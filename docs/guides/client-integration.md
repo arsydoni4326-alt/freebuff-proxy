@@ -129,6 +129,8 @@ const response = await openai.chat.completions.create({
 for await (const chunk of response) {
   process.stdout.write(chunk.choices[0]?.delta?.content || '');
 }
+```
+
 ---
 
 ## 7. API Routers & Aggregators (9router, OmniRouter, One API, LiteLLM)
@@ -139,8 +141,8 @@ For multi-account management or multi-user API routing:
 2. **Router Setup (9router / OmniRouter):**
    + **Provider Type:** OpenAI Compatible
    + **Base URL:** `http://localhost:3457/v1` (or container host `http://host.docker.internal:3457/v1`)
-   + **API Keys:** Add your actual **FreeBuff token(s)** as the node API keys in 9router or OmniRouter.
-3. **Routing Behavior:** When 9router or OmniRouter routes a request, it sends the key as `Authorization: Bearer <freebuff-token>`. The proxy lazily creates and caches upstream free sessions for each token without saving any token to disk.
+   + **API Keys:** Add your actual **auth token(s)** as the node API keys in 9router or OmniRouter.
+3. **Routing Behavior:** When 9router or OmniRouter routes a request, it sends the key as `Authorization: Bearer <token>`. The proxy lazily creates and caches upstream free sessions for each token without saving any token to disk.
 
 ---
 
@@ -151,8 +153,8 @@ Query `http://localhost:3457/v1/models` for the full live list.
 | Model ID | Provider | Best for |
 |---|---|---|
 | `deepseek/deepseek-v4-flash` | DeepSeek | Fast coding, reasoning, smart agent turns (Unlimited) |
-| `thudm/glm-5.2` | Zhipu AI | Code explanation, architecture, complex reasoning |
-| `moonshot/kimi-k2.5` | Moonshot | Long context window, deep coding tasks |
+| `z-ai/glm-5.2` | Zhipu AI | Code explanation, architecture, complex reasoning |
+| `mimo/mimo-v2.5` | Xiaomi | Balanced coding agent turns, multimodal support |
 | `minimax/minimax-m3` | MiniMax | Fast coding turns, multimodal image support |
-| `xiaomi/mimo-v2.5` | Xiaomi | Balanced coding agent turns, multimodal support |
+| `openai/gpt-5.6-luna` | OpenAI | Deep reasoning, multimodal support |
 | `deepseek/deepseek-v4-pro` | DeepSeek | Deep reasoning, complex problem solving (Premium) |
