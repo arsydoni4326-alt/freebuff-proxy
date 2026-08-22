@@ -241,6 +241,167 @@ func TestAdminDefaultPasswordAndChangeFlow(t *testing.T) {
 	}
 }
 
+// TestAdminChangePasswordEnvShadowed covers the divergence guard in
+// handleAdminChangePassword: when ADMIN_TOKEN is set in the real process
+// environment, config.Load keeps resolving it from there even after the
+// handler writes the new password into ./.env. The handler must detect
+// that the reload did not move the effective credential, roll the .env
+// write back byte-exact, and answer 409 instead of reporting success.
+func TestAdminChangePasswordEnvShadowed(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mock := testutil.NewMock()
+	defer mock.Close()
+
+	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=tok-0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("ADMIN_TOKEN", "env-shadow-token")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AdminToken != "env-shadow-token" {
+		t.Fatalf("expected process env ADMIN_TOKEN to win over .env, got %q", cfg.AdminToken)
+	}
+
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "env-shadow-token" }, mock)
+	defer ts.Close()
+
+	httpClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	loginForm := url.Values{"token": {"env-shadow-token"}}
+	resp, err := httpClient.PostForm(ts.URL+"/admin/login", loginForm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("login with env admin token status = %d, want 302", resp.StatusCode)
+	}
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "fb_admin" {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil || cookie.Value == "" {
+		t.Fatal("login did not set fb_admin cookie")
+	}
+
+	envBefore, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := `{"current_password":"env-shadow-token","new_password":"BrandNewPass2026!"}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/change-password", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err = httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("env-shadowed change-password status = %d, want 409: %s", resp.StatusCode, data)
+	}
+	if !strings.Contains(string(data), "admin_token_overridden") {
+		t.Errorf("error body missing admin_token_overridden code: %s", data)
+	}
+
+	envAfter, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(envBefore) != string(envAfter) {
+		t.Errorf(".env mutated despite rollback:\nbefore: %q\nafter:  %q", envBefore, envAfter)
+	}
+
+	// The running credential must be unchanged.
+	resp, err = httpClient.PostForm(ts.URL+"/admin/login", url.Values{"token": {"env-shadow-token"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("original env token rejected after failed change: %d", resp.StatusCode)
+	}
+}
+
+// TestAdminChangePasswordUnsafeCharset pins the pre-write validation:
+// parseDotenv trims unquoted values at '#' and strips leading quote pairs,
+// so such a password could never reload losslessly. It must be rejected
+// with 400 before any .env mutation rather than tripping the divergence
+// guard with a misleading environment-shadowing error.
+func TestAdminChangePasswordUnsafeCharset(t *testing.T) {
+	t.Chdir(t.TempDir())
+	mock := testutil.NewMock()
+	defer mock.Close()
+
+	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=tok-0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ts, _ := newTestServerCfg(t, nil, nil, mock)
+	defer ts.Close()
+
+	httpClient := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := httpClient.PostForm(ts.URL+"/admin/login", url.Values{"token": {config.DefaultAdminToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "fb_admin" {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("login did not set fb_admin cookie")
+	}
+
+	envBefore, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, pw := range []string{"hash#inside", "#leader", `"quoted"`, "'seven1'"} {
+		payload := `{"current_password":` + strconvQuote(config.DefaultAdminToken) + `,"new_password":` + strconvQuote(pw) + `}`
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/change-password", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		r, err := httpClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "password_unsafe_for_env") {
+			t.Errorf("password %q status = %d, want 400 password_unsafe_for_env: %s", pw, r.StatusCode, data)
+		}
+	}
+
+	envAfter, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(envBefore) != string(envAfter) {
+		t.Errorf(".env mutated by rejected change:\nbefore: %q\nafter:  %q", envBefore, envAfter)
+	}
+}
+
 func strconvQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
