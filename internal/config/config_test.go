@@ -461,6 +461,9 @@ func TestQuotaFallbackModels(t *testing.T) {
 		if got := cfg.QuotaFallbackModels["z-ai/glm-5.2"]; got != "deepseek/deepseek-v4-flash" {
 			t.Errorf("QuotaFallbackModels[glm-5.2] = %q, want deepseek/deepseek-v4-flash", got)
 		}
+		if got := cfg.QuotaFallbackModels["openai/gpt-5.6-luna"]; got != "deepseek/deepseek-v4-flash" {
+			t.Errorf("QuotaFallbackModels[luna] = %q, want deepseek/deepseek-v4-flash", got)
+		}
 	})
 	t.Run("env override", func(t *testing.T) {
 		clearEnv(t)

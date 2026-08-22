@@ -545,8 +545,10 @@ func isSensitiveHeader(k string) bool {
 	return strings.HasPrefix(lower, "x-freebuff-")
 }
 
-// cbTokenRE matches FreeBuff token values (the cb_ prefix the CLI mints).
-var cbTokenRE = regexp.MustCompile(`cb_[A-Za-z0-9]+`)
+// cbTokenRE matches FreeBuff token values (the cb_ prefix the CLI mints;
+// the payload uses the same base64url-plus-punctuation alphabet as Bearer
+// tokens, so the charset must match bearerTokenRE's).
+var cbTokenRE = regexp.MustCompile(`cb_[A-Za-z0-9._~+/=-]+`)
 
 // bearerTokenRE matches Authorization-style "Bearer <token>" sequences
 // (tokens are base64url + . _ ~ + / = characters).

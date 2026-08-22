@@ -10,6 +10,7 @@ import (
 	"errors"
 	"time"
 
+	"freebuff-proxy/internal/config"
 	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/upstream"
 )
@@ -88,6 +89,63 @@ func (p *Pool) setIdleFinishedOnce() bool {
 	return true
 }
 
+// setIdleSessionsEndedOnce mirrors setIdleFinishedOnce for the opt-in
+// SESSION_IDLE_END sweep: reports (and marks) whether upstream sessions
+// were already released during the current idle stretch.
+func (p *Pool) setIdleSessionsEndedOnce() bool {
+	p.lastActiveMu.Lock()
+	defer p.lastActiveMu.Unlock()
+	if p.sessionsEnded {
+		return false
+	}
+	p.sessionsEnded = true
+	return true
+}
+
+// endIdleSessions implements SESSION_IDLE_END: once the pool has been idle
+// past cfg.SessionIdleEnd (opt-in, default off), release every fixed
+// token's upstream session slot so an overnight-idle proxy stops holding
+// daily admission slots. Tradeoff (documented on the config knob): when
+// traffic resumes, EnsureSession re-admits each token, consuming a fresh
+// daily slot. Best-effort per token — a failed DELETE is logged and the
+// session simply persists until the next use (same as leaving the knob
+// unset); no retry within the episode.
+func (p *Pool) endIdleSessions(ctx context.Context, cfg *config.Config, toks *[]*tokenEntry) {
+	for i, tok := range *toks {
+		// Upstream calls during a cooldown read as abuse (maintain-pass
+		// policy); skip silently and keep the session.
+		if time.Now().Before(tok.runs.CooldownUntil()) {
+			continue
+		}
+		// Re-checked immediately before the DELETE: an Acquire can land
+		// between the caller's threshold check and this loop.
+		if tok.runs.InflightCount() > 0 {
+			continue
+		}
+		mCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
+		err := tok.session.EndSession(mCtx)
+		cancel()
+		if err != nil {
+			p.logger.Warn("pool: idle session end failed", "err", err, "token_index", i)
+		} else {
+			p.logger.Info("pool: ended idle session", "token_index", i)
+		}
+	}
+}
+
+// sweepIdleSessions runs the SESSION_IDLE_END sweep when its threshold is
+// crossed, exactly once per idle stretch. Called from every maintainTick
+// exit path so the knob works with or without IDLE_ROTATION_TIMEOUT and
+// regardless of which threshold fires first.
+func (p *Pool) sweepIdleSessions(ctx context.Context, cfg *config.Config, toks *[]*tokenEntry) {
+	if cfg.SessionIdleEnd <= 0 || p.idleFor() <= cfg.SessionIdleEnd {
+		return
+	}
+	if p.setIdleSessionsEndedOnce() {
+		p.endIdleSessions(ctx, cfg, toks)
+	}
+}
+
 // prewarm starts a run for every agent on every token, best-effort, bounded
 // by the request timeout.
 func (p *Pool) prewarm(ctx context.Context, agentIDs []string) {
@@ -153,6 +211,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 			// while the pool stays idle and their sessions stay admitted
 			// upstream until expiry.
 			p.bridgeMaintain(ctx, true)
+			p.sweepIdleSessions(ctx, cfg, toks)
 			return
 		}
 		for _, tok := range *toks {
@@ -167,6 +226,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 			// shutdown for the full upstream call timeout.
 			tok.runs.FinishAllRuns(ctx)
 		}
+		p.sweepIdleSessions(ctx, cfg, toks)
 		p.bridgeMaintain(ctx, true)
 		return
 	}
@@ -205,6 +265,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		}
 		cancel()
 	}
+	p.sweepIdleSessions(ctx, cfg, toks)
 	// Bridge sweep: drop entries idle past bridgeIdleEvict (runs FINISHed
 	// best-effort), maintain the rest like the fixed tokens above.
 	p.bridgeMaintain(ctx, false)
