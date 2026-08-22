@@ -320,6 +320,7 @@ func TestDotenvFullKeySet(t *testing.T) {
 		"CLI_VERSION=9.9.9",
 		"MODEL_ALIASES=gpt-4o:deepseek/deepseek-v4-flash,glm:z-ai/glm-5.2",
 		"MODELS_ALLOW=deepseek/deepseek-v4-flash,z-ai/glm-5.2",
+		"CORS_ALLOWED_ORIGIN=https://dashboard.example.com",
 		"TRANSIENT_RETRIES=2",
 		"MAX_SPEND_PER_DAY=500",
 	}, "\n")
@@ -349,6 +350,9 @@ func TestDotenvFullKeySet(t *testing.T) {
 	if want := []string{"deepseek/deepseek-v4-flash", "z-ai/glm-5.2"}; !equalStrings(cfg.ModelsAllow, want) {
 		t.Errorf("ModelsAllow = %v, want %v (from .env)", cfg.ModelsAllow, want)
 	}
+	if cfg.CORSAllowedOrigin != "https://dashboard.example.com" {
+		t.Errorf("CORSAllowedOrigin = %q, want https://dashboard.example.com (from .env)", cfg.CORSAllowedOrigin)
+	}
 	if cfg.MaxSpendPerDay != 500 {
 		t.Errorf("MaxSpendPerDay = %d, want 500 (from .env)", cfg.MaxSpendPerDay)
 	}
@@ -359,13 +363,13 @@ func TestDotenvFullKeySet(t *testing.T) {
 func TestDotenvFullKeySetEnvWins(t *testing.T) {
 	clearEnv(t)
 
-	if err := os.WriteFile(".env", []byte("SAFE_MODE=false\nCLI_VERSION=9.9.9\nTRANSIENT_RETRIES=2\n"), 0o644); err != nil {
+	if err := os.WriteFile(".env", []byte("SAFE_MODE=false\nCLI_VERSION=9.9.9\nTRANSIENT_RETRIES=2\nCORS_ALLOWED_ORIGIN=https://dotenv.example.com\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("SAFE_MODE", "true")
 	t.Setenv("CLI_VERSION", "1.2.3")
 	t.Setenv("TRANSIENT_RETRIES", "5")
-
+	t.Setenv("CORS_ALLOWED_ORIGIN", "https://env.example.com")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -378,6 +382,9 @@ func TestDotenvFullKeySetEnvWins(t *testing.T) {
 	}
 	if cfg.TransientRetries != 5 {
 		t.Errorf("TransientRetries = %d, want 5 (env wins)", cfg.TransientRetries)
+	}
+	if cfg.CORSAllowedOrigin != "https://env.example.com" {
+		t.Errorf("CORSAllowedOrigin = %q, want https://env.example.com (env wins)", cfg.CORSAllowedOrigin)
 	}
 }
 

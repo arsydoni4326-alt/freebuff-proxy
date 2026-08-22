@@ -65,6 +65,7 @@ func Load(configPath string) (Config, error) {
 	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
+	overrideString(&raw.SessionIdleEnd, "SESSION_IDLE_END")
 	overrideBool(&raw.SafeMode, "SAFE_MODE")
 	overrideBool(&raw.ModelsHideUnavailable, "MODELS_HIDE_UNAVAILABLE")
 	overrideString((*string)(&raw.ModelsAllow), "MODELS_ALLOW")
@@ -200,6 +201,16 @@ func Load(configPath string) (Config, error) {
 	idleRotationTimeout := time.Duration(0)
 	if idleRotationSet && strings.TrimSpace(raw.IdleRotationTimeout) != "0" {
 		idleRotationTimeout, err = parseDuration(raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	// SESSION_IDLE_END is zero-tolerant like IDLE_ROTATION_TIMEOUT: "" or "0"
+	// both mean disabled (opt-in knob — ending a session costs a fresh
+	// daily-slot admission when traffic resumes).
+	sessionIdleEnd := time.Duration(0)
+	if strings.TrimSpace(raw.SessionIdleEnd) != "" && strings.TrimSpace(raw.SessionIdleEnd) != "0" {
+		sessionIdleEnd, err = parseDuration(raw.SessionIdleEnd, "SESSION_IDLE_END")
 		if err != nil {
 			return Config{}, err
 		}
@@ -360,6 +371,7 @@ func Load(configPath string) (Config, error) {
 		BridgeDailyLimit:                 bridgeDailyLimit,
 		MaxSpendPerDay:                   maxSpendPerDay,
 		IdleRotationTimeout:              idleRotationTimeout,
+		SessionIdleEnd:                   sessionIdleEnd,
 		SafeMode:                         raw.SafeMode,
 		ModelsHideUnavailable:            raw.ModelsHideUnavailable,
 		ModelsAllow:                      splitList(string(raw.ModelsAllow)),
@@ -558,12 +570,14 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
 	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
 	overrideStringFrom(&raw.IdleRotationTimeout, get, "IDLE_ROTATION_TIMEOUT")
+	overrideStringFrom(&raw.SessionIdleEnd, get, "SESSION_IDLE_END")
 	// The remaining keys mirror the real-environment override set in Load.
 	// AUTO_DISCOVER_TOKEN is intentionally env-only (it controls the .env
 	// read itself, so honoring it from .env would be circular).
 	overrideBoolFrom(&raw.SafeMode, get, "SAFE_MODE")
 	overrideBoolFrom(&raw.ModelsHideUnavailable, get, "MODELS_HIDE_UNAVAILABLE")
 	overrideStringFrom((*string)(&raw.ModelsAllow), get, "MODELS_ALLOW")
+	overrideStringFrom(&raw.CORSAllowedOrigin, get, "CORS_ALLOWED_ORIGIN")
 	overrideStringFrom(&raw.RequestJitter, get, "REQUEST_JITTER")
 	overrideStringFrom(&raw.CLIVersion, get, "CLI_VERSION")
 	overrideStringFrom(&raw.ModelAliases, get, "MODEL_ALIASES")
