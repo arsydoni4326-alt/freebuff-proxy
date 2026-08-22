@@ -270,3 +270,55 @@ func TestRotateDiscardsRunStartedDuringShutdown(t *testing.T) {
 		t.Errorf("discarded-run FINISH = %+v, want race-run-1 completed", finishes[0])
 	}
 }
+
+// TestFinishAllRunsFailedFinishRelists pins the failure half of the
+// FinishAllRuns drain contract: idle runs are detached from m.runs /
+// m.draining BEFORE finishIfReadyCtx attempts the upstream FINISH, so a
+// failed attempt must re-list the run on the draining set
+// (appendDrainingLocked dedupes) instead of orphaning it outside both
+// sets — otherwise Maintain can never retry it and the run's terminal
+// status is lost upstream (P1, anti-ban contract).
+func TestFinishAllRunsFailedFinishRelists(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.SetFinishFailures(1)
+	mgr, _ := newTestManager(t, mock, time.Hour)
+
+	run, err := mgr.Acquire(context.Background(), agentA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.Release(run) // idle active run; plain Release does not enqueue a FINISH
+
+	// The synchronous FINISH inside FinishAllRuns fails (budget = 1); the
+	// run must land on the draining list, not vanish.
+	mgr.FinishAllRuns(context.Background())
+
+	eventually(t, "failed FinishAllRuns FINISH relists run as draining", func() bool {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		for _, d := range mgr.draining {
+			if d == run {
+				return true
+			}
+		}
+		return false
+	})
+	// First (failing) attempt fully observed before nudging Maintain, so
+	// the finishing guard cannot swallow the retry.
+	eventually(t, "first failed FINISH attempt observed", func() bool {
+		if mock.FinishesStartedSnapshot() < 1 {
+			return false
+		}
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		return !run.finishing
+	})
+
+	mgr.Maintain(context.Background())
+	eventually(t, "relisted run FINISHed after maintain retry", func() bool {
+		f, ok := finishedRun(mock, run.RunID)
+		return ok && f.Status == "completed"
+	})
+	mgr.Shutdown(context.Background())
+}
