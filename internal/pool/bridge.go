@@ -289,7 +289,6 @@ sessionReady:
 
 	p.logger.Debug("pool: bridge lease acquired", "model", effectiveModel, "agent", effectiveAgentID, "instance_id", ss.InstanceID,
 		"country", ss.CountryCode)
-	entry.lastModel.Store(effectiveModel)
 	// Track the activity and end any idle-maintenance pause, mirroring
 	// Acquire: without this, IDLE_ROTATION_TIMEOUT was dead config in
 	// bridge mode — lastActive stayed zero forever, so the pool never
@@ -298,6 +297,7 @@ sessionReady:
 	p.lastActiveMu.Lock()
 	p.lastActive = time.Now()
 	p.idleFinished = false
+	p.sessionsEnded = false
 	p.lastActiveMu.Unlock()
 	fallbackReason := ""
 	if fellBack {
