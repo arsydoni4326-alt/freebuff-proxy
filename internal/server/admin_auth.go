@@ -381,6 +381,19 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// parseDotenv trims unquoted values at the first '#' and strips a
+	// leading quote pair, while updateEnvKeys writes ADMIN_TOKEN raw. A
+	// password outside this charset would write fine but reload mangled,
+	// tripping the divergence guard below with a misleading "overridden by
+	// the environment" error on every future attempt. Reject it before any
+	// filesystem mutation instead.
+	if strings.ContainsAny(req.NewPassword, "#\r\n") || req.NewPassword[0] == '"' || req.NewPassword[0] == '\'' {
+		s.writeJSONError(w, http.StatusBadRequest,
+			"New password must not contain '#', newline, or start with a quote character: it could not be stored losslessly in .env.",
+			"invalid_request_error", "password_unsafe_for_env", 0)
+		return
+	}
+
 	s.adminSaveMu.Lock()
 	defer s.adminSaveMu.Unlock()
 
@@ -396,6 +409,20 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 		restoreEnvFile(oldBytes, oldErr)
 		s.logger.Warn("admin change password reload failed; restored .env", "err", err)
 		s.writeJSONError(w, http.StatusInternalServerError, "Failed to reload configuration: "+err.Error(), "internal_error", "reload_failed", 0)
+		return
+	}
+
+	// Divergence guard (mirrors syncTokensAfterMutation): a real process
+	// environment variable or -config JSON outranks ./.env, so the .env
+	// write above may not move the effective credential. Answering ok:true
+	// then would leave the old token (possibly the factory default) live
+	// while telling the operator rotation succeeded.
+	if newCfg.AdminToken != req.NewPassword {
+		restoreEnvFile(oldBytes, oldErr)
+		s.logger.Warn("admin change password shadowed by environment; restored .env")
+		s.writeJSONError(w, http.StatusConflict,
+			"ADMIN_TOKEN is overridden by the process environment or -config JSON — the .env write was rolled back and the running credential is unchanged; change ADMIN_TOKEN where it is actually set",
+			"invalid_request_error", "admin_token_overridden", 0)
 		return
 	}
 
