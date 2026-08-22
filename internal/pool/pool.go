@@ -109,13 +109,6 @@ type bridgeEntry struct {
 	admissionGate chan struct{}
 	admissionOnce sync.Once
 	admissionErr  error // result of leader's session creation
-
-	// lastModel tracks the last model successfully served by this entry
-	// for fast-path session reuse (model stickiness). Concurrent
-	// AcquireBridge waiters all pass through the post-admission path once
-	// the admission gate opens, so the write must be atomic (race
-	// detector: TestBridgeSingleFlight_ConcurrentRequestsShareSession).
-	lastModel atomic.Value // holds string
 }
 
 // TokenSnapshot is one token's healthz view.
@@ -265,6 +258,10 @@ type Pool struct {
 	lastActiveMu sync.Mutex
 	lastActive   time.Time
 	idleFinished bool
+	// sessionsEnded mirrors idleFinished for the opt-in SESSION_IDLE_END
+	// sweep: whether upstream sessions were already released for the
+	// current idle stretch. Guarded by lastActiveMu.
+	sessionsEnded bool
 
 	// Bridge mode (no AUTH_TOKENS): lazily-created per-client-token entries.
 	// bridgeOrder keeps the LRU order, oldest first. Guarded by bridgeMu.

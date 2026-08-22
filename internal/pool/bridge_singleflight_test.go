@@ -283,34 +283,6 @@ func TestBridgeValidation_ValidTokenAccepted(t *testing.T) {
 	}
 }
 
-// TestBridgeStickiness_LastModelTracked verifies that after a successful
-// lease, the entry's lastModel is set to the effective model.
-func TestBridgeStickiness_LastModelTracked(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-
-	p := newBridgePool(t, mock)
-	const clientToken = "client-tok-stick-1"
-
-	lease, err := p.AcquireBridge(context.Background(), clientToken, modelA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.LeaseRelease(lease)
-
-	p.bridgeMu.Lock()
-	entry := p.bridge[tokenKey(clientToken)]
-	p.bridgeMu.Unlock()
-
-	if entry == nil {
-		t.Fatal("bridge entry not found")
-	}
-	got, _ := entry.lastModel.Load().(string)
-	if got != modelA {
-		t.Errorf("lastModel = %q, want %q", got, modelA)
-	}
-}
-
 // TestBridgeStickiness_MultiTurnReusesSession verifies that multi-turn
 // requests for the same model on the same bridge entry reuse the session
 // without creating new ones.
