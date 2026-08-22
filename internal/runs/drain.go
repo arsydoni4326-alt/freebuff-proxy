@@ -299,7 +299,8 @@ func (m *RunManager) pruneDrainingLocked() {
 // finishIfReadyCtx is finishIfReady with an explicit context: the deferred
 // queue worker uses a background context (the client-side session-call
 // timeout bounds it), while the inline fallback passes its short deadline
-// so a saturated queue cannot stall the caller.
+// so a saturated queue cannot stall the caller. On upstream failure the run
+// is (re-)listed on the draining set so a later Maintain pass retries it.
 func (m *RunManager) finishIfReadyCtx(ctx context.Context, run *Run) {
 	m.mu.Lock()
 	// The worker picked up the job: clear the queued marker so a later
@@ -322,6 +323,11 @@ func (m *RunManager) finishIfReadyCtx(ctx context.Context, run *Run) {
 	if err := m.client.FinishRun(ctx, run.RunID, status, totalSteps, steps, ""); err != nil {
 		m.mu.Lock()
 		run.finishing = false
+		// Keep the run reachable for a Maintain retry even when the
+		// caller had already detached it (FinishAllRuns lifts runs out of
+		// m.runs/m.draining before calling here). Dedupes by identity, so
+		// worker-path runs still on the list are untouched.
+		m.appendDrainingLocked(run)
 		m.mu.Unlock()
 		slog.Warn("runs: finish draining run failed", "run_id", run.RunID, "requests", run.Requests, "err", err)
 		return
