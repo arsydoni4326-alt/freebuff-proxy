@@ -214,6 +214,7 @@ func TestRedactSecrets(t *testing.T) {
 	}{
 		{"cb token alone", "cb_AbC123", "[redacted]"},
 		{"cb token in body", `{"error":"free_mode_limited","token":"cb_xyz789"}`, `{"error":"free_mode_limited","token":"[redacted]"}`},
+		{"cb token punctuation", "cb_abc-DEF_ghi.jkl~tail", "[redacted]"},
 		{"bearer header", "Authorization: Bearer abcDEF012._~+/=-9", "Authorization: [redacted]"},
 		{"bearer in json", `{"auth":"Bearer xYz","ok":1}`, `{"auth":"[redacted]","ok":1}`},
 		{"both forms", "token=cb_a1B2 auth=Bearer q.r-s", "token=[redacted] auth=[redacted]"},

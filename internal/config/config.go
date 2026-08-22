@@ -61,6 +61,7 @@ type Config struct {
 	BridgeDailyLimit      int
 	MaxSpendPerDay        int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
 	IdleRotationTimeout   time.Duration // 0 = disabled: pause rotation/refresh after this idle period
+	SessionIdleEnd        time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
 	SafeMode              bool          // true = apply recommended anti-ban safe defaults
 	ModelsHideUnavailable bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
@@ -145,7 +146,7 @@ type Config struct {
 	ScarceSessionModels []string
 	// QuotaFallbackModels maps a model to its fallback model when its session
 	// quota is exhausted or unentitled (QUOTA_FALLBACK_MODELS; comma-separated k=v pairs).
-	// Default: {"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5", "z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}.
+	// Default: {"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5", "z-ai/glm-5.2": "deepseek/deepseek-v4-flash", "openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash"}.
 	QuotaFallbackModels map[string]string
 	// AdoptCLISession, when enabled (ADOPT_CLI_SESSION=false default),
 	// makes the proxy behave like the official CLI for a single account:
@@ -237,6 +238,7 @@ type rawConfig struct {
 	MaxSpendPerDay                   *int                    `json:"MAX_SPEND_PER_DAY"`
 	IdleRotationTimeout              string                  `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                         bool                    `json:"SAFE_MODE"`
+	SessionIdleEnd                   string                  `json:"SESSION_IDLE_END"`
 	ModelsHideUnavailable            bool                    `json:"MODELS_HIDE_UNAVAILABLE"`
 	ModelsAllow                      modelsAllowList         `json:"MODELS_ALLOW"`
 	CORSAllowedOrigin                string                  `json:"CORS_ALLOWED_ORIGIN"`
@@ -344,6 +346,7 @@ func defaultRawConfig() rawConfig {
 		MaxSpendPerDay:                   nil,         // 0 = unlimited advisory spend ceiling (never enforced)
 		IdleRotationTimeout:              "",          // "" = disabled (unset → SAFE_MODE preset may fill)
 		SafeMode:                         true,        // anti-ban presets on by default; set SAFE_MODE=false to disable
+		SessionIdleEnd:                   "",          // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
 		DashboardEnabled:                 true,        // dashboard on by default; set DASHBOARD_ENABLED=false to disable
 		LogAccess:                        true,        // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
@@ -395,13 +398,16 @@ func defaultFallbackModels() map[string]string {
 }
 
 // defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155, #183):
-// when a model's session quota is exhausted (all 5 premium sessions used for flash)
-// or unentitled (referral-only GLM 5.2 on accounts with 0 referral credits),
-// the proxy falls back to an available model (flash for GLM, mimo for flash).
+// when a model's session quota is exhausted (all 5 premium sessions used for flash,
+// luna's 1-session quota, or unentitled referral-only GLM 5.2), the proxy falls
+// back to an available model (flash for GLM/luna, mimo for flash). Luna fallback
+// (#203) reduces retry pressure on an exhausted scarce model that upstream flags
+// as abuse when hammered.
 func defaultQuotaFallbackModels() map[string]string {
 	return map[string]string{
 		"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
 		"z-ai/glm-5.2":               "deepseek/deepseek-v4-flash",
+		"openai/gpt-5.6-luna":        "deepseek/deepseek-v4-flash",
 	}
 }
 

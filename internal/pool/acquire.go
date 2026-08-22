@@ -486,6 +486,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		p.lastActiveMu.Lock()
 		p.lastActive = time.Now()
 		p.idleFinished = false
+		p.sessionsEnded = false
 		p.lastActiveMu.Unlock()
 		p.lastTokenMu.Lock()
 		if p.lastTokenByModel == nil {
