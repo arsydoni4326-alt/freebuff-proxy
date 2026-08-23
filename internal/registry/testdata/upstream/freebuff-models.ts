@@ -812,27 +812,18 @@ const DEEPSEEK_V4_PRO_MODEL = {
   // instead of ranking it. "Smartest" read as a recommendation the rest of the
   // catalog no longer makes.
   tagline: 'Deep reasoning',
-  // CLOSED 00:00-10:00 UTC (5pm-3am Pacific) again as of 2026-08-22 — see
-  // DEEPSEEK_EXPENSIVE_WINDOW_UTC. This tracks the LANE, not a change of heart:
-  // Pro briefly reopened at peak while it was served by a flat-priced gateway,
-  // and it is back on DeepSeek direct, which doubles every rate inside that
-  // window. The hour of lead-in matters for the same reason it always did — a
-  // session admitted just before peak keeps its model for a full hour.
+  // ALWAYS as of 2026-08-22, and this tracks the LANE rather than a change of
+  // policy — the third time this row has moved, always for the same reason.
+  // Pro is closed at peak only while it is served by a provider that doubles
+  // there. It is back on Cheaper Inference, whose card is FLAT, so there is no
+  // expensive window to hide from and a ten-hour closure would cost users the
+  // model for nothing.
   //
-  // PAIRED WITH V4 FLASH, which reopens in the same commit. The two rows must
-  // never be closed at once: they are the catalog's two strongest models, and
-  // shutting both for ten hours a day leaves the premium pool with nothing to
-  // spend on. Change one, check the other.
-  availability: 'off_peak_only',
-  // Where a Pro pick goes during those ten hours. Without this it falls to
-  // FALLBACK_FREEBUFF_MODEL_ID — the unlimited row — which is a bigger step
-  // down than the situation calls for: the user picked a premium reasoning
-  // model, and the other premium reasoning model is open. Both draw the same
-  // pool, so the redirect spends exactly what the original would have.
-  //
-  // The pointer ran Flash -> Pro for one day, while Flash was the closed row.
-  // It has to reverse with the closure, or it aims traffic at a shut model.
-  unavailableFallback: FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID,
+  // THE PAIRING STILL HOLDS: V4 Flash is `always` too, so neither is shut. The
+  // rule that matters is that these two are never closed at once, not that one
+  // of them always is — if Pro ever returns to DeepSeek direct, close it again
+  // and check Flash in the same commit.
+  availability: 'always',
   warning: FREEBUFF_AI_TRAINING_NOTICE,
   dataUse: 'training',
   premium: true,
@@ -1339,21 +1330,17 @@ export const FREEBUFF_PER_MODEL_SESSION_CAPS: Readonly<
   // Flash was never here and still should not be: it is the recommended
   // default, and capping the row most users are steered onto would push them
   // off the catalog's cheapest competent option after a single hour.
-  // BACK as of 2026-08-22, and for the reason the table exists: this is a claim
-  // about PRICE, and Pro's price changed under it. It came out on 2026-08-21
-  // when Pro moved to a flat $0.002538/M cache read — the cheapest premium row
-  // we served, which is exactly what must not be capped. It is back on DeepSeek
-  // direct at $0.022/M off-peak and $0.044/M at peak, which makes it the
-  // dearest row again, and it was 57% of spend in the hour before this landed.
+  // V4 PRO IS UNCAPPED as of 2026-08-22, metered only by the shared premium
+  // session pool like Flash. The cap tracked Pro being the dearest row per
+  // token on DeepSeek direct ($0.022/M off-peak, $0.044/M at peak); on Cheaper
+  // Inference it reads cache at $0.002538/M FLAT, which makes it the cheapest
+  // premium row we serve. Capping the cheap row is what this table exists not
+  // to do.
   //
-  // Closed for ten hours a day besides (availability: 'off_peak_only').
-  [FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID]: {
-    limit: 1,
-    pool: 'deepseek_pro',
-    poolLabel: 'V4 Pro',
-  },
+  // If Pro ever returns to DeepSeek direct, the cap comes back with it — the
+  // entry is a claim about price, and that is the price that changed.
   [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: {
-    limit: 2,
+    limit: 3,
     pool: 'luna',
     poolLabel: 'Luna',
   },
@@ -1519,9 +1506,14 @@ export const FREEBUFF_WEB_ALL_MODELS = [
   ...FREEBUFF_WEB_MODELS,
 ] as const satisfies readonly FreebuffModelOption[]
 
-export const FREEBUFF_WEB_GOD_ONLY_MODEL_IDS = [
-  FREEBUFF_KIMI_K3_ECO_MODEL_ID,
-] as const
+/** Derived rather than hand-listed: this is what isFreebuffWebGodOnlyModelId()
+ *  checks to keep a god-only row off /api/live, /api/latency and the picker
+ *  for a non-god user, and a hand-maintained second list can drift from
+ *  FREEBUFF_WEB_GOD_ONLY_MODELS above without either failing to compile — the
+ *  same shape FREEBUFF_ROOT_AGENT_IDS avoids relative to the base3 map. */
+export const FREEBUFF_WEB_GOD_ONLY_MODEL_IDS = Object.freeze(
+  FREEBUFF_WEB_GOD_ONLY_MODELS.map((model) => model.id),
+)
 
 /**
  * Web/Cloud models the picker no longer offers, while the backend keeps
@@ -1569,6 +1561,7 @@ export const FREEBUFF_WEB_PREMIUM_MODEL_IDS = [
   // filtering `!premium`, so a premium model left out of here would be metered
   // by no pool at all rather than by a stricter one.
   FREEBUFF_KIMI_K3_ECO_MODEL_ID,
+  FREEBUFF_GPT_5_6_LUNA_ES_MODEL_ID,
   // Not here for cost — Muse Spark Contributor is cheaper per token than the
   // Standard pool's models. The premium pool is what bounds how many users sit
   // inside its 60 RPM team-wide ceiling at once, and being in SOME pool is
@@ -1671,9 +1664,10 @@ export const FREEBUFF_ACTING_USER_HEADER = 'x-freebuff-acting-user-id'
  *  the Freebuff Web service account; from any other caller it is ignored, so
  *  forging it buys nothing. */
 export const FREEBUFF_PRIVILEGED_USER_HEADER = 'x-freebuff-privileged-user'
-/** Trusted Freebuff Web/Cloud session-proxy hint. Keeps the normal CLI GET
- * response compact while letting the browser model picker request zero-usage
- * quota snapshots so it can render accurate "N of M sessions" labels. */
+/** Trusted Freebuff Web/Cloud session-proxy hint: also resolve the GLM referral
+ * pool, which costs a query of its own. Set by the surfaces that render a GLM
+ * row. The name is historical — every other pool is now sent unconditionally —
+ * but the string stays as-is so installed clients keep working. */
 export const FREEBUFF_INCLUDE_UNUSED_RATE_LIMITS_HEADER =
   'x-freebuff-include-unused-rate-limits'
 /** Set by the CLI on its recurring active-session poll. The response keeps the

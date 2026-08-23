@@ -1,0 +1,30 @@
+# Weekly drift check: compares the pinned upstream registry files
+# (internal/registry/testdata/upstream/) against CodebuffAI/freebuff@main via
+# scripts/check-upstream.sh. A red job means a pin went stale: copy the changed
+# files into testdata/upstream/ and update fallbackAgents/fallbackRootByModel
+# until TestFallbackParityWithPinnedUpstream passes. The runtime registry
+# self-heals via live fetch; this guards the offline fallback path.
+name: upstream-drift
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-drift
+  cancel-in-progress: false
+
+jobs:
+  drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Needs only git + sha256sum (both preinstalled). The script shallow-
+      # clones the vendor repo into ../freebuff-reference on first run.
+      - name: Check pinned registry files vs CodebuffAI/freebuff@main
+        run: bash scripts/check-upstream.sh main
