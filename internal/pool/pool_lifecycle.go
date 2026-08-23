@@ -66,7 +66,9 @@ func (p *Pool) Start(ctx context.Context) {
 
 // idleFor is how long the pool has gone without a successful Acquire (0
 // when no request ever arrived, so a freshly prewarmed pool is not treated
-// as idle).
+// as idle). Uses Mutex (not RWMutex): the critical section includes
+// time.Since which is cheap but the lock is uncontended outside maintain
+// ticks — RWMutex adds complexity with no benefit.
 func (p *Pool) idleFor() time.Duration {
 	p.lastActiveMu.Lock()
 	defer p.lastActiveMu.Unlock()
@@ -76,12 +78,23 @@ func (p *Pool) idleFor() time.Duration {
 	return time.Since(p.lastActive)
 }
 
-// setIdleFinishedOnce marks the idle FINISH as done and reports whether
-// this call performed it (false when it was already done). The next
-// Acquire success resets the flag.
-func (p *Pool) setIdleFinishedOnce() bool {
+// tryIdleFinish atomically checks whether the pool has been idle past
+// cfg.IdleRotationTimeout and, if so, marks idleFinished. Returns true
+// only for the first caller past the threshold per idle stretch.
+// Atomicity: threshold check and flag set are one lastActiveMu critical
+// section so concurrent maintainTick passes cannot both FINISH.
+func (p *Pool) tryIdleFinish(cfg *config.Config) bool {
 	p.lastActiveMu.Lock()
 	defer p.lastActiveMu.Unlock()
+	if cfg.IdleRotationTimeout <= 0 {
+		return false
+	}
+	if p.lastActive.IsZero() {
+		return false
+	}
+	if time.Since(p.lastActive) <= cfg.IdleRotationTimeout {
+		return false
+	}
 	if p.idleFinished {
 		return false
 	}
@@ -89,12 +102,23 @@ func (p *Pool) setIdleFinishedOnce() bool {
 	return true
 }
 
-// setIdleSessionsEndedOnce mirrors setIdleFinishedOnce for the opt-in
-// SESSION_IDLE_END sweep: reports (and marks) whether upstream sessions
-// were already released during the current idle stretch.
-func (p *Pool) setIdleSessionsEndedOnce() bool {
+// trySweepIdleSessions atomically checks whether the pool has been idle
+// past cfg.SessionIdleEnd and marks sessionsEnded. Returns true only for
+// the first caller past the threshold per idle stretch.
+// Atomicity: threshold check and flag set are one lastActiveMu critical
+// section so concurrent maintainTicks cannot both sweep (TOCTOU).
+func (p *Pool) trySweepIdleSessions(cfg *config.Config) bool {
 	p.lastActiveMu.Lock()
 	defer p.lastActiveMu.Unlock()
+	if cfg.SessionIdleEnd <= 0 {
+		return false
+	}
+	if p.lastActive.IsZero() {
+		return false
+	}
+	if time.Since(p.lastActive) <= cfg.SessionIdleEnd {
+		return false
+	}
 	if p.sessionsEnded {
 		return false
 	}
@@ -137,11 +161,10 @@ func (p *Pool) endIdleSessions(ctx context.Context, cfg *config.Config, toks *[]
 // crossed, exactly once per idle stretch. Called from every maintainTick
 // exit path so the knob works with or without IDLE_ROTATION_TIMEOUT and
 // regardless of which threshold fires first.
+// Atomicity: delegates to trySweepIdleSessions so the threshold check and
+// sessionsEnded flag are set in one critical section (TOCTOU fix).
 func (p *Pool) sweepIdleSessions(ctx context.Context, cfg *config.Config, toks *[]*tokenEntry) {
-	if cfg.SessionIdleEnd <= 0 || p.idleFor() <= cfg.SessionIdleEnd {
-		return
-	}
-	if p.setIdleSessionsEndedOnce() {
+	if p.trySweepIdleSessions(cfg) {
 		p.endIdleSessions(ctx, cfg, toks)
 	}
 }
@@ -200,20 +223,12 @@ func (p *Pool) maintainTick(ctx context.Context) {
 	// LeaseRelease drains them; the park grace covers an Acquire that loaded
 	// the pre-removal snapshot (see RemoveLastToken).
 	p.pruneRetired()
-	if cfg.IdleRotationTimeout > 0 && p.idleFor() > cfg.IdleRotationTimeout {
-		// Past the idle threshold. If this is the first idle pass, FINISH
-		// every run so the token's rotation/refresh activity stops
-		// upstream; sessions are left untouched. Later passes skip the
-		// per-token work entirely while the pool stays idle.
-		if !p.setIdleFinishedOnce() {
-			// Later idle passes still sweep idle bridge entries: without
-			// this, entries idle past bridgeIdleEvict are never evicted
-			// while the pool stays idle and their sessions stay admitted
-			// upstream until expiry.
-			p.bridgeMaintain(ctx, true)
-			p.sweepIdleSessions(ctx, cfg, toks)
-			return
-		}
+	// Idle handling — tryIdleFinish atomically checks the threshold and
+	// marks idleFinished in one lastActiveMu critical section (TOCTOU fix).
+	// The first idle pass FINISHes all runs so rotation/refresh stops
+	// upstream; sessions are left untouched. Later passes skip per-token
+	// work and only sweep.
+	if p.tryIdleFinish(cfg) {
 		for _, tok := range *toks {
 			// Skip tokens with outstanding leases: FINISHing this run
 			// would kill an in-flight chat; leave it for rotation once the
@@ -228,6 +243,15 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		}
 		p.sweepIdleSessions(ctx, cfg, toks)
 		p.bridgeMaintain(ctx, true)
+		return
+	}
+	if cfg.IdleRotationTimeout > 0 && p.idleFor() > cfg.IdleRotationTimeout {
+		// Subsequent idle passes (already FINISHed): still sweep idle
+		// bridge entries — without this, entries idle past bridgeIdleEvict
+		// are never evicted while the pool stays idle and their sessions
+		// stay admitted upstream until expiry.
+		p.bridgeMaintain(ctx, true)
+		p.sweepIdleSessions(ctx, cfg, toks)
 		return
 	}
 	for i, tok := range *toks {

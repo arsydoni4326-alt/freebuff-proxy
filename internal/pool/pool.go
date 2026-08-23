@@ -105,7 +105,8 @@ type bridgeEntry struct {
 	// admissionGate serializes session creation per entry: the first
 	// request creates the session; concurrent requests block on the
 	// channel until it completes or fails. sync.Once ensures the session
-	// is created exactly once per entry lifecycle.
+	// is created exactly once per entry lifecycle. Guarded by mu.
+	mu            sync.Mutex
 	admissionGate chan struct{}
 	admissionOnce sync.Once
 	admissionErr  error // result of leader's session creation
@@ -382,6 +383,9 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 	p.gate = newCreateGate(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
+		if sessions[i] == nil || clients[i] == nil {
+			return nil, fmt.Errorf("pool: nil session/client at index %d", i)
+		}
 		sess := sessions[i]
 		sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 		sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)

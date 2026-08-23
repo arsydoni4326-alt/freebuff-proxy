@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"freebuff-proxy/internal/telemetry"
 )
 
 func getNumber(m map[string]any, keys ...string) (float64, bool) {
@@ -123,11 +125,11 @@ func (c *Client) dump(kind string, req *http.Request, status int, body string) {
 	_ = os.MkdirAll("dump", 0o755)
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "%s %s\n", req.Method, req.URL.String())
-	for k, vs := range req.Header {
+	// RedactHeaders is the authoritative secret set (Authorization,
+	// x-api-key, x-codebuff-api-key, Cookie/Set-Cookie, every x-freebuff-*):
+	// dump files persist to disk, so a partial inline check leaks.
+	for k, vs := range telemetry.RedactHeaders(req.Header) {
 		for _, v := range vs {
-			if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "x-codebuff-api-key") {
-				v = "[redacted]"
-			}
 			fmt.Fprintf(&buf, "%s: %s\n", k, v)
 		}
 	}

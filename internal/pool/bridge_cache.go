@@ -117,7 +117,13 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	// Upfront token validation: probe the token with a zero-cost GET
 	// (no session claimed) to catch invalid/revoked tokens early.
 	// Only runs when we are actually creating a new entry (not on cache hit).
-	if _, probeErr := client.ProbeAccount(context.Background()); probeErr != nil {
+	// Bounded by SessionCallTimeout so a hung upstream does not hold
+	// bridgeMu indefinitely.
+	probeCfg := p.cfg.Load()
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), probeCfg.SessionCallTimeout)
+	_, probeErr := client.ProbeAccount(probeCtx)
+	probeCancel()
+	if probeErr != nil {
 		p.bridgeMu.Unlock()
 		return nil, fmt.Errorf("bridge: token validation failed: %w", probeErr)
 	}

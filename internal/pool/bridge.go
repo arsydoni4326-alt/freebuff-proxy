@@ -118,7 +118,9 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	// token share one session creation. The leader creates the session;
 	// followers block on the admissionGate channel until it completes.
 	// On failure, the gate resets so the next request retries.
+	// Guarded by entry.mu to avoid races on admissionGate/Once/Err.
 	var needsCreation bool
+	entry.mu.Lock()
 	select {
 	case <-entry.admissionGate:
 		// Session already created (or failed) by a concurrent request.
@@ -127,6 +129,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		// the gate and create a fresh session for the new model.
 		ss := entry.session.Snapshot()
 		if (ss.Usable() || ss.Refreshing) && (ss.Model == "" || ss.Model == model) {
+			entry.mu.Unlock()
 			goto sessionReady
 		}
 		// Model mismatch or stale — reset gate for fresh creation.
@@ -137,34 +140,45 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	default:
 		needsCreation = true
 	}
+	entry.mu.Unlock()
 
 	if needsCreation {
 		entry.admissionOnce.Do(func() {
-			defer close(entry.admissionGate)
+			defer func() {
+				entry.mu.Lock()
+				close(entry.admissionGate)
+				entry.mu.Unlock()
+			}()
 
 			// Session-create admission gate (issue #86): global + per-model
 			// concurrency limiter.
 			permit, gerr := p.gate.acquire(ctx, model)
 			if gerr != nil {
+				entry.mu.Lock()
 				entry.admissionErr = gerr
+				entry.mu.Unlock()
 				return
 			}
 			sessionStart := time.Now()
 			_, serr := entry.session.EnsureSessionForModel(ctx, model)
 			permit.Release()
 			phasetiming.FromContext(ctx).Since(phasetiming.SessionRefreshMS, sessionStart)
+			entry.mu.Lock()
 			entry.admissionErr = serr
+			entry.mu.Unlock()
 		})
 	}
 
-	// Check the leader's result.
+	// Check the leader's result (guarded by entry.mu).
+	entry.mu.Lock()
 	if entry.admissionErr != nil {
-		err := entry.admissionErr
+		errCopy := entry.admissionErr
 		// Reset the gate so the next request retries.
 		entry.admissionGate = make(chan struct{})
 		entry.admissionOnce = sync.Once{}
 		entry.admissionErr = nil
-
+		entry.mu.Unlock()
+		err = errCopy
 		if errors.Is(err, upstream.ErrAuthRejected) {
 			entry.runs.Cooldown(runs.DefaultCooldown)
 			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
@@ -199,6 +213,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 		return nil, err
 	}
+	entry.mu.Unlock()
 	entry.runs.ClearCooldowns()
 
 sessionReady:
