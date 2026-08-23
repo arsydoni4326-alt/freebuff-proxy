@@ -902,10 +902,12 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 // TestStrictServedModelsPinned pins issue #189 (strict gate) as amended by
 // #201 and the 2026-08-23 luna-es drop: ServedModels contains ONLY the 5
 // operational FreeBuff models. openai/gpt-5.6-luna-es was removed after the
-// vendor reclassified it god-only/honeypot-class ("Codex (test)" — Novita
-// route, evaluation only; excluded from SUPPORTED_FREEBUFF_MODELS and the
-// CLI picker in snapshot 0603bc1); all decommissioned models, honeypot
-// models, and -max variants are rejected by IsServedModel.
+// vendor moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex (test)" — Novita
+// route, evaluation only; hidden from the CLI picker and
+// SUPPORTED_FREEBUFF_MODELS in snapshot 0603bc1) — not the documented
+// honeypot (that is kimi-k3-eco), but unreachable to real clients. All
+// decommissioned models, god-only/hidden-eval models, and -max variants are
+// rejected by IsServedModel.
 func TestStrictServedModelsPinned(t *testing.T) {
 	wantModels := []string{
 		"deepseek/deepseek-v4-flash",
