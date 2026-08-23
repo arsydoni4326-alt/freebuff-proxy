@@ -285,3 +285,35 @@ func TestModelsDataServedGateOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigDataEffectiveRows pins the Effective table contract: every key
+// appears exactly once, SAFE_MODE is present (it was silently clobbered by a
+// bad edit once), and secret list-valued keys render counts — never raw
+// joins (DASH-EXPOSURE-005).
+func TestConfigDataEffectiveRows(t *testing.T) {
+	t.Chdir(t.TempDir())
+	cfg := &config.Config{
+		AuthTokens:      []string{"tok-a", "tok-b"},
+		APIKeys:         []string{"sk-client-1", "sk-client-2"},
+		SafeMode:        true,
+		UpstreamBaseURL: "https://www.codebuff.com",
+	}
+	d := New(func() *config.Config { return cfg }, nil, nil, nil, nil)
+	cd := d.configData()
+
+	seen := map[string]int{}
+	for _, kv := range cd.Effective {
+		seen[kv.Key]++
+		if kv.Key == "API_KEYS" && (strings.Contains(kv.Value, "sk-client") || strings.Contains(kv.Value, ",")) {
+			t.Errorf("API_KEYS row leaks raw values: %q", kv.Value)
+		}
+		if kv.Key == "AUTH_TOKENS" && strings.Contains(kv.Value, "tok-") {
+			t.Errorf("AUTH_TOKENS row leaks raw values: %q", kv.Value)
+		}
+	}
+	for _, k := range []string{"SAFE_MODE", "API_KEYS", "AUTH_TOKENS", "ADMIN_TOKEN"} {
+		if seen[k] != 1 {
+			t.Errorf("Effective rows for %s = %d, want exactly 1", k, seen[k])
+		}
+	}
+}
