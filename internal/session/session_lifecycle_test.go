@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -84,36 +85,78 @@ func TestExpiredCacheRefreshes(t *testing.T) {
 // N concurrent callers must trigger exactly 1 upstream create and all N must
 // surface the retained refresh error (instead of each becoming the next
 // refresher and re-running the failing POST).
+//
+// Determinism (issue #205): under loaded -race runners a follower could
+// formerly be scheduled only after the leader's instant 429 round trip had
+// fully completed, then legitimately re-enter leader election and issue a
+// second create — an ordering artifact, not amplification. The leader's
+// rate-limited response is now parked on HoldRateLimit until every follower
+// has registered as a waiter (proven via testWaiterPark), making the
+// exactly-one-request assertion schedule-independent. A caller arriving
+// after a completed failed round is a legitimate retry, not amplification.
 func TestSingleFlightFailureBounded(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.RateLimit = true // every route returns 429 rate_limited
+	hold := make(chan struct{})
+	mock.HoldRateLimit = hold // park the winning caller's response mid-request
 	mgr := newTestManager(t, mock)
 
-	const n = 8
+	const followers = 7 // +1 in-flight refresher = 8 concurrent callers
+
+	// testWaiterPark runs while m.mu is held when a follower is about to
+	// park on the refresh channel; each send proves that follower observed
+	// refreshing==true and elected to wait instead of leading.
+	arrived := make(chan struct{}, followers)
+	mgr.testWaiterPark = func() { arrived <- struct{}{} }
+
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := mgr.EnsureSession(context.Background())
+		leaderErr <- err
+	}()
+
 	var wg sync.WaitGroup
-	errs := make([]error, n)
-	for i := 0; i < n; i++ {
+	followerErrs := make([]error, followers)
+	for i := range followers {
 		wg.Add(1)
-		go func(i int) {
+		go func() {
 			defer wg.Done()
-			_, errs[i] = mgr.EnsureSession(context.Background())
-		}(i)
+			_, followerErrs[i] = mgr.EnsureSession(context.Background())
+		}()
 	}
+
+	// Whoever wins leadership is provably mid-request while held, so every
+	// remaining caller must take the waiter branch before release.
+	for i := range followers {
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("only %d/%d followers registered as waiters", i, followers)
+		}
+	}
+	close(hold) // release the held response; its failure fans out to waiters
 	wg.Wait()
 
-	if mock.Requests != 1 {
-		t.Errorf("upstream requests = %d, want exactly 1 (single-flight failure must not amplify)", mock.Requests)
+	if got := mock.RequestCount(); got != 1 {
+		t.Errorf("upstream requests = %d, want exactly 1 (single-flight failure must not amplify)", got)
 	}
-	for i, err := range errs {
-		if err == nil {
-			t.Errorf("caller %d got nil error, want the retained refresh error", i)
-			continue
-		}
-		var rle *upstream.RateLimitError
-		if !errors.As(err, &rle) {
-			t.Errorf("caller %d error = %T %v, want RateLimitError", i, err, err)
-		}
+	err := <-leaderErr
+	assertRateLimited(t, "leader", err)
+	for i, ferr := range followerErrs {
+		assertRateLimited(t, fmt.Sprintf("follower %d", i), ferr)
+	}
+}
+
+func assertRateLimited(t *testing.T, who string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Errorf("%s got nil error, want the retained refresh error", who)
+		return
+	}
+	var rle *upstream.RateLimitError
+	if !errors.As(err, &rle) {
+		t.Errorf("%s error = %T %v, want RateLimitError", who, err, err)
 	}
 }
 

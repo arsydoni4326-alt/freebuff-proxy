@@ -102,6 +102,10 @@ type Manager struct {
 	// becoming the next refresher and re-running the failing upstream create.
 	// Cleared when a new refresh starts, so a later caller retries normally.
 	refreshErr error
+	// testWaiterPark, when set (tests only), runs while mu is held at the
+	// moment a follower parks on refreshCh — lets tests deterministically
+	// count parked waiters before releasing a held leader request.
+	testWaiterPark func()
 
 	// reAdmitLead (issue #99, SESSION_RE_ADMIT_LEAD default 60s): when the
 	// cached active session has less than this much time left, EnsureSession
@@ -375,6 +379,9 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 		if m.refreshing {
 			// Another caller is the refresher: park on its completion signal.
 			refreshCh := m.refreshCh
+			if m.testWaiterPark != nil {
+				m.testWaiterPark()
+			}
 			m.mu.Unlock()
 			select {
 			case <-refreshCh:
