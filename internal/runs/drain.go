@@ -57,7 +57,7 @@ func (m *RunManager) FinishAllRuns(ctx context.Context) {
 	}
 	// Draining runs: finish the idle ones; busy ones stay draining (the
 	// lease release re-queues them once inflight drains).
-	kept := m.draining[:0]
+	kept := m.draining[:0:0] // cap=0 forces fresh backing array — breaks append aliasing with the old slice
 	for _, run := range m.draining {
 		if run.inflight > 0 {
 			kept = append(kept, run)
@@ -167,21 +167,24 @@ func (m *RunManager) finishLoop() {
 		select {
 		case <-m.finishStop:
 			// Shutdown: drain whatever is queued (bounded by the shutdown
-			// deadline â€” a saturated queue must not stall the process),
-			// then exit. Jobs run on a background ctx so they COMPLETE;
-			// the deadline only abandons the wait (review P2).
+			// deadline — a saturated queue must not stall the process),
+			// then exit. Jobs run on a context detached from cancellation
+			// (WithoutCancel keeps values, drops the cancel signal) so the
+			// FINISH COMPLETES honestly; runJob's own inline deadline bounds
+			// each attempt and the finishDrainCtx deadline abandons the
+			// remaining wait.
 			for {
 				select {
 				case <-m.finishDrainCtx.Done():
 					return
 				case job := <-m.finishQueue:
-					m.runJob(context.Background(), job)
+					m.runJob(context.WithoutCancel(m.finishDrainCtx), job)
 				default:
 					return
 				}
 			}
 		case job := <-m.finishQueue:
-			m.runJob(context.Background(), job)
+			m.runJob(context.WithoutCancel(context.Background()), job)
 		}
 	}
 }

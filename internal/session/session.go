@@ -211,16 +211,20 @@ type cachedState struct {
 
 // NewManager builds a session manager for the given upstream client.
 func NewManager(client *upstream.Client) *Manager {
+	if client == nil {
+		panic("session: nil client")
+	}
 	return NewManagerWithStore(client, nil)
 }
 
 // NewManagerWithStore builds a session manager that also persists its cached
 // state through store (nil disables persistence).
 func NewManagerWithStore(client *upstream.Client, store *Store) *Manager {
-	m := &Manager{client: client, store: store, now: time.Now}
-	if client != nil {
-		m.key = client.TokenKey()
+	if client == nil {
+		panic("session: nil client")
 	}
+	m := &Manager{client: client, store: store, now: time.Now}
+	m.key = client.TokenKey()
 	return m
 }
 
