@@ -118,7 +118,11 @@ type MockUpstream struct {
 	// RateLimit makes every route return a 429 rate_limited quota-exhaustion
 	// body (daily session quota, Pacific-day reset contract).
 	RateLimit bool
-	// RateLimitRetryAfterMs overrides retryAfterMs in the rate-limit body
+	// HoldRateLimit, when non-nil, parks every rate-limited response on the
+	// channel before writing it (released by receive; 10s safety timeout).
+	// Deterministic single-flight testing: hold the leader mid-request while
+	// followers pile up as waiters, then release. Test-only.
+	HoldRateLimit chan struct{}
 	// when > 0 (default 48549499). Tests use it to serve DIFFERENT windows
 	// per mock so best-window selection actually compares values.
 	RateLimitRetryAfterMs int
@@ -205,6 +209,14 @@ func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if rateLimit {
+		if m.HoldRateLimit != nil {
+			// Park mid-request: the leader's create is provably in-flight
+			// while followers elect to wait on its completion channel.
+			select {
+			case <-m.HoldRateLimit:
+			case <-time.After(10 * time.Second):
+			}
+		}
 		// writeRaw (not writeJSON): the body must reach the client verbatim
 		// so parseRateLimit can unmarshal the quota fields — writeJSON would
 		retryAfterMs := 48549499
@@ -722,4 +734,12 @@ func (m *MockUpstream) RecordedChatBodiesSnapshot() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]string(nil), m.RecordedChatBodies...)
+}
+
+// RequestCount returns the total number of requests served so far
+// (synchronized read of the Requests counter).
+func (m *MockUpstream) RequestCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Requests
 }
