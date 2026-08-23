@@ -204,7 +204,7 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 	s.loginMu.Unlock()
 	if done {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "token_index": flow.Index, "token": flow.Token})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "token_index": flow.Index})
 		return
 	}
 	if completing {

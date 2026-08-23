@@ -256,3 +256,32 @@ func TestCardFromSnapshotBanAndLocked(t *testing.T) {
 		t.Errorf("bridge card ban = %q/%q, want temporary/%s", bc.BanType, bc.BannedUntil, until.Format(time.RFC3339))
 	}
 }
+
+// TestModelsDataServedGateOnly pins the served-model filter on modelsData:
+// the vendor registry also carries god-only/eval rows (luna-es since
+// snapshot 0603bc1) that must never appear in the dashboard models view,
+// and Count must reflect the filtered set, not the raw registry size.
+func TestModelsDataServedGateOnly(t *testing.T) {
+	cfg := &config.Config{
+		RotationInterval:   time.Hour,
+		RequestTimeout:     15 * time.Minute,
+		SessionCallTimeout: 5 * time.Second,
+		RegistryRefresh:    6 * time.Hour,
+		UpstreamBaseURL:    "https://www.codebuff.com",
+	}
+	reg := registry.New(cfg, nil)
+	reg.LoadFallback()
+	if reg.ModelCount() <= len(registry.SupportedModelIDs) {
+		t.Fatalf("precondition: fallback registry should exceed the served set (got %d)", reg.ModelCount())
+	}
+	d := New(func() *config.Config { return cfg }, nil, reg, nil, nil)
+	md := d.modelsData()
+	if md.Count != len(registry.SupportedModelIDs) {
+		t.Errorf("Count = %d, want %d (served set)", md.Count, len(registry.SupportedModelIDs))
+	}
+	for _, row := range md.Models {
+		if !registry.IsServedModel(row.ID) {
+			t.Errorf("models view contains unserved model %q", row.ID)
+		}
+	}
+}

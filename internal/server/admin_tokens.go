@@ -198,7 +198,7 @@ func (s *Server) syncTokensAfterMutation(tokens []string) error {
 	}
 	if !reflect.DeepEqual(newCfg.AuthTokens, tokens) {
 		restoreEnvFile(old, oldErr)
-		return fmt.Errorf("AUTH_TOKENS=%q overrides .env (environment or -config JSON) — the %d token(s) were persisted to .env but NOT activated; clear AUTH_TOKENS from the environment/config, or restart the container without env_file, then retry", strings.Join(newCfg.AuthTokens, ","), len(tokens))
+		return fmt.Errorf("AUTH_TOKENS overridden by environment or -config JSON (%d effective vs %d requested) — persisted to .env but NOT activated; clear it there or restart without env_file, then retry", len(newCfg.AuthTokens), len(tokens))
 	}
 	s.cfg.Store(&newCfg)
 	s.reg.SetConfig(&newCfg)

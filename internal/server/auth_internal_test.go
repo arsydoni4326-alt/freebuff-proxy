@@ -662,6 +662,40 @@ func TestAdminReloadAdminSensitiveGate(t *testing.T) {
 			t.Errorf("reload with bearer = %d, want 200", got)
 		}
 	})
+
+	t.Run("factory default token remote forbidden", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		srv := newServerOpts(t, mock, func(c *config.Config) { c.AdminToken = config.DefaultAdminToken })
+		if got := reload(t, srv, "198.51.100.7:1234", "proxy.example.com", config.DefaultAdminToken); got != http.StatusForbidden {
+			t.Errorf("reload from non-loopback under factory-default token = %d, want 403 (publicly-known password is anonymous-equivalent)", got)
+		}
+	})
+
+	t.Run("factory default token loopback allowed", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		srv := newServerOpts(t, mock, func(c *config.Config) { c.AdminToken = config.DefaultAdminToken })
+		if got := reload(t, srv, "127.0.0.1:1234", "127.0.0.1:3457", config.DefaultAdminToken); got != http.StatusOK {
+			t.Errorf("reload from loopback under factory-default token = %d, want 200", got)
+		}
+	})
+
+	t.Run("admin bearer works even with API_KEYS configured", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		srv := newServerOpts(t, mock, func(c *config.Config) {
+			c.AdminToken = "admin-secret"
+			c.APIKeys = []string{"sk-client"}
+		})
+		// DASH-AUTH-001 regression: the old chain stacked requireAuth above
+		// adminSensitive, demanding the admin bearer ALSO be a client API
+		// key — no single credential satisfied both and the documented
+		// ADMIN_TOKEN-only workflow 401'd.
+		if got := reload(t, srv, "198.51.100.7:1234", "proxy.example.com", "admin-secret"); got != http.StatusOK {
+			t.Errorf("reload with admin bearer while API_KEYS set = %d, want 200", got)
+		}
+	})
 }
 
 // TestWriteErrorLegacyLunaAgent verifies that free_mode_legacy_luna_agent
