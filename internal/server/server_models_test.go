@@ -106,9 +106,10 @@ func TestModelsEndpoint(t *testing.T) {
 	if out.Object != "list" {
 		t.Errorf("object = %q, want list", out.Object)
 	}
-	// Issue #189 (strict gate), extended to 6 by #201 (luna-es).
-	if len(out.Data) != 6 {
-		t.Errorf("models = %d, want 6", len(out.Data))
+	// Issue #189 (strict gate); 6→5 on 2026-08-23: luna-es dropped (upstream
+	// reclassified it god-only/honeypot-class — vendor snapshot 0603bc1).
+	if len(out.Data) != 5 {
+		t.Errorf("models = %d, want 5", len(out.Data))
 	}
 	for i, m := range out.Data {
 		if m.ID == "" || m.Object != "model" || m.OwnedBy == "" {
@@ -196,9 +197,9 @@ func TestHealthz(t *testing.T) {
 	if out.UptimeSeconds < 0 {
 		t.Errorf("uptime_seconds = %v, want >= 0", out.UptimeSeconds)
 	}
-	// Issue #189 strict count, 6 since #201.
-	if out.Models != 6 {
-		t.Errorf("models = %d, want 6", out.Models)
+	// Issue #189 strict count; 6→5 when luna-es was dropped (2026-08-23).
+	if out.Models != 5 {
+		t.Errorf("models = %d, want 5", out.Models)
 	}
 	if len(out.Tokens) != 2 {
 		t.Errorf("tokens = %d, want 2", len(out.Tokens))
@@ -558,8 +559,8 @@ func TestModelsAllowEmptyIsOpen(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("models is not JSON: %v: %s", err, data)
 	}
-	if len(out.Data) != 6 {
-		t.Errorf("model count = %d, want 6 (all operational models served)", len(out.Data))
+	if len(out.Data) != 5 {
+		t.Errorf("model count = %d, want 5 (all operational models served)", len(out.Data))
 	}
 	var hasModelA, hasFlash bool
 	for _, m := range out.Data {
@@ -784,8 +785,8 @@ func TestStrictFiveModelsEnforced(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal /v1/models: %v", err)
 	}
-	if len(out.Data) != 6 {
-		t.Fatalf("models count = %d, want exactly 6", len(out.Data))
+	if len(out.Data) != 5 {
+		t.Fatalf("models count = %d, want exactly 5", len(out.Data))
 	}
 	wantSet := map[string]bool{
 		"deepseek/deepseek-v4-flash": true,
@@ -793,7 +794,6 @@ func TestStrictFiveModelsEnforced(t *testing.T) {
 		"openai/gpt-5.6-luna":        true,
 		"z-ai/glm-5.2":               true,
 		"mimo/mimo-v2.5":             true,
-		"openai/gpt-5.6-luna-es":     true,
 	}
 	for _, m := range out.Data {
 		if !wantSet[m.ID] {
@@ -878,7 +878,7 @@ func TestStrictFiveModelsEnforced(t *testing.T) {
 	if err := json.Unmarshal(dataH, &health); err != nil {
 		t.Fatalf("unmarshal healthz: %v", err)
 	}
-	if health.Models != 6 {
-		t.Errorf("health.Models = %d, want 6", health.Models)
+	if health.Models != 5 {
+		t.Errorf("health.Models = %d, want 5", health.Models)
 	}
 }

@@ -900,21 +900,22 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 }
 
 // TestStrictServedModelsPinned pins issue #189 (strict gate) as amended by
-// #201: ServedModels contains ONLY the 6 operational FreeBuff models — the
-// original five plus openai/gpt-5.6-luna-es, which upstream free-mode
-// natively supports with dedicated base2/base3-free-luna-es agents; all
-// decommissioned models and -max variants are rejected by IsServedModel.
+// #201 and the 2026-08-23 luna-es drop: ServedModels contains ONLY the 5
+// operational FreeBuff models. openai/gpt-5.6-luna-es was removed after the
+// vendor reclassified it god-only/honeypot-class ("Codex (test)" — Novita
+// route, evaluation only; excluded from SUPPORTED_FREEBUFF_MODELS and the
+// CLI picker in snapshot 0603bc1); all decommissioned models, honeypot
+// models, and -max variants are rejected by IsServedModel.
 func TestStrictServedModelsPinned(t *testing.T) {
 	wantModels := []string{
 		"deepseek/deepseek-v4-flash",
 		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.6-luna",
-		"openai/gpt-5.6-luna-es",
 		"z-ai/glm-5.2",
 		"mimo/mimo-v2.5",
 	}
-	if len(ServedModels) != 6 {
-		t.Fatalf("len(ServedModels) = %d, want exactly 6", len(ServedModels))
+	if len(ServedModels) != 5 {
+		t.Fatalf("len(ServedModels) = %d, want exactly 5", len(ServedModels))
 	}
 	for _, m := range wantModels {
 		if !ServedModels[m] {
@@ -925,8 +926,9 @@ func TestStrictServedModelsPinned(t *testing.T) {
 		}
 	}
 
-	// Decommissioned models and the substitution-hazard -max variants must
-	// be rejected:
+	// Decommissioned models, honeypot/bait models (kimi-k3-eco, and luna-es
+	// since vendor snapshot 0603bc1 reclassified it "Codex (test)" god-only),
+	// and the substitution-hazard -max variants must be rejected:
 	decommissioned := []string{
 		"minimax/minimax-m3",
 		"google/gemini-2.5-flash-lite",
@@ -934,6 +936,7 @@ func TestStrictServedModelsPinned(t *testing.T) {
 		"google/gemini-3.5-flash-lite",
 		"anthropic/claude-fable-5",
 		"crof/kimi-k3-eco",
+		"openai/gpt-5.6-luna-es",
 		"meta/muse-spark-1.2-contributor",
 		"deepseek/deepseek-v4-pro-max",
 		"deepseek/deepseek-v4-flash-max",

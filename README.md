@@ -69,14 +69,15 @@ If you are a beginner, you don't need to write code or compile anything:
 
 **Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
 
-> **📢 Official Freebuff Upstream Notice**:
-> *"DeepSeek costs have spiked, so limits are tighter for now: V4 Pro and GPT-5.6 Luna are 1 session a day, V4 Pro pauses at peak times, and MiniMax M3 is unavailable. MiMo 2.5 stays unlimited. —Freebuff Team"*
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot 2026-08-23):
+> *"GPT-5.6 Luna is 3 sessions a day. V4 Pro and Flash use your daily sessions; MiMo is unmetered. —❤️ Freebuff Team"*
+> (DeepSeek models remain unavailable during weekday peak hours; Beijing-weekend Saturdays/Sundays are always off-peak.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
 | **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. 5 sessions/day premium pool. |
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **1 session/day limit**. |
-| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. **1 session/day limit; pauses at peak times**. |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **3 sessions/day limit** (raised from 1 → 2 → 3 in the Aug 21–23 vendor snapshots). |
+| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. Per-model cap removed upstream (Aug 23 snapshot) — draws from the shared daily premium pool; weekday peak-hour pauses lifted. |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
 | **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session/referral). |
 | **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost spikes. |
@@ -280,7 +281,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `QUOTA_FALLBACK_MODELS` | `flash→mimo, glm→flash, luna→flash` | Map model → fallback when its session quota is exhausted/unentitled. Defaults: `deepseek/deepseek-v4-flash=mimo/mimo-v2.5`, `z-ai/glm-5.2=deepseek/deepseek-v4-flash`, `openai/gpt-5.6-luna=deepseek/deepseek-v4-flash` (luna degrades the scarce 1/day session locally instead of hammering quota 429s; #203) |
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
 | `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 2s when unset) |
-| `CLI_VERSION` | `0.10.7` | Informational only: parsed and shown on the admin dashboard (Configuration Studio). No wire impact — the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff`, the ads UA to `Freebuff-CLI/1.0.0`, and session/auth endpoints default to `Bun/1.3.14` |
+| `QUOTA_FALLBACK_MODELS` | `flash→mimo, glm→flash, luna→flash` | Map model → fallback when its session quota is exhausted/unentitled. Defaults: `deepseek/deepseek-v4-flash=mimo/mimo-v2.5`, `z-ai/glm-5.2=deepseek/deepseek-v4-flash`, `openai/gpt-5.6-luna=deepseek/deepseek-v4-flash` (luna degrades the scarce premium session locally instead of hammering quota 429s; #203) |
 | `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:deepseek/deepseek-v4-pro`. When unset (or empty / parsing to no pairs) the built-ins apply: `deepseek-chat` → `deepseek/deepseek-v4-flash`, `gpt-4o` → `deepseek/deepseek-v4-pro`, `claude-3-5-sonnet` → `anthropic/claude-fable-5`. A non-empty value with ≥1 valid pair REPLACES the defaults entirely; the built-ins cannot be disabled (there is no way to express an empty alias map) |
 | `TRANSIENT_RETRIES` | `1` | Max additional attempts after a transient transport failure; `0` disables |
 | `SESSION_PERSIST` | `false` | Persist session state AND active agent runs to disk so a restart resumes them instead of re-creating (new daily slot / re-START) |
@@ -430,6 +431,16 @@ See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardeni
 
 - [Contributing](CONTRIBUTING.md): filing issues, opening PRs, what to expect
 - [Security](.github/SECURITY.md): supported versions and how to report a vulnerability
+
+### Upstream Drift Check
+
+The offline model registry pins five upstream constant files in `internal/registry/testdata/upstream/`. `scripts/check-upstream.sh` compares those pins against `CodebuffAI/freebuff@main` (shallow-clones to `../freebuff-reference`, or set `FREEBUFF_REFERENCE_DIR`; Windows: run from Git Bash):
+
+```bash
+bash scripts/check-upstream.sh
+```
+
+CI runs the same check weekly (`upstream-drift` workflow) and goes red on drift. A live registry refresh self-heals at runtime, but the offline fallback does not: on DRIFT, copy the changed files into `testdata/upstream/` and update `fallbackAgents`/`fallbackRootByModel` in `internal/registry/registry.go` until `TestFallbackParityWithPinnedUpstream` passes.
 
 ## Contact & Support
 
