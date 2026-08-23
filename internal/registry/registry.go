@@ -72,11 +72,14 @@ const maxFetchBytes = 2 << 20
 // mimo/mimo-v2.5 (FALLBACK_FREEBUFF_MODEL_ID), so a -max request would be
 // served by a different model while advertising a name it does not honor.
 //
-// openai/gpt-5.6-luna-es was served until 2026-08-23 (issue #201); upstream
-// has since reclassified it as a god-only Web test model ("Codex (test)",
-// Novita route — evaluation only, unreachable from the CLI/Desktop picker and
-// excluded from SUPPORTED_FREEBUFF_MODELS; luna-es-god-only.test.ts in the
-// vendor snapshot) — bait/ban-evidence class, so the gate now excludes it.
+// openai/gpt-5.6-luna-es was served until 2026-08-23 (issue #201). Vendor
+// snapshot 0603bc1 moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex (test)",
+// Novita route — evaluation only): hidden from the CLI/Desktop picker,
+// /api/live and /api/latency, and excluded from SUPPORTED_FREEBUFF_MODELS
+// (luna-es-god-only.test.ts). It is NOT the documented honeypot (that is
+// kimi-k3-eco, subscriptions.ts GOD_ONLY_BAIT_MODEL_ID) — but a model no
+// real client can reach makes proxy traffic to it indistinguishable from
+// probing a hidden eval route, so the gate excludes it.
 var ServedModels = map[string]bool{
 	"deepseek/deepseek-v4-flash": true,
 	"deepseek/deepseek-v4-pro":   true,
