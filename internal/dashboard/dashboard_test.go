@@ -898,3 +898,24 @@ func TestTokensPageStanding(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboardModelsViewsServeOnly pins the served gate on the three
+// dashboard model views (models/overview/setup): the vendor registry also
+// carries god-only/eval rows (luna-es since snapshot 0603bc1) that must
+// never appear as servable in the admin UI.
+func TestDashboardModelsViewsServeOnly(t *testing.T) {
+	ts := newDashboardForPages(t, false, "models")
+	client := ts.Client()
+	for _, page := range []string{"models", "overview", "setup"} {
+		resp, err := client.Get(ts.URL + "/" + page)
+		if err != nil {
+			t.Fatalf("%s: %v", page, err)
+		}
+		body := string(mustReadAll(t, resp))
+		_ = resp.Body.Close()
+		if strings.Contains(body, "luna-es") {
+			t.Errorf("%s view leaked god-only luna-es", page)
+		}
+	}
+
+}

@@ -371,8 +371,11 @@ func TestDashboardTokenAddEnvOverrideFails(t *testing.T) {
 
 	resp := postJSON(t, ts.URL, cookie, "/admin/tokens/add", `{"token":"cb_fresh"}`)
 	body := bodyOf(t, resp)
-	if !strings.Contains(body, "overrides .env") {
+	if !strings.Contains(body, "NOT activated") {
 		t.Fatalf("add response = %q, want env-override failure message", body)
+	}
+	if strings.Contains(body, "cb_fresh") || strings.Contains(body, "tok-0") {
+		t.Fatalf("add response leaked token values: %q", body)
 	}
 	// The pool must be rolled back — no token may linger while cfg claims
 	// bridge mode.

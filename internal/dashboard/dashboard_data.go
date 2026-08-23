@@ -3,6 +3,9 @@ package dashboard
 import (
 	"encoding/json"
 	"fmt"
+	"freebuff-proxy/internal/phasetiming"
+	"freebuff-proxy/internal/pool"
+	"freebuff-proxy/internal/registry"
 	"net"
 	"net/http"
 	"os"
@@ -10,9 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"freebuff-proxy/internal/phasetiming"
-	"freebuff-proxy/internal/pool"
 )
 
 // --- logs ---
@@ -367,6 +367,19 @@ type modelRow struct {
 	Agent string `json:"agent"`
 }
 
+// servedModels returns the registry ids that pass the strict ServedModels
+// gate (issue #189 set): the vendor catalog also carries god-only/eval rows
+// (luna-es) that must never appear as servable in dashboard/setup views.
+func servedModels(reg *registry.Registry) []string {
+	out := make([]string, 0, 8)
+	for _, id := range reg.Models() {
+		if registry.IsServedModel(id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 type aliasRow struct {
 	Alias string `json:"alias"`
 	Real  string `json:"real"`
@@ -374,13 +387,21 @@ type aliasRow struct {
 
 func (d *Dashboard) modelsData() modelsData {
 	md := modelsData{Count: d.reg.ModelCount(), Agents: len(d.reg.AgentIDs())}
+	// Served gate: the dashboard shows the models this proxy actually
+	// serves (issue #189 strict set), not the raw upstream registry — the
+	// vendor catalog now carries god-only/eval rows (e.g. luna-es) that
+	// must never be presented as servable.
 	for _, id := range d.reg.Models() {
+		if !registry.IsServedModel(id) {
+			continue
+		}
 		row := modelRow{ID: id}
 		if agent, err := d.reg.AgentForModel(id); err == nil {
 			row.Agent = agent
 		}
 		md.Models = append(md.Models, row)
 	}
+	md.Count = len(md.Models)
 	cfg := d.cfg()
 	for alias, real := range cfg.ModelAliases {
 		md.Aliases = append(md.Aliases, aliasRow{Alias: alias, Real: real})
@@ -490,7 +511,7 @@ func (d *Dashboard) setupData() setupData {
 		Bridge:       mode == "bridge",
 		BridgeTokens: d.pool.BridgeCount(),
 		TokenCount:   d.pool.TokenCount(),
-		Models:       d.reg.Models(),
+		Models:       servedModels(d.reg),
 	}
 	sd.HasTokens = sd.TokenCount > 0
 	if len(sd.Models) > 0 {
@@ -727,7 +748,7 @@ func (d *Dashboard) configData() configData {
 		{Key: "LOG_LEVEL", Value: cfg.LogLevel},
 		{Key: "MAX_MESSAGES_PER_DAY", Value: strconv.Itoa(cfg.MaxMessagesPerDay)},
 		{Key: "IDLE_ROTATION_TIMEOUT", Value: cfg.IdleRotationTimeout.String()},
-		{Key: "SAFE_MODE", Value: strconv.FormatBool(cfg.SafeMode)},
+		{Key: "API_KEYS", Value: fmt.Sprintf("%d key(s)", len(cfg.APIKeys)), Secret: true},
 		{Key: "REQUEST_JITTER", Value: cfg.RequestJitter.String()},
 		{Key: "CLI_VERSION", Value: cfg.CLIVersion},
 		{Key: "MODEL_ALIASES", Value: fmt.Sprintf("%d alias(es)", len(cfg.ModelAliases)), Secret: true},
@@ -779,8 +800,8 @@ func (d *Dashboard) overviewData() overviewData {
 	od := overviewData{
 		Mode:                 mode,
 		InBridge:             mode == "bridge",
-		Models:               d.reg.Models(),
-		ModelCount:           d.reg.ModelCount(),
+		Models:               servedModels(d.reg),
+		ModelCount:           len(servedModels(d.reg)),
 		Uptime:               time.Since(d.started).Round(time.Second).String(),
 		SafeMode:             cfg.SafeMode,
 		MaxMessagesPerDay:    cfg.MaxMessagesPerDay,

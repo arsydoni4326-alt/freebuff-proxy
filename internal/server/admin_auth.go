@@ -175,8 +175,16 @@ func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 func (s *Server) adminSensitive(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.cfg.Load()
-		if cfg.AdminToken == "" && (!isLoopbackAddr(r.RemoteAddr) || !isLoopbackHost(r.Host)) {
-			http.Error(w, "forbidden: admin config requires a loopback client", http.StatusForbidden)
+		// Sensitive routes (raw .env read/write, logs, mode switch, token
+		// management) require a loopback client when the deployment is
+		// effectively unauthenticated: ADMIN_TOKEN unset, or still the
+		// factory default ("123456" since #188 — publicly known, so remote
+		// access under it is anonymous-equivalent). Changing the password
+		// (/admin/api/change-password requires the current credential) lifts
+		// the restriction for remote operators.
+		if (cfg.AdminToken == "" || cfg.IsDefaultAdminToken()) &&
+			(!isLoopbackAddr(r.RemoteAddr) || !isLoopbackHost(r.Host)) {
+			http.Error(w, "forbidden: sensitive dashboard routes require a loopback client until a custom admin password is set", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
