@@ -440,7 +440,7 @@ func TestModelsAllowRejectsChat(t *testing.T) {
 	if out.Error.Code != "model_unavailable" {
 		t.Errorf("error.code = %q, want model_unavailable", out.Error.Code)
 	}
-	if !strings.Contains(out.Error.Message, "Only the following 6 models are supported") {
+	if !strings.Contains(out.Error.Message, "Supported models: deepseek") {
 		t.Errorf("error.message = %q, want supported models notice", out.Error.Message)
 	}
 	if len(mock.RecordedChatHeaders) != 0 {
@@ -831,7 +831,7 @@ func TestStrictFiveModelsEnforced(t *testing.T) {
 		if errChat.Error.Code != "model_unavailable" {
 			t.Errorf("chat %s error code = %q, want model_unavailable", dm, errChat.Error.Code)
 		}
-		if !strings.Contains(errChat.Error.Message, "Only the following 6 models are supported") {
+		if !strings.Contains(errChat.Error.Message, "Supported models: deepseek") {
 			t.Errorf("chat %s message = %q, want supported models notice", dm, errChat.Error.Message)
 		}
 
@@ -855,7 +855,7 @@ func TestStrictFiveModelsEnforced(t *testing.T) {
 		if errAnthropic.Error.Type != "invalid_request_error" {
 			t.Errorf("messages %s error type = %q, want invalid_request_error", dm, errAnthropic.Error.Type)
 		}
-		if !strings.Contains(errAnthropic.Error.Message, "Only the following 6 models are supported") {
+		if !strings.Contains(errAnthropic.Error.Message, "Supported models: deepseek") {
 			t.Errorf("messages %s message = %q, want supported models notice", dm, errAnthropic.Error.Message)
 		}
 
