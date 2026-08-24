@@ -103,8 +103,9 @@ func TestAcquireScarceSessionProtection(t *testing.T) {
 	if !errors.As(err, &scse) {
 		t.Fatalf("expected errors.As ScarceSessionError, got %T: %v", err, err)
 	}
-	if scse.Model != "deepseek/deepseek-v4-flash" {
-		t.Errorf("scse.Model = %q, want deepseek/deepseek-v4-flash", scse.Model)
+	// The error names the HELD session's model, not the requested one.
+	if scse.Model != "openai/gpt-5.6-luna" {
+		t.Errorf("scse.Model = %q, want openai/gpt-5.6-luna", scse.Model)
 	}
 }
 

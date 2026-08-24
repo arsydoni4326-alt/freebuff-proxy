@@ -54,11 +54,15 @@ type persistedQuota struct {
 // (issue #40): a restart resumes the run id without re-START. Keyed per
 // token (hash) and agent, alongside the session state.
 type PersistedRun struct {
-	RunID          string    `json:"run_id"`
-	AgentID        string    `json:"agent_id"`
-	TraceSessionID string    `json:"trace_session_id"`
-	StartedAt      time.Time `json:"started_at"`
-	Requests       int       `json:"requests"`
+	RunID          string `json:"run_id"`
+	AgentID        string `json:"agent_id"`
+	TraceSessionID string `json:"trace_session_id"`
+	// ClientID is the run's codebuff_metadata["client_id"]. Additive: an old
+	// file parses with "" and the run manager mints a fresh id, which only
+	// costs that resumed run one client-id change.
+	ClientID  string    `json:"client_id,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	Requests  int       `json:"requests"`
 }
 
 type storeFile struct {
