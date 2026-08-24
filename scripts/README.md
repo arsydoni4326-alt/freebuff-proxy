@@ -7,7 +7,7 @@
 | **Start Proxy** | `./start-proxy.sh` | `.\start-proxy.ps1` | `.\start-proxy.cmd` |
 | **Generate Token** | `./gen-token.sh` | `.\gen-token.ps1` | `.\gen-token.cmd` |
 | **Easy Install** | `./install.sh` | `.\install.ps1` | `.\install.cmd` |
-
+| **Sync Upstream** | `./sync-upstream.sh` | `.\sync-upstream.ps1` | `.\sync-upstream.cmd` |
 ---
 
 ## 1. Run the proxy — one command
@@ -93,7 +93,39 @@ The extracted release folder contains `freebuff-proxy` (Linux/macOS) or `freebuf
 
 ---
 
-## 4. Backward Compatibility Aliases
+## 4. Upstream Synchronization (`sync-upstream.*` / `check-upstream.sh`)
+
+Automates fetching upstream changes from `CodebuffAI/freebuff`, syncing the five pinned model registry definitions (`internal/registry/testdata/upstream/`), checking hash parity, and running tests.
+
+### Windows (PowerShell / CMD)
+
+```powershell
+# Full sync: fetch upstream, copy changes, verify hashes, run registry tests
+.\sync-upstream.cmd
+
+# Check drift without writing files
+.\sync-upstream.cmd -CheckOnly
+
+# Sync and run the full test suite
+.\sync-upstream.cmd -TestAll
+```
+
+### Linux / macOS / Git Bash
+
+```bash
+# Full sync
+./sync-upstream.sh
+
+# Check drift only
+./sync-upstream.sh --check
+
+# Sync and run the full test suite
+./sync-upstream.sh --test-all
+```
+
+---
+
+## 5. Backward Compatibility Aliases
 
 The following legacy script names are preserved as transparent forwarders:
 - `gen-freebuff-token.ps1` / `gen-freebuff-token.sh` → `gen-token.*`
