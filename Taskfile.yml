@@ -21,7 +21,7 @@ tasks:
   build:proxy:
     desc: Compile the Go proxy binary
     cmds:
-      - go build -o bin/freebuff-proxy{{exeExt}} ./cmd/freebuff-proxy
+      - go build -tags dashboard -o bin/freebuff-proxy{{exeExt}} ./cmd/freebuff-proxy
 
   test:
     desc: Run the hermetic Go test suite
@@ -48,7 +48,7 @@ tasks:
   dev:
     desc: Run proxy server
     cmds:
-      - go run ./cmd/freebuff-proxy
+      - go run -tags dashboard ./cmd/freebuff-proxy
 
   dev:ui:
     desc: Run frontend Vite dev server on port 5173

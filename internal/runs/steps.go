@@ -46,6 +46,15 @@ type Run struct {
 	// randomUUID; reference/proxy-freebuff lib/runs.js:43-46).
 	TraceSessionID string
 
+	// ClientID is codebuff_metadata["client_id"], minted once per run and
+	// repeated by every chat call of that run. The CLI mints it once per
+	// prompt (run.ts:722 `promptId`, handed to the agent loop as
+	// `clientSessionId` at run.ts:822 and reused by every LLM step), so a
+	// FRESH id per chat call made one run_id fan out across N client ids —
+	// the shape upstream refuses as free_mode_run_fanout. Persisted with the
+	// run so a restart resumes the id instead of splitting the run.
+	ClientID string
+
 	// StepCount is the run's 1-based per-chat-call step counter, stamped
 	// as codebuff_metadata["llm_step_number"] (issue #113, CLI parity:
 	// run-agent-step.ts increments per step). Atomic: chatAttempt
@@ -160,6 +169,7 @@ func (m *RunManager) cloneRun(run *Run) *Run {
 		StartedAt:      run.StartedAt,
 		Requests:       run.Requests,
 		TraceSessionID: run.TraceSessionID,
+		ClientID:       run.ClientID,
 		Status:         run.Status,
 		Steps:          append([]upstream.RunStep(nil), run.Steps...),
 		stepTotal:      run.stepTotal,
@@ -183,6 +193,7 @@ func (m *RunManager) persistRun(run *Run) {
 		RunID:          run.RunID,
 		AgentID:        run.AgentID,
 		TraceSessionID: run.TraceSessionID,
+		ClientID:       run.ClientID,
 		StartedAt:      startedAt,
 		Requests:       requests,
 	})
@@ -247,4 +258,14 @@ func (m *RunManager) ReleaseAbandoned(run *Run) {
 	// other re-enqueuer, and after a drain there may be no next tick (P1).
 	// enqueueFinish dedupes against a job already in the queue.
 	m.enqueueFinish(run)
+}
+
+// resumedClientID keeps a resumed run's persisted client id, minting a fresh
+// one only for a run persisted before the field existed. Returning "" instead
+// would send no client_id at all, which is a shape the CLI never produces.
+func resumedClientID(persisted string) string {
+	if persisted != "" {
+		return persisted
+	}
+	return upstream.NewClientID()
 }

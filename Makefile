@@ -9,7 +9,7 @@ build-ui:
 	cd frontend && npm run build
 
 build-proxy:
-	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/freebuff-proxy
+	go build -tags dashboard -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/freebuff-proxy
 
 build: build-ui build-proxy
 
@@ -27,7 +27,7 @@ dev-ui:
 	cd frontend && npm run dev
 
 dev-proxy:
-	go run ./cmd/freebuff-proxy
+	go run -tags dashboard ./cmd/freebuff-proxy
 
 clean:
 	rm -rf $(BIN_DIR)

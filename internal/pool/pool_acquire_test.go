@@ -538,7 +538,11 @@ func TestUnknownModel(t *testing.T) {
 	}
 }
 
-func TestStartPrewarmsAndShutdownDrains(t *testing.T) {
+// TestStartDoesNotFanOutAndShutdownDrains pins the free_mode_run_fanout
+// root cause: Start must NOT open a run per registry agent per token at boot
+// (that fleet is the "proxy fanout" shape upstream refuses), and the runs a
+// real lease does create must still FINISH on shutdown.
+func TestStartDoesNotFanOutAndShutdownDrains(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	ids := make([]string, 100)
@@ -552,17 +556,29 @@ func TestStartPrewarmsAndShutdownDrains(t *testing.T) {
 	p.Start(ctx)
 	defer cancel()
 
-	// Prewarm runs in the background: wait until every registry agent has a
-	// STARTed run.
-	agentCount := len(p.regAgentIDs(t))
-	eventually(t, "prewarm of all agents", func() bool {
-		return len(mock.StartedRunsSnapshot()) >= agentCount
-	})
+	// No request has arrived, so no run may exist upstream. The registry
+	// carries several agents; a fleet prewarm would show up here.
+	if agents := len(p.regAgentIDs(t)); agents < 2 {
+		t.Fatalf("registry agents = %d, want >= 2 for this to prove anything", agents)
+	}
+	if started := mock.StartedRunsSnapshot(); len(started) != 0 {
+		t.Fatalf("STARTed runs at boot = %d, want 0 (no agent-fleet fanout)", len(started))
+	}
+
+	// One lease starts exactly the run it needs, and shutdown drains it.
+	lease, err := p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	p.LeaseRelease(lease)
+	if started := mock.StartedRunsSnapshot(); len(started) != 1 {
+		t.Errorf("STARTed runs after one Acquire = %d, want 1", len(started))
+	}
 
 	p.Shutdown(context.Background())
 
 	eventually(t, "shutdown drain FINISHes", func() bool {
-		return len(mock.FinishedRunsSnapshot()) >= agentCount
+		return len(mock.FinishedRunsSnapshot()) >= 1
 	})
 	for _, f := range mock.FinishedRunsSnapshot() {
 		if f.Status != "completed" {

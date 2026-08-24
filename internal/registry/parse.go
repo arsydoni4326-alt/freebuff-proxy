@@ -210,6 +210,28 @@ func parseAgentModels(text string, resolver *constantResolver) []agentModels {
 	return agents
 }
 
+// retiredRootOverrides pins a model whose parsed root upstream retired
+// server-side. FREEBUFF_ROOT_AGENT_ID_BY_MODEL — the only root map this text
+// parser can read — still names base2-free-luna for Luna, and base2-free-luna
+// is still in the upstream agent allowlist, but the backend now rejects a Luna
+// turn on it with free_mode_legacy_luna_agent ("Retired Luna agent — start a
+// new conversation"). That code classifies as ErrSessionInvalid, so the
+// recovery path re-admits onto the same dead root until the retry budget is
+// gone and the client sees 502.
+//
+// Upstream's own Web and CLI clients send base3-free-luna
+// (FREEBUFF_{WEB,CLI}_BASE3_AGENT_ID_BY_MODEL). Those rows, and their
+// allowlist entries, are derived through an Object.fromEntries spread the
+// parser cannot evaluate, so a live refresh never sees them.
+//
+// ponytail: a one-model override, not a base3 map parser — one model is
+// retired, not the catalog. Revisit if the upstream
+// FREEBUFF_BASE3_HARNESS_DISABLED kill switch routes base2 back on, or if a
+// second model starts returning a retired-agent code.
+var retiredRootOverrides = map[string]string{
+	"openai/gpt-5.6-luna": "base3-free-luna",
+}
+
 // buildModelMapping merges the root map (wins) with first-seen agent→models
 // assignment, in entry order, and returns the model→agent map plus sorted
 // model list.
@@ -223,6 +245,14 @@ func buildModelMapping(agentModels []agentModels, rootAgentByModel map[string]st
 			if _, ok := modelToAgent[model]; !ok {
 				modelToAgent[model] = entry.agent
 			}
+		}
+	}
+	// Applied after both sources so the live-refresh and offline-fallback
+	// paths (both call this function) agree. Only remaps a model the sources
+	// already serve — an override never invents a catalog row.
+	for model, agent := range retiredRootOverrides {
+		if _, ok := modelToAgent[model]; ok {
+			modelToAgent[model] = agent
 		}
 	}
 	allModels := make([]string, 0, len(modelToAgent))

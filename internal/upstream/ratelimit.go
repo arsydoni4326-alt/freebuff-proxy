@@ -98,6 +98,28 @@ func classifyError(status int, body string, hdr http.Header) error {
 		// cases because upstream can attach it to any status (reference:
 		// freebuff-reverse adapter.go classifies it Retryable by body first).
 		return &UpstreamError{Status: status, Body: truncate(body, 500), RetryAfter: retryAfter, Retryable: true}
+	case containsAny(lower, "free_mode_run_fanout"):
+		// free_mode_run_fanout: the free tier refused the request because the
+		// account's concurrent-run counter looked like proxy fanout (upstream
+		// common/src/constants/freebuff-spend-ceilings.ts names "proxy fanout"
+		// a ban-grade sweep signal). Body-marker driven and status-agnostic —
+		// upstream attaches it to a bare {"error":...,"message":"Free mode
+		// request rejected."} whose status the default branch turned into a
+		// dead 502. It is a CONCURRENCY refusal, not a quota one: it clears
+		// as soon as the account's other runs drain, so it gets the bounded
+		// load_shedding/peak_hours treatment (distinct Status, no ResetAt,
+		// no Period => isQuotaExhaustedError is false, no Pacific-midnight
+		// lock) and the token cools for FanoutCooldown so the pool rotates to
+		// another token instead of re-feeding the fanout counter.
+		ra := clampCooldown(retryAfter)
+		if ra <= 0 {
+			ra = FanoutCooldown
+		}
+		return &RateLimitError{
+			Status:     "free_mode_run_fanout",
+			RetryAfter: ra,
+			Body:       truncate(body, 200),
+		}
 	case containsAny(lower, "free_mode_capacity_deferred"):
 		// Free-tier transient capacity queue: upstream says "your request
 		// will be retried automatically" and a same-session retry recovers
@@ -453,6 +475,13 @@ func isCapacityDeferred(err error) bool {
 	var cde *CapacityDeferredError
 	return errors.As(err, &cde)
 }
+
+// FanoutCooldown bounds a free_mode_run_fanout refusal: the upstream
+// concurrent-run counter clears as the account's other runs drain (seconds,
+// not a day), and re-hitting it feeds a ban-grade sweep signal — so the token
+// backs off for a minute rather than being locked until Pacific midnight.
+// Used only when the refusal carries no Retry-After header.
+const FanoutCooldown = 60 * time.Second
 
 // LoadShedCooldown bounds a 429 load-saturation refusal (issue #133): the
 // upstream sheds load for minutes, not a day, so the token re-probes after

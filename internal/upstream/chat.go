@@ -29,6 +29,11 @@ type ChatOptions struct {
 	// CLI (run.ts: previousRun?.traceSessionId ?? randomUUID). Injected as
 	// codebuff_metadata["trace_session_id"] when set.
 	TraceSessionID string
+	// ClientID is codebuff_metadata["client_id"], minted once per run by the
+	// run manager and repeated by every chat call of that run (CLI: one
+	// promptId per prompt, run.ts:722/822). Empty falls back to a fresh draw
+	// so callers without a run manager still send a well-shaped id.
+	ClientID string
 	// StepNumber is the 1-based per-run agent step counter (CLI parity:
 	// llm_step_number is merged on every chat call, String(n);
 	// reference/freebuff agent-runtime run-agent-step.ts:1175-1177).
@@ -246,17 +251,24 @@ func injectEnvelope(body []byte, costMode string, opts ChatOptions) ([]byte, err
 
 	ensureCliSystemMarker(payload)
 
-	// client_id is a FRESH random SDK-faithful draw per chat call — never
-	// the sess:/run:-prefixed shapes the server fingerprints as a proxy
-	// (#103; reference/freebuff run.ts:646
-	// Math.random().toString(36).substring(2,15), cf-worker-signals.ts
-	// ^wf-[a-z0-9]{8}$). trace_session_id remains per run (minted once by
-	// the run manager, reused across the run's requests; run.ts:
-	// previousRun?.traceSessionId ?? randomUUID, proxy-freebuff
-	// lib/runs.js:43-46) and freebuff_instance_id stays per session.
+	// client_id is minted ONCE PER RUN and repeated here — never a fresh
+	// draw per chat call. The CLI mints it once per prompt (run.ts:722
+	// `const promptId = Math.random().toString(36).substring(2,15)`, handed
+	// to the agent loop as `clientSessionId` at run.ts:822 and stamped on
+	// every LLM step by llm.ts:117), so a per-call draw made ONE run_id fan
+	// out across N client ids — which is what upstream refuses as
+	// free_mode_run_fanout. The shape stays SDK-faithful 13-char base36:
+	// never the sess:/run:-prefixed forms the server fingerprints as a
+	// proxy, and never pingmike's ^wf-[a-z0-9]{8}$ (#103;
+	// cf-worker-signals.ts looksLikeProxyClientId). trace_session_id is
+	// likewise per run and freebuff_instance_id stays per session.
+	clientID := opts.ClientID
+	if clientID == "" {
+		clientID = generateClientID()
+	}
 	metadata := map[string]any{
 		"run_id":    opts.RunID,
-		"client_id": generateClientID(),
+		"client_id": clientID,
 	}
 	if opts.TraceSessionID != "" {
 		metadata["trace_session_id"] = opts.TraceSessionID
