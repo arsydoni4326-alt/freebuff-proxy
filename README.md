@@ -432,15 +432,29 @@ See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardeni
 - [Contributing](CONTRIBUTING.md): filing issues, opening PRs, what to expect
 - [Security](.github/SECURITY.md): supported versions and how to report a vulnerability
 
-### Upstream Drift Check
+### Upstream Drift Tracking & Sync
 
-The offline model registry pins five upstream constant files in `internal/registry/testdata/upstream/`. `scripts/check-upstream.sh` compares those pins against `CodebuffAI/freebuff@main` (shallow-clones to `../freebuff-reference`, or set `FREEBUFF_REFERENCE_DIR`; Windows: run from Git Bash):
+The offline model registry pins five upstream constant files in `internal/registry/testdata/upstream/`.
+
+To automatically fetch upstream changes from `CodebuffAI/freebuff`, update the pinned definitions, verify hash parity, and run the test suite:
+
+```bash
+# Linux / macOS / Git Bash
+bash scripts/sync-upstream.sh
+
+# Windows (PowerShell / CMD)
+.\scripts\sync-upstream.cmd
+```
+
+To check drift without writing files, pass `--check` / `-CheckOnly`. To run the full test suite after syncing, pass `--test-all` / `-TestAll`.
+
+To run only the read-only hash parity check:
 
 ```bash
 bash scripts/check-upstream.sh
 ```
 
-CI runs the same check weekly (`upstream-drift` workflow) and goes red on drift. A live registry refresh self-heals at runtime, but the offline fallback does not: on DRIFT, copy the changed files into `testdata/upstream/` and update `fallbackAgents`/`fallbackRootByModel` in `internal/registry/registry.go` until `TestFallbackParityWithPinnedUpstream` passes.
+CI runs the same check weekly (`upstream-drift` workflow) and goes red on drift. A live registry refresh self-heals at runtime; `sync-upstream` keeps the offline fallback in lockstep.
 
 ## Contact & Support
 

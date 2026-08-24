@@ -24,7 +24,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REF="${1:-main}"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
-CLONE_DIR="${2:-${FREEBUFF_REFERENCE_DIR:-$REPO_ROOT/../freebuff-reference}}"
+if [[ -n "${2:-}" ]]; then
+	CLONE_DIR="$2"
+elif [[ -n "${FREEBUFF_REFERENCE_DIR:-}" ]]; then
+	CLONE_DIR="$FREEBUFF_REFERENCE_DIR"
+elif [[ -d "$REPO_ROOT/reference/freebuff/.git" ]]; then
+	CLONE_DIR="$REPO_ROOT/reference/freebuff"
+else
+	CLONE_DIR="$REPO_ROOT/../freebuff-reference"
+fi
 UPSTREAM_PREFIX="common/src/constants"
 PINNED_DIR="$REPO_ROOT/internal/registry/testdata/upstream"
 
