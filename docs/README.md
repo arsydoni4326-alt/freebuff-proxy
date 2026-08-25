@@ -5,6 +5,14 @@ repository; local-only development study (reverse-engineering notes, plans,
 research) lives in the ignored `devdocs/` directory and is not part of the
 public repo.
 
+## Reference Documents (Project Root)
+
+These top-level documents serve as the canonical design and specification references:
+
+- [Architecture](../ARCHITECTURE.md) — System architecture, components, data flow, operating modes, invariants
+- [Specification](../SPECIFICATION.md) — Full API surface, request/response contracts, error handling, behavioral rules
+- [Roadmap](../ROADMAP.md) — Feature checklist, known limitations, in-flight work, future plans
+
 ## Guides
 
 | Guide | What it covers |
@@ -18,4 +26,5 @@ public repo.
 ## Related
 
 - [README](../README.md): overview, quick start, full config reference
+- [DESIGN](../DESIGN.md): dashboard design system (typography, layout, components)
 - [CONTRIBUTING](../CONTRIBUTING.md): how to contribute to this repository

@@ -425,6 +425,12 @@ See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardeni
 - [Manual Testing](docs/testing.md): verify the proxy on Linux or Windows by hand, step by step
 - [Version Stability & Ban Findings](docs/getting-started.md#access-tiers--workarounds): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment
 
+## Documentation Set
+
+- [Architecture](ARCHITECTURE.md): system components, request flows, operating modes, invariants
+- [Specification](SPECIFICATION.md): full API surface, request/response schemas, error contract
+- [Roadmap & Future Work](ROADMAP.md): feature checklist, known limitations, planned & deferred work
+
 ---
 
 ## Contributing & Security
