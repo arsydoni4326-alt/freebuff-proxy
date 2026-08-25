@@ -42,6 +42,10 @@ The dashboard provides 6 focused operational sections:
 - **Add Token Form**: Input form to append new FreeBuff auth tokens (`cb_...`) directly to `.env`.
 - **OAuth Login Wizard**: One-click device-code browser login flow for minting fresh tokens without the CLI.
 - **Per-Model Quota Breakdown**: Expandable rows showing real-time upstream quota limits, recent usage counts, period reset countdowns (Pacific midnight), and entitlement tiers.
+  - **Model Filter**: Filter quota display by specific model name.
+  - **Visual Usage Bars**: Proportional fill bars showing quota consumption.
+  - **Status Indicators**: Color-coded thresholds (green < 80%, amber 80-95%, red > 95%).
+  - **Refresh Quota**: Per-token quota refresh button for up-to-date data.
 
 ### 3. Models Registry
 - Live catalog of all models available on FreeBuff.
@@ -52,10 +56,17 @@ The dashboard provides 6 focused operational sections:
 ### 4. Configuration Studio
 - **Visual `.env` Editor**: In-browser monospace editor for live configuration changes.
 - **Validation & Safe Save**:
-  - **Validate**: Checks syntax, port availability, and token formats before applying.
+  - **Client-side Validation**: Real-time syntax checking with categorized error types (missing separators, invalid keys, duplicate keys, empty values).
+  - **Diff Preview**: Shows exactly what changed (added/removed/modified keys) before saving.
+  - **Validate Button**: Checks syntax, port availability, and token formats before applying.
   - **Save & Reload**: Writes `.env` atomically via temp-file rename (mode `0600`) and triggers hot reload (`POST /admin/reload`) without dropping active connections.
   - **Rollback**: Automatically reverts to the previous valid configuration if validation fails.
-- **Effective Configuration Table**: Read-only breakdown of active in-memory settings with automatic secret redaction (`AUTH_TOKENS`, `ADMIN_TOKEN`, `API_KEYS` masked).
+- **Effective Configuration Table**: Read-only breakdown of active in-memory settings with:
+  - Automatic secret redaction (`AUTH_TOKENS`, `ADMIN_TOKEN`, `API_KEYS` masked).
+  - **Search/Filter**: Filter config keys by name or value.
+  - **Category Groups**: Config keys organized by category (Core, Auth, Upstream, Dashboard, Performance).
+  - **Changed Key Highlighting**: Recently modified keys visually distinguished.
+  - **Copy Actions**: One-click copy for individual config values.
 
 ### 5. In-Memory Logs
 - Live circular log ring buffer (last 500 entries) capturing structured slog output.

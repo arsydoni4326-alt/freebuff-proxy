@@ -47,10 +47,42 @@
   let oauthStatus = $state(null);
   let oauthTimer = $state(null);
 
+  // Auto-dismiss action messages
+  $effect(() => {
+    if (actionMessage) {
+      const timeout = actionOK ? 5000 : 10000;
+      const timer = setTimeout(() => { actionMessage = ''; }, timeout);
+      return () => clearTimeout(timer);
+    }
+  });
+
   // Token table
   let expandedToken = $state(null);
   let actionPending = $state(false);
   let now = $state(Date.now());
+  let quotaModelFilter = $state('');
+
+  // Derive unique quota models across all tokens for the filter dropdown
+  let allQuotaModels = $derived.by(() => {
+    if (!data?.tokens) return [];
+    const models = new Set();
+    for (const t of data.tokens) {
+      if (t.quota) for (const q of t.quota) models.add(q.model);
+    }
+    return Array.from(models).sort();
+  });
+
+  function quotaPercent(recent, limit) {
+    const l = parseFloat(limit);
+    if (!l || l <= 0) return 0;
+    return Math.min(100, Math.round((parseFloat(recent) / l) * 100));
+  }
+
+  function quotaUsageTone(pct) {
+    if (pct >= 95) return 'critical';
+    if (pct >= 80) return 'warn';
+    return 'good';
+  }
 
   const tokenValid = $derived(
     newToken.trim() === ''
@@ -535,26 +567,56 @@
                       {/if}
                       {#if token.has_quota && token.quota?.length > 0}
                         <div class="flex flex-col gap-2">
-                          <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Session quotas')}</p>
-                          {#each token.quota as q}
-                            <div class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 px-2 py-1.5 rounded bg-[var(--fp-bg)]/40">
-                              <code class="fp-num text-xs text-[var(--fp-text)] sm:w-48 shrink-0 truncate">{q.model}</code>
-                              <span class="fp-num text-xs text-[var(--fp-muted)]">
-                                <span class="text-[var(--fp-text)]">{q.recent}</span> / {q.limit}
-                                {#if q.limit !== '0' && q.limit !== ''}
-                                  {$tr('(remaining {count})', { count: Math.max(0, parseFloat(q.limit) - parseFloat(q.recent)) })}
-                                {/if}
-                              </span>
-                              <span class="fp-num text-xs text-[var(--fp-dim)] sm:ml-auto">
-                                {q.period}{#if q.has_entitlement} · {$tr('entitled')} {q.entitled}{/if}
-                              </span>
-                              <span class="fp-num text-xs text-[var(--fp-dim)]">
-                                {#if q.resets_in}
-                                  {$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at} ({q.resets_in})
-                                {:else}
-                                  {$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at}
-                                {/if}
-                              </span>
+                          <div class="flex items-center justify-between">
+                            <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Session quotas')}</p>
+                            {#if allQuotaModels.length > 1}
+                              <select
+                                bind:value={quotaModelFilter}
+                                class="text-[11px] font-mono bg-[var(--fp-bg)] border border-[var(--fp-border)] rounded px-2 py-1 text-[var(--fp-muted)]"
+                              >
+                                <option value="">{$tr('All models')}</option>
+                                {#each allQuotaModels as m}
+                                  <option value={m}>{m}</option>
+                                {/each}
+                              </select>
+                            {/if}
+                          </div>
+                          {#each (quotaModelFilter ? token.quota.filter(q => q.model === quotaModelFilter) : token.quota) as q}
+                            {@const pct = quotaPercent(q.recent, q.limit)}
+                            {@const tone = quotaUsageTone(pct)}
+                            <div class="flex flex-col gap-1 px-2 py-2 rounded bg-[var(--fp-bg)]/40">
+                              <div class="flex items-center gap-2 sm:gap-4 text-xs">
+                                <code class="fp-num text-[var(--fp-text)] sm:w-48 shrink-0 truncate">{q.model}</code>
+                                <span class="fp-num text-[var(--fp-muted)]">
+                                  <span class="text-[var(--fp-text)]">{q.recent}</span> / {q.limit}
+                                  {#if q.limit !== '0' && q.limit !== ''}
+                                    <span class="text-[var(--fp-dim)]">
+                                      ({$tr('remaining {count}', { count: Math.max(0, parseFloat(q.limit) - parseFloat(q.recent)) })})
+                                    </span>
+                                  {/if}
+                                </span>
+                                <span class="fp-num text-[var(--fp-dim)] sm:ml-auto">
+                                  {q.period}{#if q.has_entitlement} · {$tr('entitled')} {q.entitled}{/if}
+                                </span>
+                                <span class="fp-num text-[var(--fp-dim)]">
+                                  {#if q.resets_in}{$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at} ({q.resets_in}){:else}{$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at}{/if}
+                                </span>
+                              </div>
+                              <!-- Visual usage bar -->
+                              {#if q.limit !== '0' && q.limit !== ''}
+                                <div class="relative h-1.5 rounded-full bg-[var(--fp-border)]/40 overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100" aria-label={`${q.model} usage ${pct}%`}>
+                                  <div
+                                    class="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+                                    class:bg-[var(--fp-success)]={tone === 'good'}
+                                    class:bg-[var(--fp-warning)]={tone === 'warn'}
+                                    class:bg-[var(--fp-error)]={tone === 'critical'}
+                                    style="width: {pct}%"
+                                  ></div>
+                                </div>
+                                <span class="text-[10px] font-mono {tone === 'critical' ? 'text-[var(--fp-error)]' : tone === 'warn' ? 'text-[var(--fp-warning)]' : 'text-[var(--fp-dim)]'}">
+                                  {pct}% {$tr('used')}
+                                </span>
+                              {/if}
                             </div>
                           {/each}
                         </div>

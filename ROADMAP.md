@@ -71,9 +71,25 @@ Reflects current focus; items are not commitments.
 
 ### 1. Dashboard / Admin polish
 
-- Extend Configuration Studio validation feedback and rollback ergonomics.
-- Deepen effective-config table normalization and dedup.
-- Add filtered per-model quota timelines beyond today's expandable rows.
+Configuration Studio:
+- [x] Add client-side diff preview showing exactly what changed before save
+- [x] Enhance validation feedback with categorized error types (syntax, format, security)
+- [x] Show changed keys count prominently with breakdown (added/removed/modified)
+
+Effective Config Table:
+- [x] Add search/filter input for the config table
+- [x] Group config keys by category (core, auth, upstream, dashboard, performance)
+- [x] Highlight recently changed keys with visual indicator
+
+Token Quota Timeline:
+- [x] Add model filter dropdown for quota breakdown
+- [x] Visual quota usage bars with proportional fill
+- [x] Color-code near-limit quotas (warn at 80%, critical at 95%)
+
+UI/UX Polish:
+- [x] Improve error/success banner auto-dismiss timing (5s success, 10s error)
+- [x] Add loading spinners for async token actions (test, unlock, lock)
+- [x] Consistent button spacing and icon alignment across pages
 
 ### 2. Bridge mode hardening
 
