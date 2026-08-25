@@ -54,6 +54,9 @@ Zero-storage relay. Each request carries the client's FreeBuff token in
 - Lazily leases and caches upstream sessions per client token (LRU).
 - Tracks cooldowns, health, and quota per bridge entry.
 - Exposes bridge entry counts and health via `GET /healthz`.
+
+See [Bridge Mode guide](docs/bridge-mode.md) for the full invariant set (B1–B8),
+security contracts, error surfaces, and the Phase 2 hardening checklist.
 ---
 
 ## System Components

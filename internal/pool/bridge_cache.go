@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"time"
 
 	"freebuff-proxy/internal/config"
@@ -128,8 +129,10 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		return nil, fmt.Errorf("bridge: token validation failed: %w", probeErr)
 	}
 
-	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger(), admissionGate: make(chan struct{})}
 	cfg := p.cfg.Load()
+	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger(), admissionGate: make(chan struct{}),
+		rateLimitRate: cfg.BridgeRateLimitPerToken,
+	}
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
@@ -154,6 +157,38 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		victim.runs.FinishAllRuns(ctx)
 	}
 	return entry, nil
+}
+
+// rateLimitAllow implements a simple per-entry token-bucket rate limiter.
+// Returns true if the request is allowed, false if rate limited.
+// The bucket refills linearly over time; capacity is at least one request
+// (burst), so a slowed client can always make an immediate request. Guarded
+// by entry.mu which is held during AcquireBridge's cooldown/limit checks
+// anyway.
+func (e *bridgeEntry) rateLimitAllow() bool {
+	if e.rateLimitRate <= 0 {
+		return true // unlimited
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Burst capacity = at least one request (so the first request always
+	// has a token), matching the per-IP limiter's burst default.
+	capacity := math.Max(1.0, e.rateLimitRate)
+	now := time.Now()
+	if e.rateLimitLastRefill.IsZero() {
+		// First request: fill bucket to capacity.
+		e.rateLimitTokens = capacity
+		e.rateLimitLastRefill = now
+	} else if elapsed := now.Sub(e.rateLimitLastRefill).Seconds(); elapsed > 0 {
+		// Refill based on elapsed time.
+		e.rateLimitTokens = math.Min(capacity, e.rateLimitTokens+elapsed*e.rateLimitRate)
+		e.rateLimitLastRefill = now
+	}
+	if e.rateLimitTokens >= 1.0 {
+		e.rateLimitTokens -= 1.0
+		return true
+	}
+	return false
 }
 
 // bridgeTouch moves clientToken to the newest end of the LRU order.
@@ -335,6 +370,7 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 			SpendPct:      spendPct,
 			BanType:       banType,
 			BannedUntil:   bannedUntil,
+			DeadToken:     banType == "hard",
 		})
 	}
 	return snaps

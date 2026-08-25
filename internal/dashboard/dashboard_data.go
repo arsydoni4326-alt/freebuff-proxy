@@ -640,6 +640,13 @@ type overviewData struct {
 	Tokens               []tokenCard       `json:"tokens"`
 	HasTokens            bool              `json:"has_tokens"`
 	IsDefaultAdminToken  bool              `json:"is_default_admin_token"`
+	// Registry freshness (Phase 4.2): RegistryFallback is true when the
+	// current model catalog is the offline fallback rather than a live
+	// upstream refresh; RegistryLastRefresh is a human-readable "time ago"
+	// string ("" when the registry has never refreshed live). Surfaced on
+	// the overview so operators can spot a stale offline path at a glance.
+	RegistryFallback    bool   `json:"registry_fallback"`
+	RegistryLastRefresh string `json:"registry_last_refresh"`
 }
 
 type tokenCard struct {
@@ -809,6 +816,11 @@ func (d *Dashboard) overviewData() overviewData {
 		FingerprintRotations: ps.FingerprintRotations,
 		BridgeTokens:         d.pool.BridgeCount(),
 		IsDefaultAdminToken:  cfg.IsDefaultAdminToken(),
+		// Registry freshness (Phase 4.2): reflect the live vs fallback state
+		// and the last successful refresh time on the overview so a stale
+		// offline path is visible without leaving the dashboard.
+		RegistryFallback:    d.reg.UsingFallback(),
+		RegistryLastRefresh: shortTime(d.reg.LastRefreshAt()),
 	}
 	for _, t := range ps.Tokens {
 		od.Tokens = append(od.Tokens, cardFromSnapshot(t))

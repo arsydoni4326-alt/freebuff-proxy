@@ -882,3 +882,65 @@ func TestStrictFiveModelsEnforced(t *testing.T) {
 		t.Errorf("health.Models = %d, want 5", health.Models)
 	}
 }
+
+// TestHealthzRegistryFreshness verifies Phase 4.2: /healthz surfaces the
+// registry's live-vs-fallback state and the time since the last successful
+// live refresh so operators can detect a stale offline path without logs.
+func TestHealthzRegistryFreshness(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/healthz", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Registry struct {
+			Fallback    bool     `json:"fallback"`
+			LastRefresh any      `json:"last_refresh"`
+			AgeSeconds  *float64 `json:"age_seconds"`
+		} `json:"registry"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal healthz: %v: %s", err, data)
+	}
+	// All test servers start with LoadFallback, so the registry is in fallback mode.
+	if !out.Registry.Fallback {
+		t.Errorf("registry.fallback = false, want true (LoadFallback at boot)")
+	}
+	// Last-refresh should be nil (never refreshed from live sources).
+	if out.Registry.LastRefresh != nil {
+		t.Errorf("registry.last_refresh = %v, want nil (never live-refreshed in test)", out.Registry.LastRefresh)
+	}
+	// Age should be nil when no live refresh has occurred.
+	if out.Registry.AgeSeconds != nil {
+		t.Errorf("registry.age_seconds = %v, want nil", *out.Registry.AgeSeconds)
+	}
+}
+
+// TestMetricsRegistryFreshness verifies Phase 4.2: /metrics exposes
+// freebuff_proxy_registry_age_seconds and freebuff_proxy_registry_fallback gauges.
+func TestMetricsRegistryFreshness(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"# HELP freebuff_proxy_registry_age_seconds",
+		"# TYPE freebuff_proxy_registry_age_seconds gauge",
+		"freebuff_proxy_registry_age_seconds 0",
+		"# HELP freebuff_proxy_registry_fallback",
+		"# TYPE freebuff_proxy_registry_fallback gauge",
+		"freebuff_proxy_registry_fallback 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q in:\n%s", want, body)
+		}
+	}
+}

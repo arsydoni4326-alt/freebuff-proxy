@@ -95,6 +95,10 @@ func Load(configPath string) (Config, error) {
 	overrideBool(&raw.WaitingRoomChain, "WAITING_ROOM_CHAIN")
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
+	overrideFloat(&raw.BridgeRateLimitPerToken, "BRIDGE_RATE_LIMIT_PER_TOKEN")
+	overrideInt(&raw.BridgeCircuitBreakerFailures, "BRIDGE_CIRCUIT_BREAKER_FAILURES")
+	overrideString(&raw.BridgeCircuitBreakerWindow, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
+	overrideString(&raw.BridgeCircuitBreakerCooldown, "BRIDGE_CIRCUIT_BREAKER_COOLDOWN")
 	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
@@ -274,6 +278,42 @@ func Load(configPath string) (Config, error) {
 	if raw.RateLimitBurst != nil {
 		rateLimitBurst = *raw.RateLimitBurst
 	}
+	// BRIDGE_RATE_LIMIT_PER_TOKEN (security hardening): per-client-token
+	// rate limit in req/s for bridge mode. 0 = unlimited. Independent of
+	// the per-IP rate limiter.
+	bridgeRateLimitPerToken := 0.0
+	if raw.BridgeRateLimitPerToken != nil {
+		bridgeRateLimitPerToken = *raw.BridgeRateLimitPerToken
+	}
+	// BRIDGE_CIRCUIT_BREAKER_FAILURES: 0 = disabled. When >0, a burst of
+	// transient upstream 5xx/network failures within the sliding window
+	// opens the breaker, short-circuiting bridge admission to 503 for the
+	// cooldown period. Classified errors (auth/rate-limit/ban/country/ip_capped)
+	// never trip it.
+	bridgeCircuitBreakerFailures := 0
+	if raw.BridgeCircuitBreakerFailures != nil {
+		bridgeCircuitBreakerFailures = *raw.BridgeCircuitBreakerFailures
+	}
+	bridgeCircuitBreakerWindow := 30 * time.Second
+	if v := strings.TrimSpace(raw.BridgeCircuitBreakerWindow); v != "" {
+		bridgeCircuitBreakerWindow, err = parseDuration(v, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
+		if err != nil {
+			return Config{}, err
+		}
+		if bridgeCircuitBreakerWindow <= 0 {
+			bridgeCircuitBreakerWindow = 30 * time.Second
+		}
+	}
+	bridgeCircuitBreakerCooldown := 10 * time.Second
+	if v := strings.TrimSpace(raw.BridgeCircuitBreakerCooldown); v != "" {
+		bridgeCircuitBreakerCooldown, err = parseDuration(v, "BRIDGE_CIRCUIT_BREAKER_COOLDOWN")
+		if err != nil {
+			return Config{}, err
+		}
+		if bridgeCircuitBreakerCooldown <= 0 {
+			bridgeCircuitBreakerCooldown = 10 * time.Second
+		}
+	}
 	if raw.LogRingSize != nil {
 		logRingSize = *raw.LogRingSize
 	}
@@ -400,6 +440,10 @@ func Load(configPath string) (Config, error) {
 		WaitingRoomChain:                 raw.WaitingRoomChain,
 		RateLimitPerIP:                   rateLimitPerIP,
 		RateLimitBurst:                   rateLimitBurst,
+		BridgeRateLimitPerToken:          bridgeRateLimitPerToken,
+		BridgeCircuitBreakerFailures:     bridgeCircuitBreakerFailures,
+		BridgeCircuitBreakerWindow:       bridgeCircuitBreakerWindow,
+		BridgeCircuitBreakerCooldown:     bridgeCircuitBreakerCooldown,
 		DashboardEnabled:                 raw.DashboardEnabled,
 		EnvFile:                          envFileUsed,
 	}

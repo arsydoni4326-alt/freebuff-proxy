@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -270,6 +271,41 @@ func TestBridgeAcquireEmptyToken(t *testing.T) {
 	}
 	if got := p.bridgeLen(); got != 0 {
 		t.Errorf("bridge entries = %d, want 0 (no entry for empty token)", got)
+	}
+}
+
+// TestValidateClientToken exercises validateClientToken directly.
+func TestValidateClientToken(t *testing.T) {
+	tests := []struct {
+		name  string
+		token string
+		want  string // empty = expect success
+	}{
+		{"empty", "", "empty"},
+		{"whitespace only", "   ", "empty"},
+		{"interior space", "abc def", "invalid"},
+		{"tab interior", "abc\tdef", "invalid"},
+		{"newline interior", "abc\ndef", "invalid"},
+		{"control char", "abc\x00def", "invalid"},
+		{"DEL char", "abc\x7fdef", "invalid"},
+		{"valid simple", "valid-token", ""},
+		{"valid cb_ token", "cb_a1B2c3D4.e_~xyz", ""},
+		{"very long", strings.Repeat("a", maxClientTokenLen+1), "too long"},
+		{"at limit", strings.Repeat("b", maxClientTokenLen), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateClientToken(strings.TrimSpace(tt.token))
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+			}
+		})
 	}
 }
 
@@ -624,5 +660,132 @@ func TestBridgeSnapshot(t *testing.T) {
 	}
 	if !snaps[0].Locked {
 		t.Error("BridgeSnapshot Locked = false after LockBridgeEntry, want true")
+	}
+}
+
+// TestBridgeTokenRateLimit verifies per-client-token rate limiting: when
+// BRIDGE_RATE_LIMIT_PER_TOKEN is set, repeated AcquireBridge calls beyond the
+// rate limit are rejected with the rate limit error message.
+func TestBridgeTokenRateLimit(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePoolCfg(t, mock, func(c *config.Config) {
+		c.BridgeRateLimitPerToken = 0.5 // 1 token every 2 seconds
+	})
+
+	token := "rate-limited-token"
+	// First request: allowed (fills bucket).
+	lease, err := p.AcquireBridge(context.Background(), token, modelA)
+	if err != nil {
+		t.Fatalf("first AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	// Second request immediately: should be rate limited (bucket empty).
+	_, err = p.AcquireBridge(context.Background(), token, modelA)
+	if err == nil {
+		t.Fatal("second AcquireBridge succeeded, want rate limit error")
+	}
+	if !strings.Contains(err.Error(), "rate limit exceeded") {
+		t.Errorf("error = %q, want rate limit exceeded message", err.Error())
+	}
+
+	// A different token should not be affected.
+	lease2, err := p.AcquireBridge(context.Background(), "other-token", modelA)
+	if err != nil {
+		t.Fatalf("other token AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease2)
+}
+
+// TestBridgeTokenRateLimitUnlimited verifies that default (0 = unlimited)
+// does not rate limit.
+func TestBridgeTokenRateLimitUnlimited(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	for i := 0; i < 10; i++ {
+		lease, err := p.AcquireBridge(context.Background(), "unlimited-token", modelA)
+		if err != nil {
+			t.Fatalf("AcquireBridge attempt %d failed: %v", i, err)
+		}
+		p.LeaseRelease(lease)
+	}
+}
+
+// TestBridgeRateLimitEntryIsIndependent verifies that rate limiting is
+// per-entry: one token being rate limited does not affect other tokens.
+func TestBridgeRateLimitEntryIsIndependent(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePoolCfg(t, mock, func(c *config.Config) {
+		c.BridgeRateLimitPerToken = 1.0 // 1 req/s
+	})
+
+	// Exhaust token A's bucket.
+	lease, err := p.AcquireBridge(context.Background(), "token-a", modelA)
+	if err != nil {
+		t.Fatalf("token-a first AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	// Token B should not be affected.
+	leaseB, err := p.AcquireBridge(context.Background(), "token-b", modelA)
+	if err != nil {
+		t.Fatalf("token-b AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(leaseB)
+
+	// Token A should be rate limited.
+	_, err = p.AcquireBridge(context.Background(), "token-a", modelA)
+	if err == nil {
+		t.Fatal("token-a second AcquireBridge succeeded, want rate limit")
+	}
+}
+
+// TestBridgeDeadToken verifies that DeadToken is surfaced correctly in
+// BridgeSnapshot for hard-banned tokens.
+func TestBridgeDeadToken(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	token := "dead-token-test"
+	lease, err := p.AcquireBridge(context.Background(), token, modelA)
+	if err != nil {
+		t.Fatalf("AcquireBridge failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	// No ban yet: DeadToken should be false.
+	snaps := p.BridgeSnapshot()
+	if len(snaps) != 1 {
+		t.Fatalf("BridgeSnapshot len = %d, want 1", len(snaps))
+	}
+	if snaps[0].DeadToken {
+		t.Error("DeadToken = true for healthy entry, want false")
+	}
+
+	// Apply a hard ban to the runs.
+	key := tokenKey(token)
+	p.bridgeMu.Lock()
+	entry, ok := p.bridge[key]
+	p.bridgeMu.Unlock()
+	if !ok {
+		t.Fatal("bridge entry not found")
+	}
+	entry.runs.CooldownBan(&upstream.BanError{
+		Body:      "account banned",
+		ResumesAt: time.Time{}, // zero = hard ban (never resumes)
+	})
+
+	// DeadToken should now be true.
+	snaps = p.BridgeSnapshot()
+	if len(snaps) != 1 {
+		t.Fatalf("BridgeSnapshot len after ban = %d, want 1", len(snaps))
+	}
+	if !snaps[0].DeadToken {
+		t.Error("DeadToken = false for hard-banned entry, want true")
 	}
 }

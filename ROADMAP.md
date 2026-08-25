@@ -93,19 +93,75 @@ UI/UX Polish:
 
 ### 2. Bridge mode hardening
 
-- Improve cooldown/quota handling under a flood of distinct client tokens.
-- Consider surfacing per-entry registry / quota info in bridge health without storing tokens.
+Documentation + planning:
+- [x] Author `docs/bridge-mode.md` — architecture, invariants B1–B8, security notes, error surfaces, testing, hardening checklist
+- [x] Track Phase 2 progress in `session.md`
+
+Security:
+- [x] Token format validation (`validateClientToken`: length bound + interior whitespace/control rejection; `cb_` prefix deliberately not hard-enforced)
+- [x] Log sanitization audit — no raw tokens in logs/metrics (verified with pool-level log capture tests + metric label hygiene tests)
+- [x] Per-client-token rate limiting (independent of per-IP) — `BridgeRateLimitPerToken` config, per-entry token bucket, tested
+- [x] Header smuggling / injection tests (`Authorization`, `x-api-key`, `anthropic-api-key`) — precedence, no-concatenation, multiple-value, authorized gate parity, integration
+- [x] Quota exhaustion edge-case tests — global daily limit, per-entry cap + cooldown intersection, cooldown then cap
+
+Reliability:
+- [x] Transient upstream failure retry (bounded, idempotent) — `TRANSIENT_RETRIES` config with `GetBody` replay, extensive client_retry_test coverage
+- [ ] Circuit breaker for batch upstream failures — config fields added (`BridgeCircuitBreakerFailures/Window/Cooldown`); wiring deferred (Phase 3)
+- [x] Clear diagnostics for invalid/expired tokens — `errors.go` `remediationMessage()` has actionable gen-token/wait instructions per error code
+- [x] Improved quota exhaustion messaging — `errors.go` `remediationMessage()` with reset time, Retry-After, and actionable hints per code
+
+Code quality & tests:
+- [x] Extract bridge admission/eviction into pure-unit-testable paths — `rateLimitAllow()` extracted, `newBridgePoolCfg` helper added
+- [x] Fuzz tests for token handling — `FuzzValidateClientToken`, `FuzzTokenKey` (never panics, property-checked)
+- [x] Property-based LRU eviction verification — `TestBridgeLRUProperty` (cache size ≤ max, random access patterns)
+- [x] Load test for thundering-herd creation — `TestBridgeThunderingHerd` (40 concurrent requests, 20 distinct tokens, all complete)
+
+Metrics & observability:
+- [x] Bridge-specific Prometheus metrics (entries, evictions, cooldowns) — `freebuff_proxy_bridge_entries_total`, `cooling_down_total`, `dead_tokens_total`, `locked_total`, `requests_total`, `active_runs`, `quota_remaining`
+- [x] Per-entry quota introspection in `/admin` without plaintext token exposure — `BridgeSnapshot` returns hashed key + quota/messages/spend/ban, no raw token
+- [x] `/healthz` bridge indicators (entry count, cooling-down, dead-token) — exposed as `bridge_tokens` count and `bridge_entries[]` with `dead_token`, `cooldown_until`, `locked` per entry
 
 ### 3. Ban-avoidance & signature research
 
-- Continue documenting upstream detection (per-request IP scoring, trust levels, sticky caps,
-  daily ceilings, mass sweeps).
-- Prototype header-sanitization refinements against real traffic signatures.
+- [x] Document upstream detection mechanisms:
+  - Per-request IP scoring and privacy signals
+  - Per-account trust levels and sticky caps
+  - IP-capping and daily spend ceilings
+  - Mass sweeps against known farm patterns
+  - Wire protocol fingerprinting vectors
+- [x] Document proxy countermeasures:
+  - Anti-ban contract invariants (A1–A5)
+  - TLS fingerprinting profiles and rotation
+  - Header sanitization and browser profile application
+  - Request jitter and idle rotation
+  - Cooldown/unfit registries and scarce model protection
+  - Safe mode presets and operator hygiene rules
+- [x] Document Risk Engine architecture:
+  - Scoring rules and risk thresholds
+  - Sample sources and aggregation
+  - Dashboard exposure and read-only design
+- [x] Create `docs/ban-avoidance.md` — comprehensive ban-avoidance & signature research documentation
+- [ ] Phase 3.2: Header-sanitization refinements against real traffic
+- [ ] Phase 3.3: Timing & behavioral analysis
+- [ ] Phase 3.4: TLS fingerprint drift monitoring
+- [ ] Phase 3.5: Risk engine improvements
+- [ ] Phase 3.6: Egress probe enhancements
 
 ### 4. Upstream drift tracking
 
-- Keep pinned upstream files under `internal/registry/testdata/upstream/` synced.
-- Add warning-level alerts when drift is detected.
+- [x] Pinned upstream snapshots — `internal/registry/testdata/upstream/` with 5 constant files
+- [x] Hardcoded fallback tables — `fallbackAgents` and `fallbackRootByModel` in `internal/registry/registry.go`
+- [x] Parity test — `TestFallbackParityWithPinnedUpstream` enforces sync
+- [x] Drift detection — `scripts/check-upstream.sh` read-only hash comparison
+- [x] Sync automation — `scripts/sync-upstream.sh` / `.ps1` fetch, copy, verify, test
+- [x] CI integration — Weekly `upstream-drift` workflow (Monday 06:17 UTC)
+- [x] Runtime self-healing — Live registry refresh (6h default)
+- [x] Create `docs/upstream-drift-tracking.md` — comprehensive drift tracking documentation
+- [x] Phase 4.2: Warning-level alerts (webhook, Prometheus, /healthz)
+- [x] Phase 4.3: Protocol drift detection (error-classification + field + timestamp regression tests)
+- [ ] Phase 4.4: Automated sync automation (auto-PR, auto-fallback)
+- [ ] Phase 4.5: Egress behavior tracking (admission, quota windows)
+- [x] Phase 4.6: Documentation & runbooks (troubleshooting, rollback)
 
 ---
 

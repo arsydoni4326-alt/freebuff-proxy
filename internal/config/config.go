@@ -58,12 +58,36 @@ type Config struct {
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
 	// before the per-entry check so a flood of distinct client tokens cannot
 	// collectively exceed the operator's budget.
-	BridgeDailyLimit      int
-	MaxSpendPerDay        int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
-	IdleRotationTimeout   time.Duration // 0 = disabled: pause rotation/refresh after this idle period
-	SessionIdleEnd        time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
-	SafeMode              bool          // true = apply recommended anti-ban safe defaults
-	ModelsHideUnavailable bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
+	BridgeDailyLimit int
+	// BridgeRateLimitPerToken is the per-client-token rate limit in requests
+	// per second (BRIDGE_RATE_LIMIT_PER_TOKEN; 0 = unlimited). Independent
+	// of the per-IP rate limiter: each bridge token's requests are throttled
+	// individually to prevent a single client from flooding upstream through
+	// one token. Default 0 (unlimited).
+	BridgeRateLimitPerToken float64
+	// BridgeCircuitBreakerFailures is the number of transient upstream
+	// network/5xx failures across bridge entries within one circuit window
+	// that trips the bridge circuit breaker (BRIDGE_CIRCUIT_BREAKER_FAILURES
+	// default 0 = disabled). When tripped, bridge admission short-circuits to
+	// a 503 upstream_unavailable error for the cooldown instead of hammering
+	// a batch-down upstream. Classified errors (auth/rate-limit/ban/country/
+	// ip_capped) never trip the breaker — only genuine transient upstream
+	// outages do.
+	BridgeCircuitBreakerFailures int
+	// BridgeCircuitBreakerWindow is the sliding window in which the failure
+	// count is measured (BRIDGE_CIRCUIT_BREAKER_WINDOW default 30s). The
+	// breaker opens when BridgeCircuitBreakerFailures failures fall within
+	// this window, and stays open for BridgeCircuitBreakerCooldown.
+	BridgeCircuitBreakerWindow time.Duration
+	// BridgeCircuitBreakerCooldown is how long the breaker stays open
+	// (BRIDGE_CIRCUIT_BREAKER_COOLDOWN default 10s). Disabled when
+	// BridgeCircuitBreakerFailures is 0.
+	BridgeCircuitBreakerCooldown time.Duration
+	MaxSpendPerDay               int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
+	IdleRotationTimeout          time.Duration // 0 = disabled: pause rotation/refresh after this idle period
+	SessionIdleEnd               time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
+	SafeMode                     bool          // true = apply recommended anti-ban safe defaults
+	ModelsHideUnavailable        bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
@@ -234,7 +258,13 @@ type rawConfig struct {
 	MaxMessagesPerDay  *int   `json:"MAX_MESSAGES_PER_DAY"`
 	// BridgeDailyLimit is the global daily chat cap across all bridge
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
-	BridgeDailyLimit                 *int                    `json:"BRIDGE_DAILY_LIMIT"`
+	BridgeDailyLimit *int `json:"BRIDGE_DAILY_LIMIT"`
+	// BridgeRateLimitPerToken is the per-client-token rate limit in req/s
+	// (BRIDGE_RATE_LIMIT_PER_TOKEN; 0 = unlimited).
+	BridgeRateLimitPerToken          *float64                `json:"BRIDGE_RATE_LIMIT_PER_TOKEN"`
+	BridgeCircuitBreakerFailures     *int                    `json:"BRIDGE_CIRCUIT_BREAKER_FAILURES"`
+	BridgeCircuitBreakerWindow       string                  `json:"BRIDGE_CIRCUIT_BREAKER_WINDOW"`
+	BridgeCircuitBreakerCooldown     string                  `json:"BRIDGE_CIRCUIT_BREAKER_COOLDOWN"`
 	MaxSpendPerDay                   *int                    `json:"MAX_SPEND_PER_DAY"`
 	IdleRotationTimeout              string                  `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                         bool                    `json:"SAFE_MODE"`

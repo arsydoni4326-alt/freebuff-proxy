@@ -102,6 +102,15 @@ type bridgeEntry struct {
 	// UnlockBridgeEntry; in-flight leases are unaffected.
 	locked atomic.Bool
 
+	// rateLimitTokens / rateLimitLastRefill implement a simple per-entry
+	// token-bucket rate limiter (BRIDGE_RATE_LIMIT_PER_TOKEN config).
+	// Guarded by mu. rateLimitTokens holds the current token balance;
+	// rateLimitLastRefill is the last refill timestamp. rateLimitRate
+	// is the configured tokens/sec (0 = unlimited, set once at creation).
+	rateLimitTokens     float64
+	rateLimitLastRefill time.Time
+	rateLimitRate       float64
+
 	// admissionGate serializes session creation per entry: the first
 	// request creates the session; concurrent requests block on the
 	// channel until it completes or fails. sync.Once ensures the session
@@ -280,6 +289,19 @@ type Pool struct {
 	// ALL bridge entries for the BRIDGE_DAILY_LIMIT global cap (B5).
 	// Guarded by bridgeMu.
 	bridgeDailyUsage int
+
+	// Bridge circuit breaker (BRIDGE_CIRCUIT_BREAKER_*): protects a
+	// batch-down upstream from being hammered by bridge admission. When
+	// configured, a burst of transient upstream 5xx/network failures within
+	// the sliding window opens the breaker; while open, AcquireBridge
+	// short-circuits to a 503 upstream_unavailable instead of touching the
+	// upstream until the cooldown elapses. breakerFailures holds the sliding
+	// window timestamps (reaped lazily); breakerUntil is when the breaker
+	// re-closes (zero = closed). All guarded by bridgeMu. Only genuine
+	// transient outages (UpstreamError with Retryable=true) trip it —
+	// classified errors (auth/rate-limit/ban/country/ip_capped) never do.
+	breakerFailures []time.Time
+	breakerUntil    time.Time
 
 	// unfit is the per-(egress, model) unfit registry (issue #74 P2): models
 	// refused upstream with limited_ip on this egress are marked unfit for

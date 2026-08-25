@@ -954,3 +954,74 @@ func TestStrictServedModelsPinned(t *testing.T) {
 		}
 	}
 }
+
+// TestFreshnessTracking pins Phase 4.2: LastRefreshAt / UsingFallback reflect
+// the registry's live-vs-fallback state so /healthz, /metrics, and the
+// dashboard can surface a stale offline path.
+func TestFreshnessTracking(t *testing.T) {
+	r := New(nil, nil)
+
+	// Fresh boot: never refreshed live, no fallback loaded yet.
+	if got := r.LastRefreshAt(); !got.IsZero() {
+		t.Errorf("LastRefreshAt fresh boot = %v, want zero", got)
+	}
+	// UsingFallback is false before LoadFallback (no state loaded at all).
+	if r.UsingFallback() {
+		t.Errorf("UsingFallback fresh boot = true, want false")
+	}
+
+	// LoadFallback marks the state as the offline fallback.
+	r.LoadFallback()
+	if !r.UsingFallback() {
+		t.Errorf("UsingFallback after LoadFallback = false, want true")
+	}
+	if got := r.LastRefreshAt(); !got.IsZero() {
+		t.Errorf("LastRefreshAt after LoadFallback = %v, want zero (fallback is not a live refresh)", got)
+	}
+
+	// A failed refresh keeps the previous (fallback) state — freshness stays
+	// fallback and last-refresh stays zero.
+	missing := fileSource(t, filepath.Join("testdata", "does-not-exist.ts"))
+	r.SetSources([]string{missing})
+	if err := r.Refresh(context.Background()); err == nil {
+		t.Fatal("Refresh against missing source succeeded, want error")
+	}
+	if !r.UsingFallback() {
+		t.Errorf("UsingFallback after failed refresh = false, want true (previous fallback retained)")
+	}
+	if got := r.LastRefreshAt(); !got.IsZero() {
+		t.Errorf("LastRefreshAt after failed refresh = %v, want zero (no live success yet)", got)
+	}
+
+	// A successful live refresh clears the fallback flag and stamps the
+	// last-refresh instant.
+	fixture := fileSource(t, filepath.Join("testdata", "registry-fixture.ts"))
+	r.SetSources([]string{fixture})
+	before := time.Now()
+	if err := r.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if r.UsingFallback() {
+		t.Errorf("UsingFallback after successful refresh = true, want false (live state)")
+	}
+	got := r.LastRefreshAt()
+	if got.IsZero() {
+		t.Fatal("LastRefreshAt after successful refresh = zero, want stamped")
+	}
+	if got.Before(before) {
+		t.Errorf("LastRefreshAt = %v, want >= %v (stamped before refresh completed)", got, before)
+	}
+
+	// A subsequent LoadFallback re-marks the state as fallback but preserves
+	// the lastRefreshAt timestamp as a historical record of the most recent
+	// live refresh — the two fields are independent (usingFallback describes
+	// the current source; lastRefreshAt records when a live refresh last
+	// succeeded).
+	r.LoadFallback()
+	if !r.UsingFallback() {
+		t.Errorf("UsingFallback after re-LoadFallback = false, want true")
+	}
+	if got := r.LastRefreshAt(); got.IsZero() {
+		t.Errorf("LastRefreshAt after re-LoadFallback = zero, want preserved (historical record)")
+	}
+}

@@ -153,6 +153,30 @@ func newBridgePool(t *testing.T, mock *testutil.MockUpstream) *Pool {
 	return p
 }
 
+// newBridgePoolCfg wires a pool in bridge mode like newBridgePool but applies
+// a config modifier before creation so callers can set rate-limit and other
+// knobs that are read at bridge-entry creation time.
+func newBridgePoolCfg(t *testing.T, mock *testutil.MockUpstream, mod func(*config.Config)) *Pool {
+	t.Helper()
+	cfg := &config.Config{
+		RotationInterval:   time.Hour,
+		RequestTimeout:     15 * time.Minute,
+		SessionCallTimeout: 5 * time.Second,
+		RegistryRefresh:    6 * time.Hour,
+		UpstreamBaseURL:    mock.URL(),
+	}
+	if mod != nil {
+		mod(cfg)
+	}
+	reg := registry.New(cfg, nil)
+	reg.LoadFallback()
+	p, err := New(cfg, nil, nil, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 // flakyFirstRT fails the very first request with a transient transport error
 // and delegates everything else to base. It drives a real retry through the
 // full stack deterministically (a live connection teardown surfaces as

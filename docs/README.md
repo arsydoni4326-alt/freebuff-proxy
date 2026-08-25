@@ -22,6 +22,7 @@ These top-level documents serve as the canonical design and specification refere
 | [9router Integration](9router-integration.md) | Wire the proxy into 9router as a custom OpenAI-compatible provider |
 | [Dashboard Guide](dashboard.md) | The embedded admin web UI: access, pages, Docker caveats, hardening |
 | [Manual Testing](testing.md) | Step-by-step verification runbook (Linux and Windows), mirroring the CI checks |
+| [Bridge Mode](bridge-mode.md) | Bridge-mode architecture, invariants B1–B8, security considerations, error surfaces, hardening checklist |
 
 ## Related
 

@@ -303,6 +303,9 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `WEBHOOK_URL` | `""` | Best-effort alert POSTs for exactly two events: `pool_exhausted` (all tokens rate-limited) and `token_banned` (issue #48; empty = disabled; at most one POST per event type per 5m, never blocks the request path) |
 | `RATE_LIMIT_PER_IP` | `0` | Requests/second allowed per client IP (`0` = disabled; e.g. `20`) |
 | `RATE_LIMIT_BURST` | `0` | Burst request capacity per client IP (`0` = default `2 * RATE_LIMIT_PER_IP`) |
+| `BRIDGE_RATE_LIMIT_PER_TOKEN` | `0` | Per-client-token rate limit in req/s in bridge mode (`0` = unlimited). Independent of the per-IP limiter; each bridge token is throttled individually |
+| `BRIDGE_DAILY_LIMIT` | `0` | Global daily chat cap across ALL bridge-mode tokens (`0` = unlimited). Checked before per-entry caps |
+| `MAX_SPEND_PER_DAY` | `0` | Advisory per-token Pacific-day spend ceiling in ledger units (`0` = unlimited). Never blocks — informational only, surfaced on `/healthz` |
 
 When `SESSION_PERSIST=true`, the state file stores a SHA-256 hash of each
 active token plus its session metadata (instance id, expiry, tier/country)
@@ -423,6 +426,9 @@ See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardeni
 - [9router Integration](docs/9router-integration.md): router dashboard setup in bridge mode
 - [Dashboard Guide](docs/dashboard.md): the admin web UI: access, pages, Docker caveats, hardening
 - [Manual Testing](docs/testing.md): verify the proxy on Linux or Windows by hand, step by step
+- [Bridge Mode](docs/bridge-mode.md): bridge-mode architecture, invariants, security notes, hardening checklist
+- [Ban-Avoidance & Signature Research](docs/ban-avoidance.md): upstream detection landscape, countermeasures, risk engine, operator hygiene rules
+- [Upstream Drift Tracking](docs/upstream-drift-tracking.md): pinned registry snapshots, drift detection/sync scripts, CI integration, response playbook
 - [Version Stability & Ban Findings](docs/getting-started.md#access-tiers--workarounds): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment
 
 ## Documentation Set

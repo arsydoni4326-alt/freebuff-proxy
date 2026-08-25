@@ -13,11 +13,48 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"freebuff-proxy/internal/phasetiming"
 	"freebuff-proxy/internal/runs"
 	"freebuff-proxy/internal/upstream"
 )
+
+// maxClientTokenLen is the maximum allowed length of a client-supplied
+// FreeBuff token (after trimming). FreeBuff tokens are short opaque
+// credentials; a wildly oversized value is either malformed or a header-
+// smuggling attempt. The limit bounds memory and prevents pathological
+// upstream echo. Generous enough for any legitimate token.
+const maxClientTokenLen = 4096
+
+// validateClientToken validates a trimmed bridge-mode client token without
+// contacting the upstream. It enforces:
+//
+//   - Non-empty.
+//   - No interior whitespace or control characters (a FreeBuff token is a
+//     single opaque credential — embedded whitespace indicates a malformed
+//     or injected header).
+//   - Length within maxClientTokenLen.
+//
+// Returns nil on valid, or an error explaining the rejection.
+func validateClientToken(tok string) error {
+	if tok == "" {
+		return errors.New("bridge: empty client token")
+	}
+	if len(tok) > maxClientTokenLen {
+		return fmt.Errorf("bridge: client token too long (%d bytes)", len(tok))
+	}
+	for _, r := range tok {
+		// Reject all control characters (0x00–0x1f including tab, newline,
+		// carriage return) and DEL (0x7f). Printable space (0x20) is
+		// checked separately: a space that survived TrimSpace is interior
+		// whitespace, never part of a valid opaque token.
+		if unicode.IsControl(r) || r == ' ' {
+			return errors.New("bridge: invalid client token")
+		}
+	}
+	return nil
+}
 
 // AcquireBridge acquires a lease for one client-supplied token in bridge
 // mode (no AUTH_TOKENS configured). The entry — upstream client, session
@@ -27,10 +64,34 @@ import (
 // is returned as-is. Registry misses pass through.
 func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*Lease, error) {
 	clientToken = strings.TrimSpace(clientToken)
-	cfg := p.cfg.Load()
-	if clientToken == "" {
-		return nil, errors.New("bridge: empty client token")
+	if err := validateClientToken(clientToken); err != nil {
+		return nil, err
 	}
+	cfg := p.cfg.Load()
+
+	// Bridge circuit breaker (BRIDGE_CIRCUIT_BREAKER_*): when the breaker
+	// is open, short-circuit admission to a 503 upstream_retryable instead
+	// of hammering a batch-down upstream. The breaker is tripped by a burst
+	// of transient upstream 5xx/network failures within the sliding window;
+	// classified errors (auth/rate-limit/ban/country/ip_capped) never trip it.
+	if cfg.BridgeCircuitBreakerFailures > 0 {
+		p.bridgeMu.Lock()
+		broken := p.breakerOpenLocked(cfg)
+		p.bridgeMu.Unlock()
+		if broken {
+			remaining := time.Until(p.breakerUntil)
+			if remaining <= 0 {
+				remaining = cfg.BridgeCircuitBreakerCooldown
+			}
+			return nil, &upstream.UpstreamError{
+				Status:     503,
+				Body:       fmt.Sprintf("bridge circuit breaker open: upstream unavailable (retry after %s)", remaining.Round(time.Second)),
+				RetryAfter: remaining,
+				Retryable:  true,
+			}
+		}
+	}
+
 	agentID, err := p.reg.AgentForModel(model)
 	if err != nil {
 		return nil, err
@@ -45,6 +106,15 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	// In-flight leases are unaffected (they were acquired before the lock).
 	if entry.locked.Load() {
 		return nil, fmt.Errorf("bridge token %s is locked by administrator", tokenKey(clientToken))
+	}
+
+	// Per-token rate limiting (BRIDGE_RATE_LIMIT_PER_TOKEN): independent of
+	// the per-IP rate limiter, this limits requests per bridge token to
+	// prevent a single client from flooding upstream through one token.
+	// Uses a simple token-bucket per bridgeEntry.
+	if !entry.rateLimitAllow() {
+		p.logger.Debug("pool: bridge per-token rate limit exceeded", "token_label", bridgeTokenLabel(entry))
+		return nil, fmt.Errorf("bridge: token rate limit exceeded (%.1f req/s)", entry.rateLimitRate)
 	}
 
 	// B5: Global bridge daily limit check — before per-entry check, reject
@@ -211,6 +281,10 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		if cbe := asCountryBlocked(err); cbe != nil {
 			entry.runs.CooldownCountryBlocked(cbe)
 		}
+		// Record transient upstream failures for the circuit breaker. Only
+		// genuine 5xx/network outages trip it (classified errors already
+		// returned above never record).
+		p.breakerRecordFailureClass(cfg, err)
 		return nil, err
 	}
 	entry.mu.Unlock()
@@ -299,6 +373,9 @@ sessionReady:
 		if cbe := asCountryBlocked(err); cbe != nil {
 			entry.runs.CooldownCountryBlocked(cbe)
 		}
+		// Record transient upstream failures for the circuit breaker (run
+		// acquire path). Classified errors never trip it.
+		p.breakerRecordFailureClass(cfg, err)
 		return nil, err
 	}
 

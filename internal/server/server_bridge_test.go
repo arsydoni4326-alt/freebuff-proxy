@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -335,6 +337,199 @@ func TestBridgeTokenLockUnlockAdmin(t *testing.T) {
 		chatBody(modelA), map[string]string{"Authorization": "Bearer bridge-lock-test-token"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("post-unlock bridge chat status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// postBridgeChat sends a chat request with an arbitrary ordered set of
+// headers (including duplicates) so header-smuggling/injection scenarios can
+// exercise the middleware exactly as a crafted client would. Calls
+// testClient.Do so the request goes through the real HTTP stack (canonicalizing
+// headers etc). Returns the response and body. The caller reads mock's
+// recorded headers directly.
+func postBridgeChat(t *testing.T, ts *httptest.Server, headers [][2]string) (*http.Response, []byte) {
+	t.Helper()
+	body := bytes.NewReader(chatBody(modelA))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range headers {
+		if kv[1] == "" {
+			req.Header.Del(kv[0])
+		} else {
+			req.Header.Add(kv[0], kv[1])
+		}
+	}
+	resp, err := testClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp, data
+}
+
+// TestBridgeHeaderInjectionRejectsMalformedTokens pins that a control-char or
+// whitespace-embedded token in Authorization is rejected either by Go's HTTP
+// client (newlines, null byte — transport layer) or by the pool's
+// validateClientToken (tabs, interior space — before upstream contact). A
+// header-smuggling attempt cannot burn an upstream slot.
+func TestBridgeHeaderInjectionRejectsMalformedTokens(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, p := newBridgeTestServer(t, mock)
+
+	// Cases where Go's http.Client rejects the header value at transport
+	// level before it ever reaches the server (best defense).
+	goRejects := []struct {
+		name   string
+		header string
+	}{
+		{"embedded newline", "Bearer tokenA\ntokenB"},
+		{"embedded carriage return", "Bearer tok\r\na"},
+		{"control char", "Bearer tok\x00en"},
+	}
+	for _, tc := range goRejects {
+		t.Run(tc.name, func(t *testing.T) {
+			before := mock.SessionCreates
+			body := bytes.NewReader(chatBody(modelA))
+			req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Add("Authorization", tc.header)
+			_, err = testClient.Do(req)
+			// Go rejects the header: the malformed token never reaches the server.
+			if err == nil {
+				t.Fatal("expected error from HTTP client for malformed header value")
+			}
+			if mock.SessionCreates != before {
+				t.Errorf("SessionCreates = %d, want %d (transport rejection must not reach upstream)",
+					mock.SessionCreates, before)
+			}
+			if got := p.BridgeCount(); got != 0 {
+				t.Errorf("BridgeCount = %d, want 0 (must not cache an entry for rejected token)", got)
+			}
+		})
+	}
+
+	// Cases where the header passes Go validation but fails our pool's
+	// validateClientToken before upstream contact.
+	poolRejects := []struct {
+		name   string
+		header string
+	}{
+		{"embedded tab", "Bearer tok\ta"},
+		{"interior space", "Bearer tok a"},
+	}
+	for _, tc := range poolRejects {
+		t.Run(tc.name, func(t *testing.T) {
+			before := mock.SessionCreates
+			resp, _ := postBridgeChat(t, ts, [][2]string{{"Authorization", tc.header}})
+			if resp.StatusCode == http.StatusOK {
+				t.Fatalf("status = 200 for malformed bearer %q; must reject", tc.header)
+			}
+			if mock.SessionCreates != before {
+				t.Errorf("SessionCreates = %d, want %d (malformed token must not reach upstream)",
+					mock.SessionCreates, before)
+			}
+			if got := p.BridgeCount(); got != 0 {
+				t.Errorf("BridgeCount = %d, want 0 (malformed token must not cache an entry)", got)
+			}
+		})
+	}
+}
+
+// TestBridgeHeaderPrecedence pins the deterministic precedence when several
+// credential headers conflict: Authorization wins over x-api-key over
+// anthropic-api-key. A malicious client must not be able to spoof which token
+// is relayed by stacking headers.
+func TestBridgeHeaderPrecedence(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-p", 1, `"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]`))
+	ts, _ := newBridgeTestServer(t, mock)
+
+	// Authorization + x-api-key: Authorization must win.
+	resp, data := postBridgeChat(t, ts, [][2]string{
+		{"Authorization", "Bearer auth-wins"},
+		{"x-api-key", "key-loses"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	if calls := len(mock.RecordedChatHeaders); calls != 1 {
+		t.Fatalf("upstream chat calls = %d, want 1", calls)
+	}
+	if got := mock.RecordedChatHeaders[0].Get("Authorization"); got != "Bearer auth-wins" {
+		t.Errorf("Authorization = %q, want Bearer auth-wins (must take precedence over x-api-key)", got)
+	}
+
+	// x-api-key + anthropic-api-key: x-api-key wins.
+	mock.RecordedChatHeaders = nil
+	resp, data = postBridgeChat(t, ts, [][2]string{
+		{"x-api-key", "keywins"},
+		{"anthropic-api-key", "anthropic-loses"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	if calls := len(mock.RecordedChatHeaders); calls != 1 {
+		t.Fatalf("upstream chat calls = %d, want 1", calls)
+	}
+	if got := mock.RecordedChatHeaders[0].Get("Authorization"); got != "Bearer keywins" {
+		t.Errorf("Authorization = %q, want Bearer keywins (x-api-key precedence over anthropic-api-key)", got)
+	}
+}
+
+// TestBridgeDuplicateAuthorizationHeader pins that Go's Header.Get returns the
+// FIRST of several Authorization values, and the proxy relays that one — an
+// attacker appending a second Authorization header cannot override the token.
+func TestBridgeDuplicateAuthorizationHeader(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = testutil.SSEEvent(chunk("cmplpdup", 1, `"choices":[{"index":0,"delta":{"content":"dup"},"finish_reason":null}]`))
+	ts, _ := newBridgeTestServer(t, mock)
+
+	resp, data := postBridgeChat(t, ts, [][2]string{
+		{"Authorization", "Bearer first-token"},
+		{"Authorization", "Bearer second-token"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	if calls := len(mock.RecordedChatHeaders); calls != 1 {
+		t.Fatalf("upstream chat calls = %d, want 1", calls)
+	}
+	if got := mock.RecordedChatHeaders[0].Get("Authorization"); got != "Bearer first-token" {
+		t.Errorf("Authorization = %q, want Bearer first-token (first header wins, no smuggling override)", got)
+	}
+	if len(mock.StartedRuns) != 1 {
+		t.Errorf("started runs = %d, want 1 (only one token entry built)", len(mock.StartedRuns))
+	}
+}
+
+// TestBridgeHeaderCaseInsensitive confirms Go canonicalizes header names, so a
+// lowercase or mixed-case "authorization" is read identically (an injection
+// attempt via casing cannot bypass the token extraction).
+func TestBridgeHeaderCaseInsensitive(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatBody = testutil.SSEEvent(chunk("cmplcase", 1, `"choices":[{"index":0,"delta":{"content":"case"},"finish_reason":null}]`))
+	ts, _ := newBridgeTestServer(t, mock)
+
+	resp, data := postBridgeChat(t, ts, [][2]string{{"authorization", "Bearer cased-token"}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	if calls := len(mock.RecordedChatHeaders); calls != 1 {
+		t.Fatalf("upstream chat calls = %d, want 1", calls)
+	}
+	if got := mock.RecordedChatHeaders[0].Get("Authorization"); got != "Bearer cased-token" {
+		t.Errorf("Authorization = %q, want Bearer cased-token (case-insensitive extraction)", got)
 	}
 }
 

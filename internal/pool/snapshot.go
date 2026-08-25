@@ -26,6 +26,11 @@ type BridgeTokenSnapshot struct {
 	// "hard" (never self-heals); zero values when no ban is active.
 	BanType     string    `json:"ban_type,omitempty"`
 	BannedUntil time.Time `json:"banned_until,omitempty"`
+	// DeadToken reports whether this entry's token is confirmed dead
+	// (hard ban or auth rejection) and only awaits idle-sweep eviction.
+	// Exposed so /healthz and bridge metrics can surface dead-token counts
+	// without any plaintext token material.
+	DeadToken bool `json:"dead_token,omitempty"`
 }
 
 // banView derives the snapshot ban view from a remembered runs ban

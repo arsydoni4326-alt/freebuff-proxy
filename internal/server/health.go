@@ -83,12 +83,30 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"model":          bs.Model,
 			"spend_day":      bs.SpendDay,
 			"spend_pct":      bs.SpendPct,
+			"dead_token":     bs.DeadToken,
 		}
 		if bs.CooldownUntil.After(time.Now()) {
 			entry["cooldown_until"] = bs.CooldownUntil
 		}
 		bridgeEntries = append(bridgeEntries, entry)
 	}
+	// Registry freshness (Phase 4.2): surface the last successful live
+	// refresh timestamp and whether the current state is the offline
+	// fallback so operators can detect a stale offline path from /healthz
+	// without inspecting logs. A zero last-refresh means the registry has
+	// never refreshed from upstream (fresh boot or fallback-only state).
+	registryLastRefresh := s.reg.LastRefreshAt()
+	registryFreshness := map[string]any{
+		"fallback": s.reg.UsingFallback(),
+	}
+	if registryLastRefresh.IsZero() {
+		registryFreshness["last_refresh"] = nil
+		registryFreshness["age_seconds"] = nil
+	} else {
+		registryFreshness["last_refresh"] = registryLastRefresh
+		registryFreshness["age_seconds"] = time.Since(registryLastRefresh).Seconds()
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":         "ok",
 		"mode":           cfg.EffectiveMode(),
@@ -97,6 +115,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"tokens":         tokens,
 		"bridge_tokens":  s.pool.BridgeCount(),
 		"bridge_entries": bridgeEntries,
+		"registry":       registryFreshness,
 	})
 }
 
@@ -290,5 +309,99 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString("\n")
 	}
 
+	// Bridge-specific Prometheus metrics (entries, evictions, cooldowns).
+	s.bridgeMetrics(&sb)
+
+	// Registry freshness (Phase 4.2): emit a staleness gauge so dashboards
+	// and alerting can detect a stale offline fallback path without parsing
+	// logs. registry_age_seconds is the time since the last successful live
+	// refresh (zero when the registry has never refreshed); registry_fallback
+	// is 1 when the current state is the offline fallback, 0 when it is live.
+	registryLastRefresh := s.reg.LastRefreshAt()
+	registryAge := 0.0
+	if !registryLastRefresh.IsZero() {
+		registryAge = time.Since(registryLastRefresh).Seconds()
+	}
+	registryFallback := 0
+	if s.reg.UsingFallback() {
+		registryFallback = 1
+	}
+	sb.WriteString("# HELP freebuff_proxy_registry_age_seconds Seconds since the last successful live model registry refresh (0 = never refreshed)\n")
+	sb.WriteString("# TYPE freebuff_proxy_registry_age_seconds gauge\n")
+	fmt.Fprintf(&sb, "freebuff_proxy_registry_age_seconds %g\n\n", registryAge)
+	sb.WriteString("# HELP freebuff_proxy_registry_fallback 1 when the registry is serving the offline hardcoded fallback, 0 when live-refreshed\n")
+	sb.WriteString("# TYPE freebuff_proxy_registry_fallback gauge\n")
+	fmt.Fprintf(&sb, "freebuff_proxy_registry_fallback %d\n\n", registryFallback)
+
 	_, _ = w.Write([]byte(sb.String()))
+}
+
+// bridgeMetrics appends bridge-specific Prometheus metrics to sb.
+// It reads bridge snapshots and emits zero-value defaults when bridge mode
+// is inactive so dashboards with pre-provisioned queries get consistent data.
+func (s *Server) bridgeMetrics(sb *strings.Builder) {
+	now := time.Now()
+	bridgeSnaps := s.pool.BridgeSnapshot()
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_entries_total Current bridge cache entries\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_entries_total gauge\n")
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_entries_total %d\n\n", len(bridgeSnaps))
+
+	var coolingDown, deadTokens, locked int
+	for _, snap := range bridgeSnaps {
+		if !snap.CooldownUntil.IsZero() && now.Before(snap.CooldownUntil) {
+			coolingDown++
+		}
+		if snap.DeadToken {
+			deadTokens++
+		}
+		if snap.Locked {
+			locked++
+		}
+	}
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_cooling_down_total Bridge entries currently cooling down\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_cooling_down_total gauge\n")
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_cooling_down_total %d\n\n", coolingDown)
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_dead_tokens_total Bridge entries with dead tokens\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_dead_tokens_total gauge\n")
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_dead_tokens_total %d\n\n", deadTokens)
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_locked_total Bridge entries locked by administrator\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_locked_total gauge\n")
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_locked_total %d\n\n", locked)
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_requests_total Total requests served through bridge entries\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_requests_total counter\n")
+	for _, snap := range bridgeSnaps {
+		fmt.Fprintf(sb, "freebuff_proxy_bridge_requests_total{token_label=\"%s\"} %d\n",
+			escapeLabelValue(snap.Key[:min(8, len(snap.Key))]), snap.Requests)
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_active_runs Active agent runs per bridge entry\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_active_runs gauge\n")
+	for _, snap := range bridgeSnaps {
+		fmt.Fprintf(sb, "freebuff_proxy_bridge_active_runs{token_label=\"%s\"} %d\n",
+			escapeLabelValue(snap.Key[:min(8, len(snap.Key))]), snap.ActiveRuns)
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_quota_remaining Quota remaining per bridge entry per model\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_quota_remaining gauge\n")
+	for _, snap := range bridgeSnaps {
+		for model, q := range snap.QuotaByModel {
+			rem := float64(0)
+			if q.Limit > 0 {
+				rem = q.Limit - q.RecentCount
+				if rem < 0 {
+					rem = 0
+				}
+			}
+			fmt.Fprintf(sb, "freebuff_proxy_bridge_quota_remaining{token_label=\"%s\",model=\"%s\"} %g\n",
+				escapeLabelValue(snap.Key[:min(8, len(snap.Key))]), escapeLabelValue(model), rem)
+		}
+	}
+	sb.WriteString("\n")
 }

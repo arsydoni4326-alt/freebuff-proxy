@@ -53,6 +53,14 @@ func (c Config) Validate() error {
 		return errors.New("RATE_LIMIT_PER_IP cannot be negative")
 	case c.RateLimitBurst < 0:
 		return errors.New("RATE_LIMIT_BURST cannot be negative")
+	case c.BridgeRateLimitPerToken < 0:
+		return errors.New("BRIDGE_RATE_LIMIT_PER_TOKEN cannot be negative")
+	case c.BridgeCircuitBreakerFailures < 0:
+		return errors.New("BRIDGE_CIRCUIT_BREAKER_FAILURES cannot be negative (0 disables the circuit breaker)")
+	case c.BridgeCircuitBreakerWindow < 0:
+		return errors.New("BRIDGE_CIRCUIT_BREAKER_WINDOW cannot be negative")
+	case c.BridgeCircuitBreakerCooldown < 0:
+		return errors.New("BRIDGE_CIRCUIT_BREAKER_COOLDOWN cannot be negative")
 	}
 	for _, m := range c.ScarceSessionModels {
 		if strings.TrimSpace(m) == "" {

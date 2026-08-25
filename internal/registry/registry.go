@@ -198,6 +198,15 @@ type Registry struct {
 	modelToAgent  map[string]string
 	allModels     []string // sorted
 	agentModels   []agentModels
+
+	// Freshness tracking (Phase 4.2): lastRefreshAt is the instant the most
+	// recent live Refresh successfully swapped the model map (zero before the
+	// first success / after LoadFallback); usingFallback is true when the
+	// current state came from the hardcoded fallback tables rather than a live
+	// upstream fetch. Exposed via /healthz, /metrics, and the admin dashboard
+	// so operators can detect a stale offline path without inspecting logs.
+	lastRefreshAt time.Time
+	usingFallback bool
 }
 
 // New returns a Registry that fetches from the default Codebuff sources.
@@ -297,6 +306,8 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	r.agentModels = agentModels
 	r.modelToAgent = modelToAgent
 	r.allModels = allModels
+	r.lastRefreshAt = time.Now()
+	r.usingFallback = false
 	agents, models := len(agentModels), len(allModels)
 	r.mu.Unlock()
 	// T18: the success path was silent (the failure path logs in main.go) —
@@ -333,6 +344,27 @@ func (r *Registry) LastAttemptedSources() []string {
 	return slices.Clone(r.lastAttempted)
 }
 
+// LastRefreshAt returns the instant the most recent live Refresh successfully
+// swapped the model map. The zero time means the registry has never refreshed
+// from upstream (fresh boot or LoadFallback-only state). Safe for concurrent
+// use; returns a value copy so callers cannot mutate registry state.
+func (r *Registry) LastRefreshAt() time.Time {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.lastRefreshAt
+}
+
+// UsingFallback reports whether the current registry state came from the
+// hardcoded fallback tables (LoadFallback) rather than a live upstream fetch.
+// True at boot and after a failed refresh that retained the previous fallback
+// state; false after a successful Refresh. Exposed via /healthz and /metrics
+// (Phase 4.2) so operators can detect a stale offline path.
+func (r *Registry) UsingFallback() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.usingFallback
+}
+
 // LoadFallback replaces the registry state with the hardcoded fallback map,
 // giving an offline-first model list at boot (and after every failed refresh
 // the previous state — initially the fallback — is retained). The root map is
@@ -348,6 +380,7 @@ func (r *Registry) LoadFallback() {
 	r.agentModels = agents
 	r.modelToAgent = modelToAgent
 	r.allModels = allModels
+	r.usingFallback = true
 	r.mu.Unlock()
 }
 

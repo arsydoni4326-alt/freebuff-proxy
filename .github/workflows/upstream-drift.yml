@@ -4,6 +4,11 @@
 # files into testdata/upstream/ and update fallbackAgents/fallbackRootByModel
 # until TestFallbackParityWithPinnedUpstream passes. The runtime registry
 # self-heals via live fetch; this guards the offline fallback path.
+#
+# Phase 4.2: when drift is detected and the DRIFT_WEBHOOK_URL secret is set,
+# a best-effort webhook POST (Slack/Discord-compatible JSON) is fired so
+# maintainers are alerted without watching the CI dashboard. The secret is
+# optional — unset → the notification step is a no-op.
 name: upstream-drift
 
 on:
@@ -27,4 +32,18 @@ jobs:
       # Needs only git + sha256sum (both preinstalled). The script shallow-
       # clones the vendor repo into ../freebuff-reference on first run.
       - name: Check pinned registry files vs CodebuffAI/freebuff@main
+        id: drift
         run: bash scripts/check-upstream.sh main
+
+      # Phase 4.2: best-effort webhook alert on drift (Slack/Discord-compatible).
+      # Fires only when the check above failed (drift detected) AND the
+      # DRIFT_WEBHOOK_URL repository secret is configured. Never blocks the job.
+      - name: Notify webhook on drift
+        if: failure() && env.DRIFT_WEBHOOK_URL != ''
+        env:
+          DRIFT_WEBHOOK_URL: ${{ secrets.DRIFT_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          payload='{"text":"⚠️ freebuff-proxy upstream drift detected: pinned registry files are stale vs CodebuffAI/freebuff@main. See the upstream-drift workflow for details."}'
+          curl -sf -X POST -H 'Content-Type: application/json' -d "$payload" "$DRIFT_WEBHOOK_URL" || \
+            echo "webhook delivery failed (non-blocking)"
