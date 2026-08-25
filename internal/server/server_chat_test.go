@@ -681,3 +681,36 @@ func TestChatModelIPLimitedConcurrentRefusals(t *testing.T) {
 		t.Errorf("upstream requests = %d, want %d (prime baseline; guard refusals never reach upstream)", got, before)
 	}
 }
+
+// TestChatRunFanoutSurfaced429 is the end-to-end contract for the
+// free_mode_run_fanout refusal Finn hit as a turn-killing
+// 502 upstream_unavailable: the exact observed upstream body must reach the
+// client as 429 free_mode_run_fanout + a bounded Retry-After, and the mock
+// must see exactly ONE chat call — re-POSTing into an anti-fanout refusal is
+// what feeds upstream's ban-grade sweep counter.
+func TestChatRunFanoutSurfaced429(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var chatCalls atomic.Int32
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		chatCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":"free_mode_run_fanout","message":"Free mode request rejected."}`)
+	}
+	ts, _ := newTestServerCfg(t, nil, nil, mock)
+
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (never the 502 that killed the turn): %s", resp.StatusCode, data)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "60" {
+		t.Errorf("Retry-After = %q, want 60 (FanoutCooldown default)", ra)
+	}
+	if !strings.Contains(string(data), `"code":"free_mode_run_fanout"`) {
+		t.Errorf("body missing free_mode_run_fanout code: %s", data)
+	}
+	if got := chatCalls.Load(); got != 1 {
+		t.Errorf("upstream chat calls = %d, want 1 (never re-POST into a fanout refusal)", got)
+	}
+}

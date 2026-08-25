@@ -93,6 +93,8 @@ func defaultHintForCode(code, message string) string {
 		return "Retired Luna agent — new session required, retry immediately."
 	case code == "free_mode_rate_limited" || strings.Contains(lowerMsg, "free_mode_rate_limited"):
 		return "Free-tier sliding window rate limit (30m). Wait for Retry-After or retry with backoff."
+	case code == "free_mode_run_fanout" || strings.Contains(lowerMsg, "free_mode_run_fanout"):
+		return "Upstream refused the account's concurrent agent runs (proxy-fanout signal). Honor Retry-After; run fewer parallel requests per token, or add another token."
 	case code == "free_mode_capacity_deferred" || strings.Contains(lowerMsg, "free_mode_capacity_deferred"):
 		return "Free tier at capacity — request deferred. Honor Retry-After (approx 2s for 30m window, 10s default) before retrying."
 	case code == "account_banned" || strings.Contains(lowerMsg, "banned"):
@@ -208,6 +210,12 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 			// #133: upstream peak-hours pricing window — bounded cooldown,
 			// not a quota lock.
 			code = "peak_hours"
+		case "free_mode_run_fanout":
+			// Upstream concurrent-run/fanout refusal: 429 + bounded
+			// Retry-After so the client backs off and the next request
+			// lands on another token — never the dead 502 the generic
+			// UpstreamError branch used to write.
+			code = "free_mode_run_fanout"
 		}
 		message, retryAfter = rle.Error(), rle.RetryAfter
 		resetAt, window = rle.ResetAt, rle.Window

@@ -124,11 +124,13 @@ func TestChatCompletionsEnvelope(t *testing.T) {
 	if md["freebuff_instance_id"] != "inst-1" {
 		t.Errorf("freebuff_instance_id = %v", md["freebuff_instance_id"])
 	}
-	// #103: client_id is a FRESH random draw per chat call — never the
-	// sess:-prefixed shape the server fingerprints as a proxy.
+	// client_id is the RUN's id (one per run, repeated per call) and keeps
+	// the SDK-faithful shape — never the sess:-prefixed form the server
+	// fingerprints as a proxy. This call passes none, so it is the fallback
+	// draw.
 	clientID, _ := md["client_id"].(string)
 	if !regexp.MustCompile(`^[a-z0-9]{13}$`).MatchString(clientID) || strings.HasPrefix(clientID, "sess:") {
-		t.Errorf("client_id = %q, want a fresh 13-char base36 draw per chat call (#103)", clientID)
+		t.Errorf("client_id = %q, want a 13-char base36 draw", clientID)
 	}
 	provider, ok := sent["provider"].(map[string]any)
 	if !ok || provider["data_collection"] != "deny" {
