@@ -16,15 +16,20 @@ import (
 	"freebuff-proxy/internal/testutil"
 )
 
-// --- #103: fresh random client_id per chat call -----------------------------
+// --- #103 / free_mode_run_fanout: client_id is PER RUN ----------------------
 
-// TestInjectEnvelopeFreshRandomClientID verifies #103: client_id is a FRESH
-// random SDK-faithful base36 draw per chat call — never the sess:/run:-
-// prefixed shapes the server fingerprints as a proxy, never wf- prefixed,
-// and never stable across calls. trace_session_id stays per run and
-// freebuff_instance_id stays per session.
-func TestInjectEnvelopeFreshRandomClientID(t *testing.T) {
-	out, err := injectEnvelope([]byte(`{"model":"m"}`), "free", ChatOptions{RunID: "run-1", SessionInstanceID: "inst-9", TraceSessionID: "trace-abc"})
+// TestInjectEnvelopeClientIDPerRun pins the client_id scope. The CLI mints it
+// once per prompt (run.ts:722 promptId -> run.ts:822 clientSessionId ->
+// llm.ts:117 client_id) and every LLM step of that run repeats it, so the
+// envelope must REPEAT ChatOptions.ClientID rather than draw a fresh id per
+// call: N ids under one run_id is the fanout shape upstream refuses with
+// free_mode_run_fanout. The shape stays SDK-faithful and unprefixed, and an
+// empty ClientID still falls back to a well-shaped draw.
+func TestInjectEnvelopeClientIDPerRun(t *testing.T) {
+	base36 := regexp.MustCompile(`^[a-z0-9]{13}$`)
+	const runClientID = "abc123def4567"
+
+	out, err := injectEnvelope([]byte(`{"model":"m"}`), "free", ChatOptions{RunID: "run-1", SessionInstanceID: "inst-9", TraceSessionID: "trace-abc", ClientID: runClientID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,14 +38,8 @@ func TestInjectEnvelopeFreshRandomClientID(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := sent["codebuff_metadata"].(map[string]any)
-	clientID, _ := md["client_id"].(string)
-	if !regexp.MustCompile(`^[a-z0-9]{13}$`).MatchString(clientID) {
-		t.Errorf("client_id = %q, want a 13-char base36 draw", clientID)
-	}
-	for _, prefix := range []string{"sess:", "run:", "wf-"} {
-		if strings.HasPrefix(clientID, prefix) {
-			t.Errorf("client_id = %q, must not carry the %q prefix (proxy fingerprint)", clientID, prefix)
-		}
+	if md["client_id"] != runClientID {
+		t.Errorf("client_id = %v, want the run's id %q repeated", md["client_id"], runClientID)
 	}
 	if md["trace_session_id"] != "trace-abc" {
 		t.Errorf("trace_session_id = %v, want trace-abc (per run)", md["trace_session_id"])
@@ -49,20 +48,21 @@ func TestInjectEnvelopeFreshRandomClientID(t *testing.T) {
 		t.Errorf("freebuff_instance_id = %v, want inst-9 (per session)", md["freebuff_instance_id"])
 	}
 
-	// A second call with the SAME run AND session must draw a DIFFERENT id.
-	out2, err := injectEnvelope([]byte(`{"model":"m"}`), "free", ChatOptions{RunID: "run-1", SessionInstanceID: "inst-9"})
+	// The SECOND call of the same run must carry the SAME id — this is the
+	// regression that produced free_mode_run_fanout.
+	out2, err := injectEnvelope([]byte(`{"model":"m"}`), "free", ChatOptions{RunID: "run-1", SessionInstanceID: "inst-9", ClientID: runClientID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal(out2, &sent); err != nil {
 		t.Fatal(err)
 	}
-	md2 := sent["codebuff_metadata"].(map[string]any)
-	if id2, _ := md2["client_id"].(string); id2 == clientID {
-		t.Errorf("client_id = %q on a second call, want a fresh draw per call", id2)
+	if got := sent["codebuff_metadata"].(map[string]any)["client_id"]; got != runClientID {
+		t.Errorf("client_id on the run's second call = %v, want %q (one client_id per run)", got, runClientID)
 	}
 
-	// No instance id (disabled session): still a fresh unprefixed draw.
+	// No ClientID supplied (admin smoke ping, bridge callers): fall back to a
+	// fresh SDK-faithful draw, never a prefixed proxy fingerprint.
 	out3, err := injectEnvelope([]byte(`{"model":"m"}`), "free", ChatOptions{RunID: "run-3"})
 	if err != nil {
 		t.Fatal(err)
@@ -70,9 +70,29 @@ func TestInjectEnvelopeFreshRandomClientID(t *testing.T) {
 	if err := json.Unmarshal(out3, &sent); err != nil {
 		t.Fatal(err)
 	}
-	md3 := sent["codebuff_metadata"].(map[string]any)
-	if id3, _ := md3["client_id"].(string); !regexp.MustCompile(`^[a-z0-9]{13}$`).MatchString(id3) || strings.HasPrefix(id3, "run:") {
-		t.Errorf("client_id without instance = %q, want fresh unprefixed 13-char base36", id3)
+	fallback, _ := sent["codebuff_metadata"].(map[string]any)["client_id"].(string)
+	if !base36.MatchString(fallback) {
+		t.Errorf("fallback client_id = %q, want a 13-char base36 draw", fallback)
+	}
+	for _, prefix := range []string{"sess:", "run:", "wf-"} {
+		if strings.HasPrefix(fallback, prefix) {
+			t.Errorf("client_id = %q, must not carry the %q prefix (proxy fingerprint)", fallback, prefix)
+		}
+	}
+}
+
+// TestNewClientIDIsPerRunDraw pins that the run manager's generator produces
+// distinct SDK-faithful ids — one per run, not one per process.
+func TestNewClientIDIsPerRunDraw(t *testing.T) {
+	base36 := regexp.MustCompile(`^[a-z0-9]{13}$`)
+	a, b := NewClientID(), NewClientID()
+	for _, id := range []string{a, b} {
+		if !base36.MatchString(id) {
+			t.Errorf("NewClientID = %q, want 13-char base36", id)
+		}
+	}
+	if a == b {
+		t.Error("NewClientID returned the same id twice; runs must not share one")
 	}
 }
 

@@ -39,8 +39,10 @@ func fileSource(t *testing.T, path string) string {
 // helper models belong to file-picker / file-picker-max, and every upstream-
 // retired id is absent.
 var expectedFallback = map[string]string{
-	"minimax/minimax-m3":              "base2-free-minimax-m3",
-	"openai/gpt-5.6-luna":             "base2-free-luna",
+	"minimax/minimax-m3": "base2-free-minimax-m3",
+	// base2-free-luna is retired upstream (free_mode_legacy_luna_agent);
+	// retiredRootOverrides remaps it — see parse.go.
+	"openai/gpt-5.6-luna":             "base3-free-luna",
 	"deepseek/deepseek-v4-pro":        "base2-free-deepseek",
 	"deepseek/deepseek-v4-flash":      "base2-free-deepseek-flash",
 	"mimo/mimo-v2.5":                  "base2-free-mimo",

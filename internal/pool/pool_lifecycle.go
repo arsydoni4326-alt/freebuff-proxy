@@ -1,4 +1,4 @@
-// pool_lifecycle.go — background-job lifecycle: prewarm, the maintain
+// pool_lifecycle.go — background-job lifecycle: the maintain
 // rotation loop (rotate aged runs, advance queued sessions), and the
 // session-liveness poll schedule (gap #2).
 package pool
@@ -47,17 +47,23 @@ const (
 // is still mid-admission when the park happens (see RemoveLastToken).
 const retiredDrainGrace = 2 * time.Minute
 
-// Start launches the background jobs: a best-effort prewarm of every
-// registry agent across every token (so the first request does not pay the
-// START latency) and the 60s maintain loop (rotate aged runs + advance
-// queued sessions). Both stop when ctx is canceled; Pool.Shutdown cancels.
+// Start launches the 60s maintain loop (rotate aged runs + advance queued
+// sessions). It stops when ctx is canceled; Pool.Shutdown cancels.
+//
+// It deliberately does NOT prewarm a run per registry agent per token any
+// more. That boot fleet held ~one concurrent agent run per served model on a
+// single free account, which is exactly the "proxy fanout" shape upstream
+// counts as ban-grade evidence (upstream
+// common/src/constants/freebuff-spend-ceilings.ts) and refuses with
+// free_mode_run_fanout — a refusal the reference proxies that keep one run
+// per (token, agent) never see. Runs START lazily on first use (Acquire),
+// so dropping the fleet costs the first request its START latency and
+// nothing else.
 func (p *Pool) Start(ctx context.Context) {
 	p.once.Do(func() {
-		agentIDs := p.reg.AgentIDs()
 		runCtx, cancel := context.WithCancel(ctx)
 		p.cancel = cancel
-		p.wg.Add(2)
-		go p.prewarm(runCtx, agentIDs)
+		p.wg.Add(1)
 		go p.maintainLoop(runCtx)
 	})
 }
@@ -166,19 +172,6 @@ func (p *Pool) endIdleSessions(ctx context.Context, cfg *config.Config, toks *[]
 func (p *Pool) sweepIdleSessions(ctx context.Context, cfg *config.Config, toks *[]*tokenEntry) {
 	if p.trySweepIdleSessions(cfg) {
 		p.endIdleSessions(ctx, cfg, toks)
-	}
-}
-
-// prewarm starts a run for every agent on every token, best-effort, bounded
-// by the request timeout.
-func (p *Pool) prewarm(ctx context.Context, agentIDs []string) {
-	defer p.wg.Done()
-	toks := p.toks.Load()
-	for i, tok := range *toks {
-		preCtx, cancel := context.WithTimeout(ctx, p.cfg.Load().RequestTimeout)
-		tok.runs.Prewarm(preCtx, agentIDs)
-		cancel()
-		p.logger.Debug("pool: prewarm done", "token", i+1, "agents", len(agentIDs))
 	}
 }
 

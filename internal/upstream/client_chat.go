@@ -433,6 +433,12 @@ func (b *cancelBody) Close() error {
 	return err
 }
 
+// NewClientID mints one SDK-faithful client id for a run. The CLI draws it
+// once per PROMPT (run.ts:722 promptId, passed as clientSessionId at run.ts:822
+// and reused by every LLM step of that run), so the run manager mints it with
+// the run and every chat call of that run repeats it.
+func NewClientID() string { return generateClientID() }
+
 // generateClientID mints the SDK-faithful 13-char base36 client id
 // (Math.random().toString(36).substring(2, 15)).
 func generateClientID() string {

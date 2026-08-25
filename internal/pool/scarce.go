@@ -22,6 +22,8 @@ const scarceSwitchLead = time.Minute
 // Surfaced as 503 Service Unavailable with Retry-After matching the earliest
 // expiry time.
 type ScarceSessionError struct {
+	// Model is the scarce model the HELD session runs, not the model that
+	// was requested — that one is in the request log line.
 	Model     string
 	ExpiresAt time.Time
 }

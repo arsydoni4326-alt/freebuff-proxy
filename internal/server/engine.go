@@ -537,6 +537,9 @@ func (s *Server) chatAttempt(
 		RunID:             lease.Run.RunID,
 		SessionInstanceID: lease.SessionInstanceID,
 		TraceSessionID:    lease.Run.TraceSessionID,
+		// One client_id for the whole run: a fresh draw per call is the
+		// free_mode_run_fanout shape (see injectEnvelope).
+		ClientID: lease.Run.ClientID,
 		// D1: the request's correlation id, threaded to the upstream
 		// client so its do()/retry log lines share the server's req_id.
 		RequestID: st.reqID,
