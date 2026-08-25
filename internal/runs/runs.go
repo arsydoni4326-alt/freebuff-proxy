@@ -637,6 +637,7 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 						RunID:          pr.RunID,
 						StartedAt:      pr.StartedAt,
 						TraceSessionID: pr.TraceSessionID,
+						ClientID:       resumedClientID(pr.ClientID),
 						Requests:       pr.Requests,
 					}
 					flight.err = nil
@@ -683,7 +684,14 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 		traceSessionID := newTraceSessionID()
 		slog.Debug("runs: run started", "agent_id", agentID, "run_id", runID, "trace_session_id", traceSessionID)
 
-		newRun := &Run{AgentID: agentID, RunID: runID, StartedAt: time.Now(), TraceSessionID: traceSessionID}
+		newRun := &Run{
+			AgentID:        agentID,
+			RunID:          runID,
+			StartedAt:      time.Now(),
+			TraceSessionID: traceSessionID,
+			// One client id for the whole run (CLI: one promptId per prompt).
+			ClientID: upstream.NewClientID(),
+		}
 		oldRun := m.runs[agentID]
 		m.runs[agentID] = newRun
 		if oldRun != nil {

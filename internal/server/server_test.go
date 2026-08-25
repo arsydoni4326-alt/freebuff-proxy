@@ -277,10 +277,11 @@ func TestChatStream(t *testing.T) {
 			t.Errorf("upstream body missing %s: %s", want, recorded)
 		}
 	}
-	// #80+#103: trace_session_id is minted once per run and threaded through
-	// the envelope; client_id is a FRESH random 13-char base36 draw per chat
-	// call — never the sess:/run:-prefixed shapes the server fingerprints as
-	// a proxy.
+	// #80+#103: trace_session_id and client_id are BOTH minted once per run
+	// and threaded through the envelope (a per-call client_id draw is the
+	// free_mode_run_fanout shape — see TestChatClientIDStableAcrossRun).
+	// client_id keeps the SDK-faithful 13-char base36 form, never the
+	// sess:/run:-prefixed shapes the server fingerprints as a proxy.
 	if !strings.Contains(recorded, `"trace_session_id":"`) {
 		t.Errorf("upstream body missing trace_session_id: %s", recorded)
 	}
@@ -617,4 +618,52 @@ func TestClientCancelBeforeFirstByteAbandonsRun(t *testing.T) {
 		return mock.AbortDetected.Load()
 	})
 	<-errCh
+}
+
+// TestChatClientIDStableAcrossRun is the wiring guard for the
+// free_mode_run_fanout fix: two chat requests served by the same lease/run
+// must carry the SAME codebuff_metadata.client_id, because the CLI mints it
+// once per prompt and repeats it on every LLM step (run.ts:722/822,
+// llm.ts:117). A fresh draw per call made one run_id fan out across N client
+// ids, which upstream refuses.
+func TestChatClientIDStableAcrossRun(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	body := []byte(`{"model":"` + modelA + `","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	for i := 0; i < 2; i++ {
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", body, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200: %s", i+1, resp.StatusCode, data)
+		}
+	}
+
+	recorded := mock.RecordedChatBodies
+	if len(recorded) < 2 {
+		t.Fatalf("recorded chat bodies = %d, want 2", len(recorded))
+	}
+	meta := func(raw string) (clientID, runID string) {
+		var sent struct {
+			Metadata struct {
+				ClientID string `json:"client_id"`
+				RunID    string `json:"run_id"`
+			} `json:"codebuff_metadata"`
+		}
+		if err := json.Unmarshal([]byte(raw), &sent); err != nil {
+			t.Fatalf("body not JSON: %v", err)
+		}
+		return sent.Metadata.ClientID, sent.Metadata.RunID
+	}
+	id1, run1 := meta(recorded[0])
+	id2, run2 := meta(recorded[1])
+	if run1 != run2 {
+		t.Fatalf("run_id = %q then %q; this test needs both calls on one run", run1, run2)
+	}
+	if !regexp.MustCompile(`^[a-z0-9]{13}$`).MatchString(id1) {
+		t.Errorf("client_id = %q, want 13-char base36", id1)
+	}
+	if id1 != id2 {
+		t.Errorf("client_id = %q then %q on run %q, want one id per run (fanout shape otherwise)", id1, id2, run1)
+	}
 }

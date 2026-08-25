@@ -120,7 +120,8 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	var countryBlocked []*upstream.CountryBlockedError
 	var modelLimited []*upstream.LimitedIpError
 	var dailyLimited []*upstream.RateLimitError
-	var scarceUntil []time.Time
+	var scarceUntil time.Time
+	var scarceModel string
 	scarceSet := scarceModelSet(cfg.ScarceSessionModels)
 	for _, idx := range order {
 		if err := ctx.Err(); err != nil {
@@ -215,11 +216,15 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		// active scarce session (pro/luna) with > 1 minute remaining, do not
 		// switch away from it to serve a different model — that would burn
 		// the irreplaceable 1-session/day allocation.
-		if scarceHeld(tok.session.Snapshot(), model, scarceSet) {
-			exp := tok.session.Snapshot().ExpiresAt
-			scarceUntil = append(scarceUntil, exp)
-			errs = append(errs, fmt.Sprintf("%s: scarce session (%s) in use until %s", name, tok.session.Snapshot().Model, exp.Format(time.RFC3339)))
-			p.logger.Debug("pool: token skipped (scarce session in use)", "token", idx+1, "model", tok.session.Snapshot().Model, "until", exp.Format(time.RFC3339))
+		if snap := tok.session.Snapshot(); scarceHeld(snap, model, scarceSet) {
+			exp := snap.ExpiresAt
+			// Remember the session that expires first: it is the one the
+			// caller can retry against, and its model names the refusal.
+			if scarceModel == "" || exp.Before(scarceUntil) {
+				scarceUntil, scarceModel = exp, snap.Model
+			}
+			errs = append(errs, fmt.Sprintf("%s: scarce session (%s) in use until %s", name, snap.Model, exp.Format(time.RFC3339)))
+			p.logger.Debug("pool: token skipped (scarce session in use)", "token", idx+1, "model", snap.Model, "until", exp.Format(time.RFC3339))
 			continue
 		}
 
@@ -565,14 +570,8 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	if len(ipCapped) > 0 {
 		return nil, ipCapped[0]
 	}
-	if len(scarceUntil) > 0 {
-		earliest := scarceUntil[0]
-		for _, t := range scarceUntil[1:] {
-			if t.Before(earliest) {
-				earliest = t
-			}
-		}
-		return nil, &ScarceSessionError{Model: model, ExpiresAt: earliest}
+	if scarceModel != "" {
+		return nil, &ScarceSessionError{Model: scarceModel, ExpiresAt: scarceUntil}
 	}
 	if len(waiting) > 0 {
 		wr := bestWaitingRoom(waiting)

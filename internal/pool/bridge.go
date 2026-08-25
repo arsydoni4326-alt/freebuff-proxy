@@ -163,8 +163,8 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	}
 	// Issue #155: scarce-model session protection in bridge mode.
 	scarceSet := scarceModelSet(cfg.ScarceSessionModels)
-	if scarceHeld(entry.session.Snapshot(), model, scarceSet) {
-		return nil, &ScarceSessionError{Model: model, ExpiresAt: entry.session.Snapshot().ExpiresAt}
+	if snap := entry.session.Snapshot(); scarceHeld(snap, model, scarceSet) {
+		return nil, &ScarceSessionError{Model: snap.Model, ExpiresAt: snap.ExpiresAt}
 	}
 
 	// Issue #155: quota-exhaustion fallback in bridge mode.

@@ -1484,3 +1484,45 @@ func TestClassifyOpaqueRateLimitedBoundedBackoff(t *testing.T) {
 		t.Errorf("ResetAt = %v, want zero (opaque body: no midnight lock)", rle.ResetAt)
 	}
 }
+
+// TestClassifyRunFanout pins the free_mode_run_fanout refusal: the observed
+// body ({"error":"free_mode_run_fanout","message":"Free mode request
+// rejected."}) used to fall through to the default branch, which the server
+// wrote as a dead 502 upstream_unavailable and killed the client's turn. It
+// must classify as a bounded-cooldown RateLimitError on ANY status the marker
+// rides (the upstream body carries no status of its own), with no ResetAt and
+// no Period so the pool treats it as a transient rate limit rather than a
+// per-model quota exhaustion.
+func TestClassifyRunFanout(t *testing.T) {
+	const body = `{"error":"free_mode_run_fanout","message":"Free mode request rejected."}`
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests, http.StatusBadGateway} {
+		err := classifyError(status, body, http.Header{})
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("status %d: classifyError = %T %v, want *RateLimitError", status, err, err)
+		}
+		if rle.Status != "free_mode_run_fanout" {
+			t.Errorf("status %d: Status = %q, want free_mode_run_fanout", status, rle.Status)
+		}
+		if rle.RetryAfter != FanoutCooldown {
+			t.Errorf("status %d: RetryAfter = %v, want %v", status, rle.RetryAfter, FanoutCooldown)
+		}
+		if !rle.ResetAt.IsZero() || rle.Period != "" || rle.Limit != 0 {
+			t.Errorf("status %d: quota-shaped fields set (%v/%q/%v), want a transient refusal",
+				status, rle.ResetAt, rle.Period, rle.Limit)
+		}
+	}
+
+	// A Retry-After header wins over the default, clamped like every other
+	// cooldown.
+	hdr := http.Header{}
+	hdr.Set("Retry-After", "5")
+	err := classifyError(http.StatusTooManyRequests, body, hdr)
+	var rle *RateLimitError
+	if !errors.As(err, &rle) {
+		t.Fatalf("classifyError = %T %v, want *RateLimitError", err, err)
+	}
+	if rle.RetryAfter != 5*time.Second {
+		t.Errorf("RetryAfter = %v, want 5s (header honored)", rle.RetryAfter)
+	}
+}
