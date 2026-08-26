@@ -658,13 +658,13 @@ type overviewData struct {
 // internal/dashboard/data/upstream_drift.json. Computed once at request
 // time; cheap.
 type upstreamSync struct {
-	UpstreamSHA   string         `json:"upstream_sha"`            // short SHA, "(not yet reported)" before first CI run
-	CheckedAt     string         `json:"checked_at"`              // RFC3339
-	HasDrift      bool           `json:"has_drift"`               // any non-SAME file
-	HasRegistry   bool           `json:"has_registry_drift"`      // 5 pinned files
-	HasWire       bool           `json:"has_wire_drift"`          // wire files MISSING_UPSTREAM
-	DriftedFiles  []upstreamFile `json:"drifted_files,omitempty"`  // the actual changes
-	ReleasesURL   string         `json:"releases_url"`            // where to update
+	UpstreamSHA  string         `json:"upstream_sha"`            // short SHA, "(not yet reported)" before first CI run
+	CheckedAt    string         `json:"checked_at"`              // RFC3339
+	HasDrift     bool           `json:"has_drift"`               // any non-SAME file
+	HasRegistry  bool           `json:"has_registry_drift"`      // 5 pinned files
+	HasWire      bool           `json:"has_wire_drift"`          // wire files MISSING_UPSTREAM
+	DriftedFiles []upstreamFile `json:"drifted_files,omitempty"` // the actual changes
+	ReleasesURL  string         `json:"releases_url"`            // where to update
 }
 
 type upstreamFile struct {

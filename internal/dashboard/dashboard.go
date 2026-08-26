@@ -160,14 +160,12 @@ func (d *Dashboard) upstreamData() map[string]any {
 // upstreamReport is the on-disk JSON shape written by
 // scripts/check-upstream.sh. The fields match the script's printf order so
 // the two stay lock-step (a parse failure here is a deploy-time regression
-// caught by `go build`. The ReleasesURL is hard-coded here (not from the
-// JSON) because the dashboard banner must always point at the current repo
-// even if the drift JSON is stale.
+// caught by `go build`).
 type upstreamReport struct {
-	Upstream   string            `json:"upstream"`
+	Upstream    string            `json:"upstream"`
 	UpstreamSHA string            `json:"upstream_sha"`
-	CheckedAt  string            `json:"checked_at"`
-	Files      []upstreamFileRaw `json:"files"`
+	CheckedAt   string            `json:"checked_at"`
+	Files       []upstreamFileRaw `json:"files"`
 }
 
 type upstreamFileRaw struct {
@@ -210,14 +208,9 @@ func parseUpstreamSync(raw []byte) *upstreamSync {
 		return sync
 	}
 	// The embedded JSON has the file-level shape; the dashboard view is a
-	// rolled-up summary. Re-decode the raw into a richer shape so the
-	// summary can name the affected files.
-	var rep struct {
-		Upstream   string            `json:"upstream"`
-		UpstreamSHA string            `json:"upstream_sha"`
-		CheckedAt  string            `json:"checked_at"`
-		Files      []upstreamFileRaw `json:"files"`
-	}
+	// rolled-up summary. Re-decode into upstreamReport so the summary can
+	// name the affected files.
+	var rep upstreamReport
 	if err := json.Unmarshal(raw, &rep); err != nil {
 		// Parse failure on a shipped artifact: return the empty summary
 		// with the timestamp placeholder so the banner still renders.
@@ -236,13 +229,7 @@ func parseUpstreamSync(raw []byte) *upstreamSync {
 		if f.Status == "SAME" {
 			continue
 		}
-		sync.DriftedFiles = append(sync.DriftedFiles, upstreamFile{
-			Group:     f.Group,
-			File:      f.File,
-			PinnedSHA: f.PinnedSHA,
-			VendorSHA: f.VendorSHA,
-			Status:    f.Status,
-		})
+		sync.DriftedFiles = append(sync.DriftedFiles, upstreamFile(f))
 		switch f.Group {
 		case "registry":
 			sync.HasRegistry = true
