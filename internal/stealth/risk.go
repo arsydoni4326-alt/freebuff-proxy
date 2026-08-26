@@ -16,6 +16,15 @@ const (
 	RiskHigh   RiskLevel = "high"
 )
 
+// Default thresholds classify the 0-100 score into levels.
+// Configurable via [RiskEngine.SetThresholds] — the engine accepts a
+// medium threshold (score ≥ this → medium) and a high threshold (score
+// ≥ this → high).  Clamped so medium < high and both are in [1, 100].
+const (
+	defaultRiskMediumThreshold = 30
+	defaultRiskHighThreshold   = 40
+)
+
 // RiskSample is one passive observation feeding the engine: egress geo from
 // a probe result and ip-capping / privacy signals from an upstream session
 // response. All fields are optional; the engine tolerates partial samples.
@@ -68,11 +77,67 @@ const maxRiskSamples = 64
 type RiskEngine struct {
 	mu      sync.Mutex
 	samples []RiskSample // oldest first; capped at maxRiskSamples
+	// mediumThreshold is the score at or above which the level becomes
+	// RiskMedium.  Set via SetThresholds; defaults to defaultRiskMediumThreshold.
+	mediumThreshold int
+	// highThreshold is the score at or above which the level becomes
+	// RiskHigh.  Set via SetThresholds; defaults to defaultRiskHighThreshold.
+	highThreshold int
 }
 
-// NewRiskEngine returns an empty engine.
+// NewRiskEngine returns an empty engine with default thresholds.
 func NewRiskEngine() *RiskEngine {
-	return &RiskEngine{}
+	return &RiskEngine{
+		mediumThreshold: defaultRiskMediumThreshold,
+		highThreshold:   defaultRiskHighThreshold,
+	}
+}
+
+// SetThresholds configures the medium/high level boundaries.  The engine
+// clamps values so both are in [1, 100] and medium < high.  Pass 0 to
+// keep the current value for either parameter (useful for selective
+// updates).  A nil receiver is a safe no-op.
+func (e *RiskEngine) SetThresholds(medium, high int) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if medium > 0 {
+		e.mediumThreshold = medium
+	}
+	if high > 0 {
+		e.highThreshold = high
+	}
+	// Enforce ordering: medium < high, both in [1, 100].
+	if e.mediumThreshold < 1 {
+		e.mediumThreshold = 1
+	}
+	if e.highThreshold < 1 {
+		e.highThreshold = 1
+	}
+	if e.mediumThreshold > 100 {
+		e.mediumThreshold = 100
+	}
+	if e.highThreshold > 100 {
+		e.highThreshold = 100
+	}
+	if e.mediumThreshold >= e.highThreshold {
+		e.mediumThreshold = e.highThreshold - 1
+		if e.mediumThreshold < 1 {
+			e.mediumThreshold = 1
+		}
+	}
+}
+
+// Thresholds returns the current medium/high level boundaries.
+func (e *RiskEngine) Thresholds() (medium, high int) {
+	if e == nil {
+		return defaultRiskMediumThreshold, defaultRiskHighThreshold
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.mediumThreshold, e.highThreshold
 }
 
 // DefaultRiskEngine is the process-wide risk sink fed by upstream session
@@ -203,9 +268,9 @@ func (e *RiskEngine) Score() RiskState {
 	}
 	level := RiskLow
 	switch {
-	case score >= 40:
+	case score >= e.highThreshold:
 		level = RiskHigh
-	case score >= 30:
+	case score >= e.mediumThreshold:
 		level = RiskMedium
 	}
 	return RiskState{

@@ -35,6 +35,7 @@ import (
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/server"
 	"freebuff-proxy/internal/session"
+	"freebuff-proxy/internal/stealth"
 	"freebuff-proxy/internal/telemetry"
 	"freebuff-proxy/internal/updatecheck"
 	"freebuff-proxy/internal/upstream"
@@ -124,6 +125,13 @@ func main() {
 		}
 	}
 	logger.Info("config loaded", "env_file", envFile, "config_file", *configPath)
+	// Phase 3.5: apply configurable risk-engine level boundaries to the
+	// shared passive risk engine fed by upstream session responses. The
+	// default pair (30 medium / 40 high) is replaced when the operator
+	// sets RISK_THRESHOLD_MEDIUM / RISK_THRESHOLD_HIGH; engine clamps
+	// ordering/range defensively and Validate() has already rejected an
+	// inverted pair.
+	stealth.DefaultRiskEngine.SetThresholds(cfg.RiskMediumThreshold, cfg.RiskHighThreshold)
 	if cfg.EnvFile == "" {
 		if cwd, err := os.Getwd(); err == nil {
 			exe, exeErr := os.Executable()

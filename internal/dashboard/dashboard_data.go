@@ -6,6 +6,7 @@ import (
 	"freebuff-proxy/internal/phasetiming"
 	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
+	"freebuff-proxy/internal/stealth"
 	"net"
 	"net/http"
 	"os"
@@ -625,6 +626,15 @@ func humanDuration(d time.Duration) string {
 
 // --- overview ---
 
+// riskBreakdown is the current passive ban-risk engine verdict exposed on
+// the dashboard overview (Phase 3.5).
+type riskBreakdown struct {
+	Score   int      `json:"score"`
+	Level   string   `json:"level"`
+	Reasons []string `json:"reasons,omitempty"`
+	Samples int      `json:"samples"`
+}
+
 type overviewData struct {
 	Mode                 string            `json:"mode"`
 	InBridge             bool              `json:"in_bridge"`
@@ -645,8 +655,12 @@ type overviewData struct {
 	// upstream refresh; RegistryLastRefresh is a human-readable "time ago"
 	// string ("" when the registry has never refreshed live). Surfaced on
 	// the overview so operators can spot a stale offline path at a glance.
-	RegistryFallback    bool   `json:"registry_fallback"`
-	RegistryLastRefresh string `json:"registry_last_refresh"`
+	RegistryFallback    bool          `json:"registry_fallback"`
+	RegistryLastRefresh string        `json:"registry_last_refresh"`
+	// Risk (Phase 3.5): passive ban-risk engine verdict (read-only — the
+	// engine warns but never modifies routing).  Available on the overview
+	// so operators can judge ban exposure at a glance.
+	Risk riskBreakdown `json:"risk"`
 }
 
 type tokenCard struct {
@@ -761,6 +775,8 @@ func (d *Dashboard) configData() configData {
 		{Key: "MODEL_ALIASES", Value: fmt.Sprintf("%d alias(es)", len(cfg.ModelAliases)), Secret: true},
 		{Key: "MODELS_ALLOW", Value: strings.Join(cfg.ModelsAllow, ",")},
 		{Key: "TRANSIENT_RETRIES", Value: strconv.Itoa(cfg.TransientRetries)},
+		{Key: "RISK_THRESHOLD_MEDIUM", Value: strconv.Itoa(cfg.RiskMediumThreshold)},
+		{Key: "RISK_THRESHOLD_HIGH", Value: strconv.Itoa(cfg.RiskHighThreshold)},
 	}
 	return cd
 }
@@ -798,12 +814,17 @@ const defaultEnvTemplate = `# freebuff-proxy configuration (.env)
 #MODEL_ALIASES=
 #MODELS_ALLOW=
 #TRANSIENT_RETRIES=1
+#RISK_THRESHOLD_MEDIUM=30
+#RISK_THRESHOLD_HIGH=40
 `
 
 func (d *Dashboard) overviewData() overviewData {
 	cfg := d.cfg()
 	ps := d.pool.PoolSnapshot()
 	mode := cfg.EffectiveMode()
+	// Phase 3.5: read the shared passive ban-risk engine verdict for the
+	// dashboard overview.
+	rs := stealth.DefaultRiskEngine.Score()
 	od := overviewData{
 		Mode:                 mode,
 		InBridge:             mode == "bridge",
@@ -819,8 +840,17 @@ func (d *Dashboard) overviewData() overviewData {
 		// Registry freshness (Phase 4.2): reflect the live vs fallback state
 		// and the last successful refresh time on the overview so a stale
 		// offline path is visible without leaving the dashboard.
+		// Risk (Phase 3.5): passive ban-risk engine verdict (read-only — the
+		// engine warns but never modifies routing).  Available on the overview
+		// so operators can judge ban exposure at a glance.
 		RegistryFallback:    d.reg.UsingFallback(),
 		RegistryLastRefresh: shortTime(d.reg.LastRefreshAt()),
+		Risk: riskBreakdown{
+			Score:   rs.Score,
+			Level:   string(rs.Level),
+			Reasons: rs.Reasons,
+			Samples: rs.Samples,
+		},
 	}
 	for _, t := range ps.Tokens {
 		od.Tokens = append(od.Tokens, cardFromSnapshot(t))

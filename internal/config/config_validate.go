@@ -61,6 +61,12 @@ func (c Config) Validate() error {
 		return errors.New("BRIDGE_CIRCUIT_BREAKER_WINDOW cannot be negative")
 	case c.BridgeCircuitBreakerCooldown < 0:
 		return errors.New("BRIDGE_CIRCUIT_BREAKER_COOLDOWN cannot be negative")
+	case c.RiskMediumThreshold < 0 || c.RiskMediumThreshold > 100:
+		return errors.New("RISK_THRESHOLD_MEDIUM must be between 1 and 100")
+	case c.RiskHighThreshold < 0 || c.RiskHighThreshold > 100:
+		return errors.New("RISK_THRESHOLD_HIGH must be between 1 and 100")
+	case c.RiskMediumThreshold != 0 && c.RiskHighThreshold != 0 && c.RiskMediumThreshold >= c.RiskHighThreshold:
+		return errors.New("RISK_THRESHOLD_MEDIUM must be strictly less than RISK_THRESHOLD_HIGH")
 	}
 	for _, m := range c.ScarceSessionModels {
 		if strings.TrimSpace(m) == "" {

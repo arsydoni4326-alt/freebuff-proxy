@@ -88,6 +88,15 @@ type Config struct {
 	SessionIdleEnd               time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
 	SafeMode                     bool          // true = apply recommended anti-ban safe defaults
 	ModelsHideUnavailable        bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
+	// RiskMediumThreshold is the ban-risk score at or above which the
+	// passive risk engine classifies the verdict as "medium" (RISK_THRESHOLD_MEDIUM;
+	// default 30).  The score range is 0–100; medium must be strictly less
+	// than RiskHighThreshold.
+	RiskMediumThreshold int
+	// RiskHighThreshold is the ban-risk score at or above which the
+	// passive risk engine classifies the verdict as "high" (RISK_THRESHOLD_HIGH;
+	// default 40).  Must be strictly greater than RiskMediumThreshold.
+	RiskHighThreshold int
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
@@ -297,6 +306,8 @@ type rawConfig struct {
 	WaitingRoomChain                 bool                    `json:"WAITING_ROOM_CHAIN"`
 	RateLimitPerIP                   *float64                `json:"RATE_LIMIT_PER_IP"`
 	RateLimitBurst                   *int                    `json:"RATE_LIMIT_BURST"`
+	RiskMediumThreshold              *int                    `json:"RISK_THRESHOLD_MEDIUM"`
+	RiskHighThreshold                *int                    `json:"RISK_THRESHOLD_HIGH"`
 	DashboardEnabled                 bool                    `json:"DASHBOARD_ENABLED"`
 }
 
@@ -396,6 +407,8 @@ func defaultRawConfig() rawConfig {
 		SessionReAdmitLead:               "60s",       // #99: pre-emptive re-admit lead
 		SessionProbeCacheTTL:             "15s",       // #60: admission probe cache TTL
 		FallbackAfter:                    "10000",     // #100: queue-wait fallback threshold (ms)
+		RiskMediumThreshold:              ptrInt(30),  // #3.5: risk engine medium boundary (score 0-100)
+		RiskHighThreshold:                ptrInt(40),  // #3.5: risk engine high boundary (must be > medium)
 	}
 }
 

@@ -95,6 +95,8 @@ func Load(configPath string) (Config, error) {
 	overrideBool(&raw.WaitingRoomChain, "WAITING_ROOM_CHAIN")
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
+	overrideInt(&raw.RiskMediumThreshold, "RISK_THRESHOLD_MEDIUM")
+	overrideInt(&raw.RiskHighThreshold, "RISK_THRESHOLD_HIGH")
 	overrideFloat(&raw.BridgeRateLimitPerToken, "BRIDGE_RATE_LIMIT_PER_TOKEN")
 	overrideInt(&raw.BridgeCircuitBreakerFailures, "BRIDGE_CIRCUIT_BREAKER_FAILURES")
 	overrideString(&raw.BridgeCircuitBreakerWindow, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
@@ -278,6 +280,20 @@ func Load(configPath string) (Config, error) {
 	if raw.RateLimitBurst != nil {
 		rateLimitBurst = *raw.RateLimitBurst
 	}
+	// RISK_THRESHOLD_MEDIUM / RISK_THRESHOLD_HIGH (Phase 3.5): passive risk
+	// engine level boundaries on the 0-100 score.  Defaults are 30 (medium)
+	// and 40 (high); an explicit 0/negative falls back to the default (the
+	// "disabled knob" convention used by the other bounded ints).  A pair
+	// that violates medium < high is rejected at Validate time (a silent
+	// inversion would mis-label ban risk).
+	riskMediumThreshold := 30
+	if raw.RiskMediumThreshold != nil && *raw.RiskMediumThreshold > 0 {
+		riskMediumThreshold = *raw.RiskMediumThreshold
+	}
+	riskHighThreshold := 40
+	if raw.RiskHighThreshold != nil && *raw.RiskHighThreshold > 0 {
+		riskHighThreshold = *raw.RiskHighThreshold
+	}
 	// BRIDGE_RATE_LIMIT_PER_TOKEN (security hardening): per-client-token
 	// rate limit in req/s for bridge mode. 0 = unlimited. Independent of
 	// the per-IP rate limiter.
@@ -440,6 +456,8 @@ func Load(configPath string) (Config, error) {
 		WaitingRoomChain:                 raw.WaitingRoomChain,
 		RateLimitPerIP:                   rateLimitPerIP,
 		RateLimitBurst:                   rateLimitBurst,
+		RiskMediumThreshold:              riskMediumThreshold,
+		RiskHighThreshold:                riskHighThreshold,
 		BridgeRateLimitPerToken:          bridgeRateLimitPerToken,
 		BridgeCircuitBreakerFailures:     bridgeCircuitBreakerFailures,
 		BridgeCircuitBreakerWindow:       bridgeCircuitBreakerWindow,

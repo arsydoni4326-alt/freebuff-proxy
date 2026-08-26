@@ -63,6 +63,21 @@
     }
   }
 
+  // Risk-engine level tone (Phase 3.5): the passive engine reports
+  // low | medium | high, distinct from the per-token card levels above.
+  function riskToneRisk(level) {
+    switch (level) {
+      case 'low':
+        return 'good';
+      case 'medium':
+        return 'warn';
+      case 'high':
+        return 'bad';
+      default:
+        return 'idle';
+    }
+  }
+
   function banBadge(t) {
     if (t.ban_type === 'hard') {
       return { label: $tr('banned — appeal required'), tone: 'critical', pulse: true };
@@ -210,6 +225,39 @@
             </div>
           </Card>
         {/if}
+      </section>
+
+      <!-- Phase 3.5: passive ban-risk engine verdict (read-only) -->
+      <section aria-label="Risk engine">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-semibold text-[var(--fp-text)]">{$tr('Risk engine')}</h2>
+          <span class="fp-num text-xs text-[var(--fp-dim)]">{$tr('passive, read-only')}</span>
+        </div>
+        <Card>
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div class="flex items-center gap-3">
+              <StatusBadge status={data.risk?.level ?? 'low'} tone={riskToneRisk(data.risk?.level)} />
+              <div>
+                <div class="text-sm text-[var(--fp-muted)]">{$tr('Score')}</div>
+                <div class="fp-num text-2xl font-semibold text-[var(--fp-text)]">{data.risk?.score ?? 0}<span class="text-sm text-[var(--fp-dim)]">/100</span></div>
+              </div>
+            </div>
+            <div class="text-right text-xs text-[var(--fp-dim)]">
+              <div>{data.risk?.samples ?? 0} {$tr('sample(s)')}</div>
+            </div>
+          </div>
+          {#if data.risk?.reasons?.length}
+            <div class="mt-3 space-y-1">
+              {#each data.risk.reasons as reason}
+                <div class="fp-inset px-2.5 py-2 text-xs text-[var(--fp-warning)]">{reason}</div>
+              {/each}
+            </div>
+          {:else}
+            <p class="mt-3 text-xs text-[var(--fp-muted)]">
+              {$tr('No active risk signals — the engine has no flagging observations.')}
+            </p>
+          {/if}
+        </Card>
       </section>
     {/if}
   {/if}
