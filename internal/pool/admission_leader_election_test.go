@@ -154,6 +154,7 @@ func TestLeaderElection_ConcurrentFollowersAllLandOnLeader(t *testing.T) {
 		t.Errorf("mock1 session creates = %d, want 0 (no competing session)", mock1.SessionCreates)
 	}
 	if c := tokenCounts[0].Load(); c != goroutines {
+		t.Errorf("token 0 leases = %d, want %d (all followers on leader)", c, goroutines)
 	}
 	if c := tokenCounts[1].Load(); c != 0 {
 		t.Errorf("token 1 leases = %d, want 0", c)
