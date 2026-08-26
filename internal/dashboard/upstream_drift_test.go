@@ -1,8 +1,7 @@
 package dashboard
 
 import (
-	"net/http/httptest"
-	"strings"
+	"encoding/json"
 	"testing"
 )
 
@@ -69,12 +68,16 @@ func TestParseUpstreamSyncMalformed(t *testing.T) {
 // json.RawMessage so the client can parse it.
 func TestUpstreamEndpointJSON(t *testing.T) {
 	d := &Dashboard{}
-	rec := httptest.NewRecorder()
-	d.upstreamData()
-	_ = rec // the data is a map; covered by the parser tests above. The
-	// endpoint wiring (mux + auth) is exercised by the existing
-	// server_admin_* tests in internal/server.
-	if !strings.Contains(string(upstreamDriftJSON), `"upstream_sha"`) {
-		t.Errorf("embedded drift JSON missing upstream_sha field: %s", upstreamDriftJSON)
+	out := d.upstreamData()
+	raw, ok := out["drift"].(json.RawMessage)
+	if !ok {
+		t.Fatalf("drift value is %T, want json.RawMessage", out["drift"])
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("embedded drift JSON does not parse: %v", err)
+	}
+	if _, ok := m["upstream_sha"]; !ok {
+		t.Errorf("embedded drift JSON missing upstream_sha field: %s", raw)
 	}
 }
