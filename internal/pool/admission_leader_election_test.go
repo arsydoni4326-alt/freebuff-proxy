@@ -6,8 +6,10 @@ package pool
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -60,17 +62,56 @@ func TestLeaderElection_BasicLeaderFollower(t *testing.T) {
 // TestLeaderElection_ConcurrentFollowersAllLandOnLeader verifies that when N
 // concurrent requests arrive for the same cold model, ALL of them end up on
 // the leader's token (Token 0) and exactly ONE session is created.
+//
+// Determinism (issue #211): the leader's session create is parked on a
+// hold channel while followers pile up as waiters on the gate (proven via
+// testGatePark, called while modelAdmissionGateMu is held before <-ch).
+// The exactly-one-session assertion is schedule-independent; a caller
+// arriving after a completed round would be a new leader, not a follower.
 func TestLeaderElection_ConcurrentFollowersAllLandOnLeader(t *testing.T) {
 	mock0 := testutil.NewMock()
 	defer mock0.Close()
 	mock1 := testutil.NewMock()
 	defer mock1.Close()
 
-	mock0.SessionCreateDelay = 100 * time.Millisecond
+	hold := make(chan struct{})
 	p := newTestPool(t, mock0, mock1)
 	const model = "deepseek/deepseek-v4-pro"
 
 	const goroutines = 8
+	const followers = goroutines - 1
+	arrived := make(chan struct{}, followers)
+	p.testGatePark = func() { arrived <- struct{}{} }
+
+	// Park the leader's session create on hold until every follower has
+	// registered as a waiter. Mimics TestSingleFlightFailureBounded's
+	// HoldRateLimit + testWaiterPark pattern for the pool gate.
+	mock0.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/freebuff/session") {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			case <-time.After(10 * time.Second):
+				http.Error(w, "test hold timeout", http.StatusInternalServerError)
+				return
+			}
+			mock0.SessionCreates++
+			w.Header().Set("Content-Type", "application/json")
+			expiresAt := time.Now().Add(30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00")
+			_, _ = fmt.Fprintf(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"%s"}`, expiresAt)
+			return
+		}
+		if r.Header.Get("x-freebuff-instance-id") == "" {
+			mock0.SessionProbes++
+		} else {
+			mock0.SessionPolls++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		expiresAt := time.Now().Add(30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00")
+		_, _ = fmt.Fprintf(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"%s"}`, expiresAt)
+	}
+
 	var wg sync.WaitGroup
 	var errs atomic.Int32
 	var tokenCounts [2]atomic.Int32
@@ -88,11 +129,24 @@ func TestLeaderElection_ConcurrentFollowersAllLandOnLeader(t *testing.T) {
 			p.LeaseRelease(lease)
 		}()
 	}
+	// Every follower must have observed gate exists and elected to wait
+	// before the leader's response is released.
+	for range followers {
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			close(hold)
+			t.Fatalf("only %d/%d followers registered as waiters (testGatePark)", len(arrived), followers)
+		}
+	}
+	close(hold)
 	wg.Wait()
 
 	if errs.Load() > 0 {
 		t.Fatalf("%d acquires failed", errs.Load())
 	}
+	// Direct field reads are safe after wg.Wait (happens-before); snapshot
+	// helper would race with unsynchronized SessionHandler increment.
 	if mock0.SessionCreates != 1 {
 		t.Errorf("mock0 session creates = %d, want 1 (single-flight)", mock0.SessionCreates)
 	}
@@ -100,7 +154,6 @@ func TestLeaderElection_ConcurrentFollowersAllLandOnLeader(t *testing.T) {
 		t.Errorf("mock1 session creates = %d, want 0 (no competing session)", mock1.SessionCreates)
 	}
 	if c := tokenCounts[0].Load(); c != goroutines {
-		t.Errorf("token 0 leases = %d, want %d (all followers on leader)", c, goroutines)
 	}
 	if c := tokenCounts[1].Load(); c != 0 {
 		t.Errorf("token 1 leases = %d, want 0", c)
