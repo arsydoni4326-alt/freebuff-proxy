@@ -52,14 +52,17 @@ jobs:
         env:
           DRIFT_REPORT: ${{ runner.temp }}/drift.json
         run: |
-          bash scripts/check-upstream.sh main 2>&1 | tee "$RUNNER_TEMP/check.log" || true
+          rc=0
+          bash scripts/check-upstream.sh main 2>&1 | tee "$RUNNER_TEMP/check.log" || rc=$?
+          echo "check-upstream.sh exit code: $rc"
+          echo "script_rc=$rc" >>"$GITHUB_ENV"
           echo "drift.json:"
           cat "$DRIFT_REPORT"
           echo
 
           has_drift=$(jq -r 'any(.files[]; .status != "SAME")' "$DRIFT_REPORT")
           has_registry=$(jq -r 'any(.files[]; .group == "registry" and .status != "SAME")' "$DRIFT_REPORT")
-          has_wire=$(jq -r 'any(.files[]; .group == "wire" and .status == "MISSING_UPSTREAM")' "$DRIFT_REPORT")
+          has_wire=$(jq -r 'any(.files[]; .group == "wire" and (.status == "MISSING_UPSTREAM" or .status == "DRIFT"))' "$DRIFT_REPORT")
           upstream_sha=$(jq -r '.upstream_sha' "$DRIFT_REPORT")
 
           {
@@ -86,11 +89,15 @@ jobs:
 
       - name: Post step summary
         if: always()
+        env:
+          DRIFT_REPORT: ${{ runner.temp }}/drift.json
         run: |
           echo "## Upstream drift check" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "check-upstream.sh exit code: ${script_rc:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          cat "${{ env.DRIFT_REPORT }}" >> "$GITHUB_STEP_SUMMARY"
+          cat "$DRIFT_REPORT" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   open-drift-pr:
@@ -149,6 +156,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+          DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
         run: |
           existing=$(gh pr list --state open --json number,title \
             --jq ".[] | select(.title | startswith(\"chore(registry): sync pinned upstream models to vendor ${UPSTREAM_SHA:0:7}\")) | .number" | head -1)
@@ -158,6 +166,11 @@ jobs:
           fi
           gh pr create --base main \
             --title "chore(registry): sync pinned upstream models to vendor ${UPSTREAM_SHA:0:7}" \
+            --body "Upstream SHA: $UPSTREAM_SHA
+          
+          $DRIFT_SUMMARY
+          
+          Note: PRs created with GITHUB_TOKEN do not trigger CI workflows; run the checks manually before merging." \
             --label "dependencies" || true
 
   open-port-issue:
@@ -176,17 +189,20 @@ jobs:
       - name: Open needs-port issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+          DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
         run: |
           existing=$(gh issue list --state open --json number,title \
-            --jq ".[] | select(.title | startswith(\"Upstream wire drift at ${UPSTREAM_SHA:0:7}\")) | .number" | head -1)
+            --jq '.[] | select(.title == "Upstream wire drift needs porting") | .number' | head -1)
           if [ -n "$existing" ]; then
             echo "Existing needs-port issue #$existing already open; skipping."
             exit 0
           fi
           gh issue create \
-            --title "Upstream wire drift at ${UPSTREAM_SHA:0:7}: port required" \
-            --label "needs-repro,question" || true
+            --title "Upstream wire drift needs porting" \
+            --body "Upstream SHA: ${{ needs.drift.outputs.upstream_sha }}
+          
+          $DRIFT_SUMMARY" \
+            --label "anti-ban" || true
 
   publish-drift-data:
     name: Publish drift JSON to dashboard embed
@@ -250,4 +266,5 @@ jobs:
           fi
           gh pr create --base main \
             --title "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
+            --body "Refreshes internal/dashboard/data/upstream_drift.json against CodebuffAI/freebuff @ ${UPSTREAM_SHA}." \
             --label "dependencies" || true
