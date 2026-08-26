@@ -1,30 +1,270 @@
-# Weekly drift check: compares the pinned upstream registry files
-# (internal/registry/testdata/upstream/) against CodebuffAI/freebuff@main via
-# scripts/check-upstream.sh. A red job means a pin went stale: copy the changed
-# files into testdata/upstream/ and update fallbackAgents/fallbackRootByModel
-# until TestFallbackParityWithPinnedUpstream passes. The runtime registry
-# self-heals via live fetch; this guards the offline fallback path.
+# Upstream drift detection (CodebuffAI/freebuff).
+#
+# Three automations:
+#  1. **Registry pin drift** (the 5 files in internal/registry/testdata/upstream/):
+#     auto-open a PR that runs sync-upstream so the change lands in front of a
+#     human reviewer. Idempotent: reruns reuse the same branch + open PR.
+#  2. **Wire-shape file drift** (freebuff-trust.ts, foreign-client-signals.ts,
+#     prompt-agent-stream.ts, etc.): requires a code change in the Go side
+#     (Phase 1+ of every issue #140 fix used to live here). Auto-open a
+#     "needs port" issue so the change is queued; never auto-merge because
+#     the port needs human judgment.
+#  3. **Dashboard embed refresh**: a separate job always refreshes the JSON
+#     embedded in the dashboard binary so users see up-to-date sync status
+#     without a live network call at boot.
 name: upstream-drift
 
 on:
   workflow_dispatch:
   schedule:
+    # Twice a week (Mon + Thu 06:17 UTC) so a missed run doesn't leave the
+    # repo blind for seven days.
     - cron: '17 6 * * 1'
+    - cron: '17 6 * * 4'
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+  issues: write
 
 concurrency:
   group: upstream-drift
   cancel-in-progress: false
 
 jobs:
-  drift-check:
+  drift:
+    name: Detect upstream drift
     runs-on: ubuntu-latest
+    outputs:
+      has_drift: ${{ steps.report.outputs.has_drift }}
+      has_registry_drift: ${{ steps.report.outputs.has_registry_drift }}
+      has_wire_drift: ${{ steps.report.outputs.has_wire_drift }}
+      upstream_sha: ${{ steps.report.outputs.upstream_sha }}
+      drift_summary: ${{ steps.report.outputs.drift_summary }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Needs only git + sha256sum (both preinstalled). The script shallow-
-      # clones the vendor repo into ../freebuff-reference on first run.
-      - name: Check pinned registry files vs CodebuffAI/freebuff@main
-        run: bash scripts/check-upstream.sh main
+      - name: Run drift detection
+        id: report
+        env:
+          DRIFT_REPORT: ${{ runner.temp }}/drift.json
+        run: |
+          rc=0
+          bash scripts/check-upstream.sh main 2>&1 | tee "$RUNNER_TEMP/check.log" || rc=$?
+          echo "check-upstream.sh exit code: $rc"
+          echo "script_rc=$rc" >>"$GITHUB_ENV"
+          echo "drift.json:"
+          cat "$DRIFT_REPORT"
+          echo
+
+          has_drift=$(jq -r 'any(.files[]; .status != "SAME")' "$DRIFT_REPORT")
+          has_registry=$(jq -r 'any(.files[]; .group == "registry" and .status != "SAME")' "$DRIFT_REPORT")
+          has_wire=$(jq -r 'any(.files[]; .group == "wire" and (.status == "MISSING_UPSTREAM" or .status == "DRIFT"))' "$DRIFT_REPORT")
+          upstream_sha=$(jq -r '.upstream_sha' "$DRIFT_REPORT")
+
+          {
+            echo "has_drift=$has_drift"
+            echo "has_registry_drift=$has_registry"
+            echo "has_wire_drift=$has_wire"
+            echo "upstream_sha=$upstream_sha"
+          } >>"$GITHUB_OUTPUT"
+
+          drift_summary=$(jq -r '
+            ["upstream_sha: " + .upstream_sha,
+             "checked_at:  " + .checked_at,
+             "",
+             "Drifted files:"] +
+            ([.files[] | select(.status != "SAME") |
+              "  - [" + .group + "] " + .file + " (" + .pinned_sha + " -> " + .vendor_sha + ") [" + .status + "]"])
+            | join("\n")
+          ' "$DRIFT_REPORT")
+          {
+            echo "drift_summary<<EOF"
+            echo "$drift_summary"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Post step summary
+        if: always()
+        env:
+          DRIFT_REPORT: ${{ runner.temp }}/drift.json
+        run: |
+          echo "## Upstream drift check" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "check-upstream.sh exit code: ${script_rc:-unknown}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$DRIFT_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  open-drift-pr:
+    name: Open sync PR (registry drift)
+    needs: drift
+    if: needs.drift.outputs.has_registry_drift == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check out fresh branch
+        env:
+          BRANCH_NAME: chore/upstream-drift-${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          if git ls-remote --heads origin "$BRANCH_NAME" | grep -q "$BRANCH_NAME"; then
+            git checkout -B "$BRANCH_NAME" origin/"$BRANCH_NAME"
+          else
+            git checkout -b "$BRANCH_NAME"
+          fi
+
+      - name: Run sync-upstream
+        env:
+          # sync-upstream reads the local clone, not a fresh one. The CI
+          # clone is shallow (depth 50) which is enough for sync-upstream's
+          # use. We unshallow first to avoid "fetch first" errors.
+          FREEBUFF_REFERENCE_DIR: ${{ runner.temp }}/freebuff-ref
+        run: |
+          mkdir -p "$FREEBUFF_REFERENCE_DIR"
+          git clone --depth 50 https://github.com/CodebuffAI/freebuff.git "$FREEBUFF_REFERENCE_DIR"
+          git -C "$FREEBUFF_REFERENCE_DIR" fetch --unshallow || true
+          bash scripts/sync-upstream.sh --test-all || true
+
+      - name: Commit any changes
+        run: |
+          git add internal/registry/testdata/upstream internal/registry/registry.go || true
+          if git diff --cached --quiet; then
+            echo "No changes after sync-upstream; skipping PR."
+            exit 0
+          fi
+          sha="${{ needs.drift.outputs.upstream_sha }}"
+          short="${sha:0:7}"
+          git -c commit.gpgsign=false commit -m "chore(registry): sync pinned upstream models to vendor ${short}" \
+            -m "Automated sync triggered by .github/workflows/upstream-drift.yml." \
+            -m "Upstream SHA: ${sha}" \
+            -m "Drift summary:" \
+            -m "${{ needs.drift.outputs.drift_summary }}"
+          git push -u origin HEAD
+
+      - name: Open or update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+          DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
+        run: |
+          existing=$(gh pr list --state open --json number,title \
+            --jq ".[] | select(.title | startswith(\"chore(registry): sync pinned upstream models to vendor ${UPSTREAM_SHA:0:7}\")) | .number" | head -1)
+          if [ -n "$existing" ]; then
+            echo "Existing sync PR #$existing already open for this upstream SHA; nothing to create."
+            exit 0
+          fi
+          gh pr create --base main \
+            --title "chore(registry): sync pinned upstream models to vendor ${UPSTREAM_SHA:0:7}" \
+            --body "Upstream SHA: $UPSTREAM_SHA
+          
+          $DRIFT_SUMMARY
+          
+          Note: PRs created with GITHUB_TOKEN do not trigger CI workflows; run the checks manually before merging." \
+            --label "dependencies" || true
+
+  open-port-issue:
+    name: Open needs-port issue (wire drift)
+    needs: drift
+    if: needs.drift.outputs.has_wire_drift == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open needs-port issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
+        run: |
+          existing=$(gh issue list --state open --json number,title \
+            --jq '.[] | select(.title == "Upstream wire drift needs porting") | .number' | head -1)
+          if [ -n "$existing" ]; then
+            echo "Existing needs-port issue #$existing already open; skipping."
+            exit 0
+          fi
+          gh issue create \
+            --title "Upstream wire drift needs porting" \
+            --body "Upstream SHA: ${{ needs.drift.outputs.upstream_sha }}
+          
+          $DRIFT_SUMMARY" \
+            --label "anti-ban" || true
+
+  publish-drift-data:
+    name: Publish drift JSON to dashboard embed
+    needs: drift
+    # Always runs (even when no drift) so the embedded checked_at stays
+    # current; the dashboard banner shows "last checked" even on clean runs.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@4466453366008a4c0b3a18d97a8042a0733963b4 # v6
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Refresh drift.json
+        env:
+          DRIFT_REPORT: internal/dashboard/data/upstream_drift.json
+        run: |
+          bash scripts/check-upstream.sh main || true
+          head -20 internal/dashboard/data/upstream_drift.json
+
+      - name: Verify the embed still parses
+        run: |
+          go build ./internal/dashboard/... ./internal/server/...
+
+      - name: Open or update drift-data PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          BRANCH="chore/upstream-drift-data-${UPSTREAM_SHA:0:7}"
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            git checkout -B "$BRANCH" origin/"$BRANCH"
+            git checkout main -- internal/dashboard/data/upstream_drift.json || true
+          else
+            git checkout -b "$BRANCH"
+          fi
+          git add internal/dashboard/data/upstream_drift.json
+          if git diff --cached --quiet; then
+            echo "No data change; skipping PR."
+            exit 0
+          fi
+          short="${UPSTREAM_SHA:0:7}"
+          git -c commit.gpgsign=false commit -m "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
+            -m "Automated refresh by .github/workflows/upstream-drift.yml." \
+            -m "Upstream SHA: ${UPSTREAM_SHA}" || true
+          git push -u origin HEAD || true
+          existing=$(gh pr list --state open --json number,title \
+            --jq ".[] | select(.title | startswith(\"chore(dashboard): refresh upstream-drift embed to vendor ${short}\")) | .number" | head -1 || true)
+          if [ -n "$existing" ]; then
+            echo "Existing drift-data PR #$existing already open; skipping."
+            exit 0
+          fi
+          gh pr create --base main \
+            --title "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
+            --body "Refreshes internal/dashboard/data/upstream_drift.json against CodebuffAI/freebuff @ ${UPSTREAM_SHA}." \
+            --label "dependencies" || true

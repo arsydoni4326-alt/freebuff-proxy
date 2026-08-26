@@ -364,9 +364,7 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 				standing.NextLevelAt = time.Time{}
 			}
 			for _, s := range raw.Standing.NextSteps {
-				standing.NextSteps = append(standing.NextSteps, StandingNextStep{
-					ID: s.ID, Label: s.Label, Detail: s.Detail, Points: s.Points, Href: s.Href,
-				})
+				standing.NextSteps = append(standing.NextSteps, StandingNextStep(s))
 			}
 			state.Standing = standing
 		}
