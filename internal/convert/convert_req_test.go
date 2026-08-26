@@ -196,6 +196,16 @@ func TestExtractReasoningEffort(t *testing.T) {
 			payload: map[string]any{"model": "deepseek/deepseek-v4-pro:max", "reasoning": map[string]any{"effort": "medium"}},
 			want:    "medium",
 		},
+		{
+			name:    "ox-alpha model suffix parenthesized medium",
+			payload: map[string]any{"model": "stealth/ox-alpha(medium)"},
+			want:    "medium",
+		},
+		{
+			name:    "ox-alpha model suffix colon max",
+			payload: map[string]any{"model": "stealth/ox-alpha:max"},
+			want:    "max",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +254,26 @@ func TestNormalizeRequestReasoningEffort(t *testing.T) {
 	}
 	if _, ok := got["thinking"]; ok {
 		t.Error("thinking block added for non-deepseek model")
+	}
+
+	// stealth/ox-alpha shares the DeepSeek V4 ladder shape ('low','high',
+	// 'max', no medium): nested reasoning.effort is clamped and sent PLAIN,
+	// never as a client-side thinking block.
+	body = map[string]any{
+		"model":     "stealth/ox-alpha",
+		"messages":  []any{map[string]any{"role": "user", "content": "hello"}},
+		"reasoning": map[string]any{"effort": "max"},
+	}
+	out, err = NormalizeRequest(mustJSON(t, body), "")
+	if err != nil {
+		t.Fatalf("NormalizeRequest: %v", err)
+	}
+	got = decode(t, out)
+	if gotEff, ok := got["reasoning_effort"].(string); !ok || gotEff != "max" {
+		t.Errorf("reasoning_effort = %v, want \"max\"", got["reasoning_effort"])
+	}
+	if _, ok := got["thinking"]; ok {
+		t.Error("thinking block emitted for stealth/ox-alpha model")
 	}
 }
 
@@ -384,6 +414,11 @@ func TestDeepSeekPlainReasoningEffort(t *testing.T) {
 		{"flash max stays max", "deepseek/deepseek-v4-flash", "max", "max"},
 		{"flash xhigh clamps down to high", "deepseek/deepseek-v4-flash", "xhigh", "high"},
 		{"pro low stays low", "deepseek/deepseek-v4-pro", "low", "low"},
+		{"ox-alpha low stays low", "stealth/ox-alpha", "low", "low"},
+		{"ox-alpha medium rewrites to high", "stealth/ox-alpha", "medium", "high"},
+		{"ox-alpha high stays high", "stealth/ox-alpha", "high", "high"},
+		{"ox-alpha max stays max", "stealth/ox-alpha", "max", "max"},
+		{"bare ox-alpha id tolerated", "ox-alpha", "medium", "high"},
 		{"pro medium rewrites to high", "deepseek/deepseek-v4-pro", "medium", "high"},
 		{"pro max stays max", "deepseek/deepseek-v4-pro", "max", "max"},
 		{"bare model id tolerated", "deepseek-v4-flash", "max", "max"},
@@ -500,6 +535,7 @@ func TestEffortsForModel(t *testing.T) {
 	for model, want := range map[string][]string{
 		"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
 		"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
+		"stealth/ox-alpha":                {"low", "high", "max"},
 		"mimo/mimo-v2.5":                  {"high"}, // Xiaomi: disabled/high only
 		"minimax/minimax-m3":              {"high"}, // adaptive/disabled only
 		"anthropic/claude-fable-5":        {"low", "medium", "high", "xhigh", "max"},
@@ -567,6 +603,11 @@ func TestNormalizeRequestEffortClamp(t *testing.T) {
 	// never down to low.
 	if got := effortFor("deepseek/deepseek-v4-flash", "medium"); got != "high" {
 		t.Errorf("deepseek-v4-flash medium = %q, want high", got)
+	}
+	// stealth/ox-alpha shares the DeepSeek V4 ladder ('low','high','max'):
+	// medium likewise rewrites to high, never down to low.
+	if got := effortFor("stealth/ox-alpha", "medium"); got != "high" {
+		t.Errorf("stealth/ox-alpha medium = %q, want high", got)
 	}
 	// mimo/mimo-v2.5 exposes only disabled/high: every depth rung is a
 	// compatibility alias and clamps to high.
