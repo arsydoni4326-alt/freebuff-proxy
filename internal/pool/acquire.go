@@ -52,17 +52,20 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	start := int(p.rr.Add(1)-1) % len(*toks)
 
 	// Issue #191: leader-election gate per model. The first Acquire for a
-	// model registers as the leader (creates a channel); concurrent
+	// model registers as the leader (creates a gate); concurrent
 	// followers block on it. When the leader picks a token (or fails), it
-	// updates p.admissions and closes the channel so followers re-read the
-	// leader's token and follow it — preventing duplicate session creates
-	// across different cold tokens.
+	// sets gate.token/hasToken and closes the channel so followers re-read
+	// the leader's choice via the gate — preventing duplicate session creates
+	// across different cold tokens. The gate is the single source of truth;
+	// p.admissions is kept for acquireOrder pinning but followers do not
+	// rely on it after channel close.
 	p.modelAdmissionGateMu.Lock()
-	ch, exists := p.modelAdmissionGate[model]
-	if !exists {
-		// Leader: create the gate channel and register admission.
-		ch = make(chan struct{})
-		p.modelAdmissionGate[model] = ch
+	gate, exists := p.modelAdmissionGate[model]
+	isLeader := !exists
+	if isLeader {
+		// Leader: create the gate and register admission.
+		gate = &admissionGate{ch: make(chan struct{})}
+		p.modelAdmissionGate[model] = gate
 		p.modelAdmissionGateMu.Unlock()
 		p.admissionsMu.Lock()
 		p.admissions[model] = -1 // sentinel: "leader, target unknown"
@@ -70,42 +73,64 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		// Ensure the gate is closed and cleaned up on every exit path.
 		defer func() {
 			p.modelAdmissionGateMu.Lock()
-			close(ch)
+			close(gate.ch)
 			delete(p.modelAdmissionGate, model)
 			p.modelAdmissionGateMu.Unlock()
 		}()
 	} else {
-		// Follower: release the gate lock, then block on the leader's channel.
-		p.modelAdmissionGateMu.Unlock()
-		<-ch
-		// Leader finished: re-read the admission to get the real token.
-		p.admissionsMu.Lock()
-		leaderToken := p.admissions[model]
-		p.admissionsMu.Unlock()
-		if leaderToken >= 0 {
-			order, quotaLimited := p.acquireOrder(toks, start, model)
-			reordered := make([]int, 0, len(order))
-			reordered = append(reordered, leaderToken)
-			for _, idx := range order {
-				if idx != leaderToken {
-					reordered = append(reordered, idx)
-				}
-			}
-			return p.leaseFromOrder(ctx, model, agentID, cfg, toks, reordered, quotaLimited)
+		// Follower: invoke test hook while lock is held so tests can count
+		// parked waiters deterministically before the leader releases.
+		if p.testGatePark != nil {
+			p.testGatePark()
 		}
-		// Leader failed (admission cleaned up) — fall through to normal path.
+		followerGate := gate
+		p.modelAdmissionGateMu.Unlock()
+		select {
+		case <-followerGate.ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		// Leader finished: read the leader's token via the gate.
+		p.modelAdmissionGateMu.Lock()
+		hasToken := followerGate.hasToken
+		leaderToken := followerGate.token
+		p.modelAdmissionGateMu.Unlock()
+		if hasToken && leaderToken >= 0 {
+			// Candidate #2: followers try ONLY the leader's token. If that
+			// token fails (e.g. transient), fall through to the normal full
+			// order path — don't silently create a second session on another
+			// token inside the follow branch, but allow the normal failover
+			// loop to run after.
+			lease, err := p.leaseFromOrder(ctx, model, agentID, cfg, toks, []int{leaderToken}, nil)
+			if err == nil {
+				return lease, nil
+			}
+			// Fall through to normal path on follower follow failure.
+		}
+		// Leader failed (no token) or follower follow failed — fall through
+		// to normal hot-order path without publishing to leader's gate.
+		order, quotaLimited := p.acquireOrder(toks, start, model)
+		return p.leaseFromOrder(ctx, model, agentID, cfg, toks, order, quotaLimited)
 	}
-
-	// Hot-session-first selection: tokens that already hold a live session
-	// are tried before any fresh account, so a request reuses the live slot
-	// instead of admitting a new session (never create where one already
-	// exists — the lowest fingerprint/quota-burn path). When at least one
-	// token is hot, the pass iterates only over hot tokens; only when every
-	// hot token fails does it fall back to the remaining eligible tokens
-	// from the round-robin start (cold path), exactly like the historical
-	// linear failover. When no token is hot the order is unchanged.
+	// Hot-session-first selection (leader path): tokens that already hold a
+	// live session are tried before any fresh account, so a request reuses
+	// the live slot instead of admitting a new session (never create where
+	// one already exists — the lowest fingerprint/quota-burn path). When at
+	// least one token is hot, the pass iterates only over hot tokens; only
+	// when every hot token fails does it fall back to the remaining eligible
+	// tokens from the round-robin start (cold path), exactly like the
+	// historical linear failover. When no token is hot the order is unchanged.
 	order, quotaLimited := p.acquireOrder(toks, start, model)
-	return p.leaseFromOrder(ctx, model, agentID, cfg, toks, order, quotaLimited)
+	lease, err := p.leaseFromOrder(ctx, model, agentID, cfg, toks, order, quotaLimited)
+	if err == nil {
+		// Leader success: publish token via gate before channel close so
+		// followers read it deterministically via gate.token.
+		p.modelAdmissionGateMu.Lock()
+		gate.token = lease.Token
+		gate.hasToken = true
+		p.modelAdmissionGateMu.Unlock()
+	}
+	return lease, err
 }
 
 // leaseFromOrder runs the token failover loop against the given order.

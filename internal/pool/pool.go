@@ -304,13 +304,15 @@ type Pool struct {
 	admissions   map[string]int
 
 	// modelAdmissionGate serializes cold-path Acquire per model: the leader
-	// creates a channel on registration; concurrent followers block on it
-	// until the leader either picks a token (and they follow) or fails.
+	// creates a gate on registration; concurrent followers block on it
 	// Guarded by modelAdmissionGateMu; entries are deleted when the channel
 	// is closed.
 	modelAdmissionGateMu sync.Mutex
-	modelAdmissionGate   map[string]chan struct{}
-
+	modelAdmissionGate   map[string]*admissionGate
+	// testGatePark, when non-nil (tests only), runs while modelAdmissionGateMu is held
+	// at the moment a follower is about to park on the leader's gate. Lets tests
+	// deterministically count parked waiters before the leader releases.
+	testGatePark func()
 	// store persists session state across restarts (SESSION_PERSIST); nil
 	// disables. Injected by the caller (main) via SetSessionStore so there
 	// is exactly one store shared by pooled and bridge entries.
@@ -337,6 +339,15 @@ type Pool struct {
 	// effect on the next restart.
 	storeSessionPersist bool
 	storeStateFile      string
+}
+
+// admissionGate is the per-model leader election gate: the leader creates
+// the gate, followers block on gate.ch, and the chosen token is
+// communicated via gate.token/hasToken (guarded by modelAdmissionGateMu).
+type admissionGate struct {
+	ch       chan struct{}
+	token    int
+	hasToken bool
 }
 
 type tokenEntry struct {
@@ -381,7 +392,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]chan struct{}), mismatch: make(map[int]mismatchEscalation)}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), mismatch: make(map[int]mismatchEscalation)}
 	p.cfg.Store(cfg)
 	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	p.spendPerToken = make([]*spendLedger, len(cfg.AuthTokens))
