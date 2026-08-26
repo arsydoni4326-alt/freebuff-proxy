@@ -119,7 +119,7 @@
     {@const us = data.upstream_sync}
     {#if us.has_drift}
       <Alert
-        tone={us.has_registry_drift ? 'error' : 'warn'}
+        tone={us.has_registry_drift ? 'error' : 'warning'}
         title={$tr('Upstream has updates — your build is behind')}
       >
         <p class="mb-2">
