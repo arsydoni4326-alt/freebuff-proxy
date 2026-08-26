@@ -648,6 +648,31 @@ type overviewData struct {
 	Tokens               []tokenCard       `json:"tokens"`
 	HasTokens            bool              `json:"has_tokens"`
 	IsDefaultAdminToken  bool              `json:"is_default_admin_token"`
+	// UpstreamSync summarises the latest .github/workflows/upstream-drift
+	// run (compiled into the binary). Users on an out-of-date build see
+	// HasDrift=true + DriftedFiles and know to update.
+	UpstreamSync *upstreamSync `json:"upstream_sync,omitempty"`
+}
+
+// upstreamSync is the dashboard-friendly view of the embedded
+// internal/dashboard/data/upstream_drift.json. Computed once at request
+// time; cheap.
+type upstreamSync struct {
+	UpstreamSHA   string         `json:"upstream_sha"`            // short SHA, "(not yet reported)" before first CI run
+	CheckedAt     string         `json:"checked_at"`              // RFC3339
+	HasDrift      bool           `json:"has_drift"`               // any non-SAME file
+	HasRegistry   bool           `json:"has_registry_drift"`      // 5 pinned files
+	HasWire       bool           `json:"has_wire_drift"`          // wire files MISSING_UPSTREAM
+	DriftedFiles  []upstreamFile `json:"drifted_files,omitempty"`  // the actual changes
+	ReleasesURL   string         `json:"releases_url"`            // where to update
+}
+
+type upstreamFile struct {
+	Group     string `json:"group"` // "registry" | "wire"
+	File      string `json:"file"`
+	PinnedSHA string `json:"pinned_sha"`
+	VendorSHA string `json:"vendor_sha"`
+	Status    string `json:"status"` // DRIFT | MISSING_UPSTREAM | SAME
 }
 
 type tokenCard struct {
@@ -848,5 +873,6 @@ func (d *Dashboard) overviewData() overviewData {
 			od.BridgeTokenCards = append(od.BridgeTokenCards, bridgeCardFromSnapshot(snap))
 		}
 	}
+	od.UpstreamSync = parseUpstreamSync(upstreamDriftJSON)
 	return od
 }
