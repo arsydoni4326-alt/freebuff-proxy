@@ -139,7 +139,104 @@ func (d *Dashboard) dataFor(name string, r *http.Request) any {
 		return d.setupData()
 	case "metrics":
 		return d.metricsData()
+	case "upstream":
+		return d.upstreamData()
 	default:
 		return nil
 	}
+}
+
+// upstreamData surfaces the embedded upstream-drift JSON the
+// .github/workflows/upstream-drift.yml job refreshes after every check
+// run. The user sees whether the running build is current with
+// CodebuffAI/freebuff; the data is shipped at compile time, so a stale
+// runtime that cannot reach GitHub still gets a real answer.
+func (d *Dashboard) upstreamData() map[string]any {
+	return map[string]any{
+		"drift": json.RawMessage(upstreamDriftJSON),
+	}
+}
+
+// upstreamReport is the on-disk JSON shape written by
+// scripts/check-upstream.sh. The fields match the script's printf order so
+// the two stay lock-step (a parse failure here is a deploy-time regression
+// caught by `go build`).
+type upstreamReport struct {
+	Upstream    string            `json:"upstream"`
+	UpstreamSHA string            `json:"upstream_sha"`
+	CheckedAt   string            `json:"checked_at"`
+	Files       []upstreamFileRaw `json:"files"`
+}
+
+type upstreamFileRaw struct {
+	Group     string `json:"group"`
+	File      string `json:"file"`
+	PinnedSHA string `json:"pinned_sha"`
+	VendorSHA string `json:"vendor_sha"`
+	Status    string `json:"status"`
+}
+
+// isHexSHA reports whether s looks like a 40-char git SHA. Used to
+// distinguish real upstream SHAs from placeholder strings
+// ("(not yet reported)", "(parse error)") in the dashboard banner.
+func isHexSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseUpstreamSync turns the embedded drift JSON into the dashboard view.
+// Always returns a non-nil struct; never errors — the embed is a known
+// shape, and a parse failure is a deploy-time regression caught by `go
+// build`. The ReleasesURL is hard-coded here (not from the JSON) because
+// the dashboard banner must always point at the current repo even if the
+// drift JSON is stale.
+func parseUpstreamSync(raw []byte) *upstreamSync {
+	const releasesURL = "https://github.com/trefeon/freebuff-proxy/releases"
+	sync := &upstreamSync{ReleasesURL: releasesURL}
+	if len(raw) == 0 {
+		return sync
+	}
+	// The embedded JSON has the file-level shape; the dashboard view is a
+	// rolled-up summary. Re-decode into upstreamReport so the summary can
+	// name the affected files.
+	var rep upstreamReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		// Parse failure on a shipped artifact: return the empty summary
+		// with the timestamp placeholder so the banner still renders.
+		sync.UpstreamSHA = "(parse error)"
+		return sync
+	}
+	sync.UpstreamSHA = rep.UpstreamSHA
+	// A real upstream SHA is hex; the placeholder "(not yet reported)"
+	// (or a "(parse error)" literal) is not. Only truncate hex SHAs so the
+	// placeholder stays readable in the dashboard banner.
+	if isHexSHA(sync.UpstreamSHA) && len(sync.UpstreamSHA) > 12 {
+		sync.UpstreamSHA = sync.UpstreamSHA[:12]
+	}
+	sync.CheckedAt = rep.CheckedAt
+	for _, f := range rep.Files {
+		if f.Status == "SAME" {
+			continue
+		}
+		sync.DriftedFiles = append(sync.DriftedFiles, upstreamFile(f))
+		switch f.Group {
+		case "registry":
+			sync.HasRegistry = true
+		case "wire":
+			sync.HasWire = true
+		}
+	}
+	sync.HasDrift = sync.HasRegistry || sync.HasWire
+	return sync
 }

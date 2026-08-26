@@ -197,6 +197,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /admin/api/logs", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("logs"))))
 		mux.Handle("GET /admin/api/metrics", s.dashboardAuth(s.dash.APIHandler("metrics")))
 		mux.Handle("GET /admin/api/version", s.dashboardAuth(http.HandlerFunc(s.dash.APIVersion)))
+		mux.Handle("GET /admin/api/upstream-drift", s.dashboardAuth(s.dash.APIHandler("upstream")))
 
 		mux.Handle("GET /admin/api/auth/status", s.dashboardAuth(http.HandlerFunc(s.handleAdminAuthStatus)))
 		// SPA: all admin/* GET routes serve the embedded Svelte SPA
