@@ -34,7 +34,7 @@ func fileSource(t *testing.T, path string) string {
 // expectedFallback is the model→agent map the pruned, parity-checked fallback
 // table must produce: the pinned upstream snapshot (testdata/upstream) parsed
 // with the real parser, with FREEBUFF_ROOT_AGENT_ID_BY_MODEL winning over
-// first-seen assignment (exactly like a live refresh). The five base models
+// first-seen assignment (exactly like a live refresh). The six base models
 // route to their per-model roots (not the generic base2-free), the gemini
 // helper models belong to file-picker / file-picker-max, and every upstream-
 // retired id is absent.
@@ -902,14 +902,15 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 }
 
 // TestStrictServedModelsPinned pins issue #189 (strict gate) as amended by
-// #201 and the 2026-08-23 luna-es drop: ServedModels contains ONLY the 5
-// operational FreeBuff models. openai/gpt-5.6-luna-es was removed after the
-// vendor moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex (test)" — Novita
-// route, evaluation only; hidden from the CLI picker and
+// #201 and the 2026-08-23 luna-es drop, and by #209: ServedModels contains
+// ONLY the 6 operational FreeBuff models. openai/gpt-5.6-luna-es was removed
+// after the vendor moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex
+// (test)" — Novita route, evaluation only; hidden from the CLI picker and
 // SUPPORTED_FREEBUFF_MODELS in snapshot 0603bc1) — not the documented
-// honeypot (that is kimi-k3-eco), but unreachable to real clients. All
-// decommissioned models, god-only/hidden-eval models, and -max variants are
-// rejected by IsServedModel.
+// honeypot (that is kimi-k3-eco), but unreachable to real clients.
+// stealth/ox-alpha was gated in when vendor cce4800 made it the first row of
+// SUPPORTED_FREEBUFF_MODELS. All decommissioned models, god-only/hidden-eval
+// models, and -max variants are rejected by IsServedModel.
 func TestStrictServedModelsPinned(t *testing.T) {
 	wantModels := []string{
 		"deepseek/deepseek-v4-flash",
@@ -917,9 +918,10 @@ func TestStrictServedModelsPinned(t *testing.T) {
 		"openai/gpt-5.6-luna",
 		"z-ai/glm-5.2",
 		"mimo/mimo-v2.5",
+		"stealth/ox-alpha",
 	}
-	if len(ServedModels) != 5 {
-		t.Fatalf("len(ServedModels) = %d, want exactly 5", len(ServedModels))
+	if len(ServedModels) != 6 {
+		t.Fatalf("len(ServedModels) = %d, want exactly 6", len(ServedModels))
 	}
 	for _, m := range wantModels {
 		if !ServedModels[m] {

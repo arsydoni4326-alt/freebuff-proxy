@@ -80,6 +80,7 @@ If you are a beginner, you don't need to write code or compile anything:
 | **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. Per-model cap removed upstream (Aug 23 snapshot) — draws from the shared daily premium pool; weekday peak-hour pauses lifted. |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
 | **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session/referral). |
+| **Stealth** | **Ox Alpha** | `stealth/ox-alpha` | **Anonymous stealth provider**, Reasoning: mandatory (`low`/`high`/`max`, default `high`). 1M-token context, multimodal. Free tier. |
 | **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost spikes. |
 
 Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
