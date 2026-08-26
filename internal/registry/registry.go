@@ -80,27 +80,32 @@ const maxFetchBytes = 2 << 20
 // kimi-k3-eco, subscriptions.ts GOD_ONLY_BAIT_MODEL_ID) — but a model no
 // real client can reach makes proxy traffic to it indistinguishable from
 // probing a hidden eval route, so the gate excludes it.
+// stealth/ox-alpha rejoined the served set with vendor cce4800 (2026-08-24,
+// issue #209): SUPPORTED_FREEBUFF_MODELS gained it as the first row of the
+// CLI/Desktop catalog, ending its web/cloud-only fencing.
 var ServedModels = map[string]bool{
 	"deepseek/deepseek-v4-flash": true,
 	"deepseek/deepseek-v4-pro":   true,
 	"openai/gpt-5.6-luna":        true,
 	"z-ai/glm-5.2":               true,
 	"mimo/mimo-v2.5":             true,
+	"stealth/ox-alpha":           true,
 }
 
-// SupportedModelIDs is the canonical list of the 5 active models served by the gateway.
+// SupportedModelIDs is the canonical list of the 6 active models served by the gateway.
 var SupportedModelIDs = []string{
 	"deepseek/deepseek-v4-flash",
 	"deepseek/deepseek-v4-pro",
 	"openai/gpt-5.6-luna",
 	"z-ai/glm-5.2",
 	"mimo/mimo-v2.5",
+	"stealth/ox-alpha",
 }
 
 // SupportedModelsHelpText is the formatted list of models for error messages (issue #189).
-const SupportedModelsHelpText = "deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro, openai/gpt-5.6-luna, z-ai/glm-5.2, mimo/mimo-v2.5"
+const SupportedModelsHelpText = "deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro, openai/gpt-5.6-luna, z-ai/glm-5.2, mimo/mimo-v2.5, stealth/ox-alpha"
 
-// IsServedModel reports whether model is in the 5 active served models.
+// IsServedModel reports whether model is in the 6 active served models.
 func IsServedModel(model string) bool {
 	return ServedModels[model]
 }
@@ -208,7 +213,7 @@ var fallbackAgents = []agentModels{
 // fallbackRootByModel mirrors upstream FREEBUFF_ROOT_AGENT_ID_BY_MODEL (pinned
 // free-agents.ts): the per-model roots win over first-seen assignment, exactly
 // like a live refresh (parseRootAgentMap + buildModelMapping). Without it the
-// fallback collapses the five base models onto the generic base2-free agent,
+// fallback collapses the six base models onto the generic base2-free agent,
 // so a fallback-state request for a second base model would reuse a session
 // admitted for another model and trip upstream session_model_mismatch.
 var fallbackRootByModel = map[string]string{

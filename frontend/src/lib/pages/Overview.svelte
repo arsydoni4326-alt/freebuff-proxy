@@ -4,7 +4,7 @@
    * Data: GET /admin/api/overview (pooled snapshot + token cards), polled every 15s.
    * All KPIs/cards map to real response fields only.
    */
-  import { RefreshCw } from '@lucide/svelte';
+  import { RefreshCw, ExternalLink } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Stat from '../components/Stat.svelte';
@@ -124,6 +124,53 @@
         <div class="skeleton skeleton-card"></div>
       {/each}
     </div>
+  {/if}
+
+  <!-- Upstream sync banner: warns operators that the running build is
+       behind CodebuffAI/freebuff@main. Data ships compiled into the
+       binary (see internal/dashboard/data/upstream_drift.json) and is
+       refreshed by .github/workflows/upstream-drift.yml. -->
+  {#if data?.upstream_sync}
+    {@const us = data.upstream_sync}
+    {#if us.has_drift}
+      <Alert
+        tone={us.has_registry_drift ? 'error' : 'warning'}
+        title={$tr('Upstream has updates — your build is behind')}
+      >
+        <p class="mb-2">
+          {$tr('CodebuffAI/freebuff moved past vendor {sha} (checked {when}). This build knows about {pinned} upstream SHAs; a newer one is on main.', {
+            sha: us.upstream_sha,
+            when: us.checked_at,
+            pinned: us.drifted_files?.length ?? 0,
+          })}
+        </p>
+        {#if us.drifted_files && us.drifted_files.length > 0}
+          <ul class="text-xs space-y-1 mb-3">
+            {#each us.drifted_files as f}
+              <li>
+                <span class="fp-num text-[var(--fp-muted)]">[{f.group}]</span>
+                <code class="fp-num text-xs">{f.file}</code>
+                {#if f.pinned_sha}
+                  <span class="fp-num text-[var(--fp-dim)]">({f.pinned_sha} -> {f.vendor_sha})</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <p class="text-xs text-[var(--fp-muted)]">
+          {$tr('Registry pin drift can land via the auto-synced PR; wire-shape drift needs a human to port (the upstream-drift workflow opens a needs-port issue for each).')}
+        </p>
+        <a
+          href={us.releases_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="mt-2 inline-flex items-center gap-1 text-xs text-[var(--fp-accent)] hover:underline"
+        >
+          {$tr('Open releases page')}
+          <ExternalLink size={12} />
+        </a>
+      </Alert>
+    {/if}
   {/if}
 
   <!-- Fetch error with retry -->

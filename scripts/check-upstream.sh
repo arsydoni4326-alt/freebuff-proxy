@@ -3,13 +3,18 @@
 # (internal/registry/testdata/upstream/) and CodebuffAI/freebuff at a ref.
 #
 # Usage:
-#   scripts/check-upstream.sh [ref] [clone-dir]
+#   scripts/check-upstream.sh [--update-wire-baseline] [ref] [clone-dir]
 #
 #   ref        upstream branch or full commit SHA to compare against
 #              (default: main)
 #   clone-dir  local clone of https://github.com/CodebuffAI/freebuff
 #              (default: $FREEBUFF_REFERENCE_DIR, else <repo>/../freebuff-reference).
 #              Missing → shallow-cloned with --depth 50; present → fetched.
+#   --update-wire-baseline
+#              Refresh scripts/wire-baseline.tsv with the current upstream
+#              content hash of every wire file, then exit 0 regardless of
+#              drift. Run this by hand after porting/reviewing an upstream
+#              wire change so future runs only flag genuinely new drift.
 #
 # Prints one table row per pinned file: file | pinned-sha | vendor-sha |
 # status (SAME/DRIFT/MISSING). Exit codes: 0 all SAME, 1 any DRIFT/MISSING,
@@ -22,8 +27,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+UPDATE_BASELINE=0
+if [[ "${1:-}" == "--update-wire-baseline" ]]; then
+	UPDATE_BASELINE=1
+	shift
+fi
 REF="${1:-main}"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
+BASELINE_FILE="$REPO_ROOT/scripts/wire-baseline.tsv"
 if [[ -n "${2:-}" ]]; then
 	CLONE_DIR="$2"
 elif [[ -n "${FREEBUFF_REFERENCE_DIR:-}" ]]; then
@@ -36,13 +47,33 @@ fi
 UPSTREAM_PREFIX="common/src/constants"
 PINNED_DIR="$REPO_ROOT/internal/registry/testdata/upstream"
 
-# Keep in sync with sourceFiles in internal/registry/registry.go.
-FILES=(
+# Registry mirror files: pinned into internal/registry/testdata/upstream/ and
+# diffed hash-for-hash. Keep in sync with sourceFiles in
+# internal/registry/registry.go.
+REGISTRY_FILES=(
 	free-agents.ts
 	freebuff-model-ids.ts
 	freebuff-models.ts
 	gemini.ts
 	model-config.ts
+)
+# Wire-shape files the proxy reads at runtime but does NOT pin. Drift here
+# changes the answer to "what does the upstream wire look like" without
+# breaking the registry parity test. The drift workflow still flags them; a
+# human applies the change (every Phase 1+ fix in issue #140 used to live
+# here: freebuff-trust.ts, foreign-client-signals.ts, prompt-agent-stream.ts,
+# tools/constants.ts for cb_easp).
+WIRE_FILES=(
+	common/src/constants/freebuff-trust.ts
+	common/src/constants/foreign-client-signals.ts
+	common/src/constants/freebuff-spend-ceilings.ts
+	common/src/constants/freebuff-signup-block.ts
+	common/src/types/freebuff-session.ts
+	packages/agent-runtime/src/constants.ts
+	packages/agent-runtime/src/prompt-agent-stream.ts
+	packages/agent-runtime/src/run-agent-step.ts
+	packages/agent-runtime/src/run-programmatic-step.ts
+	common/src/tools/constants.ts
 )
 
 die() {
@@ -86,40 +117,120 @@ fi
 
 echo "check-upstream: comparing pins against CodebuffAI/freebuff @ $UPSTREAM_SHA (ref: $REF)"
 echo
-printf '%-26s %-14s %-14s %s\n' FILE PINNED-SHA VENDOR-SHA STATUS
-printf '%-26s %-14s %-14s %s\n' '-------------------------' '-------------' '-------------' '------'
+printf '%-12s %-64s %-14s %-14s %s\n' GROUP FILE PINNED-SHA VENDOR-SHA STATUS
+printf '%-12s %-64s %-14s %-14s %s\n' '------------' '----------------------------------------------------------------' '-------------' '-------------' '------'
 
 drift=0
-for f in "${FILES[@]}"; do
-	pinned_file="$PINNED_DIR/$f"
-	if [[ ! -f "$pinned_file" ]]; then
-		printf '%-26s %-14s %-14s %s\n' "$f" '-' '-' 'MISSING'
-		drift=1
-		continue
+# JSON accumulator for the drift-detection workflow (machine-readable
+# handoff so the next step can create issues/PRs without re-running git).
+declare -A WIRE_VENDOR=()
+JSON_ENTRIES=()
+
+# Generic per-file check. pinned_file may be empty (WIRE_FILES are unpinned).
+# status is one of: SAME, DRIFT, MISSING_UPSTREAM.
+#
+# For registry files, vendor_sha comes from the local working-tree copy
+# (testdata/upstream/). For wire files, vendor_sha comes from the live
+# upstream file at the fetched commit. A wire file whose live hash differs
+# from the last-reviewed baseline entry (scripts/wire-baseline.tsv) is
+# DRIFT — that signal tells the human "upstream moved; re-read the file
+# and port the change".
+check_file() {
+	local group="$1" file="$2" pinned_rel="$3"
+	local pinned_file="" vendor_sha="" status="SAME"
+	if [[ "$group" == "registry" && -n "$pinned_rel" ]]; then
+		pinned_file="$PINNED_DIR/$pinned_rel"
 	fi
-	pinned_sha="$(pin_hash "$pinned_file")"
-	pinned_sha="${pinned_sha%% *}"
-	if ! git -C "$CLONE_DIR" cat-file -e "$UPSTREAM_SHA:$UPSTREAM_PREFIX/$f" 2>/dev/null; then
-		printf '%-26s %-14s %-14s %s\n' "$f" "${pinned_sha:0:12}" '-' 'MISSING'
-		drift=1
-		continue
+	local pinned_sha=""
+	if [[ -n "$pinned_file" && -f "$pinned_file" ]]; then
+		pinned_sha="$(pin_hash "$pinned_file")"
+		pinned_sha="${pinned_sha%% *}"
 	fi
-	vendor_sha="$(git -C "$CLONE_DIR" show "$UPSTREAM_SHA:$UPSTREAM_PREFIX/$f" | tr -d '\r' | "${SHA_CMD[@]}")"
-	vendor_sha="${vendor_sha%% *}"
-	status=SAME
-	if [[ "$pinned_sha" != "$vendor_sha" ]]; then
-		status=DRIFT
+	if ! git -C "$CLONE_DIR" cat-file -e "$UPSTREAM_SHA:$file" 2>/dev/null; then
+		status="MISSING_UPSTREAM"
+	else
+		vendor_sha="$(git -C "$CLONE_DIR" show "$UPSTREAM_SHA:$file" 2>/dev/null | tr -d '\r' | "${SHA_CMD[@]}")"
+		vendor_sha="${vendor_sha%% *}"
+		if [[ "$group" == "registry" ]]; then
+			if [[ "$pinned_sha" != "$vendor_sha" ]]; then
+				status="DRIFT"
+			fi
+		else
+			# Wire files have no pinned copy: compare against the committed
+			# baseline of last-reviewed upstream content
+			# (scripts/wire-baseline.tsv, one "<sha12> <path>" per line).
+			# A baseline entry that differs from the live upstream hash is
+			# DRIFT ("the reviewed version changed upstream"); a missing
+			# entry means we never recorded this file, so report SAME.
+			local base_sha=""
+			if [[ -f "$BASELINE_FILE" ]]; then
+				while read -r sha path; do
+					if [[ "$path" == "$file" ]]; then
+						base_sha="$sha"
+					fi
+				done <"$BASELINE_FILE"
+			fi
+			if [[ -n "$base_sha" && "$base_sha" != "${vendor_sha:0:12}" ]]; then
+				status="DRIFT"
+			fi
+			WIRE_VENDOR["$file"]="${vendor_sha:0:12}"
+		fi
+	fi
+	if [[ "$status" != "SAME" ]]; then
 		drift=1
 	fi
-	printf '%-26s %-14s %-14s %s\n' "$f" "${pinned_sha:0:12}" "${vendor_sha:0:12}" "$status"
+	printf '%-12s %-64s %-14s %-14s %s\n' "$group" "$file" "${pinned_sha:0:12}" "${vendor_sha:0:12}" "$status"
+	local esc_file="${file//\\/\\\\}"
+	esc_file="${esc_file//\"/\\\"}"
+	JSON_ENTRIES+=("{\"group\":\"$group\",\"file\":\"$esc_file\",\"pinned_sha\":\"${pinned_sha:0:12}\",\"vendor_sha\":\"${vendor_sha:0:12}\",\"status\":\"$status\"}")
+}
+
+for f in "${REGISTRY_FILES[@]}"; do
+	check_file "registry" "$UPSTREAM_PREFIX/$f" "$f"
+done
+for f in "${WIRE_FILES[@]}"; do
+	check_file "wire" "$f" ""
 done
 
+# Emit machine-readable summary for the drift workflow. Path is honored
+# by callers (CI sets DRIFT_REPORT; the dashboard loader reads the file from
+# the runtime data dir).
+DRIFT_REPORT="${DRIFT_REPORT:-$REPO_ROOT/.drift-report.json}"
+{
+	printf '{\n'
+	printf '  "upstream": "%s",\n' "$VENDOR_URL"
+	printf '  "upstream_sha": "%s",\n' "$UPSTREAM_SHA"
+	printf '  "checked_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	printf '  "files": [\n'
+	i=0
+	for entry in "${JSON_ENTRIES[@]}"; do
+		if ((i > 0)); then printf ',\n'; fi
+		printf '    %s' "$entry"
+		i=$((i+1))
+	done
+	printf '\n  ]\n}\n'
+} >"$DRIFT_REPORT"
+
 echo
+echo "report: $DRIFT_REPORT"
+if ((UPDATE_BASELINE)); then
+	{
+		for f in "${WIRE_FILES[@]}"; do
+			if [[ -n "${WIRE_VENDOR[$f]:-}" ]]; then
+				printf '%s %s\n' "${WIRE_VENDOR[$f]}" "$f"
+			fi
+		done
+	} | sort -k2 >"$BASELINE_FILE"
+	echo "check-upstream: wire baseline written to $BASELINE_FILE (${#WIRE_VENDOR[@]} entries)."
+	exit 0
+fi
 if ((drift)); then
 	echo "check-upstream: DRIFT detected."
-	echo "Refresh the pins: copy the changed files into internal/registry/testdata/upstream/"
-	echo "and update fallbackAgents/fallbackRootByModel in internal/registry/registry.go until"
+	echo "Registry pins: refresh by running scripts/sync-upstream.sh and updating"
+	echo "fallbackAgents/fallbackRootByModel in internal/registry/registry.go until"
 	echo "TestFallbackParityWithPinnedUpstream passes."
+	echo "Wire files: read the new file, apply the wire-shape change to the Go side"
+	echo "(e.g. injectEnvelope, classifyError, parseSessionResponse), and add a test."
 	exit 1
 fi
-echo "check-upstream: OK — all pinned files match $VENDOR_URL @ ${UPSTREAM_SHA:0:12}."
+echo "check-upstream: OK — all pins match $VENDOR_URL @ ${UPSTREAM_SHA:0:12}."
