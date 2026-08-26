@@ -1,22 +1,47 @@
-FROM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:trixie AS go-builder
 WORKDIR /src
+# Define the build arguments passed from GitHub Actions
+ARG APP_VERSION=v0.0.0
+ARG APP_COMMIT=unknown
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# VERSION is injected from the build host (docker-compose passes
-# `git describe --tags`); the .git dir is excluded from the build context
-# so it cannot be derived here. Matches GoReleaser's -X main.version.
-ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -tags dashboard -ldflags "-s -w -X main.version=${VERSION}" -o /out/freebuff-proxy ./cmd/freebuff-proxy
+RUN set -eux;   \
+    export BUILD_DATE="$(date +%Y-%m-%d)";   \
+    CGO_ENABLED=1 \
+        GOOS=linux \
+        go build \
+            -buildvcs=false \
+            -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.Commit=${APP_COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" \
+            -o /out/freebuff-proxy ./cmd/freebuff-proxy ;  \
+    chmod +x /out/freebuff-proxy
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -S -g 1000 app \
-    && adduser -S -u 1000 -G app app \
-    && mkdir -p /app/dump /app/logs \
-    && chown -R app:app /app
+FROM debian:trixie-slim
+SHELL ["/bin/bash", "-c"]
+ENV TZ="Asia/Jakarta"
+RUN set -eux; 	\
+    [ ! -f /etc/localtime ] && ln -s /usr/share/zoneinfo/$TZ /etc/localtime; 	\
+    echo $TZ > /etc/timezone; 	\
+    apt-get update
+RUN set -eux;     \
+    apt install -y --no-install-recommends \
+        tzdata ca-certificates;     \
+    apt-mark showmanual > /savedAptMark.txt
+RUN set -eux;   \
+    apt-mark auto '.*' > /dev/null ;	\
+    apt-mark manual $(cat /savedAptMark.txt) > /dev/null; 	\
+    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false;     \
+    apt-get clean;     \
+    apt-get autoclean;     \
+    rm -rf /var/lib/apt/lists/*
+    
+RUN set -eux; \
+    useradd -s /bin/bash -d /app -m app
+
 WORKDIR /app
-COPY --from=build /out/freebuff-proxy /usr/local/bin/freebuff-proxy
+COPY --from=go-builder /out/freebuff-proxy /usr/local/bin/freebuff-proxy
 USER app
+RUN set -eux; \
+    mkdir -p /app/dump /app/logs
 EXPOSE 3457
 ENTRYPOINT ["/usr/local/bin/freebuff-proxy"]
