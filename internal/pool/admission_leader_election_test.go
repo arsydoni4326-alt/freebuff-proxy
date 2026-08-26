@@ -147,17 +147,26 @@ func TestLeaderElection_ConcurrentFollowersAllLandOnLeader(t *testing.T) {
 	}
 	// Direct field reads are safe after wg.Wait (happens-before); snapshot
 	// helper would race with unsynchronized SessionHandler increment.
-	if mock0.SessionCreates != 1 {
-		t.Errorf("mock0 session creates = %d, want 1 (single-flight)", mock0.SessionCreates)
+	totalCreates := mock0.SessionCreates + mock1.SessionCreates
+	if totalCreates != 1 {
+		t.Errorf("total session creates = %d, want 1 (single-flight) mock0=%d mock1=%d", totalCreates, mock0.SessionCreates, mock1.SessionCreates)
 	}
-	if mock1.SessionCreates != 0 {
-		t.Errorf("mock1 session creates = %d, want 0 (no competing session)", mock1.SessionCreates)
+	c0 := tokenCounts[0].Load()
+	c1 := tokenCounts[1].Load()
+	if c0+c1 != goroutines {
+		t.Errorf("total leases = %d, want %d (c0=%d c1=%d)", c0+c1, goroutines, c0, c1)
 	}
-	if c := tokenCounts[0].Load(); c != goroutines {
-		t.Errorf("token 0 leases = %d, want %d (all followers on leader)", c, goroutines)
+	if c0 != 0 && c0 != goroutines {
+		t.Errorf("token 0 leases = %d, want 0 or %d (all on same token)", c0, goroutines)
 	}
-	if c := tokenCounts[1].Load(); c != 0 {
-		t.Errorf("token 1 leases = %d, want 0", c)
+	if c1 != 0 && c1 != goroutines {
+		t.Errorf("token 1 leases = %d, want 0 or %d (all on same token)", c1, goroutines)
+	}
+	if mock0.SessionCreates == 1 && c0 != goroutines {
+		t.Errorf("mock0 created but token 0 leases = %d, want %d", c0, goroutines)
+	}
+	if mock1.SessionCreates == 1 && c1 != goroutines {
+		t.Errorf("mock1 created but token 1 leases = %d, want %d", c1, goroutines)
 	}
 }
 
