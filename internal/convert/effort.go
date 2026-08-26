@@ -86,6 +86,10 @@ const defaultReasoningEffort = "high"
 //	                                     ['low','high','max'] — medium is not a
 //	                                     distinct level and rewrites to high
 //	                                     (see normalizeReasoning).
+//	stealth/ox-alpha                     OX_ALPHA_REASONING_EFFORTS
+//	                                     ['low','high','max'] — medium is not
+//	                                     a distinct level and rewrites to
+//	                                     high (see normalizeReasoning).
 //	gpt-5.6-luna / claude-fable-5        EFFORTS_THROUGH_MAX low..max (xhigh
 //	                                     included, OpenRouter metadata).
 //	muse-spark-1.2-contributor           EFFORTS_THROUGH_XHIGH minimal..xhigh
@@ -104,12 +108,10 @@ const defaultReasoningEffort = "high"
 //	google/*-flash-lite rows             absent — helper models, no upstream
 //	                                     restriction.
 //
-//	google/*-flash-lite rows             absent — helper models, no upstream
-//	                                     restriction.
-//
 // Clamping mirrors upstream's resolveFreebuffReasoningEffort
 // (reference/freebuff/common/src/constants/freebuff-models.ts): clamp-DOWN,
-// keyed on the actually-served model, medium→high on DeepSeek V4. For rows
+// keyed on the actually-served model, medium→high on DeepSeek V4 and Ox
+// Alpha. For rows
 // with no ladder upstream returns null and passes the client value through
 // untouched (MIMO/MiniMax treat any rung as thinking-on; GLM/Kimi ignore it)
 // — clamping those rows to "high" is the alias-equivalent normalization.
@@ -120,6 +122,7 @@ const defaultReasoningEffort = "high"
 var modelReasoningEfforts = map[string][]string{
 	"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
 	"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
+	"stealth/ox-alpha":                {"low", "high", "max"},
 	"mimo/mimo-v2.5":                  {"high"},
 	"minimax/minimax-m3":              {"high"},
 	"anthropic/claude-fable-5":        {"low", "medium", "high", "xhigh", "max"},
@@ -200,14 +203,21 @@ func clampReasoningEffort(requested string, allowed []string, fallback string) s
 }
 
 // isDeepSeekModel reports whether the route is one of the DeepSeek V4 models.
-// DeepSeek routes accept prompt-cache hints (#84) and rewrite requested
-// "medium" to "high" (#112). Tolerates both the registry's full ids and bare
-// model ids. The provisioned -max variants are blocked at the ServedModels
-// gate (issue #153) and never reach conversion.
+// DeepSeek routes accept prompt-cache hints (#84). Tolerates both the
+// registry's full ids and bare model ids. The provisioned -max variants are
+// blocked at the ServedModels gate (issue #153) and never reach conversion.
 func isDeepSeekModel(model string) bool {
 	m := strings.ToLower(model)
 	return strings.HasSuffix(m, "deepseek-v4-flash") ||
 		strings.HasSuffix(m, "deepseek-v4-pro")
+}
+
+// isMediumlessLadderModel reports whether the model's upstream effort ladder
+// omits "medium" (DeepSeek V4, Ox Alpha): both rewrite a requested "medium"
+// to "high" (#112) instead of the generic down-clamp, which would pick "low".
+func isMediumlessLadderModel(model string) bool {
+	m := strings.ToLower(model)
+	return isDeepSeekModel(m) || strings.HasSuffix(m, "ox-alpha")
 }
 
 // isStrictReasoningModel reports whether the model requires an explicit reasoning_content
@@ -258,8 +268,9 @@ func extractLeakedThinkTags(content string) (string, string) {
 //     rungs (down-nearest, never rejected; unknown efforts fall back to
 //     "high"). The DeepSeek thinking translation is server-side per issue
 //     #111 — the proxy never emits a thinking block.
-//   - "medium" on a DeepSeek route rewrites to "high" first (CLI
-//     resolveFreebuffReasoningEffort: medium → high on Flash/Pro, #112).
+//   - "medium" on DeepSeek V4 / Ox Alpha routes rewrites to "high" first
+//     (CLI resolveFreebuffReasoningEffort: medium → high when the ladder
+//     lacks it, #112).
 //   - reasoning.enabled === false or thinking.type "disabled" suppresses the
 //     effort entirely (no reasoning_effort, no thinking field).
 func normalizeReasoning(payload, out map[string]any) {
@@ -295,10 +306,10 @@ func normalizeReasoning(payload, out map[string]any) {
 		// No effort requested: leave the body untouched.
 	default:
 		var clamped string
-		if isDeepSeekModel(model) && eff == "medium" {
+		if isMediumlessLadderModel(model) && eff == "medium" {
 			// CLI resolveFreebuffReasoningEffort: medium is intentionally
-			// absent from the DeepSeek ladders and rewrites to high — never
-			// down to low (the generic clamp would say low).
+			// absent from these ladders (DeepSeek V4, Ox Alpha) and rewrites
+			// to high — never down to low (the generic clamp would say low).
 			clamped = "high"
 		} else {
 			clamped = clampReasoningEffort(eff, effortsForModel(model), defaultReasoningEffort)
