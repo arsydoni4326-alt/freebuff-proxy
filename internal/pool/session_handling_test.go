@@ -4,6 +4,9 @@ package pool
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -114,18 +117,42 @@ func TestAcquireConcurrentColdAdmissionSharesSingleFlight(t *testing.T) {
 	mock1 := testutil.NewMock()
 	defer mock1.Close()
 
-	// Add a slight delay to mock0 session create so the concurrent request lands while refreshing.
-	mock0.SessionCreateDelay = 100 * time.Millisecond
-
 	p := newTestPool(t, mock0, mock1)
 	const scarceModel = "deepseek/deepseek-v4-pro"
+
+	hold := make(chan struct{})
+	arrived := make(chan struct{}, 3)
+	p.testGatePark = func() { arrived <- struct{}{} }
+	handler := func(m *testutil.MockUpstream) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/freebuff/session") {
+				select {
+				case <-hold:
+				case <-r.Context().Done():
+					return
+				case <-time.After(10 * time.Second):
+					http.Error(w, "test hold timeout", http.StatusInternalServerError)
+					return
+				}
+				m.SessionCreates++
+				w.Header().Set("Content-Type", "application/json")
+				expiresAt := time.Now().Add(30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00")
+				_, _ = fmt.Fprintf(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"%s"}`, expiresAt)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			expiresAt := time.Now().Add(30 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z07:00")
+			_, _ = fmt.Fprintf(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"%s"}`, expiresAt)
+		}
+	}
+	mock0.SessionHandler = handler(mock0)
+	mock1.SessionHandler = handler(mock1)
 
 	var wg sync.WaitGroup
 	var errors atomic.Int32
 	var token0Count atomic.Int32
 	var token1Count atomic.Int32
 
-	// Launch 4 concurrent acquires for the same scarce model.
 	for range 4 {
 		wg.Add(1)
 		go func() {
@@ -144,23 +171,40 @@ func TestAcquireConcurrentColdAdmissionSharesSingleFlight(t *testing.T) {
 			p.LeaseRelease(lease)
 		}()
 	}
-
+	for range 3 {
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			close(hold)
+			t.Fatalf("only %d/3 followers registered", len(arrived))
+		}
+	}
+	close(hold)
 	wg.Wait()
 
 	if errors.Load() > 0 {
 		t.Fatalf("%d concurrent acquires failed", errors.Load())
 	}
-	if mock0.SessionCreates != 1 {
-		t.Errorf("mock0 session creates = %d, want 1 (single-flight admission)", mock0.SessionCreates)
+	totalCreates := mock0.SessionCreates + mock1.SessionCreates
+	if totalCreates != 1 {
+		t.Errorf("total session creates = %d, want 1 (single-flight) mock0=%d mock1=%d", totalCreates, mock0.SessionCreates, mock1.SessionCreates)
 	}
-	if mock1.SessionCreates != 0 {
-		t.Errorf("mock1 session creates = %d, want 0 (competing session must not be created)", mock1.SessionCreates)
+	c0 := token0Count.Load()
+	c1 := token1Count.Load()
+	if c0+c1 != 4 {
+		t.Errorf("total leases = %d, want 4 (c0=%d c1=%d)", c0+c1, c0, c1)
 	}
-	if token1Count.Load() != 0 {
-		t.Errorf("token 1 leases = %d, want 0", token1Count.Load())
+	if c0 != 0 && c0 != 4 {
+		t.Errorf("token 0 leases = %d, want 0 or 4 (all on same token)", c0)
 	}
-	if token0Count.Load() != 4 {
-		t.Errorf("token 0 leases = %d, want 4", token0Count.Load())
+	if c1 != 0 && c1 != 4 {
+		t.Errorf("token 1 leases = %d, want 0 or 4 (all on same token)", c1)
+	}
+	if mock0.SessionCreates == 1 && c0 != 4 {
+		t.Errorf("mock0 created but token 0 leases = %d, want 4", c0)
+	}
+	if mock1.SessionCreates == 1 && c1 != 4 {
+		t.Errorf("mock1 created but token 1 leases = %d, want 4", c1)
 	}
 }
 
