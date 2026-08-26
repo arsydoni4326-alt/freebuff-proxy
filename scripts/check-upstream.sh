@@ -3,13 +3,18 @@
 # (internal/registry/testdata/upstream/) and CodebuffAI/freebuff at a ref.
 #
 # Usage:
-#   scripts/check-upstream.sh [ref] [clone-dir]
+#   scripts/check-upstream.sh [--update-wire-baseline] [ref] [clone-dir]
 #
 #   ref        upstream branch or full commit SHA to compare against
 #              (default: main)
 #   clone-dir  local clone of https://github.com/CodebuffAI/freebuff
 #              (default: $FREEBUFF_REFERENCE_DIR, else <repo>/../freebuff-reference).
 #              Missing → shallow-cloned with --depth 50; present → fetched.
+#   --update-wire-baseline
+#              Refresh scripts/wire-baseline.tsv with the current upstream
+#              content hash of every wire file, then exit 0 regardless of
+#              drift. Run this by hand after porting/reviewing an upstream
+#              wire change so future runs only flag genuinely new drift.
 #
 # Prints one table row per pinned file: file | pinned-sha | vendor-sha |
 # status (SAME/DRIFT/MISSING). Exit codes: 0 all SAME, 1 any DRIFT/MISSING,
@@ -22,8 +27,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+UPDATE_BASELINE=0
+if [[ "${1:-}" == "--update-wire-baseline" ]]; then
+	UPDATE_BASELINE=1
+	shift
+fi
 REF="${1:-main}"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
+BASELINE_FILE="$REPO_ROOT/scripts/wire-baseline.tsv"
 if [[ -n "${2:-}" ]]; then
 	CLONE_DIR="$2"
 elif [[ -n "${FREEBUFF_REFERENCE_DIR:-}" ]]; then
@@ -112,6 +123,7 @@ printf '%-12s %-64s %-14s %-14s %s\n' '------------' '--------------------------
 drift=0
 # JSON accumulator for the drift-detection workflow (machine-readable
 # handoff so the next step can create issues/PRs without re-running git).
+declare -A WIRE_VENDOR=()
 JSON_ENTRIES=()
 
 # Generic per-file check. pinned_file may be empty (WIRE_FILES are unpinned).
@@ -119,9 +131,10 @@ JSON_ENTRIES=()
 #
 # For registry files, vendor_sha comes from the local working-tree copy
 # (testdata/upstream/). For wire files, vendor_sha comes from the live
-# upstream file at the fetched commit. A wire file matching the upstream
-# (vendor_sha == upstream_sha) is SAME; otherwise DRIFT — that signal
-# tells the human "upstream moved; re-read the file and port the change".
+# upstream file at the fetched commit. A wire file whose live hash differs
+# from the last-reviewed baseline entry (scripts/wire-baseline.tsv) is
+# DRIFT — that signal tells the human "upstream moved; re-read the file
+# and port the change".
 check_file() {
 	local group="$1" file="$2" pinned_rel="$3"
 	local pinned_file="" vendor_sha="" status="SAME"
@@ -143,12 +156,24 @@ check_file() {
 				status="DRIFT"
 			fi
 		else
-			# Wire files have no pinned copy: DRIFT = "upstream changed
-			# since we last looked" (always true for an unpinned file
-			# unless we capture a vendored copy too). Without a vendored
-			# baseline, report SAME; the owner ports changes manually
-			# against AGENTS.md's "always sync-upstream before work" rule.
-			status="SAME"
+			# Wire files have no pinned copy: compare against the committed
+			# baseline of last-reviewed upstream content
+			# (scripts/wire-baseline.tsv, one "<sha12> <path>" per line).
+			# A baseline entry that differs from the live upstream hash is
+			# DRIFT ("the reviewed version changed upstream"); a missing
+			# entry means we never recorded this file, so report SAME.
+			local base_sha=""
+			if [[ -f "$BASELINE_FILE" ]]; then
+				while read -r sha path; do
+					if [[ "$path" == "$file" ]]; then
+						base_sha="$sha"
+					fi
+				done <"$BASELINE_FILE"
+			fi
+			if [[ -n "$base_sha" && "$base_sha" != "${vendor_sha:0:12}" ]]; then
+				status="DRIFT"
+			fi
+			WIRE_VENDOR["$file"]="${vendor_sha:0:12}"
 		fi
 	fi
 	if [[ "$status" != "SAME" ]]; then
@@ -188,6 +213,17 @@ DRIFT_REPORT="${DRIFT_REPORT:-$REPO_ROOT/.drift-report.json}"
 
 echo
 echo "report: $DRIFT_REPORT"
+if ((UPDATE_BASELINE)); then
+	{
+		for f in "${WIRE_FILES[@]}"; do
+			if [[ -n "${WIRE_VENDOR[$f]:-}" ]]; then
+				printf '%s %s\n' "${WIRE_VENDOR[$f]}" "$f"
+			fi
+		done
+	} | sort -k2 >"$BASELINE_FILE"
+	echo "check-upstream: wire baseline written to $BASELINE_FILE (${#WIRE_VENDOR[@]} entries)."
+	exit 0
+fi
 if ((drift)); then
 	echo "check-upstream: DRIFT detected."
 	echo "Registry pins: refresh by running scripts/sync-upstream.sh and updating"
