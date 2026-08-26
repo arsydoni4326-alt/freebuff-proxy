@@ -12,6 +12,9 @@
 #  3. **Dashboard embed refresh**: a separate job always refreshes the JSON
 #     embedded in the dashboard binary so users see up-to-date sync status
 #     without a live network call at boot.
+# NOTE: the PR-opening jobs need Settings -> Actions -> General ->
+# "Allow GitHub Actions to create and approve pull requests". Without it
+# they fail on gh pr create (needs-port issues are unaffected).
 name: upstream-drift
 
 on:
@@ -139,7 +142,7 @@ jobs:
           mkdir -p "$FREEBUFF_REFERENCE_DIR"
           git clone --depth 50 https://github.com/CodebuffAI/freebuff.git "$FREEBUFF_REFERENCE_DIR"
           git -C "$FREEBUFF_REFERENCE_DIR" fetch --unshallow || true
-          bash scripts/sync-upstream.sh --test-all || true
+          bash scripts/sync-upstream.sh --test-all
 
       - name: Commit any changes
         run: |
@@ -176,7 +179,7 @@ jobs:
           $DRIFT_SUMMARY
           
           Note: PRs created with GITHUB_TOKEN do not trigger CI workflows; run the checks manually before merging." \
-            --label "dependencies" || true
+            --label "dependencies"
 
   open-port-issue:
     name: Open needs-port issue (wire drift)
@@ -207,7 +210,7 @@ jobs:
             --body "Upstream SHA: ${{ needs.drift.outputs.upstream_sha }}
           
           $DRIFT_SUMMARY" \
-            --label "anti-ban" || true
+            --label "anti-ban"
 
   publish-drift-data:
     name: Publish drift JSON to dashboard embed
@@ -239,7 +242,7 @@ jobs:
         env:
           DRIFT_REPORT: internal/dashboard/data/upstream_drift.json
         run: |
-          bash scripts/check-upstream.sh main || true
+          bash scripts/check-upstream.sh main
           head -20 internal/dashboard/data/upstream_drift.json
 
       - name: Verify the embed still parses
@@ -266,8 +269,8 @@ jobs:
           short="${UPSTREAM_SHA:0:7}"
           git -c commit.gpgsign=false commit -m "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
             -m "Automated refresh by .github/workflows/upstream-drift.yml." \
-            -m "Upstream SHA: ${UPSTREAM_SHA}" || true
-          git push -u origin HEAD || true
+            -m "Upstream SHA: ${UPSTREAM_SHA}"
+          git push -u origin HEAD
           existing=$(gh pr list --state open --json number,title \
             --jq ".[] | select(.title | startswith(\"chore(dashboard): refresh upstream-drift embed to vendor ${short}\")) | .number" | head -1 || true)
           if [ -n "$existing" ]; then
@@ -277,4 +280,4 @@ jobs:
           gh pr create --base main \
             --title "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
             --body "Refreshes internal/dashboard/data/upstream_drift.json against CodebuffAI/freebuff @ ${UPSTREAM_SHA}." \
-            --label "dependencies" || true
+            --label "dependencies"
