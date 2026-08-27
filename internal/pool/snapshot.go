@@ -145,6 +145,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 
 		out = append(out, TokenSnapshot{
 			Token:                   i,
+			TokenValue:              cfg.AuthTokens[i],
 			CooldownUntil:           rs.CooldownUntil,
 			ActiveRuns:              rs.ActiveRuns,
 			Requests:                rs.Requests,

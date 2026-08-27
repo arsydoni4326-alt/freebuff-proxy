@@ -129,6 +129,7 @@ type bridgeEntry struct {
 // TokenSnapshot is one token's healthz view.
 type TokenSnapshot struct {
 	Token                   int
+	TokenValue              string    // the actual token value from config.AuthTokens
 	CooldownUntil           time.Time
 	SessionStatus           string
 	SessionInstanceID       string

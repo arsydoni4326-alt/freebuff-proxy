@@ -687,7 +687,7 @@
                       variant="danger"
                       size="sm"
                       disabled={actionPending}
-                      onclick={() => triggerAction('/admin/tokens/remove', { token: token.index ?? i }, $tr('Remove token {idx} from the pool and .env?', { idx }))}
+                      onclick={() => triggerAction('/admin/tokens/remove-specific', { token: token.token_value || '' }, $tr('Remove token {idx} from the pool and database?', { idx }))}
                     >
                       <Trash2 size={13} />
                       <span>{$tr('Remove')}</span>

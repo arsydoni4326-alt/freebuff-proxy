@@ -1,4 +1,4 @@
-# Session: SQLite Token Database
+# Session: SQLite Token Database + UI
 
 ## Current Objective
 Migrating AUTH_TOKENS from `.env` file persistence to a SQLite-backed database for hot-reload support without container recreation. Adding UI for token management.
@@ -19,6 +19,15 @@ Migrating AUTH_TOKENS from `.env` file persistence to a SQLite-backed database f
   - New `handleTokenList()`: Returns all tokens from database
 - **Pool (`internal/pool/lifecycle.go`)**:
   - Added `RemoveTokenByIndex(idx int) error` for specific token removal from the pool
+- **Pool Snapshot (`internal/pool/pool.go`, `internal/pool/snapshot.go`)**:
+  - Added `TokenValue string` field to `TokenSnapshot` struct
+  - Populated from `cfg.AuthTokens[i]` in `Snapshot()` function
+- **Dashboard (`internal/dashboard/dashboard_data.go`)**:
+  - Added `TokenValue string` field to `tokenCard` struct
+  - Populated from `pool.TokenSnapshot.TokenValue` in `cardFromSnapshot()`
+- **Frontend (`frontend/src/lib/pages/Tokens.svelte`)**:
+  - Updated "Remove" button to use `POST /admin/tokens/remove-specific` with `token.token_value`
+  - Changed confirmation message to "Remove token {idx} from the pool and database?"
 - **Entrypoint (`cmd/freebuff-proxy/main.go`)**:
   - Opens token database at startup, migrates existing AUTH_TOKENS
   - Loads tokens from database as authoritative source
@@ -32,6 +41,7 @@ Migrating AUTH_TOKENS from `.env` file persistence to a SQLite-backed database f
 - Database is authoritative source: on startup, tokens are loaded from DB, overriding .env
 - Graceful fallback: if DB fails to open, falls back to .env persistence
 - `RemoveTokenByIndex` mirrors `RemoveLastToken` safety pattern (inflight check, park, drain)
+- Frontend uses `token_value` field for specific token removal instead of index-based removal
 - Extended bridgeTokenCard with Quota rows, SpendLimit, and rate limit stats
 - Tokens page: Bridge Quota section with per-entry cards, quota breakdown, rate limit activity
 - Documentation: docs/bridge-quota-dashboard.md

@@ -531,6 +531,7 @@ func (d *Dashboard) setupData() setupData {
 func cardFromSnapshot(t pool.TokenSnapshot) tokenCard {
 	card := tokenCard{
 		Index:            t.Token,
+		TokenValue:       t.TokenValue,
 		SessionStatus:    t.SessionStatus,
 		QueuePosition:    t.SessionQueuePosition,
 		QueueDepth:       t.SessionQueueDepth,
@@ -711,6 +712,7 @@ type upstreamFile struct {
 
 type tokenCard struct {
 	Index               int     `json:"index"`
+	TokenValue          string  `json:"token_value,omitempty"` // actual token value for removal
 	SessionStatus       string  `json:"session_status"`
 	QueuePosition       int     `json:"queue_position"`
 	QueueDepth          int     `json:"queue_depth"`
