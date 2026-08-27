@@ -106,7 +106,7 @@ Security:
 
 Reliability:
 - [x] Transient upstream failure retry (bounded, idempotent) — `TRANSIENT_RETRIES` config with `GetBody` replay, extensive client_retry_test coverage
-- [ ] Circuit breaker for batch upstream failures — config fields added (`BridgeCircuitBreakerFailures/Window/Cooldown`); wiring deferred (Phase 3)
+- [x] Circuit breaker for batch upstream failures — `bridge_breaker.go` implemented: sliding window, transient-only trips (5xx/network), configurable failures/window/cooldown (`BridgeCircuitBreakerFailures/Window/Cooldown`), tested in `bridge_hardening_test.go`
 - [x] Clear diagnostics for invalid/expired tokens — `errors.go` `remediationMessage()` has actionable gen-token/wait instructions per error code
 - [x] Improved quota exhaustion messaging — `errors.go` `remediationMessage()` with reset time, Retry-After, and actionable hints per code
 
@@ -186,6 +186,127 @@ Consciously parked unless the upstream or a successor strategy removes the block
 - Consolidate configuration flow between the dashboard and `-setup` CLI.
 - Reverse-engineer remaining upstream schema differences toward ~100% wire parity.
 - Regional (China / datacenter) support within existing tiers, if upstream changes.
+
+---
+
+## Future Work Recommendations
+
+Based on the current state of the project and recent merge, the following recommendations
+are organized by priority and impact. These complement the existing roadmap items above.
+
+### High Priority (Production Hardening)
+
+1. **Circuit Breaker Observability**
+   - [x] Expose circuit breaker state in `/healthz` (open/closed, failure count, cooldown remaining)
+   - [x] Add Prometheus metrics: `freebuff_proxy_bridge_breaker_open`, `freebuff_proxy_bridge_breaker_failures`
+   - [ ] Surface breaker state in dashboard Overview page
+
+2. **Bridge Mode Quota Introspection Dashboard**
+   - Per-entry quota visualization with model-level breakdown
+   - Historical quota usage charts (Pacific-day window)
+   - Rate limit hit/miss counters per entry
+
+3. **Automated Token Rotation**
+   - Detect tokens approaching quota exhaustion
+   - Suggest or auto-rotate to backup tokens
+   - Integrate with `-test-token` for health validation
+
+4. **Enhanced Error Remediation**
+   - Expand `remediationMessage()` with actionable steps for each error class
+   - Link to relevant documentation sections in error responses
+   - Add dashboard toast notifications for common fixable errors
+
+### Medium Priority (Feature Completeness)
+
+5. **Multi-Profile Egress Abstraction**
+   - Support rotating between Chrome, Firefox, Safari profiles automatically
+   - Profile selection based on request characteristics
+   - CI testing against profile drift
+
+6. **Request-Level Cost Tracking**
+   - Per-request token usage logging
+   - Aggregated cost dashboards per model/client
+   - Integration with `MaxSpendPerDay` for budget enforcement
+
+7. **Advanced Rate Limiting**
+   - Per-model rate limits (not just per-token)
+   - Burst allowance configuration
+   - Adaptive rate limiting based on upstream feedback
+
+8. **Session Persistence Improvements**
+   - Cross-restart session continuity validation
+   - Session state versioning for backward compatibility
+   - Session migration tools for pool changes
+
+### Low Priority (Nice-to-Have)
+
+9. **Dashboard Enhancements**
+   - Dark/light theme toggle (despite "instrument panel" philosophy)
+   - Exportable configuration snapshots
+   - Audit log for admin actions
+   - WebSocket-based real-time updates (replacing polling)
+
+10. **Developer Experience**
+    - Plugin system for custom middleware
+    - Webhook support for upstream events
+    - GraphQL API for complex queries
+    - gRPC transport option
+
+11. **Advanced Ban Avoidance**
+    - Machine learning-based risk scoring
+    - Crowd-sourced IP reputation database
+    - Automated IP rotation (with upstream consent)
+    - Honeypot detection for upstream probes
+
+12. **Multi-Tenant Support**
+    - Per-user quotas and rate limits
+    - Role-based access control
+    - Usage billing integration
+    - Tenant isolation guarantees
+
+### Research & Exploration
+
+13. **Upstream Protocol Analysis**
+    - Formal protocol specification (reverse-engineered)
+    - Protocol versioning detection
+    - Backward compatibility layers
+    - Forward compatibility negotiation
+
+14. **Performance Optimization**
+    - Connection pooling improvements
+    - Request batching for upstream
+    - Response caching for repeated queries
+    - HTTP/3 support
+
+15. **Security Hardening**
+    - Zero-trust architecture for multi-user deployments
+    - mTLS between proxy and upstream
+    - Secret rotation automation
+    - Compliance logging (SOC2, GDPR)
+
+---
+
+## Contributing to the Roadmap
+
+See [CONTRIBUTING](CONTRIBUTING.md):
+
+- Open an issue and discuss first, especially where behavior depends on the undocumented upstream.
+- Keep docs in public places (`README.md`, `docs/`, plus these top-level docs).
+- Route improvements are often better as configuration defaults; deliberate first.
+
+---
+
+## Related Documentation
+
+- [Architecture](ARCHITECTURE.md) — system architecture, components, routing
+- [Specification](SPECIFICATION.md) — API surface and behavior contracts
+- [README](README.md) — overview, quick start, configuration
+- [Design System](DESIGN.md) — dashboard design
+- [docs/](docs/) — Getting Started, Client Integration, Testing, Dashboard, 9router
+
+---
+
+*Tracked by* maintainers and CI. Keep this roadmap accurate.
 
 ---
 

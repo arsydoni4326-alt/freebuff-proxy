@@ -23,6 +23,9 @@ These top-level documents serve as the canonical design and specification refere
 | [Dashboard Guide](dashboard.md) | The embedded admin web UI: access, pages, Docker caveats, hardening |
 | [Manual Testing](testing.md) | Step-by-step verification runbook (Linux and Windows), mirroring the CI checks |
 | [Bridge Mode](bridge-mode.md) | Bridge-mode architecture, invariants B1–B8, security considerations, error surfaces, hardening checklist |
+| [Circuit Breaker Observability](circuit-breaker-observability.md) | `/healthz` fields, Prometheus metrics, dashboard surfacing, tuning, troubleshooting |
+| [Ban-Avoidance & Signature Research](ban-avoidance.md) | Upstream detection landscape, proxy countermeasures, risk engine, operator hygiene rules, research plan |
+| [Upstream Drift Tracking](upstream-drift-tracking.md) | Pinned registry snapshots, drift detection/sync scripts, CI integration, response playbook, runtime freshness |
 
 ## Related
 

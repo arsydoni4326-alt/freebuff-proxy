@@ -107,15 +107,36 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		registryFreshness["age_seconds"] = time.Since(registryLastRefresh).Seconds()
 	}
 
+	// Circuit breaker state (Phase: Circuit Breaker Observability).
+	breakerSnap := s.pool.BreakerSnapshot()
+	var breakerUntil any
+	if breakerSnap.Until != nil {
+		breakerUntil = breakerSnap.Until.Format(time.RFC3339)
+	}
+	circuitBreaker := map[string]any{
+		"enabled":                    breakerSnap.Enabled,
+		"open":                       breakerSnap.Open,
+		"failure_count":              breakerSnap.FailureCount,
+		"failures_remaining":         breakerSnap.FailuresRemaining,
+		"cooldown_remaining_seconds": breakerSnap.CooldownRemaining,
+		"until":                      breakerUntil,
+		"config": map[string]any{
+			"failures_threshold": breakerSnap.Threshold,
+			"window":             breakerSnap.Window,
+			"cooldown":           breakerSnap.Cooldown,
+		},
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":         "ok",
-		"mode":           cfg.EffectiveMode(),
-		"uptime_seconds": time.Since(s.started).Seconds(),
-		"models":         s.servedModelCount(),
-		"tokens":         tokens,
-		"bridge_tokens":  s.pool.BridgeCount(),
-		"bridge_entries": bridgeEntries,
-		"registry":       registryFreshness,
+		"status":          "ok",
+		"mode":            cfg.EffectiveMode(),
+		"uptime_seconds":  time.Since(s.started).Seconds(),
+		"models":          s.servedModelCount(),
+		"tokens":          tokens,
+		"bridge_tokens":   s.pool.BridgeCount(),
+		"bridge_entries":  bridgeEntries,
+		"circuit_breaker": circuitBreaker,
+		"registry":        registryFreshness,
 	})
 }
 
@@ -404,4 +425,18 @@ func (s *Server) bridgeMetrics(sb *strings.Builder) {
 		}
 	}
 	sb.WriteString("\n")
+
+	// Circuit breaker metrics (Phase: Circuit Breaker Observability).
+	breakerSnap := s.pool.BreakerSnapshot()
+	openVal := 0
+	if breakerSnap.Open {
+		openVal = 1
+	}
+	sb.WriteString("# HELP freebuff_proxy_bridge_breaker_open 1 when the circuit breaker is blocking requests, 0 otherwise\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_breaker_open gauge\n")
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_open %d\n\n", openVal)
+
+	sb.WriteString("# HELP freebuff_proxy_bridge_breaker_failures Current number of transient failures in the circuit breaker sliding window\n")
+	sb.WriteString("# TYPE freebuff_proxy_bridge_breaker_failures gauge\n")
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_failures %d\n\n", breakerSnap.FailureCount)
 }

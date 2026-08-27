@@ -1,8 +1,20 @@
-# Session: Phase 3 & 4 — Ban-Avoidance & Upstream Drift Tracking
+# Session: Circuit Breaker Observability
 
 ## Current Objective
-Phase 3: Ban-avoidance & signature research — Documentation complete.
-Phase 4: Upstream drift tracking — Documentation complete.
+Implementing Circuit Breaker Observability (ROADMAP § Future Work Recommendations #1).
+Exposing circuit breaker state via `/healthz`, Prometheus metrics, and dashboard.
+
+## Recent Changes (Merge from origin/main)
+- Circuit breaker for bridge mode fully implemented (`bridge_breaker.go`)
+- Bridge hardening tests (`bridge_hardening_test.go`)
+- Header injection tests (`header_injection_test.go`)
+- Bridge metrics tests (`bridge_metrics_test.go`)
+- Protocol regression tests (`protocol_regression_test.go`)
+- Upstream drift data synced to vendor 63a1d68
+- Dashboard drift banner and sync status surfaced to operators
+- CI drift detection via committed baseline
+- Docker staging improvements (debian-based)
+- Registry updates: serve stealth/ox-alpha models
 
 ## Phase 3: Ban-Avoidance & Signature Research
 
@@ -61,27 +73,50 @@ Phase 4: Upstream drift tracking — Documentation complete.
 - [x] Anthropic SSE lifecycle documented as compile-time anchor in the regression file
 
 ## Files Modified (this increment)
-- `ROADMAP.md` — updated Phase 3, Phase 4, Phase 4.2, Phase 4.3, and Phase 4.6 progress checkmarks
-- `session.md` — Phase 3/4/4.2/4.3/4.6 progress tracking
-- `docs/ban-avoidance.md` — NEW: comprehensive ban-avoidance & signature research doc
-- `docs/upstream-drift-tracking.md` — NEW: drift tracking doc + Phase 4.2 freshness + Phase 4.3 protocol regression docs + Phase 4.6 runbooks
-- `internal/registry/registry.go` — added `lastRefreshAt`/`usingFallback` fields + accessors
-- `internal/registry/registry_test.go` — added `TestFreshnessTracking`
-- `internal/server/health.go` — added `registry` to `/healthz` + Prometheus gauges
-- `internal/server/server_models_test.go` — added `TestHealthzRegistryFreshness`, `TestMetricsRegistryFreshness`
-- `internal/dashboard/dashboard_data.go` — added `RegistryFallback`/`RegistryLastRefresh` to overview
-- `.github/workflows/upstream-drift.yml` — added `DRIFT_WEBHOOK_URL` webhook notification
-- `internal/upstream/protocol_regression_test.go` — NEW: Phase 4.3 protocol drift regression test suite
+- `session.md` — Updated to reflect post-merge state with circuit breaker completion
+- `ROADMAP.md` — Marked circuit breaker as complete, added comprehensive future work recommendations
+- `README.md` — Added circuit breaker configuration options to Configuration Reference, updated Bridge mode description
+- `docs/README.md` — Added ban-avoidance and upstream-drift-tracking documentation to guides table
+- `docs/bridge-mode.md` — Marked circuit breaker as complete in hardening checklist
+- `internal/pool/bridge_breaker.go` — NEW: Circuit breaker implementation for bridge mode
+- `internal/pool/bridge_hardening_test.go` — NEW: Comprehensive hardening tests
+- `internal/server/bridge_metrics_test.go` — NEW: Bridge metrics label hygiene tests
+- `internal/server/header_injection_test.go` — NEW: Header smuggling prevention tests
+- `internal/upstream/protocol_regression_test.go` — NEW: Protocol drift regression tests
 
-## Next Steps
+## Circuit Breaker Observability Phase (IN PROGRESS)
+
+### Deliverables
+- [x] Documentation: `docs/circuit-breaker-observability.md` — comprehensive guide
+- [x] Expose breaker state via `Pool.BreakerSnapshot()` method
+- [x] `/healthz` response includes `circuit_breaker` object
+- [x] Prometheus metrics: `freebuff_proxy_bridge_breaker_open`, `freebuff_proxy_bridge_breaker_failures`
+- [ ] Dashboard Overview surfaces breaker state (deferred to dashboard phase)
+- [x] Tests: `TestBreakerSnapshotDisabled`, `TestBreakerSnapshotEnabled`, `TestBreakerSnapshotOpen`, `TestBreakerSnapshotFailureCount`, `TestHealthzCircuitBreaker`, `TestHealthzCircuitBreakerEnabled`, `TestMetricsCircuitBreaker`
+
+### Design Decisions
+- Breaker state exposed via `BreakerSnapshot()` to decouple pool internals from server layer
+- Zero-value defaults emitted when bridge mode inactive (consistent for pre-provisioned dashboards)
+- `until` field as nullable RFC 3339 (null when closed/disabled)
+- `failures_remaining` is convenience field (threshold - count, clamped to 0)
+
+---
+
+## Remaining Work (Post-Merge)
 1. Phase 3.2: Header-sanitization refinements against real traffic captures
-2. Circuit breaker for batch upstream failures (deferred from Phase 2)
-3. Phase 4.4: Automated sync automation (auto-PR, auto-fallback)
-4. Phase 4.5: Egress behavior tracking (admission, quota windows)
-5. Run full hermetic test suite (`env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...`)
+2. Phase 3.3: Timing & behavioral analysis
+3. Phase 3.4: TLS fingerprint drift monitoring
+4. Phase 3.5: Risk engine improvements
+5. Phase 3.6: Egress probe enhancements
+6. Phase 4.4: Automated sync automation (auto-PR, auto-fallback)
+7. Phase 4.5: Egress behavior tracking (admission, quota windows)
+
+## Future Work Recommendations (NEW)
+See ROADMAP.md § Future Work Recommendations for comprehensive suggestions.
 
 ## Load-Bearing Invariants (Reminder)
 - **Hermetic Test Suite**: `env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...`
 - **Anti-Ban Contract**: Session POST sends headers, chat POST sends NO model header, honest FINISH
 - **Tool Stripping**: `end_turn` injected upstream, stripped downstream
 - **Sequential SSE Content Blocks**: Never interleave unclosed blocks
+- **Circuit Breaker**: Only trips on transient upstream failures (5xx/network); classified errors never trip

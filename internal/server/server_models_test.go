@@ -885,7 +885,6 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 	}
 }
 
-
 // TestPausedModelWithdrawnMessage pins the withdrawn-model flow (issue #140
 // drift, vendor cce4800): minimax/minimax-m3 is upstream-recognized but
 // admission-refused, so the proxy fast-refuses it with upstream's own copy —
@@ -1024,6 +1023,128 @@ func TestMetricsRegistryFreshness(t *testing.T) {
 		"# HELP freebuff_proxy_registry_fallback",
 		"# TYPE freebuff_proxy_registry_fallback gauge",
 		"freebuff_proxy_registry_fallback 1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q in:\n%s", want, body)
+		}
+	}
+}
+
+// TestHealthzCircuitBreaker verifies that /healthz includes the circuit_breaker
+// object with correct fields when the breaker is disabled (default).
+func TestHealthzCircuitBreaker(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/healthz", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		CircuitBreaker struct {
+			Enabled              bool    `json:"enabled"`
+			Open                 bool    `json:"open"`
+			FailureCount         int     `json:"failure_count"`
+			FailuresRemaining    int     `json:"failures_remaining"`
+			CooldownRemainingSec float64 `json:"cooldown_remaining_seconds"`
+			Until                *string `json:"until"`
+			Config               struct {
+				FailuresThreshold int    `json:"failures_threshold"`
+				Window            string `json:"window"`
+				Cooldown          string `json:"cooldown"`
+			} `json:"config"`
+		} `json:"circuit_breaker"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal healthz: %v: %s", err, data)
+	}
+	// Default test server has no breaker configured (failures=0).
+	if out.CircuitBreaker.Enabled {
+		t.Error("circuit_breaker.enabled = true, want false (disabled by default)")
+	}
+	if out.CircuitBreaker.Open {
+		t.Error("circuit_breaker.open = true, want false")
+	}
+	if out.CircuitBreaker.FailureCount != 0 {
+		t.Errorf("circuit_breaker.failure_count = %d, want 0", out.CircuitBreaker.FailureCount)
+	}
+	if out.CircuitBreaker.Until != nil {
+		t.Errorf("circuit_breaker.until = %v, want nil", *out.CircuitBreaker.Until)
+	}
+	if out.CircuitBreaker.Config.FailuresThreshold != 0 {
+		t.Errorf("circuit_breaker.config.failures_threshold = %d, want 0", out.CircuitBreaker.Config.FailuresThreshold)
+	}
+}
+
+// TestHealthzCircuitBreakerEnabled verifies /healthz circuit_breaker fields
+// when the breaker is configured (via newTestServerCfg mutator).
+func TestHealthzCircuitBreakerEnabled(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
+		c.BridgeCircuitBreakerFailures = 5
+		c.BridgeCircuitBreakerWindow = 30 * time.Second
+		c.BridgeCircuitBreakerCooldown = 10 * time.Second
+	}, mock)
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/healthz", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		CircuitBreaker struct {
+			Enabled              bool    `json:"enabled"`
+			Open                 bool    `json:"open"`
+			FailureCount         int     `json:"failure_count"`
+			FailuresRemaining    int     `json:"failures_remaining"`
+			CooldownRemainingSec float64 `json:"cooldown_remaining_seconds"`
+			Config               struct {
+				FailuresThreshold int    `json:"failures_threshold"`
+				Window            string `json:"window"`
+				Cooldown          string `json:"cooldown"`
+			} `json:"config"`
+		} `json:"circuit_breaker"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal healthz: %v: %s", err, data)
+	}
+	if !out.CircuitBreaker.Enabled {
+		t.Error("circuit_breaker.enabled = false, want true")
+	}
+	if out.CircuitBreaker.Open {
+		t.Error("circuit_breaker.open = true, want false (no failures)")
+	}
+	if out.CircuitBreaker.Config.FailuresThreshold != 5 {
+		t.Errorf("circuit_breaker.config.failures_threshold = %d, want 5", out.CircuitBreaker.Config.FailuresThreshold)
+	}
+	if out.CircuitBreaker.Config.Window != "30s" {
+		t.Errorf("circuit_breaker.config.window = %q, want %q", out.CircuitBreaker.Config.Window, "30s")
+	}
+	if out.CircuitBreaker.Config.Cooldown != "10s" {
+		t.Errorf("circuit_breaker.config.cooldown = %q, want %q", out.CircuitBreaker.Config.Cooldown, "10s")
+	}
+}
+
+// TestMetricsCircuitBreaker verifies that /metrics exports
+// freebuff_proxy_bridge_breaker_open and freebuff_proxy_bridge_breaker_failures.
+func TestMetricsCircuitBreaker(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"# HELP freebuff_proxy_bridge_breaker_open",
+		"# TYPE freebuff_proxy_bridge_breaker_open gauge",
+		"freebuff_proxy_bridge_breaker_open 0",
+		"# HELP freebuff_proxy_bridge_breaker_failures",
+		"# TYPE freebuff_proxy_bridge_breaker_failures gauge",
+		"freebuff_proxy_bridge_breaker_failures 0",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q in:\n%s", want, body)

@@ -197,7 +197,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 ### Reliability
 
 - [x] **Transient failure retry** — Pre-existing `TRANSIENT_RETRIES` (default 1) in the upstream client replays the request body via `GetBody` on a fresh connection; bounded attempts, byte-identical replay (idempotent). Covered by extensive `client_retry_test.go`.
-- [ ] **Circuit breaker** — Config fields added (`BridgeCircuitBreakerFailures/Window/Cooldown`); upstream short-circuit wiring deferred (Phase 3).
+- [x] **Circuit breaker** — `bridge_breaker.go` implemented: sliding window, transient-only trips (5xx/network), configurable failures/window/cooldown (`BridgeCircuitBreakerFailures/Window/Cooldown`), tested in `bridge_hardening_test.go`.
 - [x] **Diagnostics for invalid tokens** — `errors.go` `remediationMessage()` returns actionable per-code remediation (gen-token scripts for invalid/expired, reset time for quota, region routing for country block, etc.).
 - [x] **Quota exhaustion messaging** — `errors.go` `remediationMessage()` adds reset-at, Retry-After, and precise hints for daily-cap / spend_limited / ip_capped / waiting-room states.
 

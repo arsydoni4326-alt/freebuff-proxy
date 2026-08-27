@@ -340,3 +340,125 @@ func TestBridgeLogSanitization(t *testing.T) {
 		t.Error("bridgeTokenLabel leaked a raw-token-derived prefix")
 	}
 }
+
+// --- Circuit breaker observability tests ---
+
+// TestBreakerSnapshotDisabled verifies that BreakerSnapshot returns
+// Enabled=false when BRIDGE_CIRCUIT_BREAKER_FAILURES is 0 (default).
+func TestBreakerSnapshotDisabled(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock) // default config: failures=0
+
+	snap := p.BreakerSnapshot()
+	if snap.Enabled {
+		t.Error("BreakerSnapshot.Enabled = true, want false (disabled by default)")
+	}
+	if snap.Open {
+		t.Error("BreakerSnapshot.Open = true, want false")
+	}
+	if snap.FailureCount != 0 {
+		t.Errorf("BreakerSnapshot.FailureCount = %d, want 0", snap.FailureCount)
+	}
+	if snap.Until != nil {
+		t.Errorf("BreakerSnapshot.Until = %v, want nil", snap.Until)
+	}
+}
+
+// TestBreakerSnapshotEnabled verifies BreakerSnapshot returns correct state
+// when the breaker is configured but has not yet tripped.
+func TestBreakerSnapshotEnabled(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePoolCfg(t, mock, func(c *config.Config) {
+		c.BridgeCircuitBreakerFailures = 5
+		c.BridgeCircuitBreakerWindow = 30 * time.Second
+		c.BridgeCircuitBreakerCooldown = 10 * time.Second
+	})
+
+	snap := p.BreakerSnapshot()
+	if !snap.Enabled {
+		t.Error("BreakerSnapshot.Enabled = false, want true")
+	}
+	if snap.Open {
+		t.Error("BreakerSnapshot.Open = true, want false (no failures yet)")
+	}
+	if snap.FailureCount != 0 {
+		t.Errorf("BreakerSnapshot.FailureCount = %d, want 0", snap.FailureCount)
+	}
+	if snap.FailuresRemaining != 5 {
+		t.Errorf("BreakerSnapshot.FailuresRemaining = %d, want 5", snap.FailuresRemaining)
+	}
+	if snap.Threshold != 5 {
+		t.Errorf("BreakerSnapshot.Threshold = %d, want 5", snap.Threshold)
+	}
+	if snap.Window != "30s" {
+		t.Errorf("BreakerSnapshot.Window = %q, want %q", snap.Window, "30s")
+	}
+	if snap.Cooldown != "10s" {
+		t.Errorf("BreakerSnapshot.Cooldown = %q, want %q", snap.Cooldown, "10s")
+	}
+}
+
+// TestBreakerSnapshotOpen verifies BreakerSnapshot correctly reports Open=true
+// with cooldown information when the breaker has tripped.
+func TestBreakerSnapshotOpen(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePoolCfg(t, mock, func(c *config.Config) {
+		c.BridgeCircuitBreakerFailures = 2
+		c.BridgeCircuitBreakerWindow = 30 * time.Second
+		c.BridgeCircuitBreakerCooldown = 10 * time.Second
+	})
+
+	cfg := p.cfg.Load()
+
+	// Simulate 2 transient failures to trip the breaker.
+	p.bridgeMu.Lock()
+	p.breakerRecordLocked(cfg)
+	p.breakerRecordLocked(cfg)
+	p.bridgeMu.Unlock()
+
+	snap := p.BreakerSnapshot()
+	if !snap.Enabled {
+		t.Error("BreakerSnapshot.Enabled = false, want true")
+	}
+	if !snap.Open {
+		t.Error("BreakerSnapshot.Open = false, want true (breaker tripped)")
+	}
+	if snap.CooldownRemaining <= 0 {
+		t.Errorf("BreakerSnapshot.CooldownRemaining = %f, want > 0", snap.CooldownRemaining)
+	}
+	if snap.Until == nil {
+		t.Error("BreakerSnapshot.Until = nil, want non-nil (breaker is open)")
+	}
+}
+
+// TestBreakerSnapshotFailureCount verifies the sliding-window failure count
+// is reported accurately.
+func TestBreakerSnapshotFailureCount(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePoolCfg(t, mock, func(c *config.Config) {
+		c.BridgeCircuitBreakerFailures = 10 // high threshold so it doesn't trip
+		c.BridgeCircuitBreakerWindow = 30 * time.Second
+		c.BridgeCircuitBreakerCooldown = 10 * time.Second
+	})
+
+	cfg := p.cfg.Load()
+
+	// Record 3 failures without tripping.
+	p.bridgeMu.Lock()
+	for i := 0; i < 3; i++ {
+		p.breakerRecordLocked(cfg)
+	}
+	p.bridgeMu.Unlock()
+
+	snap := p.BreakerSnapshot()
+	if snap.FailureCount != 3 {
+		t.Errorf("BreakerSnapshot.FailureCount = %d, want 3", snap.FailureCount)
+	}
+	if snap.FailuresRemaining != 7 {
+		t.Errorf("BreakerSnapshot.FailuresRemaining = %d, want 7 (10-3)", snap.FailuresRemaining)
+	}
+}

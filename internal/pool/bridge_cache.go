@@ -304,6 +304,73 @@ func bridgeTokenLabel(entry *bridgeEntry) string {
 	return "token-" + entry.client.TokenKey()[:8]
 }
 
+// BreakerSnapshot contains the circuit breaker's current state for the
+// health endpoint and Prometheus metrics. Exposed via BreakerSnapshot().
+type BreakerSnapshot struct {
+	Enabled           bool       // true when BRIDGE_CIRCUIT_BREAKER_FAILURES > 0
+	Open              bool       // true when the breaker is blocking requests
+	FailureCount      int        // current failures in the sliding window
+	FailuresRemaining int        // failures before trip (clamped to 0)
+	CooldownRemaining float64    // seconds left in cooldown (0 when closed)
+	Until             *time.Time // when the breaker will close (nil when closed/disabled)
+	Threshold         int        // configured BRIDGE_CIRCUIT_BREAKER_FAILURES
+	Window            string     // configured window duration (e.g. "30s")
+	Cooldown          string     // configured cooldown duration (e.g. "10s")
+}
+
+// BreakerSnapshot returns the current circuit breaker state. Safe for
+// concurrent use; takes a brief bridgeMu lock.
+func (p *Pool) BreakerSnapshot() BreakerSnapshot {
+	cfg := p.cfg.Load()
+
+	snap := BreakerSnapshot{
+		Threshold: cfg.BridgeCircuitBreakerFailures,
+		Window:    cfg.BridgeCircuitBreakerWindow.String(),
+		Cooldown:  cfg.BridgeCircuitBreakerCooldown.String(),
+	}
+
+	if cfg.BridgeCircuitBreakerFailures <= 0 {
+		return snap // disabled
+	}
+	snap.Enabled = true
+
+	p.bridgeMu.Lock()
+	now := time.Now()
+
+	// Count failures in the sliding window (entries older than cutoff are reaped
+	// by breakerRecordLocked; all remaining entries are within the window).
+	cutoff := now.Add(-cfg.BridgeCircuitBreakerWindow)
+	count := 0
+	for _, f := range p.breakerFailures {
+		if !f.After(cutoff) {
+			break // past the window boundary
+		}
+		count++
+	}
+	snap.FailureCount = count
+
+	remaining := cfg.BridgeCircuitBreakerFailures - count
+	if remaining < 0 {
+		remaining = 0
+	}
+	snap.FailuresRemaining = remaining
+
+	// Check if breaker is open.
+	if !p.breakerUntil.IsZero() && now.Before(p.breakerUntil) {
+		snap.Open = true
+		cooldownLeft := time.Until(p.breakerUntil).Seconds()
+		if cooldownLeft < 0 {
+			cooldownLeft = 0
+		}
+		snap.CooldownRemaining = cooldownLeft
+		t := p.breakerUntil
+		snap.Until = &t
+	}
+
+	p.bridgeMu.Unlock()
+	return snap
+}
+
 // BridgeSnapshot returns a snapshot of all active bridge entries for the
 // dashboard. The snapshot is taken under bridgeMu but returned for external
 // reads (#187).

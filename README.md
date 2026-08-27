@@ -147,7 +147,7 @@ graph TD
 | **Run** | One upstream agent execution for a model, shared across many requests. Runs start on first use, live for `ROTATION_INTERVAL` (default `6h`), then are rotated (fresh start, old one drained/finished) so no run accumulates suspiciously long-lived activity. Idle tokens get their runs finished too. |
 | **Model** | A catalog entry addressed as `provider/model` (e.g. `deepseek/deepseek-v4-flash`). The registry serves `/v1/models` and maps each model to the upstream agent that runs it. |
 | **Pooled mode** | You configure several tokens in `AUTH_TOKENS`. Requests stick to the token with a live session and fail over only when it is rate-limited or errors: a reactive drain, not aggressive rotation. Best for one user with several accounts who wants maximum uptime and quota headroom. |
-| **Bridge mode** | You configure no tokens. Each client sends its own token as `Authorization: Bearer <token>`, and the proxy relays with it, caching per-client state (LRU, max 32). Best for a shared router (e.g. 9router) serving many users who each bring their own account. |
+| **Bridge mode** | You configure no tokens. Each client sends its own token as `Authorization: Bearer <token>`, and the proxy relays with it, caching per-client state (LRU, max 32). Includes circuit breaker protection against batch upstream failures (configurable via `BRIDGE_CIRCUIT_BREAKER_*`). Best for a shared router (e.g. 9router) serving many users who each bring their own account. |
 | **Safe mode** | Default-on anti-ban presets: TLS stealth, proxy-header sanitization, request jitter, and idle rotation. See [Safe Mode](#safe-mode--zero-spam-quota-handling). |
 | **Quota lock** | When a token hits its daily limit, the proxy parses the upstream `429` reset timestamp and refuses local requests for that token until reset, fast (`<1ms`), silent, and spam-free. |
 
@@ -306,6 +306,9 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `RATE_LIMIT_BURST` | `0` | Burst request capacity per client IP (`0` = default `2 * RATE_LIMIT_PER_IP`) |
 | `BRIDGE_RATE_LIMIT_PER_TOKEN` | `0` | Per-client-token rate limit in req/s in bridge mode (`0` = unlimited). Independent of the per-IP limiter; each bridge token is throttled individually |
 | `BRIDGE_DAILY_LIMIT` | `0` | Global daily chat cap across ALL bridge-mode tokens (`0` = unlimited). Checked before per-entry caps |
+| `BRIDGE_CIRCUIT_BREAKER_FAILURES` | `0` | Number of transient upstream 5xx/network failures within the sliding window that trips the circuit breaker (`0` = disabled). Only genuine transient outages (5xx/network) trip the breaker; classified errors (auth/rate-limit/ban/country/ip_capped) never trip it |
+| `BRIDGE_CIRCUIT_BREAKER_WINDOW` | `30s` | Sliding window in which the failure count is measured. The breaker opens when `BRIDGE_CIRCUIT_BREAKER_FAILURES` failures fall within this window, and stays open for `BRIDGE_CIRCUIT_BREAKER_COOLDOWN` |
+| `BRIDGE_CIRCUIT_BREAKER_COOLDOWN` | `10s` | How long the circuit breaker stays open after tripping. Disabled when `BRIDGE_CIRCUIT_BREAKER_FAILURES` is 0 |
 | `MAX_SPEND_PER_DAY` | `0` | Advisory per-token Pacific-day spend ceiling in ledger units (`0` = unlimited). Never blocks — informational only, surfaced on `/healthz` |
 
 When `SESSION_PERSIST=true`, the state file stores a SHA-256 hash of each
