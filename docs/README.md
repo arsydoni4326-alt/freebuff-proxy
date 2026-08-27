@@ -26,6 +26,7 @@ These top-level documents serve as the canonical design and specification refere
 | [Circuit Breaker Observability](circuit-breaker-observability.md) | `/healthz` fields, Prometheus metrics, dashboard surfacing, tuning, troubleshooting |
 | [Ban-Avoidance & Signature Research](ban-avoidance.md) | Upstream detection landscape, proxy countermeasures, risk engine, operator hygiene rules, research plan |
 | [Upstream Drift Tracking](upstream-drift-tracking.md) | Pinned registry snapshots, drift detection/sync scripts, CI integration, response playbook, runtime freshness |
+| [Automated Token Rotation](automated-token-rotation.md) | Token lifecycle management, health scoring, exhaustion prediction, anti-ban rotation rules, implementation plan |
 
 ## Related
 

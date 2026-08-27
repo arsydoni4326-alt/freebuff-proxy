@@ -46,6 +46,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"country":                   snap.CountryCode,
 			"session_model":             snap.SessionModel,
 			"session_remaining_seconds": snap.SessionRemainingSeconds,
+			"health_score":              snap.HealthScore,
+			"health_score_label":        snap.HealthScoreLabel,
 		}
 		if len(snap.QuotaByModel) > 0 {
 			quota := make(map[string]any, len(snap.QuotaByModel))
@@ -309,6 +311,15 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	sb.WriteString("\n")
+
+	// Phase 5.1: token health score gauge.
+	sb.WriteString("# HELP freebuff_proxy_token_health_score Composite token health score (0-100) from quota, cooldown, spend, error rate, session freshness\n")
+	sb.WriteString("# TYPE freebuff_proxy_token_health_score gauge\n")
+	for _, snap := range snaps {
+		fmt.Fprintf(&sb, "freebuff_proxy_token_health_score{token=\"%d\",label=\"%s\"} %d\n",
+			snap.Token+1, escapeLabelValue(snap.HealthScoreLabel), snap.HealthScore)
 	}
 	sb.WriteString("\n")
 

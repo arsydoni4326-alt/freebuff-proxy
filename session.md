@@ -122,6 +122,55 @@ Per-entry quota visualization with model-level breakdown, rate limit counters, a
 ## Future Work Recommendations (NEW)
 See ROADMAP.md § Future Work Recommendations for comprehensive suggestions.
 
+## Automated Token Rotation Planning (NEW)
+
+### Documentation
+- [x] Create `docs/automated-token-rotation.md` — comprehensive design & implementation plan
+- [x] Document prohibited rotation patterns (aggressive round-robin, proactive swapping, parallel hammering, re-admission spam)
+- [x] Document existing token lifecycle mechanisms (13 mechanisms mapped)
+- [x] Document anti-ban compliance rules for rotation (A1–A5 invariant mapping)
+- [x] Define token health state machine (Active → Degraded → Exhausted → Recovering → Dead)
+- [x] Define token health score (composite 0–100 from quota, cooldown, spend, error rate, session freshness)
+- [x] Define exhaustion prediction algorithm (linear extrapolation)
+- [x] Define configuration keys (TOKEN_HEALTH_PROBES, EXHAUSTION_WARNING_THRESHOLD, AUTO_ROTATE_ON_EXHAUSTION, HEALTH_SCORE_ENABLED)
+- [x] Define Prometheus metrics (token_health_score, token_exhaustion_warnings, token_state, token_probe, token_failover)
+- [x] Define implementation phases (5.1–5.7, ~15-18 days total)
+
+### Key Design Decision
+**"Automated Token Rotation" means reactive, health-aware lifecycle management — NOT
+aggressive round-robin.** The documentation explicitly prohibits:
+- Aggressive round-robin of healthy keys (farming signal per upstream detection)
+- Proactive token swapping (burns scarce session slots)
+- Parallel token hammering (ip_capped trigger)
+- Re-admission spam (burns daily slots, T10 storm detector)
+
+### Anti-Ban Invariant Reminder
+- Hot-session-first selection: traffic concentrates on tokens with live sessions
+- Drain before switching: exhaust quota/session before moving to next token
+- One session at a time per token: never create parallel sessions
+- Honest FINISH on every run termination: drain queue before state transitions
+
+## Phase 5.1: Token Health Score (COMPLETE)
+
+### Deliverables
+- [x] `internal/pool/health.go` — NEW: `ComputeHealthScore()`, `HealthScoreLabel()`, `buildHealthScoreInput()`, `countRateLimitEvents()`
+- [x] `internal/pool/health_test.go` — NEW: 11 unit tests covering healthy, exhausted, cooldown, error rate, spend, no-session, unknown-quota, label thresholds, event counting, input building
+- [x] `internal/pool/pool.go` — Added `HealthScore int` and `HealthScoreLabel string` fields to `TokenSnapshot`
+- [x] `internal/pool/snapshot.go` — `Snapshot()` computes health score from quota, cooldown, spend, error rate, session freshness
+- [x] `internal/server/health.go` — `/healthz` JSON includes `health_score` and `health_score_label`; `/metrics` emits `freebuff_proxy_token_health_score` gauge with `token` and `label` labels
+
+### Design Decisions
+- Health score is **advisory only** — never gates Acquire or failover
+- Five weighted components: quota (40%), cooldown (25%), spend (15%), error rate (10%), freshness (10%)
+- Unknown quota (before first admission) = full credit (avoids penalizing fresh tokens)
+- Cooldown score ramps linearly in last 20% of window (avoids cliff at expiry boundary)
+- Error rate soft ceiling at 50 events (linear scale below ceiling)
+- Session freshness is proportional to `remaining / ROTATION_INTERVAL`
+
+### Test Results
+- All 11 new health score tests PASS
+- Full hermetic test suite: all packages PASS (pre-existing registry_test.go syntax error is unrelated)
+
 ## Load-Bearing Invariants (Reminder)
 - **Hermetic Test Suite**: `env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...`
 - **Anti-Ban Contract**: Session POST sends headers, chat POST sends NO model header, honest FINISH

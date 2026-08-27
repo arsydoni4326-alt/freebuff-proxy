@@ -202,6 +202,13 @@ type TokenSnapshot struct {
 	// old slot and re-admits with the requested model. Surfaced per-token
 	// in /metrics as freebuff_proxy_model_locked_total.
 	ModelLocked map[string]map[string]int64
+	// HealthScore is a composite 0–100 vitality indicator computed from
+	// quota, cooldown, spend, error rate, and session freshness (Phase 5.1,
+	// docs/automated-token-rotation.md). It is advisory only — it never
+	// gates Acquire or failover — but surfaces in /healthz and /metrics
+	// for operator visibility.
+	HealthScore     int    `json:"health_score"`
+	HealthScoreLabel string `json:"health_score_label"`
 	// Locked is set when the token has been administratively locked by the
 	// operator; Acquire never selects a locked token.
 	Locked bool `json:"locked"`

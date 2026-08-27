@@ -57,8 +57,9 @@ func banView(ban *upstream.BanError, until time.Time) (string, time.Time) {
 func (p *Pool) Snapshot() []TokenSnapshot {
 	toks := p.toks.Load()
 	out := make([]TokenSnapshot, 0, len(*toks))
-	dailyLimit := p.cfg.Load().MaxMessagesPerDay
-	spendLimit := p.cfg.Load().MaxSpendPerDay
+	cfg := p.cfg.Load()
+	dailyLimit := cfg.MaxMessagesPerDay
+	spendLimit := cfg.MaxSpendPerDay
 	for i, tok := range *toks {
 		rs := tok.runs.Snapshot()
 		ss := tok.session.Snapshot()
@@ -129,6 +130,19 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		// Active-ban view for healthz/dashboard consumers (issues #198/#199).
 		banType, bannedUntil := banView(rs.BanError, rs.BannedUntil)
 
+		// Phase 5.1: token health score — composite 0–100 from quota,
+		// cooldown, spend, error rate, and session freshness.
+		hin := buildHealthScoreInput(
+			ss.QuotaByModel,
+			rs.CooldownUntil,
+			spend.Day,
+			spendLimit,
+			countRateLimitEvents(tok.client.RateLimitEvents()),
+			sessionRemaining,
+			cfg.RotationInterval,
+		)
+		healthScore, healthLabel := ComputeHealthScore(hin)
+
 		out = append(out, TokenSnapshot{
 			Token:                   i,
 			CooldownUntil:           rs.CooldownUntil,
@@ -168,6 +182,8 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			SpendLimited:            spend.SpendLimited,
 			BanType:                 banType,
 			BannedUntil:             bannedUntil,
+			HealthScore:             healthScore,
+			HealthScoreLabel:        healthLabel,
 		})
 	}
 	return out
