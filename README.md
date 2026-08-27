@@ -69,19 +69,20 @@ If you are a beginner, you don't need to write code or compile anything:
 
 **Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
 
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot 2026-08-23):
-> *"GPT-5.6 Luna is 3 sessions a day. V4 Pro and Flash use your daily sessions; MiMo is unmetered. —❤️ Freebuff Team"*
-> (DeepSeek models remain unavailable during weekday peak hours; Beijing-weekend Saturdays/Sundays are always off-peak.)
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `5951772` · `0.0.157` `2026-08-27`):
+> *"GLM 5.3 Flash is 2 sessions a day while we see what it costs; every other model runs on your normal daily sessions. MiMo and DeepSeek V4 Flash stay unmetered. —❤️ Freebuff Team"*
+> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` `2/day` fixed `glm_v53_flash` pool; `V4 Flash 07/31` off-peak `Back at 10:00 AM`.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
-| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. 5 sessions/day premium pool. |
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **3 sessions/day limit** (raised from 1 → 2 → 3 in the Aug 21–23 vendor snapshots). |
-| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. Per-model cap removed upstream (Aug 23 snapshot) — draws from the shared daily premium pool; weekday peak-hour pauses lifted. |
+| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. Drains from shared `5/day` premium pool; **unmetered on unlimited tier**. |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool (`PREMIUM 0/5`). |
+| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. `NEW` `2/day` fixed pool `glm_v53_flash` (cheap lane, measuring cache-hit cost; see `freebuff-models.ts:1593`). |
+| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. Shares `5/day` premium pool (per-model caps removed). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
-| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session/referral). |
-| **Stealth** | **Ox Alpha** | `stealth/ox-alpha` | **Anonymous stealth provider**, Reasoning: mandatory (`low`/`high`/`max`, default `high`). 1M-token context, multimodal. Free tier. |
-| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost spikes. |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` per referral). |
+| **Stealth** | **Ox Alpha** | `stealth/ox-alpha` | **Anonymous stealth provider**, Reasoning: mandatory (`low`/`high`/`max`, default `high`). `1M` context, multimodal. |
+| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream. |
 
 Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
 
