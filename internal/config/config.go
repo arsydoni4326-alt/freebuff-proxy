@@ -204,6 +204,34 @@ type Config struct {
 	// (DASHBOARD_ENABLED; default true). Set to false to disable all /admin
 	// routes.
 	DashboardEnabled bool
+	// AutoRotateOnExhaustion, when enabled (AUTO_ROTATE_ON_EXHAUSTION;
+	// default false), skips tokens whose health score label is "exhausted"
+	// during Acquire — routing requests to healthier backup tokens instead.
+	// Tokens are only skipped when at least one healthy token remains; the
+	// exhausted token is still eligible as a last resort. This is reactive
+	// (post-failure), never proactive.
+	AutoRotateOnExhaustion bool
+	// ExhaustionWarningThreshold is how far ahead to predict quota
+	// exhaustion (EXHAUSTION_WARNING_THRESHOLD; default 10m). When a
+	// token's remaining quota at the current usage rate would exhaust
+	// within this window, a WARN log and dashboard alert surface.
+	// 0 disables predictive warnings.
+	ExhaustionWarningThreshold time.Duration
+	// HealthScoreEnabled controls whether the composite 0–100 health
+	// score is computed and surfaced (HEALTH_SCORE_ENABLED; default true).
+	// Disabling reduces snapshot computation cost but removes /healthz
+	// and dashboard health indicators.
+	HealthScoreEnabled bool
+	// TokenHealthProbes, when enabled (TOKEN_HEALTH_PROBES; default
+	// false), runs background zero-cost GET /api/v1/freebuff/session
+	// probes for each pooled token at TokenProbeInterval cadence.
+	// Probes validate token liveness without claiming session slots;
+	// failures surface in /healthz, dashboard, and logs.
+	TokenHealthProbes bool
+	// TokenProbeInterval is the interval between background health
+	// probes per token (TOKEN_PROBE_INTERVAL; default 30m). Only
+	// effective when TokenHealthProbes is enabled.
+	TokenProbeInterval time.Duration
 	// EnvFile is the .env path actually loaded ("" when none existed).
 	// Resolved via ResolveEnvFile (issue #39): ./.env in the working
 	// directory wins; otherwise the platform config dir is tried.
@@ -309,6 +337,11 @@ type rawConfig struct {
 	RiskMediumThreshold              *int                    `json:"RISK_THRESHOLD_MEDIUM"`
 	RiskHighThreshold                *int                    `json:"RISK_THRESHOLD_HIGH"`
 	DashboardEnabled                 bool                    `json:"DASHBOARD_ENABLED"`
+	AutoRotateOnExhaustion           bool                    `json:"AUTO_ROTATE_ON_EXHAUSTION"`
+	ExhaustionWarningThreshold       string                  `json:"EXHAUSTION_WARNING_THRESHOLD"`
+	HealthScoreEnabled               bool                    `json:"HEALTH_SCORE_ENABLED"`
+	TokenHealthProbes                bool                    `json:"TOKEN_HEALTH_PROBES"`
+	TokenProbeInterval               string                  `json:"TOKEN_PROBE_INTERVAL"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list

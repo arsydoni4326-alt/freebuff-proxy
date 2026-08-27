@@ -65,6 +65,8 @@ func (p *Pool) Start(ctx context.Context) {
 		p.cancel = cancel
 		p.wg.Add(1)
 		go p.maintainLoop(runCtx)
+		// Phase 5.2: start background health probes when enabled.
+		p.startProbeLoop(runCtx)
 	})
 }
 

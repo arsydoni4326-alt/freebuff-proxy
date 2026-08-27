@@ -425,7 +425,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 
 **Estimated effort:** 2–3 days.
 
-### Phase 5.2: Exhaustion Prediction & Pre-Failover (High Priority)
+### Phase 5.2: Exhaustion Prediction & Pre-Failover (High Priority) ✅ COMPLETE
 
 **Files to create/modify:**
 - `internal/pool/exhaustion.go` — Exhaustion ETA computation.
@@ -444,7 +444,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 
 **Estimated effort:** 1–2 days.
 
-### Phase 5.4: Background Health Probes (Medium Priority)
+### Phase 5.4: Background Health Probes (Medium Priority) ✅ COMPLETE
 
 **Files to create/modify:**
 - `internal/pool/token_probe.go` — Background probe scheduler.
@@ -464,7 +464,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 
 **Estimated effort:** 3–4 days.
 
-### Phase 5.6: Auto-Rotation Opt-In (Low Priority)
+### Phase 5.6: Auto-Rotation Opt-In (Low Priority) ✅ COMPLETE
 
 **Files to create/modify:**
 - `internal/pool/auto_rotate.go` — Reactive auto-rotation logic.
@@ -473,7 +473,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 
 **Estimated effort:** 2–3 days.
 
-### Phase 5.7: Documentation & Integration (Final)
+### Phase 5.7: Documentation & Integration (Final) ✅ COMPLETE
 
 **Files to modify:**
 - `docs/automated-token-rotation.md` — Update with implementation details.

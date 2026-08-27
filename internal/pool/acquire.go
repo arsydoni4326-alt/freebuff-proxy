@@ -710,6 +710,44 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	order = append(order, coldTokens...)
 	order = append(order, mismatchedHot...)
 
+	// Phase 5.2: AUTO_ROTATE_ON_EXHAUSTION — deprioritise exhausted tokens
+	// by moving them to the end of the order. The exhausted token remains
+	// eligible as a last resort so a single-token pool never deadlocks.
+	// This is reactive (post-health-score), never proactive.
+	cfg := p.cfg.Load()
+	if cfg.AutoRotateOnExhaustion && len(order) > 1 {
+		var healthy, exhausted []int
+		for _, idx := range order {
+			snap := (*toks)[idx].session.Snapshot()
+			// Compute a quick health label from the snapshot.
+			hin := buildHealthScoreInput(
+				snap.QuotaByModel,
+				(*toks)[idx].runs.CooldownUntil(),
+				p.spendSnapshot(idx).Day,
+				cfg.MaxSpendPerDay,
+				countRateLimitEvents((*toks)[idx].client.RateLimitEvents()),
+				func() int64 {
+					if snap.Status == "active" && !snap.ExpiresAt.IsZero() {
+						if rem := time.Until(snap.ExpiresAt); rem > 0 {
+							return int64(rem.Seconds())
+						}
+					}
+					return 0
+				}(),
+				cfg.RotationInterval,
+			)
+			_, label := ComputeHealthScore(hin)
+			if isExhausted(label) {
+				exhausted = append(exhausted, idx)
+			} else {
+				healthy = append(healthy, idx)
+			}
+		}
+		if len(healthy) > 0 && len(exhausted) > 0 {
+			order = append(healthy, exhausted...)
+		}
+	}
+
 	if len(order) == 0 {
 		// All tokens are cooling down or capped: fallback to round-robin
 		// so the failover loop visits them and records their errors.

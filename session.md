@@ -171,6 +171,40 @@ aggressive round-robin.** The documentation explicitly prohibits:
 - All 11 new health score tests PASS
 - Full hermetic test suite: all packages PASS (pre-existing registry_test.go syntax error is unrelated)
 
+## Phase 5.2: Backup Token Suggestions & Health Validation (COMPLETE)
+
+### Deliverables
+- [x] `internal/pool/health_warn.go` — NEW: `healthState` for transition detection, `checkTransition()`, `logHealthTransition()`, `checkHealthTransitions()`, `predictExhaustion()`, `isExhausted()`, `isCriticalOrWorse()`
+- [x] `internal/pool/token_probe.go` — NEW: `probeResult`, `probeState`, `ProbeSnapshot()`, `probeTokens()`, `probeSingleToken()`, `startProbeLoop()` — background zero-cost GET probe scheduler
+- [x] `internal/pool/health_warn_test.go` — NEW: 11 unit tests covering transition detection, label helpers, exhaustion prediction, probe state, config fields
+- [x] `internal/pool/pool.go` — Added `healthTracker *healthState`, `probeResults *probeState` fields to Pool; `ProbeSnapshot()` method for /healthz
+- [x] `internal/pool/snapshot.go` — `Snapshot()` calls `checkHealthTransitions()` after computing health scores
+- [x] `internal/pool/acquire.go` — `acquireOrder()` deprioritises exhausted tokens when `AUTO_ROTATE_ON_EXHAUSTION=true` (moved to end of order, still eligible as last resort)
+- [x] `internal/pool/pool_lifecycle.go` — `Start()` launches `startProbeLoop()` for background health probes
+- [x] `internal/server/health.go` — `/healthz` JSON includes `probe_ok`, `probe_quota_ok`, `probe_error`, `probe_at` per token
+- [x] `internal/config/config.go` — Added `AutoRotateOnExhaustion`, `ExhaustionWarningThreshold`, `HealthScoreEnabled`, `TokenHealthProbes`, `TokenProbeInterval` fields to Config and rawConfig
+- [x] `internal/config/config_env.go` — Added env overrides for `AUTO_ROTATE_ON_EXHAUSTION`, `EXHAUSTION_WARNING_THRESHOLD`, `HEALTH_SCORE_ENABLED`, `TOKEN_HEALTH_PROBES`, `TOKEN_PROBE_INTERVAL`
+
+### New Configuration Keys
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `AUTO_ROTATE_ON_EXHAUSTION` | `bool` | `false` | Deprioritise exhausted tokens in Acquire order (reactive, not proactive) |
+| `EXHAUSTION_WARNING_THRESHOLD` | `duration` | `10m` | Warn when token predicted to exhaust within this window |
+| `HEALTH_SCORE_ENABLED` | `bool` | `true` | Enable composite health score computation |
+| `TOKEN_HEALTH_PROBES` | `bool` | `false` | Enable background zero-cost GET probes for idle tokens |
+| `TOKEN_PROBE_INTERVAL` | `duration` | `30m` | Interval between background health probes per token |
+
+### Design Decisions
+- **Health transition logging**: WARN log fires on first transition to "critical" or "exhausted" with token count context; avoids log spam by tracking last-known label per token
+- **Auto-rotation is reactive**: exhausted tokens are moved to end of Acquire order, not removed — single-token pools never deadlock
+- **Background probes**: zero-cost GET /api/v1/freebuff/session (no session claimed, no daily slot burned); runs at TOKEN_PROBE_INTERVAL; results surfaced in /healthz and dashboard
+- **Exhaustion prediction**: heuristic based on remaining quota as fraction of total (< 10% = warning); real usage-rate tracking is deferred
+- **Config defaults**: AUTO_ROTATE_ON_EXHAUSTION=false (opt-in), TOKEN_HEALTH_PROBES=false (opt-in), HEALTH_SCORE_ENABLED=true, TOKEN_PROBE_INTERVAL=30m
+
+### Test Results
+- All 11 new health warn/probe tests PASS
+- Full hermetic test suite: all packages PASS (pre-existing registry_test.go syntax error is unrelated)
+
 ## Load-Bearing Invariants (Reminder)
 - **Hermetic Test Suite**: `env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...`
 - **Anti-Ban Contract**: Session POST sends headers, chat POST sends NO model header, honest FINISH

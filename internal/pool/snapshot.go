@@ -186,6 +186,9 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			HealthScoreLabel:        healthLabel,
 		})
 	}
+	// Phase 5.2: detect health label transitions and log backup-token
+	// suggestions when tokens degrade to critical or exhausted.
+	p.checkHealthTransitions(out)
 	return out
 }
 

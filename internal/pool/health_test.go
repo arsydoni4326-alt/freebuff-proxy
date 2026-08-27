@@ -44,7 +44,7 @@ func TestComputeHealthScore_ExhaustedQuota(t *testing.T) {
 func TestComputeHealthScore_ActiveCooldown(t *testing.T) {
 	in := healthScoreInput{
 		cooldownUntil: time.Now().Add(30 * time.Minute),
-		spendLimit: 0, totalRateLimitEvents: 0,
+		spendLimit:    0, totalRateLimitEvents: 0,
 		sessionRemainingSeconds: 3600, rotationInterval: 6 * time.Hour,
 	}
 	score, _ := ComputeHealthScore(in)
@@ -149,7 +149,7 @@ func TestCountRateLimitEvents(t *testing.T) {
 func TestBuildHealthScoreInput(t *testing.T) {
 	quota := map[string]session.QuotaSnapshot{
 		"deepseek/deepseek-v4-flash": {Limit: 5, RecentCount: 2},
-		"mimo/mimo-v2.5":            {Limit: 3, RecentCount: 1},
+		"mimo/mimo-v2.5":             {Limit: 3, RecentCount: 1},
 	}
 	in := buildHealthScoreInput(quota, time.Time{}, 10, 0, 3, 3600, 6*time.Hour)
 	if !in.quotaKnown {

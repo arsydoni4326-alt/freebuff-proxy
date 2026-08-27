@@ -207,7 +207,7 @@ type TokenSnapshot struct {
 	// docs/automated-token-rotation.md). It is advisory only — it never
 	// gates Acquire or failover — but surfaces in /healthz and /metrics
 	// for operator visibility.
-	HealthScore     int    `json:"health_score"`
+	HealthScore      int    `json:"health_score"`
 	HealthScoreLabel string `json:"health_score_label"`
 	// Locked is set when the token has been administratively locked by the
 	// operator; Acquire never selects a locked token.
@@ -371,6 +371,15 @@ type Pool struct {
 	// effect on the next restart.
 	storeSessionPersist bool
 	storeStateFile      string
+
+	// healthTracker detects health label transitions (active → degraded →
+	// critical → exhausted) and logs WARN messages suggesting backup tokens.
+	// Initialised by the pool constructor; nil in test helpers that skip it.
+	healthTracker *healthState
+
+	// probeResults stores the last background health probe outcome per
+	// token (TOKEN_HEALTH_PROBES). Surfaced in /healthz and dashboard.
+	probeResults *probeState
 }
 
 type tokenEntry struct {
@@ -415,7 +424,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]chan struct{}), mismatch: make(map[int]mismatchEscalation)}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]chan struct{}), mismatch: make(map[int]mismatchEscalation), healthTracker: newHealthState(), probeResults: newProbeState()}
 	p.cfg.Store(cfg)
 	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	p.spendPerToken = make([]*spendLedger, len(cfg.AuthTokens))
@@ -577,6 +586,34 @@ func (p *Pool) SetNotifier(n *notify.Sender) {
 	p.notifyMu.Lock()
 	defer p.notifyMu.Unlock()
 	p.notify = n
+}
+
+// ProbeSnapshot returns the last background health probe result for each
+// token index. Returns nil when TOKEN_HEALTH_PROBES is disabled.
+func (p *Pool) ProbeSnapshot() map[int]*ProbeResult {
+	if p.probeResults == nil {
+		return nil
+	}
+	p.probeResults.mu.RLock()
+	defer p.probeResults.mu.RUnlock()
+	out := make(map[int]*ProbeResult, len(p.probeResults.results))
+	for idx, pr := range p.probeResults.results {
+		out[idx] = &ProbeResult{
+			OK:       pr.OK,
+			QuotaOK:  pr.QuotaOK,
+			Error:    pr.Error,
+			ProbedAt: pr.ProbedAt,
+		}
+	}
+	return out
+}
+
+// ProbeResult is the dashboard-safe view of a background health probe.
+type ProbeResult struct {
+	OK       bool
+	QuotaOK  bool
+	Error    string
+	ProbedAt time.Time
 }
 
 // Chat sends a chat-completion request through the leased token's upstream

@@ -310,6 +310,11 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `BRIDGE_CIRCUIT_BREAKER_WINDOW` | `30s` | Sliding window in which the failure count is measured. The breaker opens when `BRIDGE_CIRCUIT_BREAKER_FAILURES` failures fall within this window, and stays open for `BRIDGE_CIRCUIT_BREAKER_COOLDOWN` |
 | `BRIDGE_CIRCUIT_BREAKER_COOLDOWN` | `10s` | How long the circuit breaker stays open after tripping. Disabled when `BRIDGE_CIRCUIT_BREAKER_FAILURES` is 0 |
 | `MAX_SPEND_PER_DAY` | `0` | Advisory per-token Pacific-day spend ceiling in ledger units (`0` = unlimited). Never blocks — informational only, surfaced on `/healthz` |
+| `AUTO_ROTATE_ON_EXHAUSTION` | `false` | Deprioritise exhausted tokens in Acquire order — routes requests to healthier backup tokens when available (reactive, never proactive; exhausted token remains last-resort eligible so a single-token pool never deadlocks) |
+| `EXHAUSTION_WARNING_THRESHOLD` | `10m` | Warn when a token's remaining quota at current usage rate would exhaust within this window (`0` disables predictive warnings) |
+| `HEALTH_SCORE_ENABLED` | `true` | Enable composite 0–100 health score computation and `/healthz` / dashboard exposure |
+| `TOKEN_HEALTH_PROBES` | `false` | Enable background zero-cost GET `/api/v1/freebuff/session` probes for each pooled token at `TOKEN_PROBE_INTERVAL` cadence (no session claimed, no daily slot burned) |
+| `TOKEN_PROBE_INTERVAL` | `30m` | Interval between background health probes per token (only effective when `TOKEN_HEALTH_PROBES=true`) |
 
 When `SESSION_PERSIST=true`, the state file stores a SHA-256 hash of each
 active token plus its session metadata (instance id, expiry, tier/country)

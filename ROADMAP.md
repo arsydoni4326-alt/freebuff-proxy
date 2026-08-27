@@ -208,9 +208,9 @@ are organized by priority and impact. These complement the existing roadmap item
    - [x] Circuit breaker state surfaced in Overview page
 
 3. **Automated Token Rotation**
-   - Detect tokens approaching quota exhaustion
-   - Suggest or auto-rotate to backup tokens
-   - Integrate with `-test-token` for health validation
+   - [x] Detect tokens approaching quota exhaustion (Phase 5.1: composite health score 0–100 from quota, cooldown, spend, error rate, session freshness — surfaced in `/healthz` and `/metrics`)
+   - [x] Suggest or auto-rotate to backup tokens (Phase 5.2: health transition logging, backup-token suggestions via WARN logs, `AUTO_ROTATE_ON_EXHAUSTION` config for reactive deprioritisation of exhausted tokens in Acquire)
+   - [x] Integrate with `-test-token` for health validation (Phase 5.2: `TOKEN_HEALTH_PROBES` background zero-cost GET probes at `TOKEN_PROBE_INTERVAL`, results surfaced in `/healthz` and dashboard)
 
 4. **Enhanced Error Remediation**
    - Expand `remediationMessage()` with actionable steps for each error class

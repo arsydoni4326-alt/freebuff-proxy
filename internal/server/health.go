@@ -14,6 +14,7 @@ import (
 // cached bridge entries (bridge mode), and the effective routing mode.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	snaps := s.pool.Snapshot()
+	probeResults := s.pool.ProbeSnapshot()
 	cfg := s.cfg.Load()
 	w.Header().Set("Content-Type", "application/json")
 	tokens := make([]map[string]any, 0, len(snaps))
@@ -48,6 +49,19 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"session_remaining_seconds": snap.SessionRemainingSeconds,
 			"health_score":              snap.HealthScore,
 			"health_score_label":        snap.HealthScoreLabel,
+		}
+		// Background health probe results (TOKEN_HEALTH_PROBES).
+		if probeResults != nil {
+			if pr, ok := probeResults[snap.Token]; ok {
+				tok["probe_ok"] = pr.OK
+				tok["probe_quota_ok"] = pr.QuotaOK
+				if pr.Error != "" {
+					tok["probe_error"] = pr.Error
+				}
+				if !pr.ProbedAt.IsZero() {
+					tok["probe_at"] = pr.ProbedAt
+				}
+			}
 		}
 		if len(snap.QuotaByModel) > 0 {
 			quota := make(map[string]any, len(snap.QuotaByModel))

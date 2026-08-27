@@ -102,6 +102,11 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.BridgeCircuitBreakerWindow, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
 	overrideString(&raw.BridgeCircuitBreakerCooldown, "BRIDGE_CIRCUIT_BREAKER_COOLDOWN")
 	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
+	overrideBool(&raw.AutoRotateOnExhaustion, "AUTO_ROTATE_ON_EXHAUSTION")
+	overrideString(&raw.ExhaustionWarningThreshold, "EXHAUSTION_WARNING_THRESHOLD")
+	overrideBool(&raw.HealthScoreEnabled, "HEALTH_SCORE_ENABLED")
+	overrideBool(&raw.TokenHealthProbes, "TOKEN_HEALTH_PROBES")
+	overrideString(&raw.TokenProbeInterval, "TOKEN_PROBE_INTERVAL")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -330,6 +335,29 @@ func Load(configPath string) (Config, error) {
 			bridgeCircuitBreakerCooldown = 10 * time.Second
 		}
 	}
+	// EXHAUSTION_WARNING_THRESHOLD: how far ahead to predict quota exhaustion.
+	// "0" or "" disables predictive warnings (default 10m).
+	exhaustionWarningThreshold := 10 * time.Minute
+	if v := strings.TrimSpace(raw.ExhaustionWarningThreshold); v != "" && v != "0" {
+		exhaustionWarningThreshold, err = parseDuration(v, "EXHAUSTION_WARNING_THRESHOLD")
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	// HEALTH_SCORE_ENABLED: defaults to true (health score on by default).
+	healthScoreEnabled := true
+	// TOKEN_PROBE_INTERVAL: how often to probe each token. Default 30m.
+	tokenProbeInterval := 30 * time.Minute
+	if v := strings.TrimSpace(raw.TokenProbeInterval); v != "" && v != "0" {
+		tokenProbeInterval, err = parseDuration(v, "TOKEN_PROBE_INTERVAL")
+		if err != nil {
+			return Config{}, err
+		}
+		if tokenProbeInterval <= 0 {
+			tokenProbeInterval = 30 * time.Minute
+		}
+	}
+
 	if raw.LogRingSize != nil {
 		logRingSize = *raw.LogRingSize
 	}
@@ -463,6 +491,11 @@ func Load(configPath string) (Config, error) {
 		BridgeCircuitBreakerWindow:       bridgeCircuitBreakerWindow,
 		BridgeCircuitBreakerCooldown:     bridgeCircuitBreakerCooldown,
 		DashboardEnabled:                 raw.DashboardEnabled,
+		AutoRotateOnExhaustion:           raw.AutoRotateOnExhaustion,
+		ExhaustionWarningThreshold:       exhaustionWarningThreshold,
+		HealthScoreEnabled:               healthScoreEnabled,
+		TokenHealthProbes:                raw.TokenHealthProbes,
+		TokenProbeInterval:               tokenProbeInterval,
 		EnvFile:                          envFileUsed,
 	}
 
