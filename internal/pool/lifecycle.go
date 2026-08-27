@@ -257,6 +257,50 @@ func (p *Pool) RemoveLastToken() error {
 	return nil
 }
 
+// RemoveTokenByIndex removes the token at the given index from the pool.
+// The index must be valid (0 <= idx < len). The removed token must have no
+// in-flight requests. This is used for specific token removal from the UI.
+func (p *Pool) RemoveTokenByIndex(idx int) error {
+	toks := p.toks.Load()
+	if idx < 0 || idx >= len(*toks) {
+		return fmt.Errorf("pool: index %d out of range (0..%d)", idx, len(*toks)-1)
+	}
+	entry := (*toks)[idx]
+	if entry.runs.InflightCount() > 0 {
+		return errors.New("pool: token has in-flight requests; wait for them to finish")
+	}
+	// Build the new slice without the removed entry.
+	next := make([]*tokenEntry, 0, len(*toks)-1)
+	next = append(next, (*toks)[:idx]...)
+	next = append(next, (*toks)[idx+1:]...)
+	p.toks.Store(&next)
+
+	// Rebuild the usage and spend slices for the new ordering.
+	p.usageMu.Lock()
+	defer p.usageMu.Unlock()
+	if idx < len(p.msgsPerToken) {
+		p.msgsPerToken = append(p.msgsPerToken[:idx], p.msgsPerToken[idx+1:]...)
+	}
+	p.spendMu.Lock()
+	defer p.spendMu.Unlock()
+	if idx < len(p.spendPerToken) {
+		p.spendPerToken = append(p.spendPerToken[:idx], p.spendPerToken[idx+1:]...)
+	}
+
+	// Park and drain the removed entry (mirrors RemoveLastToken).
+	slip := entry.runs.InflightCount() > 0
+	p.retiredMu.Lock()
+	if p.retired == nil {
+		p.retired = make(map[*tokenEntry]time.Time)
+	}
+	p.retired[entry] = time.Now()
+	p.retiredMu.Unlock()
+	if !slip {
+		p.drainRemovedToken(entry)
+	}
+	return nil
+}
+
 // drainRemovedToken finishes the removed token's runs and ends its admitted
 // session (mirrors RemoveAllTokens' run finish plus the session end that
 // removal previously skipped), bounded by the per-token shutdown timeout so

@@ -182,11 +182,47 @@ func shortFlowID(fp string) string {
 }
 
 func (s *Server) syncTokensAfterMutation(tokens []string) error {
-	// Snapshot the .env before writing so a reload-verification failure can
-	// restore it byte-exact (mirrors handleModeSwitch's persist → verify →
-	// rollback). Otherwise the failed add leaves AUTH_TOKENS=<new> in .env
-	// while the live pool holds the old list — the very divergence the
-	// caller is trying to avoid.
+	// When tokenDB is active, persist to the database instead of .env.
+	if s.tokenDB != nil {
+		// Sync database to match the desired token list.
+		existing, err := s.tokenDB.List()
+		if err != nil {
+			return fmt.Errorf("tokendb list: %w", err)
+		}
+		existingSet := make(map[string]struct{}, len(existing))
+		for _, t := range existing {
+			existingSet[t] = struct{}{}
+		}
+		desiredSet := make(map[string]struct{}, len(tokens))
+		for _, t := range tokens {
+			desiredSet[t] = struct{}{}
+		}
+		// Remove tokens no longer in the desired list.
+		for _, t := range existing {
+			if _, ok := desiredSet[t]; !ok {
+				if _, err := s.tokenDB.Remove(t); err != nil {
+					return fmt.Errorf("tokendb remove: %w", err)
+				}
+			}
+		}
+		// Add tokens not yet in the database.
+		for _, t := range tokens {
+			if _, ok := existingSet[t]; !ok {
+				if _, err := s.tokenDB.Add(t); err != nil {
+					return fmt.Errorf("tokendb add: %w", err)
+				}
+			}
+		}
+		// Update the in-memory config directly (no .env rewrite needed).
+		cfg := s.cfg.Load()
+		cfg.AuthTokens = append([]string(nil), tokens...)
+		s.cfg.Store(cfg)
+		s.reg.SetConfig(cfg)
+		s.pool.SetConfig(cfg)
+		return nil
+	}
+
+	// Legacy path: persist to .env file.
 	old, oldErr := os.ReadFile(".env")
 	if _, err := updateAuthTokensEnv(tokens); err != nil {
 		return fmt.Errorf("persist AUTH_TOKENS: %w", err)
@@ -374,16 +410,26 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 			s.dash.RenderConfigResult(w, r, false, "Already in bridge mode.")
 			return
 		}
-		// adminSaveMu serializes the persist → verify → rollback sequence
-		// with the other .env writers (config editor, token add/remove) so a
-		// concurrent save cannot interleave between the write and the reload.
-		// The live-pool drain stays outside the lock, after the reload is
-		// verified (persist → verify → drain).
 		s.adminSaveMu.Lock()
 		defer s.adminSaveMu.Unlock()
-		// Persist AUTH_TOKENS= (explicit empty) and
-		// reload, verifying the effective config actually lands in bridge
-		// mode before touching the live pool. Roll the .env back on failure.
+
+		// When tokenDB is active, clear the database directly.
+		if s.tokenDB != nil {
+			if err := s.tokenDB.RemoveAll(); err != nil {
+				s.dash.RenderConfigResult(w, r, false, "Failed to clear token database: "+err.Error())
+				return
+			}
+			cfg.AuthTokens = nil
+			s.cfg.Store(cfg)
+			s.reg.SetConfig(cfg)
+			s.pool.SetConfig(cfg)
+			s.pool.RemoveAllTokens(r.Context())
+			s.logger.Info("dashboard switched to bridge mode (tokenDB)")
+			s.dash.RenderConfigResult(w, r, true, "Switched to bridge mode — tokens cleared; clients now send their own token.")
+			return
+		}
+
+		// Legacy path: persist AUTH_TOKENS= (explicit empty) to .env.
 		old, oldErr := os.ReadFile(".env")
 		if _, err := updateEnvKeys([]envUpdate{{Key: "AUTH_TOKENS", Value: ""}}); err != nil {
 			s.dash.RenderConfigResult(w, r, false, "Failed to persist .env: "+err.Error())
@@ -396,9 +442,6 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !newCfg.BridgeMode() {
-			// A higher-precedence source (e.g. AUTH_TOKENS in a -config JSON
-			// file or the real environment) still supplies tokens — .env alone
-			// cannot clear it, so the switch cannot succeed.
 			restoreEnvFile(old, oldErr)
 			s.dash.RenderConfigResult(w, r, false, "Could not switch to bridge mode: AUTH_TOKENS is still set by a -config JSON file or the environment, which overrides .env. Clear it there, or run without -config, then retry.")
 			return
@@ -458,4 +501,103 @@ func shortKey(key string) string {
 		return key[:8] + "…"
 	}
 	return key
+}
+
+// handleTokenRemoveSpecific removes a specific token by its value (not just
+// the last one).  This enables the UI to remove any token from the list.
+func (s *Server) handleTokenRemoveSpecific(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	req.Token = strings.TrimSpace(r.FormValue("token"))
+	if req.Token == "" {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<10))
+		if err != nil {
+			s.dash.RenderConfigResult(w, r, false, "Failed to read request: "+err.Error())
+			return
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			s.dash.RenderConfigResult(w, r, false, "Invalid request: "+err.Error())
+			return
+		}
+	}
+	req.Token = strings.TrimSpace(req.Token)
+	if req.Token == "" {
+		s.dash.RenderConfigResult(w, r, false, "Token value is required.")
+		return
+	}
+
+	s.adminSaveMu.Lock()
+	defer s.adminSaveMu.Unlock()
+
+	cfg := s.cfg.Load()
+	// Find the token in the current list.
+	found := false
+	for _, t := range cfg.AuthTokens {
+		if t == req.Token {
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.dash.RenderConfigResult(w, r, false, "Token not found in the active token list.")
+		return
+	}
+
+	// Find the pool index for this token and remove it.
+	var poolIdx int = -1
+	for i, t := range cfg.AuthTokens {
+		if t == req.Token {
+			poolIdx = i
+			break
+		}
+	}
+	if poolIdx < 0 {
+		s.dash.RenderConfigResult(w, r, false, "Token not found.")
+		return
+	}
+
+	// Remove from pool by index.
+	if err := s.pool.RemoveTokenByIndex(poolIdx); err != nil {
+		s.dash.RenderConfigResult(w, r, false, "Failed to remove from pool: "+err.Error())
+		return
+	}
+
+	// Build the new token list without the removed token.
+	tokens := make([]string, 0, len(cfg.AuthTokens)-1)
+	for _, t := range cfg.AuthTokens {
+		if t != req.Token {
+			tokens = append(tokens, t)
+		}
+	}
+	if err := s.syncTokensAfterMutation(tokens); err != nil {
+		// Roll back: re-add the token to the pool.
+		if _, addErr := s.pool.AddToken(req.Token); addErr != nil {
+			s.logger.Warn("dashboard token remove-specific rollback re-add failed", "remote", remoteHost(r), "err", addErr)
+		}
+		s.logger.Warn("dashboard token remove-specific rolled back", "remote", remoteHost(r), "err", err)
+		s.dash.RenderConfigResult(w, r, false, err.Error())
+		return
+	}
+	s.logger.Info("dashboard token removed (specific)", "remote", remoteHost(r))
+	s.dash.RenderConfigResult(w, r, true, "Token removed successfully.")
+}
+
+// handleTokenList returns all tokens from the database or config.
+func (s *Server) handleTokenList(w http.ResponseWriter, r *http.Request) {
+	cfg := s.cfg.Load()
+	tokens := cfg.AuthTokens
+
+	// If tokenDB is available, prefer its view.
+	if s.tokenDB != nil {
+		if dbTokens, err := s.tokenDB.List(); err == nil {
+			tokens = dbTokens
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"tokens": tokens,
+		"count":  len(tokens),
+	})
 }

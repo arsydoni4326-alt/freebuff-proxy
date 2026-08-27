@@ -30,6 +30,7 @@ import (
 	"freebuff-proxy/internal/reasoningcache"
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/tokenestimate"
+	"freebuff-proxy/internal/tokendb"
 	"freebuff-proxy/internal/updatecheck"
 	"freebuff-proxy/internal/upstream"
 )
@@ -66,6 +67,12 @@ type Server struct {
 	// configPath is the -config JSON path ("" when none); reloads re-apply it
 	// so JSON overrides survive dashboard saves and /admin/reload.
 	configPath string
+
+	// tokenDB is the persistent SQLite-backed token store.  When non-nil,
+	// add/remove mutations go through the database instead of rewriting
+	// .env, and the initial token list is seeded from the database on
+	// startup (with a one-time migration from AUTH_TOKENS env).
+	tokenDB *tokendb.DB
 
 	// version is the running release tag (""/dev for dev builds); the
 	// dashboard badge compares it against the latest GitHub release (#50b).
@@ -108,6 +115,14 @@ func WithVersion(version string, updates *updatecheck.Checker) Option {
 func WithLoginClient(c *upstream.Client) Option {
 	return func(s *Server) {
 		s.authClient = c
+	}
+}
+
+// WithTokenDB wires the persistent SQLite-backed token store.  When set,
+// add/remove mutations go through the database instead of rewriting .env.
+func WithTokenDB(db *tokendb.DB) Option {
+	return func(s *Server) {
+		s.tokenDB = db
 	}
 }
 
@@ -226,6 +241,8 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /admin/tokens/test-all", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTestAll)))))
 		mux.Handle("POST /admin/tokens/add", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenAdd)))))
 		mux.Handle("POST /admin/tokens/remove", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenRemove)))))
+		mux.Handle("POST /admin/tokens/remove-specific", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenRemoveSpecific)))))
+		mux.Handle("GET /admin/tokens/list", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.handleTokenList))))
 		mux.Handle("POST /admin/mode", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleModeSwitch)))))
 		mux.Handle("POST /admin/diag", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleDiag)))))
 		mux.Handle("POST /admin/api/change-password", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleAdminChangePassword)))))

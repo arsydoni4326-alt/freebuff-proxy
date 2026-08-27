@@ -37,6 +37,7 @@ import (
 	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/stealth"
 	"freebuff-proxy/internal/telemetry"
+	"freebuff-proxy/internal/tokendb"
 	"freebuff-proxy/internal/updatecheck"
 	"freebuff-proxy/internal/upstream"
 )
@@ -266,6 +267,32 @@ func main() {
 	// Issue #50b: release update indicator — the dashboard badge compares
 	// the running version against the latest GitHub release (6h cache).
 	serverOpts = append(serverOpts, server.WithVersion(version, updatecheck.New(updatecheck.DefaultRepo, nil)))
+
+	// Open the persistent token database.  The DB lives at
+	// data/auth_tokens.db (configurable via AUTH_TOKEN_DB_PATH env).
+	// On first start, existing AUTH_TOKENS from the environment / .env are
+	// migrated into the database so the operator loses nothing.
+	tokenDBPath := os.Getenv("AUTH_TOKEN_DB_PATH")
+	if tokenDBPath == "" {
+		tokenDBPath = "data/auth_tokens.db"
+	}
+	tokenDB, err := tokendb.Open(tokenDBPath, logger)
+	if err != nil {
+		logger.Warn("token database unavailable (falling back to .env persistence)", "err", err)
+	} else {
+		defer tokenDB.Close()
+		// One-time migration: seed the database from AUTH_TOKENS env.
+		if _, mErr := tokenDB.MigrateFromEnv(strings.Join(cfg.AuthTokens, ",")); mErr != nil {
+			logger.Warn("token database migration failed", "err", mErr)
+		}
+		// Reload the token list from the database so the pool starts from
+		// the authoritative source (the DB may have tokens not in .env).
+		if dbTokens, listErr := tokenDB.List(); listErr == nil && len(dbTokens) > 0 {
+			cfg.AuthTokens = dbTokens
+			logger.Info("tokens loaded from database", "count", len(dbTokens))
+		}
+		serverOpts = append(serverOpts, server.WithTokenDB(tokenDB))
+	}
 
 	srv := server.New(&cfg, p, reg, logger, logringHandler, *configPath, serverOpts...)
 	httpServer := &http.Server{

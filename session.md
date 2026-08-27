@@ -1,13 +1,37 @@
-# Session: Bridge Mode Quota Introspection Dashboard
+# Session: SQLite Token Database
 
 ## Current Objective
-Implementing Bridge Mode Quota Introspection Dashboard (ROADMAP § Future Work Recommendations #2).
-Per-entry quota visualization with model-level breakdown, rate limit counters, and spend tracking.
+Migrating AUTH_TOKENS from `.env` file persistence to a SQLite-backed database for hot-reload support without container recreation. Adding UI for token management.
 
 ## Recent Changes
-- Bridge quota dashboard: per-entry quota visualization with model-level breakdown (#bridge-quota-dashboard)
-- Rate limit hit/miss counters on bridgeEntry (atomic.Int64)
-- Extended BridgeTokenSnapshot with RateLimitHits/Misses/RateLimitRate fields
+- **SQLite Token Database (`internal/tokendb/tokendb.go`)**: New package providing persistent SQLite-backed AUTH_TOKENS storage with WAL mode, atomic operations, and thread-safe access.
+  - `Open()`, `Close()`, `List()`, `Count()`, `Add()`, `Remove()`, `RemoveLast()`, `RemoveAll()`, `MigrateFromEnv()`, `Tokens()`
+  - Database stored at `data/auth_tokens.db` (configurable via `AUTH_TOKEN_DB_PATH` env)
+  - One-time migration from `AUTH_TOKENS` env var on first startup
+- **Server Integration (`internal/server/server.go`)**:
+  - Added `tokenDB *tokendb.DB` field to `Server` struct
+  - Added `WithTokenDB(db *tokendb.DB) Option` for dependency injection
+  - New routes: `GET /admin/tokens/list`, `POST /admin/tokens/remove-specific`
+- **Admin Handlers (`internal/server/admin_tokens.go`)**:
+  - `syncTokensAfterMutation()`: Updated to persist to SQLite when tokenDB is active, falling back to `.env` for legacy
+  - `handleModeSwitch()`: Updated for bridge mode switch via tokenDB
+  - New `handleTokenRemoveSpecific()`: Removes a specific token by value (not just last)
+  - New `handleTokenList()`: Returns all tokens from database
+- **Pool (`internal/pool/lifecycle.go`)**:
+  - Added `RemoveTokenByIndex(idx int) error` for specific token removal from the pool
+- **Entrypoint (`cmd/freebuff-proxy/main.go`)**:
+  - Opens token database at startup, migrates existing AUTH_TOKENS
+  - Loads tokens from database as authoritative source
+- **Tests (`internal/tokendb/tokendb_test.go`)**: 12 unit tests covering all tokendb operations
+- **Dependency**: Added `github.com/mattn/go-sqlite3 v1.14.24` to go.mod
+
+## Design Decisions
+- SQLite WAL mode for concurrent read/write without blocking
+- Single-connection pool (`MaxOpenConns(1)`) to avoid writer starvation
+- `INSERT OR IGNORE` for idempotent adds (no duplicate tokens)
+- Database is authoritative source: on startup, tokens are loaded from DB, overriding .env
+- Graceful fallback: if DB fails to open, falls back to .env persistence
+- `RemoveTokenByIndex` mirrors `RemoveLastToken` safety pattern (inflight check, park, drain)
 - Extended bridgeTokenCard with Quota rows, SpendLimit, and rate limit stats
 - Tokens page: Bridge Quota section with per-entry cards, quota breakdown, rate limit activity
 - Documentation: docs/bridge-quota-dashboard.md
