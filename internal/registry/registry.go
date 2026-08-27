@@ -92,6 +92,7 @@ var ServedModels = map[string]bool{
 	"mimo/mimo-v2.5":             true,
 	"stealth/ox-alpha":           true,
 }
+
 // SupportedModelIDs is the canonical list of the 7 active models served by the gateway.
 var SupportedModelIDs = []string{
 	"deepseek/deepseek-v4-flash",
