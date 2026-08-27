@@ -421,6 +421,146 @@
       {/if}
     </Card>
 
+    <!-- Bridge Quota section (bridge mode only) -->
+    {#if data?.in_bridge}
+      <Card
+        title={$tr('Bridge Quota')}
+        description={data ? $tr('{count} active bridge client(s)', { count: data.bridge_tokens || 0 }) : ''}
+      >
+        {#if !data.bridge_token_cards || data.bridge_token_cards.length === 0}
+          <EmptyState
+            title={$tr('No active bridge clients')}
+            description={$tr('Bridge tokens appear here after a client sends a request with a valid FreeBuff token.')}
+          />
+        {:else}
+          <div class="flex flex-col gap-4">
+            {#each data.bridge_token_cards as card}
+              {@const st = card.status === 'dead' ? { label: $tr('dead'), tone: 'critical', pulse: true }
+                : card.status === 'locked' ? { label: $tr('locked'), tone: 'warn' }
+                : card.status === 'cooldown' ? { label: $tr('cooldown'), tone: 'warn', pulse: true }
+                : card.status === 'active' ? { label: $tr('active'), tone: 'good', pulse: true }
+                : { label: card.status, tone: 'idle' }}
+              <div class="fp-inset rounded p-3 flex flex-col gap-3">
+                <!-- Header row -->
+                <div class="flex items-center justify-between gap-3 flex-wrap">
+                  <div class="flex items-center gap-2">
+                    <code class="fp-num text-xs text-[var(--fp-accent)]">{card.key}</code>
+                    <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
+                  </div>
+                  <div class="flex items-center gap-3 text-xs text-[var(--fp-dim)]">
+                    {#if card.model}
+                      <span>{$tr('model:')} <code class="fp-num text-[var(--fp-text)]">{card.model}</code></span>
+                    {/if}
+                    <span>{$tr('runs')} <span class="fp-num text-[var(--fp-text)]">{card.active_runs}</span></span>
+                    <span>{$tr('reqs')} <span class="fp-num text-[var(--fp-text)]">{card.requests}</span></span>
+                  </div>
+                </div>
+
+                <!-- Spend overview -->
+                <div class="flex items-center gap-3 text-xs">
+                  <span class="text-[var(--fp-muted)]">{$tr('Spend')}:</span>
+                  {#if card.spend_limit > 0}
+                    {@const spendPct = Math.min(100, Math.round((card.spend_day / card.spend_limit) * 100))}
+                    {@const spendTone = spendPct >= 95 ? 'critical' : spendPct >= 80 ? 'warn' : 'good'}
+                    <div class="flex-1 max-w-xs">
+                      <div class="relative h-1.5 rounded-full bg-[var(--fp-border)]/40 overflow-hidden">
+                        <div
+                          class="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+                          class:bg-[var(--fp-success)]={spendTone === 'good'}
+                          class:bg-[var(--fp-warning)]={spendTone === 'warn'}
+                          class:bg-[var(--fp-error)]={spendTone === 'critical'}
+                          style="width: {spendPct}%"
+                        ></div>
+                      </div>
+                    </div>
+                    <span class="fp-num text-[var(--fp-text)]">{card.spend_day}</span> / <span class="fp-num">{card.spend_limit}</span>
+                    <span class="text-[var(--fp-dim)]">({spendPct}%)</span>
+                  {:else}
+                    <span class="fp-num text-[var(--fp-text)]">{card.spend_day}</span> <span class="text-[var(--fp-dim)]">{$tr('(unlimited)')}</span>
+                  {/if}
+                </div>
+
+                <!-- Quota breakdown -->
+                {#if card.quota && card.quota.length > 0}
+                  <div class="flex flex-col gap-2">
+                    <p class="text-[11px] text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Session Quotas')}</p>
+                    {#each card.quota as q}
+                      {@const pct = q.limit > 0 ? Math.min(100, Math.round((q.recent / q.limit) * 100)) : 0}
+                      {@const tone = pct >= 95 ? 'critical' : pct >= 80 ? 'warn' : 'good'}
+                      <div class="flex flex-col gap-1 px-2 py-1.5 rounded bg-[var(--fp-bg)]/40">
+                        <div class="flex items-center gap-2 sm:gap-4 text-xs">
+                          <code class="fp-num text-[var(--fp-text)] sm:w-48 shrink-0 truncate">{q.model}</code>
+                          <span class="fp-num text-[var(--fp-muted)]">
+                            <span class="text-[var(--fp-text)]">{q.recent}</span> / {q.limit}
+                          </span>
+                          <span class="fp-num text-[var(--fp-dim)] sm:ml-auto">{q.period}</span>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {:else}
+                  <p class="text-xs text-[var(--fp-dim)] italic">{$tr('No quota data — session not yet admitted.')}</p>
+                {/if}
+
+                <!-- Rate limit activity -->
+                {#if card.rate_limit_rate > 0}
+                  <div class="flex items-center gap-3 text-xs text-[var(--fp-dim)]">
+                    <span>{$tr('Rate limit')}:</span>
+                    <span class="fp-num">{card.rate_limit_rate}</span> {$tr('req/s')}
+                    <span class="text-[var(--fp-success)]">{$tr('hits')} <span class="fp-num text-[var(--fp-text)]">{card.rate_limit_hits}</span></span>
+                    <span class="text-[var(--fp-warning)]">{$tr('misses')} <span class="fp-num text-[var(--fp-text)]">{card.rate_limit_misses}</span></span>
+                  </div>
+                {/if}
+
+                <!-- Ban info -->
+                {#if card.ban_type}
+                  <div class="flex items-center gap-2 text-xs">
+                    {#if card.ban_type === 'hard'}
+                      <StatusBadge status={$tr('banned — appeal required')} tone="critical" pulse />
+                    {:else}
+                      <StatusBadge status={$tr('banned until {time}', { time: formatLocalDate(card.banned_until) || card.banned_until })} tone="bad" />
+                    {/if}
+                  </div>
+                {/if}
+
+                <!-- Cooldown info -->
+                {#if card.cooldown_until}
+                  <div class="text-xs text-[var(--fp-warning)]">
+                    {$tr('Cooldown until')} <span class="fp-num">{formatLocalDate(card.cooldown_until) || card.cooldown_until}</span>
+                  </div>
+                {/if}
+
+                <!-- Actions -->
+                <div class="flex items-center gap-2 pt-1 border-t border-[var(--fp-border)]/30">
+                  {#if card.locked}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionPending}
+                      onclick={() => triggerAction(`/admin/bridge-tokens/${card.key}/unlock`, {}, $tr('Unlock bridge token?'))}
+                    >
+                      <Unlock size={13} />
+                      <span>{$tr('Unlock')}</span>
+                    </Button>
+                  {:else}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={actionPending}
+                      onclick={() => triggerAction(`/admin/bridge-tokens/${card.key}/lock`, {}, $tr('Lock bridge token?'))}
+                    >
+                      <Lock size={13} />
+                      <span>{$tr('Lock')}</span>
+                    </Button>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </Card>
+    {/if}
+
     <!-- Token table -->
     <Card
       title={$tr('Pool Tokens')}

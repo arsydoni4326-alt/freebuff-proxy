@@ -186,8 +186,10 @@ func (e *bridgeEntry) rateLimitAllow() bool {
 	}
 	if e.rateLimitTokens >= 1.0 {
 		e.rateLimitTokens -= 1.0
+		e.rateLimitHits.Add(1)
 		return true
 	}
+	e.rateLimitMisses.Add(1)
 	return false
 }
 
@@ -424,20 +426,23 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		}
 		banType, bannedUntil := banView(eRuns.BanError, eRuns.BannedUntil)
 		snaps = append(snaps, BridgeTokenSnapshot{
-			Key:           ke.key,
-			LastUsed:      e.lastUsed,
-			ActiveRuns:    eRuns.ActiveRuns,
-			Requests:      eRuns.Requests,
-			Locked:        e.locked.Load(),
-			CooldownUntil: cooldownUntil,
-			SessionActive: sess.Status == "active",
-			Model:         model,
-			QuotaByModel:  quotaByModel,
-			SpendDay:      float64(spend.Day),
-			SpendPct:      spendPct,
-			BanType:       banType,
-			BannedUntil:   bannedUntil,
-			DeadToken:     banType == "hard",
+			Key:             ke.key,
+			LastUsed:        e.lastUsed,
+			ActiveRuns:      eRuns.ActiveRuns,
+			Requests:        eRuns.Requests,
+			Locked:          e.locked.Load(),
+			CooldownUntil:   cooldownUntil,
+			SessionActive:   sess.Status == "active",
+			Model:           model,
+			QuotaByModel:    quotaByModel,
+			SpendDay:        float64(spend.Day),
+			SpendPct:        spendPct,
+			BanType:         banType,
+			BannedUntil:     bannedUntil,
+			DeadToken:       banType == "hard",
+			RateLimitHits:   e.rateLimitHits.Load(),
+			RateLimitMisses: e.rateLimitMisses.Load(),
+			RateLimitRate:   e.rateLimitRate,
 		})
 	}
 	return snaps

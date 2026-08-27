@@ -111,6 +111,11 @@ type bridgeEntry struct {
 	rateLimitLastRefill time.Time
 	rateLimitRate       float64
 
+	// rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
+	// rateLimitHits counts allowed requests; rateLimitMisses counts denied requests.
+	rateLimitHits   atomic.Int64
+	rateLimitMisses atomic.Int64
+
 	// admissionGate serializes session creation per entry: the first
 	// request creates the session; concurrent requests block on the
 	// channel until it completes or fails. sync.Once ensures the session

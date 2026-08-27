@@ -222,12 +222,15 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 - [x] **Bridge-specific Prometheus metrics** — `freebuff_proxy_bridge_entries_total`, `cooling_down_total`, `dead_tokens_total`, `locked_total`, `requests_total`, `active_runs`, `quota_remaining`. No raw token labels (SHA-256 prefix only).
 - [x] **Per-entry quota introspection** — `BridgeSnapshot` returns hashed `Key` + `QuotaByModel`, `SpendDay/SpendPct`, `BanType/BannedUntil`, `DeadToken`; no plaintext token exposure.
 - [x] **`/healthz` bridge indicators** — `bridge_tokens` count + `bridge_entries[]` with `dead_token`, `cooldown_until`, `locked`, `session_active`, `active_runs`, `requests`, `model`, `spend_*` per entry.
+- [x] **Rate limit hit/miss counters** — Per-entry `rateLimitHits`/`rateLimitMisses` atomic counters surfaced via `BridgeTokenSnapshot` and dashboard cards.
+- [x] **Dashboard Bridge Quota section** — Tokens page shows per-entry cards with model-level quota breakdown, spend progress bars, rate limit activity, and lock/unlock actions.
 
 ---
 
 ## Related Documentation
 
 - [Architecture](../ARCHITECTURE.md) — System components and request flows
+- [Bridge Quota Dashboard](bridge-quota-dashboard.md) — Quota introspection design and implementation
 - [Specification](../SPECIFICATION.md) — API surface and error contracts
 - [Roadmap](../ROADMAP.md) — Feature checklist and known limitations
 - [Security Policy](../.github/SECURITY.md) — Vulnerability reporting and in-scope surfaces

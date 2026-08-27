@@ -346,8 +346,9 @@ func (d *Dashboard) tokensData() tokensData {
 	td.HasTokens = len(td.Tokens) > 0
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
 	if td.InBridge {
+		spendLimit := cfg.MaxSpendPerDay
 		for _, snap := range d.pool.BridgeSnapshot() {
-			td.BridgeTokenCards = append(td.BridgeTokenCards, bridgeCardFromSnapshot(snap))
+			td.BridgeTokenCards = append(td.BridgeTokenCards, bridgeCardFromSnapshot(snap, spendLimit))
 		}
 	}
 	return td
@@ -643,6 +644,20 @@ type riskBreakdown struct {
 	Samples int      `json:"samples"`
 }
 
+// circuitBreakerInfo surfaces the bridge circuit breaker state on the
+// dashboard Overview (ROADMAP §2.2). Only meaningful in bridge mode when
+// BRIDGE_CIRCUIT_BREAKER_FAILURES > 0; zero values are emitted otherwise.
+type circuitBreakerInfo struct {
+	Enabled           bool    `json:"enabled"`
+	Open              bool    `json:"open"`
+	FailureCount      int     `json:"failure_count"`
+	FailuresRemaining int     `json:"failures_remaining"`
+	CooldownRemaining float64 `json:"cooldown_remaining"`
+	Threshold         int     `json:"threshold"`
+	Window            string  `json:"window"`
+	Cooldown          string  `json:"cooldown"`
+}
+
 type overviewData struct {
 	Mode                 string            `json:"mode"`
 	InBridge             bool              `json:"in_bridge"`
@@ -663,13 +678,14 @@ type overviewData struct {
 	// upstream refresh; RegistryLastRefresh is a human-readable "time ago"
 	// string ("" when the registry has never refreshed live). Surfaced on
 	// the overview so operators can spot a stale offline path at a glance.
-	RegistryFallback    bool          `json:"registry_fallback"`
-	RegistryLastRefresh string        `json:"registry_last_refresh"`
+	RegistryFallback    bool   `json:"registry_fallback"`
+	RegistryLastRefresh string `json:"registry_last_refresh"`
 	// Risk (Phase 3.5): passive ban-risk engine verdict (read-only — the
 	// engine warns but never modifies routing).  Available on the overview
 	// so operators can judge ban exposure at a glance.
-	Risk riskBreakdown `json:"risk"`
-	UpstreamSync *upstreamSync `json:"upstream_sync,omitempty"`
+	Risk           riskBreakdown      `json:"risk"`
+	CircuitBreaker circuitBreakerInfo `json:"circuit_breaker"`
+	UpstreamSync   *upstreamSync      `json:"upstream_sync,omitempty"`
 }
 
 // upstreamSync is the dashboard-friendly view of the embedded
@@ -735,25 +751,41 @@ type standingStepCard struct {
 	Href   string  `json:"href,omitempty"`
 }
 
-// bridgeTokenCard is a dashboard-ready view of one bridge entry (#187).
-type bridgeTokenCard struct {
-	Key           string  `json:"key"`    // masked hash prefix
-	Status        string  `json:"status"` // active|cooldown|locked
-	Model         string  `json:"model"`
-	ActiveRuns    int     `json:"active_runs"`
-	Requests      int     `json:"requests"`
-	Locked        bool    `json:"locked"`
-	CooldownUntil string  `json:"cooldown_until"`
-	SessionActive bool    `json:"session_active"`
-	SpendDay      float64 `json:"spend_day"`
-	SpendPct      int     `json:"spend_pct"`
-	BanType       string  `json:"ban_type,omitempty"`
-	BannedUntil   string  `json:"banned_until,omitempty"`
+// bridgeQuotaRow is one model's quota snapshot for the bridge quota dashboard.
+type bridgeQuotaRow struct {
+	Model       string  `json:"model"`
+	Limit       float64 `json:"limit"`
+	RecentCount float64 `json:"recent"`
+	Period      string  `json:"period"`
+	ResetAt     string  `json:"reset_at,omitempty"`
 }
 
-func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot) bridgeTokenCard {
+// bridgeTokenCard is a dashboard-ready view of one bridge entry (#187).
+type bridgeTokenCard struct {
+	Key             string           `json:"key"`    // masked hash prefix
+	Status          string           `json:"status"` // active|cooldown|locked|dead
+	Model           string           `json:"model"`
+	ActiveRuns      int              `json:"active_runs"`
+	Requests        int              `json:"requests"`
+	Locked          bool             `json:"locked"`
+	CooldownUntil   string           `json:"cooldown_until"`
+	SessionActive   bool             `json:"session_active"`
+	SpendDay        float64          `json:"spend_day"`
+	SpendPct        int              `json:"spend_pct"`
+	SpendLimit      int64            `json:"spend_limit"`
+	BanType         string           `json:"ban_type,omitempty"`
+	BannedUntil     string           `json:"banned_until,omitempty"`
+	Quota           []bridgeQuotaRow `json:"quota,omitempty"`
+	RateLimitHits   int64            `json:"rate_limit_hits"`
+	RateLimitMisses int64            `json:"rate_limit_misses"`
+	RateLimitRate   float64          `json:"rate_limit_rate"`
+}
+
+func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot, spendLimit int64) bridgeTokenCard {
 	status := "active"
-	if snap.Locked {
+	if snap.DeadToken {
+		status = "dead"
+	} else if snap.Locked {
 		status = "locked"
 	} else if snap.CooldownUntil.After(time.Now()) {
 		status = "cooldown"
@@ -762,19 +794,37 @@ func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot) bridgeTokenCard {
 	if !snap.BannedUntil.IsZero() && snap.BanType == "temporary" {
 		bannedUntil = snap.BannedUntil.Format(time.RFC3339)
 	}
+	var quota []bridgeQuotaRow
+	for _, q := range snap.QuotaByModel {
+		row := bridgeQuotaRow{
+			Model:       q.Model,
+			Limit:       q.Limit,
+			RecentCount: q.RecentCount,
+			Period:      q.Period,
+		}
+		if !q.ResetAt.IsZero() {
+			row.ResetAt = q.ResetAt.Format(time.RFC3339)
+		}
+		quota = append(quota, row)
+	}
 	return bridgeTokenCard{
-		Key:           shortKey(snap.Key),
-		Status:        status,
-		Model:         snap.Model,
-		ActiveRuns:    snap.ActiveRuns,
-		Requests:      snap.Requests,
-		Locked:        snap.Locked,
-		CooldownUntil: shortTime(snap.CooldownUntil),
-		SessionActive: snap.SessionActive,
-		SpendDay:      snap.SpendDay,
-		SpendPct:      snap.SpendPct,
-		BanType:       snap.BanType,
-		BannedUntil:   bannedUntil,
+		Key:             shortKey(snap.Key),
+		Status:          status,
+		Model:           snap.Model,
+		ActiveRuns:      snap.ActiveRuns,
+		Requests:        snap.Requests,
+		Locked:          snap.Locked,
+		CooldownUntil:   shortTime(snap.CooldownUntil),
+		SessionActive:   snap.SessionActive,
+		SpendDay:        snap.SpendDay,
+		SpendPct:        snap.SpendPct,
+		SpendLimit:      spendLimit,
+		BanType:         snap.BanType,
+		BannedUntil:     bannedUntil,
+		Quota:           quota,
+		RateLimitHits:   snap.RateLimitHits,
+		RateLimitMisses: snap.RateLimitMisses,
+		RateLimitRate:   snap.RateLimitRate,
 	}
 }
 
@@ -899,6 +949,20 @@ func (d *Dashboard) overviewData() overviewData {
 			Samples: rs.Samples,
 		},
 	}
+	// Circuit breaker state (ROADMAP §2.2): surface the bridge-mode
+	// circuit breaker on the Overview so operators can see at a glance
+	// whether upstream is being protected from cascading failures.
+	bs := d.pool.BreakerSnapshot()
+	od.CircuitBreaker = circuitBreakerInfo{
+		Enabled:           bs.Enabled,
+		Open:              bs.Open,
+		FailureCount:      bs.FailureCount,
+		FailuresRemaining: bs.FailuresRemaining,
+		CooldownRemaining: bs.CooldownRemaining,
+		Threshold:         bs.Threshold,
+		Window:            bs.Window,
+		Cooldown:          bs.Cooldown,
+	}
 	for _, t := range ps.Tokens {
 		od.Tokens = append(od.Tokens, cardFromSnapshot(t))
 	}
@@ -908,8 +972,9 @@ func (d *Dashboard) overviewData() overviewData {
 	od.HasTokens = len(od.Tokens) > 0
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
 	if od.InBridge {
+		spendLimit := cfg.MaxSpendPerDay
 		for _, snap := range d.pool.BridgeSnapshot() {
-			od.BridgeTokenCards = append(od.BridgeTokenCards, bridgeCardFromSnapshot(snap))
+			od.BridgeTokenCards = append(od.BridgeTokenCards, bridgeCardFromSnapshot(snap, spendLimit))
 		}
 	}
 	od.UpstreamSync = parseUpstreamSync(upstreamDriftJSON)

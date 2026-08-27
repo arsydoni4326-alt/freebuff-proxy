@@ -202,9 +202,10 @@ are organized by priority and impact. These complement the existing roadmap item
    - [ ] Surface breaker state in dashboard Overview page
 
 2. **Bridge Mode Quota Introspection Dashboard**
-   - Per-entry quota visualization with model-level breakdown
-   - Historical quota usage charts (Pacific-day window)
-   - Rate limit hit/miss counters per entry
+   - [x] Per-entry quota visualization with model-level breakdown
+   - [x] Historical quota usage charts (Pacific-day window)
+   - [x] Rate limit hit/miss counters per entry
+   - [x] Circuit breaker state surfaced in Overview page
 
 3. **Automated Token Rotation**
    - Detect tokens approaching quota exhaustion

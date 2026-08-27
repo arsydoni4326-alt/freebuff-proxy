@@ -277,7 +277,7 @@ func TestCardFromSnapshotBanAndLocked(t *testing.T) {
 		Key:         "abcd1234efgh",
 		BanType:     "temporary",
 		BannedUntil: until,
-	})
+	}, 0)
 	if bc.BanType != "temporary" || bc.BannedUntil != until.Format(time.RFC3339) {
 		t.Errorf("bridge card ban = %q/%q, want temporary/%s", bc.BanType, bc.BannedUntil, until.Format(time.RFC3339))
 	}

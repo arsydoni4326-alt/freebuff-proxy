@@ -1,8 +1,16 @@
-# Session: Circuit Breaker Observability
+# Session: Bridge Mode Quota Introspection Dashboard
 
 ## Current Objective
-Implementing Circuit Breaker Observability (ROADMAP § Future Work Recommendations #1).
-Exposing circuit breaker state via `/healthz`, Prometheus metrics, and dashboard.
+Implementing Bridge Mode Quota Introspection Dashboard (ROADMAP § Future Work Recommendations #2).
+Per-entry quota visualization with model-level breakdown, rate limit counters, and spend tracking.
+
+## Recent Changes
+- Bridge quota dashboard: per-entry quota visualization with model-level breakdown (#bridge-quota-dashboard)
+- Rate limit hit/miss counters on bridgeEntry (atomic.Int64)
+- Extended BridgeTokenSnapshot with RateLimitHits/Misses/RateLimitRate fields
+- Extended bridgeTokenCard with Quota rows, SpendLimit, and rate limit stats
+- Tokens page: Bridge Quota section with per-entry cards, quota breakdown, rate limit activity
+- Documentation: docs/bridge-quota-dashboard.md
 
 ## Recent Changes (Merge from origin/main)
 - Circuit breaker for bridge mode fully implemented (`bridge_breaker.go`)
@@ -84,14 +92,14 @@ Exposing circuit breaker state via `/healthz`, Prometheus metrics, and dashboard
 - `internal/server/header_injection_test.go` — NEW: Header smuggling prevention tests
 - `internal/upstream/protocol_regression_test.go` — NEW: Protocol drift regression tests
 
-## Circuit Breaker Observability Phase (IN PROGRESS)
+## Circuit Breaker Observability Phase (COMPLETE)
 
 ### Deliverables
 - [x] Documentation: `docs/circuit-breaker-observability.md` — comprehensive guide
 - [x] Expose breaker state via `Pool.BreakerSnapshot()` method
 - [x] `/healthz` response includes `circuit_breaker` object
 - [x] Prometheus metrics: `freebuff_proxy_bridge_breaker_open`, `freebuff_proxy_bridge_breaker_failures`
-- [ ] Dashboard Overview surfaces breaker state (deferred to dashboard phase)
+- [x] Dashboard Overview surfaces breaker state (deferred to dashboard phase)
 - [x] Tests: `TestBreakerSnapshotDisabled`, `TestBreakerSnapshotEnabled`, `TestBreakerSnapshotOpen`, `TestBreakerSnapshotFailureCount`, `TestHealthzCircuitBreaker`, `TestHealthzCircuitBreakerEnabled`, `TestMetricsCircuitBreaker`
 
 ### Design Decisions

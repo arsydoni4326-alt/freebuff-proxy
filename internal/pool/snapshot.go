@@ -31,6 +31,10 @@ type BridgeTokenSnapshot struct {
 	// Exposed so /healthz and bridge metrics can surface dead-token counts
 	// without any plaintext token material.
 	DeadToken bool `json:"dead_token,omitempty"`
+	// Rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
+	RateLimitHits   int64   `json:"rate_limit_hits"`
+	RateLimitMisses int64   `json:"rate_limit_misses"`
+	RateLimitRate   float64 `json:"rate_limit_rate"`
 }
 
 // banView derives the snapshot ban view from a remembered runs ban

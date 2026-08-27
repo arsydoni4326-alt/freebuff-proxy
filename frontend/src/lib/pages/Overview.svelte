@@ -306,6 +306,61 @@
           {/if}
         </Card>
       </section>
+
+      <!-- Circuit breaker state (ROADMAP §2.2) -->
+      {#if data.in_bridge && data.circuit_breaker?.enabled}
+        <section aria-label="Circuit breaker">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-lg font-semibold text-[var(--fp-text)]">{$tr('Circuit breaker')}</h2>
+            <span class="fp-num text-xs text-[var(--fp-dim)]">{$tr('bridge upstream protection')}</span>
+          </div>
+          <Card>
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div class="flex items-center gap-3">
+                <StatusBadge
+                  status={data.circuit_breaker.open ? $tr('open') : $tr('closed')}
+                  tone={data.circuit_breaker.open ? 'bad' : 'good'}
+                  pulse={data.circuit_breaker.open}
+                />
+                <div>
+                  <div class="text-sm text-[var(--fp-muted)]">{$tr('Status')}</div>
+                  <div class="fp-num text-2xl font-semibold text-[var(--fp-text)]">
+                    {data.circuit_breaker.open ? $tr('OPEN') : $tr('CLOSED')}
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-center gap-6 text-xs text-[var(--fp-dim)]">
+                <div class="text-center">
+                  <div class="text-[var(--fp-muted)]">{$tr('Failures')}</div>
+                  <div class="fp-num text-lg font-semibold text-[var(--fp-text)]">
+                    {data.circuit_breaker.failure_count}
+                    <span class="text-[var(--fp-dim)]">/ {data.circuit_breaker.threshold}</span>
+                  </div>
+                </div>
+                <div class="text-center">
+                  <div class="text-[var(--fp-muted)]">{$tr('Remaining')}</div>
+                  <div class="fp-num text-lg font-semibold text-[var(--fp-text)]">
+                    {data.circuit_breaker.failures_remaining}
+                  </div>
+                </div>
+                {#if data.circuit_breaker.open && data.circuit_breaker.cooldown_remaining > 0}
+                  <div class="text-center">
+                    <div class="text-[var(--fp-muted)]">{$tr('Cooldown')}</div>
+                    <div class="fp-num text-lg font-semibold text-[var(--fp-warning)]">
+                      {Math.ceil(data.circuit_breaker.cooldown_remaining)}s
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </div>
+            <div class="mt-3 flex items-center gap-4 text-xs text-[var(--fp-dim)]">
+              <span>{$tr('window')}: <code class="fp-num text-[var(--fp-text)]">{data.circuit_breaker.window}</code></span>
+              <span>{$tr('cooldown')}: <code class="fp-num text-[var(--fp-text)]">{data.circuit_breaker.cooldown}</code></span>
+              <span>{$tr('threshold')}: <code class="fp-num text-[var(--fp-text)]">{data.circuit_breaker.threshold}</code></span>
+            </div>
+          </Card>
+        </section>
+      {/if}
     {/if}
   {/if}
 </div>
