@@ -552,6 +552,7 @@ func TestEffortsForModel(t *testing.T) {
 	// full ladder — nothing to clamp to.
 	for _, model := range []string{
 		"z-ai/glm-5.2",
+		"z-ai/glm-5.3-flash",
 		"crof/kimi-k3-eco",
 		"google/gemini-2.5-flash-lite",
 		"google/gemini-3.1-flash-lite",

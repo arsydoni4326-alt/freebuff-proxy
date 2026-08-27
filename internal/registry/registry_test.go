@@ -47,6 +47,7 @@ var expectedFallback = map[string]string{
 	"deepseek/deepseek-v4-flash":      "base2-free-deepseek-flash",
 	"mimo/mimo-v2.5":                  "base2-free-mimo",
 	"z-ai/glm-5.2":                    "base2-free-glm",
+	"z-ai/glm-5.3-flash":              "base2-free-glm-5-3-flash",
 	"crof/kimi-k3-eco":                "base2-free-kimi-k3-eco",
 	"deepseek/deepseek-v4-pro-max":    "base2-free-deepseek-pro-max",
 	"deepseek/deepseek-v4-flash-max":  "base2-free-deepseek-flash-max",
@@ -902,8 +903,9 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 }
 
 // TestStrictServedModelsPinned pins issue #189 (strict gate) as amended by
-// #201 and the 2026-08-23 luna-es drop, and by #209: ServedModels contains
-// ONLY the 6 operational FreeBuff models. openai/gpt-5.6-luna-es was removed
+// #201 and the 2026-08-23 luna-es drop, and by #209, and by d64972c (2026-08-27)
+// adding z-ai/glm-5.3-flash: ServedModels contains ONLY the 7 operational
+// FreeBuff models. openai/gpt-5.6-luna-es was removed
 // after the vendor moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex
 // (test)" — Novita route, evaluation only; hidden from the CLI picker and
 // SUPPORTED_FREEBUFF_MODELS in snapshot 0603bc1) — not the documented
@@ -917,11 +919,12 @@ func TestStrictServedModelsPinned(t *testing.T) {
 		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.6-luna",
 		"z-ai/glm-5.2",
+		"z-ai/glm-5.3-flash",
 		"mimo/mimo-v2.5",
 		"stealth/ox-alpha",
 	}
-	if len(ServedModels) != 6 {
-		t.Fatalf("len(ServedModels) = %d, want exactly 6", len(ServedModels))
+	if len(ServedModels) != 7 {
+		t.Fatalf("len(ServedModels) = %d, want exactly 7", len(ServedModels))
 	}
 	for _, m := range wantModels {
 		if !ServedModels[m] {

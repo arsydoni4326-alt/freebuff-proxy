@@ -88,24 +88,25 @@ var ServedModels = map[string]bool{
 	"deepseek/deepseek-v4-pro":   true,
 	"openai/gpt-5.6-luna":        true,
 	"z-ai/glm-5.2":               true,
+	"z-ai/glm-5.3-flash":         true,
 	"mimo/mimo-v2.5":             true,
 	"stealth/ox-alpha":           true,
 }
-
-// SupportedModelIDs is the canonical list of the 6 active models served by the gateway.
+// SupportedModelIDs is the canonical list of the 7 active models served by the gateway.
 var SupportedModelIDs = []string{
 	"deepseek/deepseek-v4-flash",
 	"deepseek/deepseek-v4-pro",
 	"openai/gpt-5.6-luna",
 	"z-ai/glm-5.2",
+	"z-ai/glm-5.3-flash",
 	"mimo/mimo-v2.5",
 	"stealth/ox-alpha",
 }
 
 // SupportedModelsHelpText is the formatted list of models for error messages (issue #189).
-const SupportedModelsHelpText = "deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro, openai/gpt-5.6-luna, z-ai/glm-5.2, mimo/mimo-v2.5, stealth/ox-alpha"
+const SupportedModelsHelpText = "deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro, openai/gpt-5.6-luna, z-ai/glm-5.2, z-ai/glm-5.3-flash, mimo/mimo-v2.5, stealth/ox-alpha"
 
-// IsServedModel reports whether model is in the 6 active served models.
+// IsServedModel reports whether model is in the 7 active served models.
 func IsServedModel(model string) bool {
 	return ServedModels[model]
 }
@@ -177,6 +178,7 @@ var fallbackAgents = []agentModels{
 	{agent: "base2-free-minimax-m3", models: []string{"minimax/minimax-m3"}},
 	{agent: "base2-free-luna", models: []string{"openai/gpt-5.6-luna"}},
 	{agent: "base2-free-glm", models: []string{"z-ai/glm-5.2"}},
+	{agent: "base2-free-glm-5-3-flash", models: []string{"z-ai/glm-5.3-flash"}},
 	{agent: "base2-free-kimi-k3-eco", models: []string{"crof/kimi-k3-eco"}},
 	{agent: "base2-free-luna-es", models: []string{"openai/gpt-5.6-luna-es"}},
 	{agent: "base3-free-luna-es", models: []string{"openai/gpt-5.6-luna-es"}},
@@ -206,6 +208,7 @@ var fallbackAgents = []agentModels{
 	{agent: "code-reviewer-deepseek-flash", models: []string{"deepseek/deepseek-v4-flash"}},
 	{agent: "code-reviewer-mimo", models: []string{"mimo/mimo-v2.5"}},
 	{agent: "code-reviewer-glm", models: []string{"z-ai/glm-5.2"}},
+	{agent: "code-reviewer-glm-5-3-flash", models: []string{"z-ai/glm-5.3-flash"}},
 	{agent: "code-reviewer-fable", models: []string{"anthropic/claude-fable-5"}},
 	{agent: "code-reviewer-lite", models: []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "mimo/mimo-v2.5"}},
 }
@@ -223,8 +226,8 @@ var fallbackRootByModel = map[string]string{
 	"deepseek/deepseek-v4-pro":        "base2-free-deepseek",
 	"deepseek/deepseek-v4-flash":      "base2-free-deepseek-flash",
 	"z-ai/glm-5.2":                    "base2-free-glm",
+	"z-ai/glm-5.3-flash":              "base2-free-glm-5-3-flash",
 	"crof/kimi-k3-eco":                "base2-free-kimi-k3-eco",
-	"openai/gpt-5.6-luna-es":          "base2-free-luna-es",
 	"anthropic/claude-fable-5":        "base2-free-fable",
 	"meta/muse-spark-1.2-contributor": "base2-free-muse-spark",
 	"stealth/ox-alpha":                "base2-free-ox-alpha",
