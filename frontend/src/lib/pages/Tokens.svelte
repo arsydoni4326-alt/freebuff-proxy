@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import {
     LogIn,
+    Key,
     Lock,
     Plus,
     Trash2,
@@ -12,19 +13,21 @@
     RefreshCw,
     Zap,
     Check,
-    Activity,
   } from '@lucide/svelte';
   import Button from '../components/Button.svelte';
   import Card from '../components/Card.svelte';
+  import Field from '../components/Field.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import PageHeader from '../components/PageHeader.svelte';
+  import PremiumQuotaBar from '../components/PremiumQuotaBar.svelte';
   import { fetchAPI, postAPI } from '../api/client.js';
   import { usePolling } from '../utils/polling.js';
-  import { formatLocalDate } from '../utils/format.js';
+  import { formatLocalDate, generateRandomApiKey } from '../utils/format.js';
   import { tr } from '../i18n.js';
+
   let data = $state(null);
   let loading = $state(true);
   let error = $state('');
@@ -35,6 +38,13 @@
   let actionMessage = $state('');
   let actionOK = $state(true);
 
+  // Client API-key management (API_KEYS in .env)
+  let apiKeys = $state([]);
+  let clientKeyMessage = $state('');
+  let clientKeyOK = $state(true);
+  let generatingKey = $state(false);
+  let generatedKey = $state('');
+
   // Device login flow
   let oauthStarting = $state(false);
   let oauthStatus = $state(null);
@@ -42,6 +52,7 @@
 
   // Token table
   let expandedToken = $state(null);
+  let spawnModels = $state({});
   let spawnModels = $state({});
   let actionPending = $state(false);
   let now = $state(Date.now());
@@ -98,6 +109,15 @@
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/tokens');
+      try {
+        const cfgRes = await fetchAPI('/admin/api/config');
+        const envContent = cfgRes?.env_content || '';
+        const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
+        const val = m ? m[1].trim() : '';
+        apiKeys = val ? val.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      } catch {
+        apiKeys = [];
+      }
       error = '';
     } catch (e) {
       error = e.message || $tr('Failed to fetch tokens');
@@ -139,6 +159,41 @@
       actionMessage = e.message || $tr('Network error executing action');
     } finally {
       actionPending = false;
+    }
+  }
+
+  async function generateClientKey() {
+    if (generatingKey) return;
+    generatingKey = true;
+    generatedKey = '';
+    clientKeyMessage = '';
+    try {
+      const newKey = generateRandomApiKey();
+      const cfgRes = await fetchAPI('/admin/api/config');
+      const envContent = cfgRes?.env_content || '';
+      const regex = /^\s*API_KEYS=(.*)$/m;
+      const match = envContent.match(regex);
+      const existing = match ? match[1].trim() : '';
+      const updated = existing ? `${existing},${newKey}` : newKey;
+      const save = await fetch('/admin/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ content: envContent.replace(regex, `API_KEYS=${updated}`) }),
+      });
+      const result = await save.json();
+      clientKeyOK = save.ok && result.ok;
+      clientKeyMessage = clientKeyOK
+        ? $tr('Generated & saved client API key')
+        : (result.message || $tr('Failed to save client API key'));
+      if (clientKeyOK) {
+        generatedKey = newKey;
+        fetchData();
+      }
+    } catch (e) {
+      clientKeyOK = false;
+      clientKeyMessage = e.message || $tr('Network error generating client key');
+    } finally {
+      generatingKey = false;
     }
   }
 
@@ -209,9 +264,42 @@
     clearInterval(tick);
   });
 </script>
+
 <div class="page-enter">
   <div class="flex flex-col gap-6">
-    <PageHeader title={$tr('Tokens')} description={$tr('Upstream FreeBuff authentication tokens, session management, and quota telemetry')} />
+    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, client API keys, and per-token session quotas')}>
+      {#snippet actions()}
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={startOAuthLogin}
+          disabled={oauthStarting}
+        >
+          {#if oauthStarting}
+            <RefreshCw size={14} class="animate-spin" />
+            <span>{$tr('Authorizing…')}</span>
+          {:else}
+            <LogIn size={14} />
+            <span>{$tr('Device Login')}</span>
+          {/if}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onclick={generateClientKey}
+          disabled={generatingKey}
+        >
+          {#if generatingKey}
+            <RefreshCw size={14} class="animate-spin" />
+            <span>{$tr('Generating…')}</span>
+          {:else}
+            <Key size={14} />
+            <span>{$tr('Generate API Key')}</span>
+          {/if}
+        </Button>
+      {/snippet}
+    </PageHeader>
+
     {#if actionMessage}
       <Alert tone={actionOK ? 'success' : 'error'} title={actionMessage} />
     {/if}
@@ -248,21 +336,14 @@
 
     <!-- Add token form -->
     <Card title={$tr('Add Token to Pool')} description={$tr('Paste a FreeBuff auth token (cb_…) to add it to the shared pool and save it to .env. Adding burns no quota.')}>
-      {#snippet actions()}
-        <Button variant="secondary" size="sm" onclick={startOAuthLogin} disabled={oauthStarting}>
-          {#if oauthStarting}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Authorizing…')}</span>
-          {:else}
-            <LogIn size={14} />
-            <span>{$tr('Device Login')}</span>
-          {/if}
-        </Button>
-      {/snippet}
-      <form onsubmit={addToken} class="flex flex-col gap-1.5">
-        <label for="add-token-input" class="text-xs text-[var(--fp-muted)]">{$tr('Token')}</label>
-        <div class="flex flex-col sm:flex-row gap-2 sm:items-end">
-          <div class="flex-1 flex flex-col gap-1.5">
+      <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-end gap-3">
+        <div class="flex-1 w-full">
+          <Field
+            label={$tr('Token')}
+            hint={tokenValid === true ? $tr('Valid format') : tokenValid === false ? $tr('Invalid format') : $tr('Format: cb_…')}
+            error={tokenValid === false ? $tr('Token must match cb_… with at least 20 characters') : ''}
+            id="add-token-input"
+          >
             <input
               id="add-token-input"
               type="text"
@@ -271,25 +352,47 @@
               autocomplete="off"
               spellcheck="false"
               class="fp-input fp-num w-full"
-              aria-describedby="add-token-input-hint"
-              aria-invalid={tokenValid === false ? 'true' : undefined}
             />
-          </div>
-          <Button
-            type="submit"
-            variant="primary"
-            disabled={adding || !newToken.trim() || tokenValid === false}
-            loading={adding}
-            class="shrink-0 self-end"
-          >
-            <Plus size={16} />
-            <span>{$tr('Add Token')}</span>
-          </Button>
+          </Field>
         </div>
-        <p id="add-token-input-hint" class="text-[11px] text-[var(--fp-dim)]">{$tr('Format: cb_…')}</p>
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={adding || !newToken.trim() || tokenValid === false}
+          loading={adding}
+        >
+          <Plus size={16} />
+          <span>{$tr('Add Token')}</span>
+        </Button>
       </form>
     </Card>
 
+    <!-- Client API-key management -->
+    <Card
+      title={$tr('Client API Keys')}
+      description={$tr('sk-fb-… credentials for clients (omp, curl) to authenticate against this proxy. Stored in the API_KEYS line of .env.')}
+    >
+      {#if generatedKey}
+        <div class="fp-inset rounded p-3 mb-3 flex flex-wrap items-center gap-2">
+          <span class="text-xs text-[var(--fp-muted)]">{$tr('New key:')}</span>
+          <code class="fp-num text-xs text-[var(--fp-accent)] break-all">{generatedKey}</code>
+          <CopyButton text={generatedKey} label="Copy" />
+        </div>
+      {/if}
+      {#if apiKeys.length > 0}
+        <div class="flex flex-col gap-2 mb-3">
+          {#each apiKeys as key}
+            <div class="fp-inset rounded flex items-center justify-between gap-2 px-3 py-2">
+              <code class="fp-num text-xs truncate">{key}</code>
+              <CopyButton text={key} label="Copy" />
+            </div>
+          {/each}
+        </div>
+      {/if}
+      {#if clientKeyMessage}
+        <Alert tone={clientKeyOK ? 'success' : 'error'} title={clientKeyMessage} />
+      {/if}
+    </Card>
 
     <!-- Token table -->
     <Card
@@ -297,19 +400,9 @@
       description={data ? $tr('{count} pooled token(s)', { count: data.token_count || 0 }) : ''}
       pad="none"
     >
-      {#snippet actions()}
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={actionPending || !data?.token_count}
-          onclick={() => triggerAction('/admin/tokens/test-all', {}, $tr('Probe all pool tokens against upstream?'))}
-        >
-          <Activity size={14} />
-          <span>{$tr('Probe All')}</span>
-        </Button>
-      {/snippet}
       {#if loading}
         <div class="p-4 flex flex-col gap-3">
+          <div class="skeleton skeleton-text w-1/3"></div>
           <div class="skeleton skeleton-line"></div>
           <div class="skeleton skeleton-line"></div>
           <div class="skeleton skeleton-line"></div>
@@ -333,15 +426,14 @@
         />
       {:else}
         <table class="fp-table w-full">
-          <caption class="sr-only">{$tr('Pool tokens — token, status, instance, cooldown and actions')}</caption>
           <thead>
             <tr>
-              <th scope="col" class="w-8"><span class="sr-only">{$tr('Expand')}</span></th>
-              <th scope="col">{$tr('Token')}</th>
-              <th scope="col">{$tr('Status')}</th>
-              <th scope="col">{$tr('Instance')}</th>
-              <th scope="col" class="num">{$tr('Cooldown')}</th>
-              <th scope="col" class="text-right">{$tr('Actions')}</th>
+              <th class="w-8"></th>
+              <th>{$tr('Token')}</th>
+              <th>{$tr('Status')}</th>
+              <th>{$tr('Instance')}</th>
+              <th class="num">{$tr('Cooldown')}</th>
+              <th class="text-right">{$tr('Actions')}</th>
             </tr>
           </thead>
           <tbody>
@@ -440,6 +532,17 @@
                 <tr>
                   <td colspan="6" class="!p-0">
                     <div class="fp-inset m-2 rounded p-3">
+                      <!-- Premium Quota Tracker — pacific_day 5/day pool + glm_v53_flash lane -->
+                      <div class="flex flex-col gap-2 mb-3">
+                        {#if token.premium_quota}
+                          <PremiumQuotaBar quota={token.premium_quota} title={$tr('Premium pool')} {now} />
+                        {:else}
+                          <p class="text-xs text-[var(--fp-dim)] italic">{$tr('No premium quota data — run a request or -test-token to populate.')}</p>
+                        {/if}
+                        {#if token.glm53flash_quota}
+                          <PremiumQuotaBar quota={token.glm53flash_quota} title={$tr('GLM 5.3 Flash pool')} {now} />
+                        {/if}
+                      </div>
                       <!-- Dev Tools: Session Generator & Diagnostics Toolbar -->
                       <div class="mb-3 p-2.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] flex flex-wrap items-center justify-between gap-2.5">
                         <div class="flex flex-wrap items-center gap-2">
@@ -549,41 +652,12 @@
                           {/if}
                         </div>
                       {/if}
-                      						{#if token.has_referral}
-							<div class="mb-2 px-2 py-1.5 rounded bg-[var(--fp-surface)]/60 border border-[var(--fp-border)]">
-								<div class="flex items-center justify-between gap-2">
-									<p class="text-xs font-semibold text-[var(--fp-text)]">
-										{$tr('Referral')}
-										<span class="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono uppercase tracking-wider text-[var(--fp-accent)]">{token.referral_code}</span>
-									</p>
-									{#if token.referral_sessions_left > 0}
-										<span class="fp-num text-xs text-[var(--fp-muted)]">
-											{$tr('{count} GLM session(s) left', { count: token.referral_sessions_left })}
-										</span>
-									{/if}
-								</div>
-								<div class="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-[var(--fp-dim)]">
-									<span>{$tr('{count} qualified referral(s)', { count: token.referral_qualified_count || 0 })}</span>
-									{#if token.referral_github_linked}
-										<span class="text-[var(--fp-success)]">{$tr('GitHub linked')}</span>
-									{:else}
-										<span class="text-[var(--fp-warning)]">{$tr('GitHub not linked')}</span>
-									{/if}
-									{#if token.referral_reset_at}
-										<span>{$tr('resets')} {formatLocalDate(token.referral_reset_at)}</span>
-									{/if}
-								</div>
-							</div>
-						{/if}
-						{#if token.has_quota && token.quota?.length > 0}
+                      {#if token.has_quota && token.quota?.length > 0}
                         <div class="flex flex-col gap-2">
                           <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Session quotas')}</p>
                           {#each token.quota as q}
                             <div class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 px-2 py-1.5 rounded bg-[var(--fp-bg)]/40">
                               <code class="fp-num text-xs text-[var(--fp-text)] sm:w-48 shrink-0 truncate">{q.model}</code>
-                              {#if q.pool_label}
-                                <span class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono uppercase tracking-wider text-[var(--fp-dim)] shrink-0">{q.pool_label}</span>
-                              {/if}
                               <span class="fp-num text-xs text-[var(--fp-muted)]">
                                 <span class="text-[var(--fp-text)]">{q.recent}</span> / {q.limit}
                                 {#if q.limit !== '0' && q.limit !== ''}
