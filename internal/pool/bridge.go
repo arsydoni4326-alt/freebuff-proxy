@@ -159,6 +159,16 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 				entry.mu.Unlock()
 				return
 			}
+			// Issue #94(b): WAITING_ROOM_CHAIN gate — when the upstream last
+			// refused this bridge token with 428 waiting_room_required, fire
+			// the reference pre-session ad-chain + streak flow (best-effort,
+			// bounded by the client's own chain timeout) before the next
+			// session create so the admission does not bounce off the same
+			// 428 again (mirrors the fixed-token path in acquire.go).
+			if cfg.WaitingRoomChain && entry.client.ConsumeWaitingRoomChain() {
+				p.logger.Debug("pool: bridge firing waiting-room pre-session chain", "token", bridgeTokenLabel(entry))
+				entry.client.FireWaitingRoomChain(ctx)
+			}
 			sessionStart := time.Now()
 			_, serr := entry.session.EnsureSessionForModel(ctx, model)
 			permit.Release()
@@ -205,8 +215,19 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		if ice := asIpCapped(err); ice != nil {
 			entry.runs.CooldownIpCapped(ice)
 		}
+		if lie := asLimitedIp(err); lie != nil {
+			// Issue #74 P2: the shared egress cannot serve this model
+			// (limited_ip) — mark it unfit so pooled requests refuse fast
+			// instead of re-admitting and burning a daily session slot on
+			// every token. Bridge requests keep their own token, so the
+			// unfit gate stays skipped for them (by design), but the
+			// surfaced error is now self-describing.
+			lie.Model = model
+			p.MarkModelUnfit(model, lie)
+		}
 		if be := asBan(err); be != nil {
 			entry.runs.CooldownBan(be)
+			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
 		if cbe := asCountryBlocked(err); cbe != nil {
 			entry.runs.CooldownCountryBlocked(cbe)
@@ -249,8 +270,19 @@ sessionReady:
 		if ice := asIpCapped(err); ice != nil {
 			entry.runs.CooldownIpCapped(ice)
 		}
+		if lie := asLimitedIp(err); lie != nil {
+			// Issue #74 P2: the shared egress cannot serve this model
+			// (limited_ip) — mark it unfit so pooled requests refuse fast
+			// instead of re-admitting and burning a daily session slot on
+			// every token. Bridge requests keep their own token, so the
+			// unfit gate stays skipped for them (by design), but the
+			// surfaced error is now self-describing.
+			lie.Model = model
+			p.MarkModelUnfit(model, lie)
+		}
 		if be := asBan(err); be != nil {
 			entry.runs.CooldownBan(be)
+			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
 		if cbe := asCountryBlocked(err); cbe != nil {
 			entry.runs.CooldownCountryBlocked(cbe)
@@ -293,8 +325,19 @@ sessionReady:
 		if ice := asIpCapped(err); ice != nil {
 			entry.runs.CooldownIpCapped(ice)
 		}
+		if lie := asLimitedIp(err); lie != nil {
+			// Issue #74 P2: the shared egress cannot serve this model
+			// (limited_ip) — mark it unfit so pooled requests refuse fast
+			// instead of re-admitting and burning a daily session slot on
+			// every token. Bridge requests keep their own token, so the
+			// unfit gate stays skipped for them (by design), but the
+			// surfaced error is now self-describing.
+			lie.Model = model
+			p.MarkModelUnfit(model, lie)
+		}
 		if be := asBan(err); be != nil {
 			entry.runs.CooldownBan(be)
+			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
 		if cbe := asCountryBlocked(err); cbe != nil {
 			entry.runs.CooldownCountryBlocked(cbe)
