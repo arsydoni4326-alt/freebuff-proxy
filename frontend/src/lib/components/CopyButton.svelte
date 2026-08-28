@@ -6,10 +6,9 @@
   /**
    * CopyButton — ghost button that copies text and confirms with a check for 1.5s.
    *
-   * @prop {string} text
-   * @prop {string} [label='Copy']
++   * @prop {() => void} [oncopy]
    */
-  let { text, label = 'Copy' } = $props();
+  let { text, label = 'Copy', oncopy } = $props();
   let copied = $state(false);
   let timer;
 
@@ -17,6 +16,7 @@
     const ok = await copyToClipboard(text);
     if (ok) {
       copied = true;
+      oncopy?.();
       clearTimeout(timer);
       timer = setTimeout(() => {
         copied = false;

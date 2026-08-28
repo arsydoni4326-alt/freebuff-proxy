@@ -4,8 +4,10 @@
    * Data: GET /admin/api/overview (pooled snapshot + token cards), polled every 15s.
    * All KPIs/cards map to real response fields only.
    */
-  import { RefreshCw, ExternalLink, Key, Eye, EyeOff, Trash2, X } from '@lucide/svelte';
+  import { RefreshCw, ExternalLink, Key, Eye, EyeOff, Trash2 } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
+  import GeneratedKeyModal from '../components/GeneratedKeyModal.svelte';
+  import RiskCards from '../components/RiskCards.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Stat from '../components/Stat.svelte';
   import Card from '../components/Card.svelte';
@@ -14,7 +16,7 @@
   import EmptyState from '../components/EmptyState.svelte';
   import Button from '../components/Button.svelte';
   import { fetchAPI } from '../api/client.js';
-  import { formatLocalDate, generateRandomApiKey } from '../utils/format.js';
+  import { generateRandomApiKey } from '../utils/format.js';
   import { usePolling } from '../utils/polling.js';
   import { tr } from '../i18n.js';
   let data = $state(null);
@@ -32,8 +34,6 @@
   let showGeneratedModal = $state(false);
   let tokenRotation = $state('drain');
   let savingRotation = $state(false);
-  let modalEl = $state(null);
-  let lastFocusedEl = null;
 
   function toggleKeyVisibility(key) {
     visibleKeys = { ...visibleKeys, [key]: !visibleKeys[key] };
@@ -51,38 +51,10 @@
   function openGeneratedKeyModal(key) {
     generatedKey = key;
     showGeneratedModal = true;
-    lastFocusedEl = typeof document !== 'undefined' ? document.activeElement : null;
-    // Issue #224: move focus into the dialog on open so keyboard users see it.
-    queueMicrotask(() => {
-      if (showGeneratedModal && modalEl) modalEl.focus();
-    });
   }
 
   function closeGeneratedKeyModal() {
     showGeneratedModal = false;
-    if (lastFocusedEl && typeof lastFocusedEl.focus === 'function') {
-      lastFocusedEl.focus();
-    }
-  }
-
-  function handleModalKeydown(e) {
-    if (e.key === 'Escape') {
-      closeGeneratedKeyModal();
-      return;
-    }
-    if (e.key === 'Tab' && modalEl) {
-      const focusable = modalEl.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-      if (focusable.length === 0) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    }
   }
 
   async function generateClientKey() {
@@ -234,42 +206,7 @@
 
   let atRiskTokens = $derived((data?.tokens ?? []).filter((t) => t.risk_level && t.risk_level !== 'low'));
 
-  function riskTone(risk) {
-    switch (risk) {
-      case 'low':
-        return 'good';
-      case 'moderate':
-        return 'warn';
-      case 'high':
-      case 'critical':
-        return 'bad';
-      default:
-        return 'idle';
-    }
-  }
-
-  function banBadge(t) {
-    if (t.ban_type === 'hard') {
-      return { label: $tr('banned — appeal required'), tone: 'critical', pulse: true };
-    }
-    if (t.ban_type === 'temporary') {
-      const until = formatLocalDate(t.banned_until);
-      return { label: until ? $tr('banned until {time}', { time: until }) : $tr('banned (temporary)'), tone: 'bad' };
-    }
-    return null;
-  }
-
-  function formatCooldown(until) {
-    if (!until) return '';
-    const diff = new Date(until).getTime() - Date.now();
-    if (diff <= 0) return '';
-    const h = Math.floor(diff / 3_600_000);
-    const m = Math.floor((diff % 3_600_000) / 60_000);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  }
 </script>
-
-<svelte:window onkeydown={showGeneratedModal ? handleModalKeydown : undefined} />
 
 <div class="space-y-6 page-enter">
   <PageHeader title={$tr('Overview')} description={$tr('Live proxy status and token pool telemetry')}>
@@ -392,62 +329,7 @@
       </div>
 
       <!-- Token risk cards -->
-      <section aria-label="At-risk tokens">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-semibold text-[var(--fp-text)]">{$tr('Token risk')}</h2>
-          <span class="fp-num text-xs text-[var(--fp-dim)]">{atRiskTokens.length}/{poolTotal}</span>
-        </div>
-
-        {#if atRiskTokens.length > 0}
-          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-            {#each atRiskTokens as t (t.index)}
-              <Card>
-                <div class="space-y-3">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="fp-num text-sm font-semibold text-[var(--fp-text)]">Token #{t.index}</span>
-                    {#if banBadge(t)}
-                      <StatusBadge status={banBadge(t).label} tone={banBadge(t).tone} pulse={banBadge(t).pulse} />
-                    {:else}
-                      <StatusBadge
-                        status={t.risk_level}
-                        tone={riskTone(t.risk_level)}
-                        pulse={t.risk_level === 'critical'}
-                      />
-                    {/if}
-                  </div>
-
-                  {#if t.cooldown_active}
-                    <div class="fp-inset px-2.5 py-2 text-xs text-[var(--fp-warning)]">
-                      {$tr('Cooldown')} — <span class="fp-num">{formatCooldown(t.cooldown_until)}</span> {$tr('remaining')}
-                    </div>
-                  {/if}
-
-                  <div class="fp-inset px-2.5 py-2 text-xs text-[var(--fp-muted)]">
-                    {#if t.daily_limit > 0}
-                      <span class="fp-num text-[var(--fp-text)]">{t.messages_24h}/{t.daily_limit}</span> {$tr('msgs today')}
-                      (<span class="fp-num">{t.usage_pct}%</span>)
-                    {:else}
-                      <span class="fp-num text-[var(--fp-text)]">{t.messages_24h}</span> {$tr('msgs 24h')}
-                    {/if}
-                  </div>
-
-                  <div class="flex justify-between text-xs text-[var(--fp-dim)]">
-                    <span>runs <span class="fp-num text-[var(--fp-text)]">{t.active_runs}</span></span>
-                    <span>reqs <span class="fp-num text-[var(--fp-text)]">{t.requests}</span></span>
-                  </div>
-                </div>
-              </Card>
-            {/each}
-          </div>
-        {:else}
-          <Card>
-            <div class="flex items-center gap-2 text-sm text-[var(--fp-muted)]">
-              <span class="led led-good" aria-hidden="true"></span>
-              {$tr('All tokens healthy — no risk flags.')}
-            </div>
-          </Card>
-        {/if}
-      </section>
+      <RiskCards tokens={atRiskTokens} total={poolTotal} />
 
       <!-- Universal Client Integration & Endpoints Card -->
       <section aria-label="Client integration">
@@ -637,77 +519,7 @@
       </section>
 
       <!-- Pop-up modal for newly generated API key -->
-      {#if showGeneratedModal}
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center p-4"
-          role="presentation"
-        >
-          <!-- Backdrop -->
-          <button
-            type="button"
-            class="fixed inset-0 bg-black/75 backdrop-blur-sm transition-opacity border-0 p-0 m-0 w-full h-full cursor-default"
-            onclick={closeGeneratedKeyModal}
-            aria-label={$tr('Close modal backdrop')}
-            tabindex="-1"
-          ></button>
-
-          <!-- Modal Card -->
-          <div
-            bind:this={modalEl}
-            tabindex="-1"
-            class="relative w-full max-w-lg bg-[var(--fp-card)] border border-[var(--fp-border)] rounded-xl shadow-2xl p-6 z-10 space-y-4 page-enter focus:outline-none"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="generated-key-title"
-          >
-            <!-- Header -->
-            <div class="flex items-center justify-between border-b border-[var(--fp-border)] pb-3">
-              <div class="flex items-center gap-2.5">
-                <div class="p-2 rounded-lg bg-[var(--fp-accent)]/10 text-[var(--fp-accent)]">
-                  <Key size={18} />
-                </div>
-                <div>
-                  <h2 id="generated-key-title" class="text-base font-semibold text-[var(--fp-text)]">
-                    {$tr('Client API Key Generated')}
-                  </h2>
-                  <p class="text-xs text-[var(--fp-muted)]">
-                    {$tr('Saved to .env in API_KEYS')}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                class="text-[var(--fp-muted)] hover:text-[var(--fp-text)] p-1.5 rounded-lg hover:bg-[var(--fp-surface-2)] transition-colors"
-                onclick={closeGeneratedKeyModal}
-                aria-label={$tr('Close dialog')}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <!-- Content -->
-            <p class="text-sm text-[var(--fp-muted)]">
-              {$tr('Use this key to authenticate clients (omp, Claude Code CLI, Cursor, curl) against this gateway.')}
-            </p>
-
-            <div class="fp-inset rounded-lg p-3.5 flex flex-col gap-2 bg-[var(--fp-surface)] border border-[var(--fp-border)]">
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider">{$tr('API Key')}</span>
-                <CopyButton text={generatedKey} label="Copy Key" />
-              </div>
-              <code class="fp-num text-sm text-[var(--fp-accent)] break-all font-mono select-all bg-[var(--fp-surface-2)] p-2.5 rounded border border-[var(--fp-border)]">
-                {generatedKey}
-              </code>
-            </div>
-
-            <div class="flex items-center justify-end gap-2 pt-2 border-t border-[var(--fp-border)]">
-              <Button variant="primary" size="md" onclick={closeGeneratedKeyModal}>
-                {$tr('Done')}
-              </Button>
-            </div>
-          </div>
-        </div>
-      {/if}
+      <GeneratedKeyModal bind:open={showGeneratedModal} key={generatedKey} onClose={closeGeneratedKeyModal} />
     {/if}
   {/if}
 </div>

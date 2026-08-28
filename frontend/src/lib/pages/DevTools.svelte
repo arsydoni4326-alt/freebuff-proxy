@@ -1,28 +1,14 @@
 <script>
-  import {
-    FlaskConical,
-    Send,
-    RefreshCw,
-    Zap,
-    Check,
-    Cpu,
-    Sliders,
-    Terminal,
-    Copy,
-    Activity,
-    Lock,
-    Unlock,
-    Trash2,
-  } from '@lucide/svelte';
+  import { Send, Activity } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import Card from '../components/Card.svelte';
   import Button from '../components/Button.svelte';
-  import StatusBadge from '../components/StatusBadge.svelte';
   import Alert from '../components/Alert.svelte';
   import CopyButton from '../components/CopyButton.svelte';
+  import SessionSpawnPanel from '../components/SessionSpawnPanel.svelte';
+  import BatchTestPanel from '../components/BatchTestPanel.svelte';
   import { fetchAPI, postAPI } from '../api/client.js';
   import { usePolling } from '../utils/polling.js';
-  import { formatLocalDate } from '../utils/format.js';
   import { tr } from '../i18n.js';
   import { onMount } from 'svelte';
 
@@ -33,7 +19,7 @@
   let devToolsChecked = $state(false);
 
   // --- State for Chat Playground ---
-  let selectedModel = $state('openai/gpt-5.6-luna');
+  let selectedModel = $state('mimo/mimo-v2.5');
   let protocol = $state('openai'); // 'openai' | 'anthropic'
   let streamMode = $state(true);
   let promptText = $state('Hello! Count from 1 to 5 and briefly describe yourself.');
@@ -49,16 +35,8 @@
   let actionMessage = $state('');
   let actionOK = $state(true);
   let actionPending = $state(false);
-  let spawnModels = $state({});
-
-  // --- State for Batch Traffic Generator ---
-  let batchCount = $state(5);
-  let batchRunning = $state(false);
-  let batchLogs = $state([]);
-  let batchSeq = 0; // monotonic key across runs so #each keys never collide
 
   const modelsList = [
-    { id: 'stealth/ox-alpha', label: 'stealth/ox-alpha (1M ctx · unmetered)', tag: '1M' },
     { id: 'openai/gpt-5.6-luna', label: 'openai/gpt-5.6-luna (5/day shared)', tag: '5/d' },
     { id: 'mimo/mimo-v2.5', label: 'mimo/mimo-v2.5 (unmetered entry)', tag: 'unmetered' },
     { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (2/day cap)', tag: '2/d' },
@@ -248,43 +226,10 @@
     }
   }
 
-  async function runBatchTraffic() {
-    if (batchRunning) return;
-    batchRunning = true;
-    batchLogs = [];
-    try {
-      for (let i = 1; i <= batchCount; i++) {
-        const start = performance.now();
-        const model = selectedModel;
-        try {
-          const res = await fetch('/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model,
-              messages: [{ role: 'user', content: `Ping test #${i}` }],
-              max_tokens: 16,
-              stream: false,
-            }),
-          });
-          const ms = Math.round(performance.now() - start);
-          batchLogs = [
-            { id: ++batchSeq, reqNum: i, model, status: res.status, ok: res.ok, ms, time: new Date().toLocaleTimeString() },
-            ...batchLogs,
-          ];
-        } catch (err) {
-          const ms = Math.round(performance.now() - start);
-          batchLogs = [
-            { id: ++batchSeq, reqNum: i, model, status: 0, ok: false, error: err.message, ms, time: new Date().toLocaleTimeString() },
-            ...batchLogs,
-          ];
-        }
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      await fetchTokens();
-    } finally {
-      batchRunning = false;
-    }
+  function handleSpawn({ ok, message }) {
+    actionOK = ok;
+    actionMessage = message;
+    fetchTokens();
   }
 </script>
 
@@ -467,51 +412,7 @@
                       <span class="text-xs text-[var(--fp-dim)]">—</span>
                     {/if}
                   </td>
-                  <td>
-                    <select
-                      bind:value={spawnModels[idx]}
-                      class="fp-input !text-xs !py-1 !px-2 !h-8 !w-48"
-                    >
-                      <option value="stealth/ox-alpha">stealth/ox-alpha (1M)</option>
-                      <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/d)</option>
-                      <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
-                      <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (2/d)</option>
-                      <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash</option>
-                      <option value="deepseek/deepseek-v4-pro">deepseek/deepseek-v4-pro</option>
-                      <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral)</option>
-                    </select>
-                  </td>
-                  <td class="text-right">
-                    <div class="inline-flex items-center gap-1.5 justify-end">
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        disabled={actionPending}
-                        onclick={() => triggerTokenAction(`/admin/tokens/${idx}/session`, { model: spawnModels[idx] || 'openai/gpt-5.6-luna' }, $tr('Spawn upstream session on token #{idx} for {model}?', { idx, model: spawnModels[idx] || 'openai/gpt-5.6-luna' }))}
-                      >
-                        <Zap size={13} />
-                        <span>{$tr('Make Session')}</span>
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={actionPending}
-                        onclick={() => triggerTokenAction(`/admin/tokens/${idx}/test`, {}, $tr('Probe token #{idx}?', { idx }))}
-                      >
-                        <RefreshCw size={13} />
-                        <span>{$tr('Probe')}</span>
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={actionPending}
-                        onclick={() => triggerTokenAction(`/admin/tokens/${idx}/finish`, {}, $tr('Finish runs on token #{idx}?', { idx }))}
-                      >
-                        <Check size={13} />
-                        <span>{$tr('Finish')}</span>
-                      </Button>
-                    </div>
-                  </td>
+                  <SessionSpawnPanel {idx} onSpawn={handleSpawn} />
                 </tr>
               {/each}
             </tbody>
@@ -522,54 +423,7 @@
   </section>
 
   <!-- Section 3: Batch Traffic & Rotation Simulator -->
-  <section aria-label="Batch Traffic Generator">
-    <Card title={$tr('Traffic Generator & Rotation Benchmark')} description={$tr('Send simulated request bursts to observe live token pool rotation and failover in action.')}>
-      {#snippet actions()}
-        <span class="text-xs font-mono text-[var(--fp-muted)]">Burst: {batchCount} reqs</span>
-      {/snippet}
-
-      <div class="space-y-3">
-        <div class="flex flex-wrap items-center gap-3">
-          <div class="flex items-center gap-2">
-            <label for="dev-burst" class="text-xs text-[var(--fp-muted)]">{$tr('Requests:')}</label>
-            <select id="dev-burst" bind:value={batchCount} class="fp-input text-xs w-28 py-1.5">
-              <option value={3}>3 requests</option>
-              <option value={5}>5 requests</option>
-              <option value={10}>10 requests</option>
-              <option value={20}>20 requests</option>
-            </select>
-          </div>
-
-          <Button
-            variant="secondary"
-            size="md"
-            loading={batchRunning}
-            disabled={batchRunning}
-            onclick={runBatchTraffic}
-          >
-            <Activity size={14} />
-            <span>{$tr('Fire Burst Traffic')}</span>
-          </Button>
-        </div>
-
-        {#if batchLogs.length > 0}
-          <div class="fp-inset rounded-lg p-3 space-y-1.5 max-h-48 overflow-y-auto font-mono text-xs">
-            {#each batchLogs as log (log.id)}
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-[var(--fp-muted)]">Req #{log.reqNum} · {log.model}</span>
-                <div class="flex items-center gap-2">
-                  <span class="px-1.5 py-0.5 rounded text-[10px] {log.ok ? 'bg-[var(--fp-success)]/10 text-[var(--fp-success)]' : 'bg-[var(--fp-error)]/10 text-[var(--fp-error)]'}">
-                    {log.ok ? `HTTP ${log.status}` : (log.error || `Status ${log.status}`)}
-                  </span>
-                  <span class="text-[var(--fp-dim)]">{log.ms}ms</span>
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    </Card>
-  </section>
+  <BatchTestPanel />
 </div>
 {:else}
   <div class="space-y-6 page-enter">
