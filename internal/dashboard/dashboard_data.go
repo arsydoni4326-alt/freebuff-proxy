@@ -16,6 +16,7 @@ type overviewData struct {
 	BaseURL              string            `json:"base_url"`
 	Mode                 string            `json:"mode"`
 	InBridge             bool              `json:"in_bridge"`
+	ShowBridge           bool              `json:"show_bridge"`
 	BridgeTokens         int               `json:"bridge_tokens"`
 	BridgeTokenCards     []bridgeTokenCard `json:"bridge_token_cards,omitempty"`
 	Models               []string          `json:"models"`
@@ -246,6 +247,7 @@ func (d *Dashboard) overviewData() overviewData {
 		BaseURL:              "http://" + host + "/v1",
 		Mode:                 mode,
 		InBridge:             mode == "bridge",
+		ShowBridge:           mode == "bridge" || mode == "hybrid",
 		Models:               servedModels(d.reg),
 		ModelCount:           len(servedModels(d.reg)),
 		SafeMode:             cfg.SafeMode,
@@ -263,7 +265,7 @@ func (d *Dashboard) overviewData() overviewData {
 	// tokens configured" on Overview while the Tokens tab worked.
 	od.HasTokens = len(od.Tokens) > 0
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
-	if od.InBridge {
+	if od.ShowBridge {
 		for _, snap := range d.pool.BridgeSnapshot() {
 			od.BridgeTokenCards = append(od.BridgeTokenCards, bridgeCardFromSnapshot(snap))
 		}

@@ -12,6 +12,7 @@ import (
 type tokensData struct {
 	Mode             string            `json:"mode"`
 	InBridge         bool              `json:"in_bridge"`
+	ShowBridge       bool              `json:"show_bridge"`
 	BridgeTokens     int               `json:"bridge_tokens"`
 	BridgeTokenCards []bridgeTokenCard `json:"bridge_token_cards,omitempty"`
 	TokenCount       int               `json:"token_count"`
@@ -59,6 +60,10 @@ func (d *Dashboard) tokensData() tokensData {
 	cfg := d.cfg()
 	td := tokensData{BridgeTokens: d.pool.BridgeCount(), TokenCount: d.pool.TokenCount(), Mode: cfg.EffectiveMode()}
 	td.InBridge = td.Mode == "bridge"
+	// Hybrid mode shows BOTH surfaces: the pooled table and the live bridge
+	// client cards. Pure bridge hides the (empty) pooled table; pure pooled
+	// has no bridge cards.
+	td.ShowBridge = td.Mode == "bridge" || td.Mode == "hybrid"
 	for _, t := range d.pool.Snapshot() {
 		detail := tokenDetail{
 			tokenCard:               cardFromSnapshot(t),
@@ -153,7 +158,7 @@ func (d *Dashboard) tokensData() tokensData {
 	}
 	td.HasTokens = len(td.Tokens) > 0
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
-	if td.InBridge {
+	if td.ShowBridge {
 		for _, snap := range d.pool.BridgeSnapshot() {
 			td.BridgeTokenCards = append(td.BridgeTokenCards, bridgeCardFromSnapshot(snap))
 		}

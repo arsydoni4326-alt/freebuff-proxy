@@ -311,8 +311,11 @@ func main() {
 	// checking if the output is a character device (terminal).
 	if stderrIsCharDevice() {
 		mode := fmt.Sprintf("pooled (%d tokens)", len(cfg.AuthTokens))
-		if cfg.BridgeMode() {
+		switch {
+		case cfg.BridgeMode():
 			mode = "bridge (clients send their own token)"
+		case cfg.HybridBridgeMode():
+			mode = fmt.Sprintf("hybrid (%d pooled tokens + bridge relay)", len(cfg.AuthTokens))
 		}
 		fmt.Fprintf(os.Stderr, "\n"+
 			"  freebuff-proxy %s is running!\n"+

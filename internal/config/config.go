@@ -59,12 +59,23 @@ type Config struct {
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
 	// before the per-entry check so a flood of distinct client tokens cannot
 	// collectively exceed the operator's budget.
-	BridgeDailyLimit      int
-	MaxSpendPerDay        int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $5 elevated [SG/CN cohort] / $0.50 restricted, compose by minimum, server-enforced; restricted reasons take a 2x HARD mid-session cut at FREEBUFF_SPEND_CEILING_HARD_MULTIPLIER) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
-	IdleRotationTimeout   time.Duration // 0 = disabled: pause rotation/refresh after this idle period
-	SessionIdleEnd        time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
-	SafeMode              bool          // true = apply recommended anti-ban safe defaults
-	ModelsHideUnavailable bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
+	BridgeDailyLimit    int
+	MaxSpendPerDay      int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $5 elevated [SG/CN cohort] / $0.50 restricted, compose by minimum, server-enforced; restricted reasons take a 2x HARD mid-session cut at FREEBUFF_SPEND_CEILING_HARD_MULTIPLIER) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
+	IdleRotationTimeout time.Duration // 0 = disabled: pause rotation/refresh after this idle period
+	SessionIdleEnd      time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
+	// BridgeEnabled gates bridge-mode traffic when AUTH_TOKENS are configured
+	// (BRIDGE_ENABLED; default true). When enabled alongside a token pool the
+	// proxy runs in hybrid mode: a request whose credential matches an
+	// API_KEYS entry uses the pool, every other credential is relayed upstream
+	// as a bridge token. Set BRIDGE_ENABLED=0 for a locked-down pooled-only
+	// instance (the pre-hybrid behavior).
+	BridgeEnabled bool
+	// BridgeIdleEvict is how long a bridge entry may sit unused before the
+	// maintain loop FINISHes its runs, ends its upstream session, and drops it
+	// from the cache (BRIDGE_IDLE_EVICT; default 72h, sliding TTL).
+	BridgeIdleEvict       time.Duration
+	SafeMode              bool // true = apply recommended anti-ban safe defaults
+	ModelsHideUnavailable bool // true = /v1/models prunes models marked unavailable (region/quota/lock)
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
@@ -194,13 +205,26 @@ func (c *Config) IsDefaultAdminToken() bool {
 // or x-api-key), and the proxy relays with that token upstream.
 func (c Config) BridgeMode() bool { return len(c.AuthTokens) == 0 }
 
+// HybridBridgeMode reports whether the proxy runs pooled AND bridge
+// simultaneously: AUTH_TOKENS are configured AND BRIDGE_ENABLED (the
+// default). A request whose credential matches an API_KEYS entry uses the
+// pooled path; any other credential is relayed upstream as a bridge token.
+func (c Config) HybridBridgeMode() bool {
+	return len(c.AuthTokens) > 0 && c.BridgeEnabled
+}
+
 // EffectiveMode reports the routing mode label for dashboards and healthz:
-// "bridge" when no AUTH_TOKENS are configured, else "pooled".
+// "bridge" when no AUTH_TOKENS are configured, "hybrid" when AUTH_TOKENS
+// are set with BRIDGE_ENABLED (the default), else "pooled".
 func (c Config) EffectiveMode() string {
-	if c.BridgeMode() {
+	switch {
+	case c.BridgeMode():
 		return "bridge"
+	case c.HybridBridgeMode():
+		return "hybrid"
+	default:
+		return "pooled"
 	}
-	return "pooled"
 }
 
 // rawConfig mirrors the JSON file / env keys as strings so that parsing and
@@ -237,7 +261,14 @@ type rawConfig struct {
 	MaxMessagesPerDay  *int   `json:"MAX_MESSAGES_PER_DAY"`
 	// BridgeDailyLimit is the global daily chat cap across all bridge
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
-	BridgeDailyLimit                 *int                    `json:"BRIDGE_DAILY_LIMIT"`
+	BridgeDailyLimit *int `json:"BRIDGE_DAILY_LIMIT"`
+	// BridgeEnabled records BRIDGE_ENABLED (default true via
+	// defaultRawConfig): whether bridge-mode traffic is accepted alongside
+	// the AUTH_TOKENS pool (hybrid mode).
+	BridgeEnabled bool `json:"BRIDGE_ENABLED"`
+	// BridgeIdleEvict is the sliding-TTL string for idle bridge-entry
+	// eviction (BRIDGE_IDLE_EVICT; default "72h", zero-tolerant → 72h).
+	BridgeIdleEvict                  string                  `json:"BRIDGE_IDLE_EVICT"`
 	MaxSpendPerDay                   *int                    `json:"MAX_SPEND_PER_DAY"`
 	IdleRotationTimeout              string                  `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                         bool                    `json:"SAFE_MODE"`
@@ -347,11 +378,13 @@ func defaultRawConfig() rawConfig {
 		TokenRotation:                    "drain",
 		CostMode:                         "free",
 		RegistryRefresh:                  "6h",
-		MaxSpendPerDay:                   nil,  // 0 = unlimited advisory spend ceiling (never enforced)
-		IdleRotationTimeout:              "",   // "" = disabled (unset → SAFE_MODE preset may fill)
-		SafeMode:                         true, // anti-ban presets on by default; set SAFE_MODE=false to disable
-		SessionIdleEnd:                   "",   // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
-		DashboardEnabled:                 true, // dashboard on by default; set DASHBOARD_ENABLED=false to disable
+		MaxSpendPerDay:                   nil,   // 0 = unlimited advisory spend ceiling (never enforced)
+		IdleRotationTimeout:              "",    // "" = disabled (unset → SAFE_MODE preset may fill)
+		BridgeEnabled:                    true,  // hybrid by default: AUTH_TOKENS + bridge relay share one instance
+		BridgeIdleEvict:                  "72h", // sliding-TTL for idle bridge-entry eviction
+		SafeMode:                         true,  // anti-ban presets on by default; set SAFE_MODE=false to disable
+		SessionIdleEnd:                   "",    // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
+		DashboardEnabled:                 true,  // dashboard on by default; set DASHBOARD_ENABLED=false to disable
 		LogAccess:                        true,
 		DevToolsEnabled:                  false,       // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)

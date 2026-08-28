@@ -65,6 +65,8 @@ func Load(configPath string) (Config, error) {
 	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
 	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
+	overrideBool(&raw.BridgeEnabled, "BRIDGE_ENABLED")
+	overrideString(&raw.BridgeIdleEvict, "BRIDGE_IDLE_EVICT")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
 	overrideString(&raw.SessionIdleEnd, "SESSION_IDLE_END")
 	overrideBool(&raw.SafeMode, "SAFE_MODE")
@@ -245,6 +247,19 @@ func Load(configPath string) (Config, error) {
 	if raw.BridgeDailyLimit != nil {
 		bridgeDailyLimit = *raw.BridgeDailyLimit
 	}
+	// BRIDGE_IDLE_EVICT is zero-tolerant: "" or "0" fall back to the 72h
+	// default (a zero TTL would evict every bridge entry on the first idle
+	// pass, defeating the cache).
+	bridgeIdleEvict := 72 * time.Hour
+	if v := strings.TrimSpace(raw.BridgeIdleEvict); v != "" {
+		bridgeIdleEvict, err = parseDuration(v, "BRIDGE_IDLE_EVICT")
+		if err != nil {
+			return Config{}, err
+		}
+		if bridgeIdleEvict <= 0 {
+			bridgeIdleEvict = 72 * time.Hour
+		}
+	}
 
 	// MAX_SPEND_PER_DAY (issue #122): advisory per-token Pacific-day spend
 	// ceiling in ledger units, default 0 (unlimited). Deliberately NOT
@@ -385,6 +400,8 @@ func Load(configPath string) (Config, error) {
 		MaxMessagesPerDay:                maxMessagesPerDay,
 		BridgeDailyLimit:                 bridgeDailyLimit,
 		MaxSpendPerDay:                   maxSpendPerDay,
+		BridgeEnabled:                    raw.BridgeEnabled,
+		BridgeIdleEvict:                  bridgeIdleEvict,
 		IdleRotationTimeout:              idleRotationTimeout,
 		SessionIdleEnd:                   sessionIdleEnd,
 		SafeMode:                         raw.SafeMode,
@@ -585,6 +602,8 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
 	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
 	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
+	overrideBoolFrom(&raw.BridgeEnabled, get, "BRIDGE_ENABLED")
+	overrideStringFrom(&raw.BridgeIdleEvict, get, "BRIDGE_IDLE_EVICT")
 	overrideStringFrom(&raw.IdleRotationTimeout, get, "IDLE_ROTATION_TIMEOUT")
 	overrideStringFrom(&raw.SessionIdleEnd, get, "SESSION_IDLE_END")
 	// The remaining keys mirror the real-environment override set in Load.

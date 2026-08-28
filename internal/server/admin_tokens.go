@@ -434,14 +434,80 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 		s.logger.Info("dashboard switched to bridge mode")
 		s.dash.RenderConfigResult(w, r, true, "Switched to bridge mode — AUTH_TOKENS cleared; clients now send their own token.")
 	case "pooled":
-		if !cfg.BridgeMode() {
+		if !cfg.BridgeMode() && !cfg.HybridBridgeMode() {
 			s.dash.RenderConfigResult(w, r, false, "Already in pooled mode.")
 			return
 		}
-		s.dash.RenderConfigResult(w, r, false, "Pooled mode needs tokens — add one via the Add-token form first.")
-		return
+		if cfg.BridgeMode() {
+			s.dash.RenderConfigResult(w, r, false, "Pooled mode needs tokens — add one via the Add-token form first.")
+			return
+		}
+		// Hybrid → pure pooled: disable the bridge relay (BRIDGE_ENABLED=0)
+		// and verify the effective config lands in pooled mode before
+		// touching the live pool. Roll the .env back on failure.
+		s.adminSaveMu.Lock()
+		defer s.adminSaveMu.Unlock()
+		old, oldErr := os.ReadFile(".env")
+		if _, err := updateEnvKeys([]envUpdate{{Key: "AUTH_TOKENS", Value: strings.Join(cfg.AuthTokens, ",")}, {Key: "BRIDGE_ENABLED", Value: "0"}}); err != nil {
+			s.dash.RenderConfigResult(w, r, false, "Failed to persist .env: "+err.Error())
+			return
+		}
+		newCfg, err := config.Load(s.configPath)
+		if err != nil {
+			restoreEnvFile(old, oldErr)
+			s.dash.RenderConfigResult(w, r, false, "Reload rejected: "+err.Error())
+			return
+		}
+		if newCfg.HybridBridgeMode() {
+			// A higher-precedence source (e.g. BRIDGE_ENABLED in a -config
+			// JSON file or the real environment) still enables the bridge —
+			// .env alone cannot clear it.
+			restoreEnvFile(old, oldErr)
+			s.dash.RenderConfigResult(w, r, false, "Could not switch to pooled mode: BRIDGE_ENABLED is still set by a -config JSON file or the environment, which overrides .env. Clear it there, then retry.")
+			return
+		}
+		s.cfg.Store(&newCfg)
+		s.reg.SetConfig(&newCfg)
+		s.pool.SetConfig(&newCfg)
+		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+		s.logger.Info("dashboard switched to pooled mode")
+		s.dash.RenderConfigResult(w, r, true, "Switched to pooled mode — bridge relay disabled.")
+	case "hybrid":
+		if cfg.BridgeMode() {
+			s.dash.RenderConfigResult(w, r, false, "Hybrid mode needs tokens — add one via the Add-token form first.")
+			return
+		}
+		if cfg.HybridBridgeMode() {
+			s.dash.RenderConfigResult(w, r, false, "Already in hybrid mode.")
+			return
+		}
+		// Pure pooled → hybrid: enable the bridge relay alongside the pool.
+		s.adminSaveMu.Lock()
+		defer s.adminSaveMu.Unlock()
+		old, oldErr := os.ReadFile(".env")
+		if _, err := updateEnvKeys([]envUpdate{{Key: "AUTH_TOKENS", Value: strings.Join(cfg.AuthTokens, ",")}, {Key: "BRIDGE_ENABLED", Value: "1"}}); err != nil {
+			s.dash.RenderConfigResult(w, r, false, "Failed to persist .env: "+err.Error())
+			return
+		}
+		newCfg, err := config.Load(s.configPath)
+		if err != nil {
+			restoreEnvFile(old, oldErr)
+			s.dash.RenderConfigResult(w, r, false, "Reload rejected: "+err.Error())
+			return
+		}
+		if !newCfg.HybridBridgeMode() {
+			restoreEnvFile(old, oldErr)
+			s.dash.RenderConfigResult(w, r, false, "Could not switch to hybrid mode: BRIDGE_ENABLED is still set to 0 by a -config JSON file or the environment, which overrides .env. Clear it there, then retry.")
+			return
+		}
+		s.cfg.Store(&newCfg)
+		s.reg.SetConfig(&newCfg)
+		s.pool.SetConfig(&newCfg)
+		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+		s.logger.Info("dashboard switched to hybrid mode")
+		s.dash.RenderConfigResult(w, r, true, "Switched to hybrid mode — pooled + bridge active.")
 	default:
-		s.dash.RenderConfigResult(w, r, false, "Mode must be 'bridge' or 'pooled'.")
+		s.dash.RenderConfigResult(w, r, false, "Mode must be 'bridge', 'pooled', or 'hybrid'.")
 	}
 }
 

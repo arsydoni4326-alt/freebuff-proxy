@@ -122,11 +122,34 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	fallbackUsed := false
 	tok := bearerToken(r)
 	bridge := false
+	// Hybrid (default when AUTH_TOKENS set): the pool and the bridge share
+	// one instance. A credential matching API_KEYS uses the pool; any other
+	// credential is relayed upstream as a bridge token. With no API_KEYS
+	// configured every request uses the pool (the historic open behavior),
+	// and a missing credential is rejected exactly like pure pooled mode.
 	switch {
 	case cfg.BridgeMode():
 		// Bridge: the client token is the only upstream credential.
 		bridge = true
 		tok = clientToken(r)
+	case cfg.HybridBridgeMode():
+		provided := clientToken(r)
+		if provided == "" && len(cfg.APIKeys) > 0 {
+			if isAnthropicRequest(r) {
+				s.writeAnthropicError(w, r, http.StatusUnauthorized,
+					"Authentication required: send a valid API key for pooled access, or your FreeBuff token for bridge mode",
+					"missing_bearer_token", 0)
+			} else {
+				s.writeJSONError(w, http.StatusUnauthorized,
+					"Authentication required: send a valid API key for pooled access, or your FreeBuff token for bridge mode",
+					"invalid_request_error", "missing_bearer_token", 0)
+			}
+			return
+		}
+		if provided != "" && len(cfg.APIKeys) > 0 && !s.authorized(r) {
+			bridge = true
+			tok = provided
+		}
 	}
 	// Issue #74 P2: refuse new requests fast when (egress, model) is marked
 	// unfit — the direct egress cannot serve this model for ~5 min. The

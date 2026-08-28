@@ -325,7 +325,7 @@ func TestDashboardModeSwitchBranchMatrix(t *testing.T) {
 
 	// Invalid mode string (JSON response, not HTML-escaped).
 	resp := postJSON(t, ts.URL, cookie, "/admin/mode", `{"mode":"warp"}`)
-	if body := bodyOf(t, resp); !strings.Contains(body, "Mode must be 'bridge' or 'pooled'.") {
+	if body := bodyOf(t, resp); !strings.Contains(body, "Mode must be 'bridge', 'pooled', or 'hybrid'.") {
 		t.Errorf("invalid-mode response = %q", body)
 	}
 

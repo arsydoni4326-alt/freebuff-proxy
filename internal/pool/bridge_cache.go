@@ -22,9 +22,12 @@ import (
 // eviction makes room when the cap is exceeded.
 const maxBridgeEntries = 32
 
-// bridgeIdleEvict is how long a bridge entry may sit unused before the
-// maintain loop FINISHes its runs and drops it from the cache.
-const bridgeIdleEvict = 24 * time.Hour // 24h sliding TTL (#187)
+// defaultBridgeIdleEvict is the sliding-TTL default for idle bridge-entry
+// eviction when BRIDGE_IDLE_EVICT is unset (72h). An idle client's upstream
+// session row expires on its own, so a longer TTL mostly saves re-create
+// churn — fewer admission requests, fewer fingerprints — while dead tokens
+// are still evicted immediately by B6.
+const defaultBridgeIdleEvict = 72 * time.Hour
 
 // tokenKey returns a 32-char hex string derived from the SHA-256 hash of the
 // raw client token. Bridge map keys use this non-reversible form so raw tokens
@@ -386,7 +389,7 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 	}
 }
 
-// bridgeMaintain sweeps the bridge cache: entries idle past bridgeIdleEvict
+// bridgeMaintain sweeps the bridge cache: entries idle past the idle-eviction TTL
 // are dropped (runs FINISHed and the upstream session ended, best-effort);
 // entries with in-flight leases are NEVER evicted — FINISHing their runs
 // would kill the in-flight chat, so busy entries always get the per-token
@@ -396,13 +399,17 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 // ctx as the fixed-token loop. On idle passes (idle=true) only the sweep
 // runs: the per-entry queued-advance pauses with the fixed tokens, and the
 // idle-sweep keeps bridge entries from staying admitted upstream past
-// bridgeIdleEvict while the pool stays idle. Active-session liveness polls
+// the idle-eviction TTL while the pool stays idle. Active-session liveness polls
 // are NOT part of this pass — they run on the jittered
 // bridgeSessionPollTick schedule (gap #2).
 func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 	cfg := p.cfg.Load()
 	var toEvict []*bridgeEntry
 	var toMaintain []*bridgeEntry
+	idleEvict := defaultBridgeIdleEvict
+	if cfg.BridgeIdleEvict > 0 {
+		idleEvict = cfg.BridgeIdleEvict
+	}
 
 	p.bridgeMu.Lock()
 	now := time.Now()
@@ -414,7 +421,7 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			toMaintain = append(toMaintain, entry)
 			continue
 		}
-		if now.Sub(entry.lastUsed) > bridgeIdleEvict {
+		if now.Sub(entry.lastUsed) > idleEvict {
 			// Issue #155: do not evict bridge entries that still hold an active
 			// scarce-model session with remaining lifetime (> 0).
 			scarceSet := scarceModelSet(cfg.ScarceSessionModels)
@@ -505,7 +512,7 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 
 // bridgeEvictToken immediately removes a token from the bridge cache (B6):
 // used when a token is confirmed dead (ErrAuthRejected) so it does not sit
-// in the cache for the full bridgeIdleEvict window. The removed entry's
+// in the cache for the full idle-eviction TTL window. The removed entry's
 // runs are FINISHed best-effort after releasing the lock. Entries with an
 // outstanding lease are left cached for the idle sweep instead: FINISHing
 // their runs would kill the concurrent chat stream, and dropping the entry
