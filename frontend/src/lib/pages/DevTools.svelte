@@ -24,6 +24,13 @@
   import { usePolling } from '../utils/polling.js';
   import { formatLocalDate } from '../utils/format.js';
   import { tr } from '../i18n.js';
+  import { onMount } from 'svelte';
+
+  // Dev Tools is an operator-only manual testing surface (issue: dev testing
+  // removed from public). Hidden unless DEVTOOLS_ENABLED=true in the proxy
+  // config; the page self-checks so a direct #devtools hash can't bypass it.
+  let devToolsEnabled = $state(false);
+  let devToolsChecked = $state(false);
 
   // --- State for Chat Playground ---
   let selectedModel = $state('openai/gpt-5.6-luna');
@@ -59,6 +66,18 @@
     { id: 'deepseek/deepseek-v4-pro', label: 'deepseek/deepseek-v4-pro (5/day shared)', tag: '5/d' },
     { id: 'z-ai/glm-5.2', label: 'z-ai/glm-5.2 (referral promo)', tag: 'referral' },
   ];
+  onMount(async () => {
+    try {
+      const cfgRes = await fetchAPI('/admin/api/config');
+      const envContent = cfgRes?.env_content || '';
+      const mm = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
+      const val = mm ? mm[1].trim().toLowerCase() : '';
+      devToolsEnabled = val === 'true' || val === '1';
+    } catch {
+      devToolsEnabled = false;
+    }
+    devToolsChecked = true;
+  });
 
   async function fetchTokens() {
     try {
@@ -269,6 +288,7 @@
   }
 </script>
 
+{#if devToolsEnabled}
 <div class="space-y-6 page-enter">
   <PageHeader
     title={$tr('Dev Tools')}
@@ -551,3 +571,11 @@
     </Card>
   </section>
 </div>
+{:else}
+  <div class="space-y-6 page-enter">
+    <PageHeader title={$tr('Dev Tools')} description={$tr('Manual testing surface')} />
+    <div class="rounded-sm border border-[var(--fp-border)] p-6 text-sm text-[var(--fp-muted)]">
+      {$tr('Dev Tools is disabled. Set DEVTOOLS_ENABLED=true in the proxy configuration to enable it.')}
+    </div>
+  </div>
+{/if}

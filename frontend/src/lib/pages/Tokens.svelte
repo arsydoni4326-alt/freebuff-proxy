@@ -554,7 +554,6 @@
                             <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (2/d)</option>
                             <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash</option>
                             <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
-                            <option value="anthropic/claude-fable-5">anthropic/claude-fable-5</option>
                             <option value="deepseek/deepseek-v4-pro">deepseek/deepseek-v4-pro</option>
                             <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral)</option>
                           </select>

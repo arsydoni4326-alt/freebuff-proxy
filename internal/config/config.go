@@ -46,6 +46,7 @@ type Config struct {
 	TLSFingerprint  string // "" (plain Go transport) | chrome120 | chrome126 | safari17 | safari18 | firefox120 | firefox128 | edge126 | random | auto
 	RegistryRefresh time.Duration
 	DebugDump       bool
+	DevToolsEnabled bool
 	LogFile         string
 	LogLevel        string // "" (use -v/default) or debug|info|warn|error|trace
 	LogFormat       string // "text" (default) or "json"
@@ -227,6 +228,7 @@ type rawConfig struct {
 	TLSFingerprint     string `json:"TLS_FINGERPRINT"`
 	RegistryRefresh    string `json:"REGISTRY_REFRESH"`
 	DebugDump          bool   `json:"DEBUG_DUMP"`
+	DevToolsEnabled    bool   `json:"DEVTOOLS_ENABLED"`
 	LogFile            string `json:"LOG_FILE"`
 	LogLevel           string `json:"LOG_LEVEL"`
 	LogFormat          string `json:"LOG_FORMAT"`
@@ -345,12 +347,13 @@ func defaultRawConfig() rawConfig {
 		TokenRotation:                    "drain",
 		CostMode:                         "free",
 		RegistryRefresh:                  "6h",
-		MaxSpendPerDay:                   nil,         // 0 = unlimited advisory spend ceiling (never enforced)
-		IdleRotationTimeout:              "",          // "" = disabled (unset → SAFE_MODE preset may fill)
-		SafeMode:                         true,        // anti-ban presets on by default; set SAFE_MODE=false to disable
-		SessionIdleEnd:                   "",          // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
-		DashboardEnabled:                 true,        // dashboard on by default; set DASHBOARD_ENABLED=false to disable
-		LogAccess:                        true,        // per-request access lines on by default; LOG_ACCESS=false disables them
+		MaxSpendPerDay:                   nil,  // 0 = unlimited advisory spend ceiling (never enforced)
+		IdleRotationTimeout:              "",   // "" = disabled (unset → SAFE_MODE preset may fill)
+		SafeMode:                         true, // anti-ban presets on by default; set SAFE_MODE=false to disable
+		SessionIdleEnd:                   "",   // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
+		DashboardEnabled:                 true, // dashboard on by default; set DASHBOARD_ENABLED=false to disable
+		LogAccess:                        true,
+		DevToolsEnabled:                  false,       // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
 		CORSAllowedOrigin:                "*",         // browser clients reach /v1/* cross-origin by default
 		RequestJitter:                    "",          // "" = disabled (unset → SAFE_MODE preset may fill)

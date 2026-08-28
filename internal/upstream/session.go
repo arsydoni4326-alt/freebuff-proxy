@@ -84,7 +84,7 @@ func mockSessionExpiry(model string) time.Duration {
 
 func mockSessionState(token string, requestedModel string, consume bool) *SessionState {
 	if requestedModel == "" {
-		requestedModel = modelcat.DefaultModelID
+		requestedModel = modelcat.FallbackModelID
 	}
 	now := time.Now()
 	pacific := pacificLoc()
@@ -181,15 +181,6 @@ func mockSessionState(token string, requestedModel string, consume bool) *Sessio
 				Model:       "deepseek/deepseek-v4-flash",
 				Limit:       unlimited,
 				RecentCount: st.recentCounts["deepseek/deepseek-v4-flash"],
-				ResetAt:     pacMidnight,
-				Period:      "pacific_day",
-				Pool:        "unlimited",
-				PoolLabel:   "Unlimited",
-			},
-			"anthropic/claude-fable-5": {
-				Model:       "anthropic/claude-fable-5",
-				Limit:       unlimited,
-				RecentCount: st.recentCounts["anthropic/claude-fable-5"],
 				ResetAt:     pacMidnight,
 				Period:      "pacific_day",
 				Pool:        "unlimited",
