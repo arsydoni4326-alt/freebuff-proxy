@@ -126,10 +126,15 @@ func TestBridgeWaitingRoomChainFiresBeforeCreate(t *testing.T) {
 // webhook (token_index 0 = bridge) — previously only the chat path alerted.
 func TestBridgeAdmissionBanNotifies(t *testing.T) {
 	var posts atomic.Int64
-	var gotEvent notify.Event
+	gotEvent := make(chan notify.Event, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		posts.Add(1)
-		_ = json.NewDecoder(r.Body).Decode(&gotEvent)
+		var ev notify.Event
+		_ = json.NewDecoder(r.Body).Decode(&ev)
+		select {
+		case gotEvent <- ev:
+		default: // more than one webhook fired — keep the first
+		}
 		w.WriteHeader(200)
 	}))
 	defer srv.Close()
@@ -156,11 +161,17 @@ func TestBridgeAdmissionBanNotifies(t *testing.T) {
 	if posts.Load() != 1 {
 		t.Fatalf("webhook posts = %d, want 1 (token_banned)", posts.Load())
 	}
-	if gotEvent.Event != "token_banned" {
-		t.Errorf("event = %q, want token_banned", gotEvent.Event)
+	var ev notify.Event
+	select {
+	case ev = <-gotEvent:
+	case <-time.After(time.Second):
+		t.Fatal("webhook event never arrived")
 	}
-	if gotEvent.TokenIndex != 0 {
-		t.Errorf("token_index = %d, want 0 (bridge)", gotEvent.TokenIndex)
+	if ev.Event != "token_banned" {
+		t.Errorf("event = %q, want token_banned", ev.Event)
+	}
+	if ev.TokenIndex != 0 {
+		t.Errorf("token_index = %d, want 0 (bridge)", ev.TokenIndex)
 	}
 }
 
