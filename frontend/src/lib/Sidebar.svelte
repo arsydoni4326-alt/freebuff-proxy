@@ -8,7 +8,7 @@
    * @prop {(tab: string) => void} onTabChange
    * @prop {{ current_version: string, has_update: boolean, latest_version: string, update_url: string }} [versionInfo]
    */
-  let { activeTab = $bindable(), onTabChange, versionInfo } = $props();
+  let { activeTab = $bindable(), versionInfo } = $props();
   import { tr, locale, setLocale } from './i18n.js';
 
   let mobileOpen = $state(false);
@@ -25,7 +25,6 @@
   ];
   function switchTab(id) {
     activeTab = id;
-    onTabChange?.(id);
     window.location.hash = id;
     closeDrawer();
   }
@@ -99,17 +98,6 @@
       }
     } catch {}
   }
-
-  // Keep documentElement.lang in sync — i18n store also does this, but syncing here ensures
-  // the drawer toggle immediately reflects in DOM and guards against store timing.
-  $effect(() => {
-    const loc = $locale;
-    try {
-      if (typeof document !== 'undefined' && document.documentElement) {
-        document.documentElement.lang = loc;
-      }
-    } catch {}
-  });
 
   // Manage focus trap, inert, Escape, focus return, and scroll lock for mobile drawer
   $effect(() => {
@@ -224,7 +212,7 @@
         <button
           type="button"
           onclick={() => setLocale('en')}
-          aria-label="Switch to English"
+          aria-label={$tr('Switch to English')}
           aria-pressed={$locale === 'en'}
           class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 { $locale === 'en' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]' }"
         >
@@ -233,7 +221,7 @@
         <button
           type="button"
           onclick={() => setLocale('zh')}
-          aria-label="Switch to Chinese"
+          aria-label={$tr('Switch to Chinese')}
           aria-pressed={$locale === 'zh'}
           class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 { $locale === 'zh' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]' }"
         >
@@ -322,7 +310,7 @@
                 <span class="led led-accent" aria-hidden="true"></span>
               {/if}
               <tab.icon size={16} class="shrink-0" />
-              <span class="font-mono text-xs">{tab.label}</span>
+              <span class="font-mono text-xs">{$tr(tab.label)}</span>
             </a>
           </li>
         {/each}
@@ -333,7 +321,7 @@
           <button
             type="button"
             onclick={() => setLocale('en')}
-            aria-label="Switch to English"
+            aria-label={$tr('Switch to English')}
             aria-pressed={$locale === 'en'}
             class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 {$locale === 'en' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]'}"
           >
@@ -342,7 +330,7 @@
           <button
             type="button"
             onclick={() => setLocale('zh')}
-            aria-label="Switch to Chinese"
+            aria-label={$tr('Switch to Chinese')}
             aria-pressed={$locale === 'zh'}
             class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 {$locale === 'zh' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]'}"
           >

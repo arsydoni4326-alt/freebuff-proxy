@@ -15,8 +15,7 @@
   import { X } from '@lucide/svelte';
   import { fetchAPI } from './lib/api/client.js';
   import { sessionExpired, dismissSessionExpired } from './lib/stores/session.js';
-  import { tr } from './lib/i18n.js';
-  import { locale } from './lib/i18n.js';
+  import { tr, locale } from './lib/i18n.js';
   function getInitialTab() {
     if (typeof window === 'undefined') return 'overview';
     const path = window.location.pathname;
@@ -45,14 +44,6 @@
     }
   });
 
-  // Keep <html lang> in sync with the i18n store — on mount + on every zh toggle.
-  $effect(() => {
-    const l = $locale;
-    if (typeof document !== 'undefined') {
-      document.documentElement.lang = l === 'zh' ? 'zh' : 'en';
-    }
-  });
-
   // Explicit user action only — never invoked from background polling.
   function goToLogin() {
     const hash = window.location.hash.replace('#', '');
@@ -62,10 +53,6 @@
   }
 
   onMount(() => {
-    // Sync lang immediately on mount (store already resolved from localStorage/navigator)
-    if (typeof document !== 'undefined') {
-      document.documentElement.lang = $locale === 'zh' ? 'zh' : 'en';
-    }
     syncTabFromURL();
     window.addEventListener('hashchange', syncTabFromURL);
 

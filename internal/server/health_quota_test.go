@@ -21,9 +21,9 @@ func TestHealthzPremiumQuotaEmitted(t *testing.T) {
 	defer mock.Close()
 	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 	mock.RateLimitsByModel = map[string]any{
-		"deepseek/deepseek-v4-flash": map[string]any{
-			"model":       "deepseek/deepseek-v4-flash",
-			"limit":       5,
+		"openai/gpt-5.6-luna": map[string]any{
+			"model":       "openai/gpt-5.6-luna",
+			"limit":       4,
 			"recentCount": 2,
 			"period":      "pacific_day",
 			"resetAt":     future,
@@ -63,17 +63,17 @@ func TestHealthzPremiumQuotaEmitted(t *testing.T) {
 	if !ok {
 		t.Fatalf("premium_quota not map: %T", pq)
 	}
-	if int(m["limit"].(float64)) != 5 {
-		t.Errorf("premium limit = %v want 5", m["limit"])
+	if int(m["limit"].(float64)) != 4 {
+		t.Errorf("premium limit = %v want 4", m["limit"])
 	}
 	if int(m["used"].(float64)) != 2 {
 		t.Errorf("premium used = %v want 2", m["used"])
 	}
-	if int(m["remaining"].(float64)) != 3 {
-		t.Errorf("premium remaining = %v want 3", m["remaining"])
+	if int(m["remaining"].(float64)) != 2 {
+		t.Errorf("premium remaining = %v want 2", m["remaining"])
 	}
-	if int(m["percent_used"].(float64)) != 40 {
-		t.Errorf("premium percent_used = %v want 40", m["percent_used"])
+	if int(m["percent_used"].(float64)) != 50 {
+		t.Errorf("premium percent_used = %v want 50", m["percent_used"])
 	}
 	if m["period"] != "pacific_day" {
 		t.Errorf("premium period = %v want pacific_day", m["period"])
@@ -114,9 +114,9 @@ func TestHealthzPremiumQuotaEmitted(t *testing.T) {
 	}
 	metrics := string(body)
 	for _, want := range []string{
-		`freebuff_proxy_premium_quota_limit{token="1"} 5`,
+		`freebuff_proxy_premium_quota_limit{token="1"} 4`,
 		`freebuff_proxy_premium_quota_used{token="1"} 2`,
-		`freebuff_proxy_premium_quota_remaining{token="1"} 3`,
+		`freebuff_proxy_premium_quota_remaining{token="1"} 2`,
 		`freebuff_proxy_glm53flash_quota_limit{token="1"} 2`,
 	} {
 		if !strings.Contains(metrics, want) {
@@ -163,10 +163,10 @@ func TestHealthzBridgePremiumQuota(t *testing.T) {
 	defer mock.Close()
 	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 	mock.RateLimitsByModel = map[string]any{
-		"deepseek/deepseek-v4-flash": map[string]any{
-			"model":       "deepseek/deepseek-v4-flash",
-			"limit":       5,
-			"recentCount": 5,
+		"openai/gpt-5.6-luna": map[string]any{
+			"model":       "openai/gpt-5.6-luna",
+			"limit":       4,
+			"recentCount": 4,
 			"period":      "pacific_day",
 			"resetAt":     future,
 		},
@@ -211,7 +211,7 @@ func TestHealthzBridgePremiumQuota(t *testing.T) {
 		} else {
 			m := pq.(map[string]any)
 			if !m["capped"].(bool) {
-				t.Errorf("bridge capped false want true (5/5 future)")
+				t.Errorf("bridge capped false want true (4/4 future)")
 			}
 		}
 	}

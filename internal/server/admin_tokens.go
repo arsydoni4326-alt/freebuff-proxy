@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/modelcat"
 	"freebuff-proxy/internal/upstream"
 	"io"
 	"net/http"
@@ -84,7 +85,7 @@ func (s *Server) handleTokenSpawnSession(w http.ResponseWriter, r *http.Request)
 	}
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
-		model = "mimo/mimo-v2.5"
+		model = modelcat.DefaultModelID
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()

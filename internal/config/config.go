@@ -374,33 +374,22 @@ func defaultRawConfig() rawConfig {
 // ptrInt returns a pointer to n for *int raw fields with a non-nil default.
 func ptrInt(n int) *int { return &n }
 
-// defaultModelAliases are applied when MODEL_ALIASES is unset (issue #42):
-// common OpenAI/Anthropic/DeepSeek client model names map to the closest
-// FreeBuff free-catalog model, so a stock client works out of the box.
-// gpt-4o maps to deepseek-v4-pro (the strongest agentic catalog row,
-// closest to GPT-4-class expectations); deepseek-chat maps to the fast
-// flash row (the DeepSeek API's own chat alias); claude-3-5-sonnet maps to
-// the Claude-line fable-5 row. An explicitly-set MODEL_ALIASES (even
-// empty) suppresses all defaults.
-var defaultModelAliases = map[string]string{}
-
 // defaultFallbackModels returns the FALLBACK_MODEL defaults (issue #100):
-// the daily premium free-catalog rows (deepseek-v4-pro, gpt-5.6-luna) fall back
-// to the always-available flash model once their queue wait passes FALLBACK_AFTER_MS
+// the premium free-catalog row (gpt-5.6-luna) falls back to the always-
+// available flash model once its queue wait passes FALLBACK_AFTER_MS
 // (issue #189). Trigger is queue-wait ≥ FALLBACK_AFTER_MS only — never 429s.
 func defaultFallbackModels() map[string]string {
 	return map[string]string{
-		"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash",
-		"openai/gpt-5.6-luna":      "deepseek/deepseek-v4-flash",
+		"openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash",
 	}
 }
 
 // defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155, #183):
-// when a model's session quota is exhausted (all 5 premium sessions used for flash,
-// luna's 1-session quota, or unentitled referral-only GLM 5.2), the proxy falls
-// back to an available model (flash for GLM/luna, mimo for flash). Luna fallback
-// (#203) reduces retry pressure on an exhausted scarce model that upstream flags
-// as abuse when hammered.
+// when a model's session quota is exhausted (all 4 premium sessions used for
+// luna, or unentitled referral-only GLM 5.2), the proxy falls back to an
+// available model (flash for GLM/luna, mimo for flash). Luna fallback (#203)
+// reduces retry pressure on an exhausted scarce model that upstream flags as
+// abuse when hammered.
 func defaultQuotaFallbackModels() map[string]string {
 	return map[string]string{
 		"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
@@ -410,10 +399,11 @@ func defaultQuotaFallbackModels() map[string]string {
 }
 
 // defaultScarceSessionModels returns the SCARCE_SESSION_MODELS defaults (issue #155):
-// the 1-session/day irreplaceable models kept alive for their full 1 hour.
+// the 4-session/day premium model kept alive for its full session.
+// deepseek-v4-pro left this list with its pause (2026-08-26): a paused model
+// is refused before a lease is acquired, so keeping its slot warm is dead work.
 func defaultScarceSessionModels() []string {
 	return []string{
-		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.6-luna",
 	}
 }

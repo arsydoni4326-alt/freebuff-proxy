@@ -4,10 +4,11 @@ import (
 	"sort"
 	"time"
 
+	"freebuff-proxy/internal/modelcat"
 	"freebuff-proxy/internal/session"
 )
 
-// PremiumQuotaSnapshot is the per-token premium quota view (5/day pacific_day pool
+// PremiumQuotaSnapshot is the per-token premium quota view (4/day pacific_day pool
 // and 2/day glm_v53_flash lane) derived from session.QuotaSnapshot.
 type PremiumQuotaSnapshot struct {
 	Limit       int       `json:"limit"`
@@ -20,19 +21,17 @@ type PremiumQuotaSnapshot struct {
 	Capped      bool      `json:"capped"`
 }
 
-var premiumPoolModels = []string{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"}
+// premiumPoolModels is the shared daily premium pool (upstream
+// FREEBUFF_PREMIUM_MODEL_IDS minus the per-model cap lanes the proxy tracks
+// separately). Derived from modelcat so the set follows upstream on sync.
+var premiumPoolModels = modelcat.SharedPremiumModels()
 
-const glm53Model = "z-ai/glm-5.3-flash"
+const glm53Model = modelcat.Glm53ModelID
 
 // isPremiumModel reports whether model is part of the premium pool or the
 // dedicated GLM 5.3 Flash lane. Kept for acquire-path gating and tests.
 func isPremiumModel(model string) bool {
-	for _, m := range premiumPoolModels {
-		if m == model {
-			return true
-		}
-	}
-	return model == glm53Model
+	return modelcat.IsPremium(model)
 }
 
 func buildPremiumSnapshot(q session.QuotaSnapshot) *PremiumQuotaSnapshot {

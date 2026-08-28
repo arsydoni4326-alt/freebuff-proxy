@@ -17,7 +17,7 @@
   let loading = $state(true);
   let error = $state('');
   let manualRefresh = $state(false);
-  let filterLevel = $state('info');
+  let filterLevel = $state('');
   let filterMsg = $state('');
   let hideAdmin = $state(true);
   let autoPoll = $state(true);

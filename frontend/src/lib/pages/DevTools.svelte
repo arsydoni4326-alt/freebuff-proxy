@@ -26,7 +26,7 @@
   import { tr } from '../i18n.js';
 
   // --- State for Chat Playground ---
-  let selectedModel = $state('stealth/ox-alpha');
+  let selectedModel = $state('openai/gpt-5.6-luna');
   let protocol = $state('openai'); // 'openai' | 'anthropic'
   let streamMode = $state(true);
   let promptText = $state('Hello! Count from 1 to 5 and briefly describe yourself.');
@@ -48,6 +48,7 @@
   let batchCount = $state(5);
   let batchRunning = $state(false);
   let batchLogs = $state([]);
+  let batchSeq = 0; // monotonic key across runs so #each keys never collide
 
   const modelsList = [
     { id: 'stealth/ox-alpha', label: 'stealth/ox-alpha (1M ctx · unmetered)', tag: '1M' },
@@ -249,13 +250,13 @@
           });
           const ms = Math.round(performance.now() - start);
           batchLogs = [
-            { reqNum: i, model, status: res.status, ok: res.ok, ms, time: new Date().toLocaleTimeString() },
+            { id: ++batchSeq, reqNum: i, model, status: res.status, ok: res.ok, ms, time: new Date().toLocaleTimeString() },
             ...batchLogs,
           ];
         } catch (err) {
           const ms = Math.round(performance.now() - start);
           batchLogs = [
-            { reqNum: i, model, status: 0, ok: false, error: err.message, ms, time: new Date().toLocaleTimeString() },
+            { id: ++batchSeq, reqNum: i, model, status: 0, ok: false, error: err.message, ms, time: new Date().toLocaleTimeString() },
             ...batchLogs,
           ];
         }
@@ -466,7 +467,7 @@
                         variant="primary"
                         size="sm"
                         disabled={actionPending}
-                        onclick={() => triggerTokenAction(`/admin/tokens/${idx}/session`, { model: spawnModels[idx] || 'stealth/ox-alpha' }, $tr('Spawn upstream session on token #{idx} for {model}?', { idx, model: spawnModels[idx] || 'stealth/ox-alpha' }))}
+                        onclick={() => triggerTokenAction(`/admin/tokens/${idx}/session`, { model: spawnModels[idx] || 'openai/gpt-5.6-luna' }, $tr('Spawn upstream session on token #{idx} for {model}?', { idx, model: spawnModels[idx] || 'openai/gpt-5.6-luna' }))}
                       >
                         <Zap size={13} />
                         <span>{$tr('Make Session')}</span>
@@ -533,7 +534,7 @@
 
         {#if batchLogs.length > 0}
           <div class="fp-inset rounded-lg p-3 space-y-1.5 max-h-48 overflow-y-auto font-mono text-xs">
-            {#each batchLogs as log (log.reqNum)}
+            {#each batchLogs as log (log.id)}
               <div class="flex items-center justify-between gap-2">
                 <span class="text-[var(--fp-muted)]">Req #{log.reqNum} · {log.model}</span>
                 <div class="flex items-center gap-2">

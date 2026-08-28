@@ -904,7 +904,8 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 
 // TestStrictServedModelsPinned pins issue #189 (strict gate) as amended by
 // #201 and the 2026-08-23 luna-es drop, and by #209, and by d64972c (2026-08-27)
-// adding z-ai/glm-5.3-flash: ServedModels contains ONLY the 7 operational
+// adding z-ai/glm-5.3-flash, and by 5951772 (2026-08-28) pausing
+// deepseek-v4-pro + ox-alpha while adding claude-fable-5: ServedModels contains ONLY the 6 operational
 // FreeBuff models. openai/gpt-5.6-luna-es was removed
 // after the vendor moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex
 // (test)" — Novita route, evaluation only; hidden from the CLI picker and
@@ -916,15 +917,13 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 func TestStrictServedModelsPinned(t *testing.T) {
 	wantModels := []string{
 		"deepseek/deepseek-v4-flash",
-		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.6-luna",
 		"z-ai/glm-5.2",
 		"z-ai/glm-5.3-flash",
 		"mimo/mimo-v2.5",
-		"stealth/ox-alpha",
 	}
-	if len(ServedModels) != 7 {
-		t.Fatalf("len(ServedModels) = %d, want exactly 7", len(ServedModels))
+	if len(ServedModels) != 6 {
+		t.Fatalf("len(ServedModels) = %d, want exactly 6", len(ServedModels))
 	}
 	for _, m := range wantModels {
 		if !ServedModels[m] {
@@ -943,7 +942,6 @@ func TestStrictServedModelsPinned(t *testing.T) {
 		"google/gemini-2.5-flash-lite",
 		"google/gemini-3.1-flash-lite",
 		"google/gemini-3.5-flash-lite",
-		"anthropic/claude-fable-5",
 		"crof/kimi-k3-eco",
 		"openai/gpt-5.6-luna-es",
 		"meta/muse-spark-1.2-contributor",
@@ -962,33 +960,41 @@ func TestStrictServedModelsPinned(t *testing.T) {
 	}
 }
 
-// TestPausedModelPolicy pins the withdrawn-model policy (vendor cce4800,
-// freebuff-models.ts:1401-1429): minimax/minimax-m3 is recognized upstream but
+// TestPausedModelPolicy pins the withdrawn-model policy (vendor 5951772,
+// freebuff-models.ts FREEBUFF_PAUSED_FREE_MODEL_IDS): minimax/minimax-m3,
+// deepseek/deepseek-v4-pro and stealth/ox-alpha are recognized upstream but
 // refused at admission with model_unavailable naming the replacement. The
-// proxy mirrors that flow — the id stays resolvable in the catalog (count
-// tokens, alias resolution) but is never served, and WithdrawnModelMessage
-// names DeepSeek V4 Flash.
+// proxy mirrors that flow — the ids stay resolvable in the catalog (count
+// tokens, alias resolution) but are never served, and WithdrawnModelMessage
+// names the upstream default (GPT-5.6 Luna) as the replacement.
 func TestPausedModelPolicy(t *testing.T) {
-	if !IsPausedModel("minimax/minimax-m3") {
-		t.Error("IsPausedModel(minimax/minimax-m3) = false, want true")
+	for _, paused := range []string{"minimax/minimax-m3", "deepseek/deepseek-v4-pro", "stealth/ox-alpha"} {
+		if !IsPausedModel(paused) {
+			t.Errorf("IsPausedModel(%s) = false, want true", paused)
+		}
+		if ServedModels[paused] {
+			t.Errorf("ServedModels contains paused model %s; requests would burn doomed admissions", paused)
+		}
 	}
 	if IsPausedModel("deepseek/deepseek-v4-flash") {
 		t.Error("IsPausedModel(deepseek/deepseek-v4-flash) = true, want false")
 	}
-	if ServedModels["minimax/minimax-m3"] {
-		t.Error("ServedModels contains a paused model; requests would burn doomed admissions")
-	}
 
-	// The catalog still recognizes it so alias resolution/count_tokens work.
+	// The catalog still recognizes paused ids so alias resolution/count_tokens work.
 	r := New(nil, nil)
 	r.LoadFallback()
-	if _, err := r.AgentForModel("minimax/minimax-m3"); err != nil {
-		t.Errorf("paused model lost from catalog: %v", err)
+	for _, paused := range []string{"minimax/minimax-m3", "deepseek/deepseek-v4-pro", "stealth/ox-alpha"} {
+		if _, err := r.AgentForModel(paused); err != nil {
+			t.Errorf("paused model %s lost from catalog: %v", paused, err)
+		}
 	}
 
 	got := WithdrawnModelMessage("minimax/minimax-m3")
-	want := "MiniMax M3 is no longer available in Freebuff. We recommend using DeepSeek V4 Flash instead."
+	want := "MiniMax M3 is no longer available in Freebuff. We recommend using GPT-5.6 Luna instead."
 	if got != want {
 		t.Errorf("WithdrawnModelMessage = %q, want %q (mirror freebuffWithdrawnModelMessage)", got, want)
+	}
+	if got := WithdrawnModelMessage("stealth/ox-alpha"); !strings.Contains(got, "GPT-5.6 Luna") {
+		t.Errorf("WithdrawnModelMessage(ox-alpha) = %q, want GPT-5.6 Luna replacement", got)
 	}
 }

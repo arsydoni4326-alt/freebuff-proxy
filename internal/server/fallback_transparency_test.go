@@ -132,12 +132,12 @@ func TestFallbackTransparencyQueueTimeout(t *testing.T) {
 	mock.EstimatedWaitMs = 20000                        // > FALLBACK_AFTER_MS (10s)
 	// The fallback model's upstream chat echoes the REQUESTED model: the
 	// relay must stamp the actually-served fallback model onto the chunks.
-	mock.ChatBody = chatSSE("deepseek/deepseek-v4-pro")
+	mock.ChatBody = chatSSE("openai/gpt-5.6-luna")
 	srv, _ := newTestServerCfg(t, nil, func(c *config.Config) {
 		c.FallbackAfter = 10 * time.Second
-		c.FallbackModels = map[string]string{"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash"}
+		c.FallbackModels = map[string]string{"openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash"}
 	}, mock)
-	body := `{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"openai/gpt-5.6-luna","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	resp, data := doJSON(t, http.MethodPost, srv.URL+"/v1/chat/completions", []byte(body), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (fallback served): %s", resp.StatusCode, data)

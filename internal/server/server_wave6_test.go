@@ -176,9 +176,9 @@ func TestChatFallbackAfterWaitingRoom(t *testing.T) {
 	mock.EstimatedWaitMs = 20000                        // > FALLBACK_AFTER_MS (10s)
 	srv := newServerCfg(t, mock, func(c *config.Config) {
 		c.FallbackAfter = 10 * time.Second
-		c.FallbackModels = map[string]string{"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash"}
+		c.FallbackModels = map[string]string{"openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash"}
 	})
-	body := `{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"openai/gpt-5.6-luna","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Host = "127.0.0.1:3457"
 	rec := httptest.NewRecorder()
@@ -200,9 +200,9 @@ func TestChatNoFallbackBelowThreshold(t *testing.T) {
 	mock.EstimatedWaitMs = 1000 // < FALLBACK_AFTER_MS
 	srv := newServerCfg(t, mock, func(c *config.Config) {
 		c.FallbackAfter = 10 * time.Second
-		c.FallbackModels = map[string]string{"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash"}
+		c.FallbackModels = map[string]string{"openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash"}
 	})
-	body := `{"model":"deepseek/deepseek-v4-pro","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	body := `{"model":"openai/gpt-5.6-luna","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	req.Host = "127.0.0.1:3457"
 	rec := httptest.NewRecorder()

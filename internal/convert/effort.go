@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+
+	"freebuff-proxy/internal/modelcat"
 )
 
 // ExtractReasoningEffort extracts the requested thinking/reasoning effort from
@@ -78,57 +80,25 @@ var reasoningLadder = [...]string{"minimal", "low", "medium", "high", "xhigh", "
 // not on the ladder (mirrors DEFAULT_REASONING_EFFORT = 'high').
 const defaultReasoningEffort = "high"
 
-// modelReasoningEfforts is the per-model effort allowance, mirroring
-// reference/freebuff/common/src/constants/freebuff-models.ts (08/20 catalog).
-// Rows, per model:
-//
-//	deepseek-v4-flash / deepseek-v4-pro  DEEPSEEK_V4_REASONING_EFFORTS
-//	                                     ['low','high','max'] — medium is not a
-//	                                     distinct level and rewrites to high
-//	                                     (see normalizeReasoning).
-//	stealth/ox-alpha                     OX_ALPHA_REASONING_EFFORTS
-//	                                     ['low','high','max'] — medium is not
-//	                                     a distinct level and rewrites to
-//	                                     high (see normalizeReasoning).
-//	gpt-5.6-luna / claude-fable-5        EFFORTS_THROUGH_MAX low..max (xhigh
-//	                                     included, OpenRouter metadata).
-//	muse-spark-1.2-contributor           EFFORTS_THROUGH_XHIGH minimal..xhigh
-//	                                     (measured ladder, 08/06).
-//	mimo-v2.5                            {'high'} — Xiaomi exposes only
-//	                                     disabled/high (enabled); there is no
-//	                                     depth ladder, so the source comments
-//	                                     call low/medium/max "compatibility
-//	                                     aliases".
-//	minimax-m3                           {'high'} — "supports adaptive thinking
-//	                                     or disabled thinking, but no effort
-//	                                     levels"; a depth picker is cosmetic.
-//	z-ai/glm-5.2, crof/kimi-k3-eco        absent — the CrofAI routes accept but
-//	                                     ignore reasoning_effort (including
-//	                                     invalid values), so no clamp.
-//	google/*-flash-lite rows             absent — helper models, no upstream
-//	                                     restriction.
+// Per-model effort ladders live in modelcat.Catalog (single source of truth,
+// mirroring the upstream freebuff-models.ts rows): deepseek-v4-flash/pro and
+// stealth/ox-alpha run ['low','high','max'] (medium is not a distinct level
+// and rewrites to high — see normalizeReasoning); gpt-5.6-luna and
+// claude-fable-5 run EFFORTS_THROUGH_MAX low..max; mimo-v2.5 and minimax-m3
+// expose only {'high'} (no depth ladder upstream); z-ai/glm-5.2, glm-5.3-flash
+// and kimi-k3-eco accept but ignore reasoning_effort, so no clamp.
 //
 // Clamping mirrors upstream's resolveFreebuffReasoningEffort
 // (reference/freebuff/common/src/constants/freebuff-models.ts): clamp-DOWN,
 // keyed on the actually-served model, medium→high on DeepSeek V4 and Ox
-// Alpha. For rows
-// with no ladder upstream returns null and passes the client value through
-// untouched (MIMO/MiniMax treat any rung as thinking-on; GLM/Kimi ignore it)
-// — clamping those rows to "high" is the alias-equivalent normalization.
+// Alpha. For rows with no ladder upstream returns null and passes the client
+// value through untouched (MIMO/MiniMax treat any rung as thinking-on;
+// GLM/Kimi ignore it) — clamping those rows to "high" is the
+// alias-equivalent normalization.
 //
-// Models absent from the table get the full ladder (no clamping). The
+// Models absent from the catalog get the full ladder (no clamping). The
 // provisioned -max variants are NOT listed: they are blocked at the
 // ServedModels gate (issue #153) before conversion ever runs.
-var modelReasoningEfforts = map[string][]string{
-	"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
-	"deepseek/deepseek-v4-pro":        {"low", "high", "max"},
-	"stealth/ox-alpha":                {"low", "high", "max"},
-	"mimo/mimo-v2.5":                  {"high"},
-	"minimax/minimax-m3":              {"high"},
-	"anthropic/claude-fable-5":        {"low", "medium", "high", "xhigh", "max"},
-	"openai/gpt-5.6-luna":             {"low", "medium", "high", "xhigh", "max"},
-	"meta/muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
-}
 
 // ReasoningLookupFn looks up cached reasoning content by tool ID or by content + toolCalls JSON.
 type ReasoningLookupFn func(toolID string, content, toolCallsJSON string) (reasoning, signature string, ok bool)
@@ -146,10 +116,10 @@ func SetReasoningLookup(fn ReasoningLookupFn) {
 	globalReasoningLookup.Store(&fn)
 }
 
-// effortsForModel returns the allowed effort rungs for a model: the hardcoded
-// table, else the full ladder for unlisted models.
+// effortsForModel returns the allowed effort rungs for a model: the catalog
+// ladder, else the full ladder for unlisted models.
 func effortsForModel(model string) []string {
-	if allowed, ok := modelReasoningEfforts[model]; ok {
+	if allowed := modelcat.Efforts(model); allowed != nil {
 		return allowed
 	}
 	return reasoningLadder[:]

@@ -423,7 +423,7 @@ func TestScarceSessionModels(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"}
+		want := []string{"openai/gpt-5.6-luna"}
 		if len(cfg.ScarceSessionModels) != len(want) {
 			t.Fatalf("len(ScarceSessionModels) = %d, want %d", len(cfg.ScarceSessionModels), len(want))
 		}

@@ -24,6 +24,8 @@ const zh = {
 	'Logs': '日志',
 	'Setup': '接入',
 	'Language': '语言',
+	'Switch to English': '切换到英文',
+	'Switch to Chinese': '切换到中文',
 
 	// Session-expired banner
 	'Session expired': '会话已过期',

@@ -328,7 +328,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// Premium quota metrics (quota_tracker.go): one gauge family per field,
 	// emitted only when the premium snapshot is present (nil means no data).
-	sb.WriteString("# HELP freebuff_proxy_premium_quota_limit Premium quota limit (5 for pacific_day pool) per token\n")
+	sb.WriteString("# HELP freebuff_proxy_premium_quota_limit Premium quota limit (4 for pacific_day pool) per token\n")
 	sb.WriteString("# TYPE freebuff_proxy_premium_quota_limit gauge\n")
 	for _, snap := range snaps {
 		if snap.PremiumQuota != nil {
