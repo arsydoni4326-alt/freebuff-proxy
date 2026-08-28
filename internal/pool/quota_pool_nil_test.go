@@ -46,7 +46,7 @@ func TestPoolPremiumQuotaNilWhenNoSession(t *testing.T) {
 func TestPremiumSnapshotMathSpec(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
 	m := map[string]session.QuotaSnapshot{
-		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 2, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
 	}
 	premium, glm := premiumSnapshotFromQuotaMap(m)
 	if premium == nil {
@@ -55,8 +55,8 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	if glm != nil {
 		t.Fatalf("glm = %+v want nil", glm)
 	}
-	if premium.Limit != 5 || premium.Used != 2 || premium.Remaining != 3 || premium.PercentUsed != 40 {
-		t.Errorf("math 5/2 = %+v want limit5 used2 remaining3 percent40", premium)
+	if premium.Limit != 4 || premium.Used != 2 || premium.Remaining != 2 || premium.PercentUsed != 50 {
+		t.Errorf("math 4/2 = %+v want limit4 used2 remaining2 percent50", premium)
 	}
 	if premium.Period != "pacific_day" {
 		t.Errorf("period = %q want pacific_day", premium.Period)
@@ -67,14 +67,14 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	// capped case
 	past := time.Now().Add(-24 * time.Hour)
 	m2 := map[string]session.QuotaSnapshot{
-		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 5, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: future},
 	}
 	p2, _ := premiumSnapshotFromQuotaMap(m2)
 	if !p2.Capped {
 		t.Error("capped false want true for future reset")
 	}
 	m3 := map[string]session.QuotaSnapshot{
-		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 5, Period: "pacific_day", ResetAt: past},
+		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: past},
 	}
 	p3, _ := premiumSnapshotFromQuotaMap(m3)
 	if p3.Capped {
@@ -82,8 +82,8 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	}
 	// glm53 lane independent
 	m4 := map[string]session.QuotaSnapshot{
-		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 1, Period: "pacific_day", ResetAt: future},
-		"z-ai/glm-5.3-flash":         {Model: "z-ai/glm-5.3-flash", Limit: 2, RecentCount: 1, Period: "glm_v53_flash", ResetAt: future},
+		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+		"z-ai/glm-5.3-flash":  {Model: "z-ai/glm-5.3-flash", Limit: 2, RecentCount: 1, Period: "glm_v53_flash", ResetAt: future},
 	}
 	pp, gg := premiumSnapshotFromQuotaMap(m4)
 	if pp == nil || gg == nil {
@@ -92,14 +92,13 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	if gg.Limit != 2 || gg.Used != 1 || gg.Remaining != 1 {
 		t.Errorf("glm = %+v want limit2 used1 remaining1", gg)
 	}
-	// multiple premiums picks flash priority
+	// premiumPoolModels[0] (luna) wins when present
 	m5 := map[string]session.QuotaSnapshot{
-		"deepseek/deepseek-v4-pro":   {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 4, Period: "pacific_day", ResetAt: future},
-		"openai/gpt-5.6-luna":        {Model: "openai/gpt-5.6-luna", Limit: 5, RecentCount: 3, Period: "pacific_day", ResetAt: future},
-		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-5.6-luna":        {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 3, Period: "pacific_day", ResetAt: future},
+		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 100, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 	}
 	p5, _ := premiumSnapshotFromQuotaMap(m5)
-	if p5.Used != 1 {
-		t.Errorf("priority: used=%d want 1 (flash)", p5.Used)
+	if p5.Used != 3 {
+		t.Errorf("priority: used=%d want 3 (luna)", p5.Used)
 	}
 }

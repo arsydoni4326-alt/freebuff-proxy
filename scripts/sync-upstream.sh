@@ -184,6 +184,32 @@ done
 
 echo
 
+# 2b. Vendor npm wrapper version (freebuff CLI package). Best-effort: npm
+#     not on PATH is fine; in sync mode the pin auto-updates.
+VENDOR_VERSION_FILE="$REPO_ROOT/scripts/vendor-version.txt"
+NPM_VERSION=""
+if command -v npm >/dev/null 2>&1; then
+	NPM_VERSION="$(npm view freebuff version 2>/dev/null || true)"
+fi
+PINNED_VERSION=""
+if [[ -f "$VENDOR_VERSION_FILE" ]]; then
+	PINNED_VERSION="$(tr -d '\r\n' <"$VENDOR_VERSION_FILE")"
+fi
+if [[ -n "$NPM_VERSION" ]]; then
+	if [[ -n "$PINNED_VERSION" && "$NPM_VERSION" != "$PINNED_VERSION" ]]; then
+		echo "    npm freebuff@${NPM_VERSION} (pinned ${PINNED_VERSION}) — VERSION DRIFT"
+		if ((!CHECK_ONLY)); then
+			printf '%s' "$NPM_VERSION" >"$VENDOR_VERSION_FILE"
+			echo "    Updated scripts/vendor-version.txt to ${NPM_VERSION}"
+		fi
+	else
+		echo "    npm freebuff@${NPM_VERSION} matches pin ${PINNED_VERSION:-none}"
+	fi
+else
+	echo "    npm not on PATH — skipping vendor npm version check"
+fi
+echo
+
 # 3. If in sync mode and files were updated, report status
 if ((CHECK_ONLY)); then
 	if ((drift_count > 0)); then

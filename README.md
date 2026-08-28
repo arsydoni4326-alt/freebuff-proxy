@@ -67,22 +67,23 @@ If you are a beginner, you don't need to write code or compile anything:
 | Keep the pool **draining one key at a time** | **Don't hammer many tokens from one public IP** (`ip_capped`) |
 
 
-**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
+**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**4 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
 
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot `5951772` · `0.0.157` `2026-08-27`):
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `440b7ad` · npm `0.0.157` `2026-08-28`):
 > *"GLM 5.3 Flash is 2 sessions a day while we see what it costs; every other model runs on your normal daily sessions. MiMo and DeepSeek V4 Flash stay unmetered. —❤️ Freebuff Team"*
-> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` `2/day` fixed `glm_v53_flash` pool; `V4 Flash 07/31` off-peak `Back at 10:00 AM`.)
+> (Premium pool `4/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` `2/day` fixed `glm_v53_flash` pool; `V4 Flash 07/31` off-peak `Back at 10:00 AM`.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
-| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. Drains from shared `5/day` premium pool; **unmetered on unlimited tier**. |
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool (`PREMIUM 0/5`). |
-| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. `NEW` `2/day` fixed pool `glm_v53_flash` (cheap lane, measuring cache-hit cost; see `freebuff-models.ts:1593`). |
-| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. Shares `5/day` premium pool (per-model caps removed). |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `4/day` premium pool (`PREMIUM 0/4`). |
+| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. `2/day` fixed pool `glm_v53_flash` (cheap lane, measuring cache-hit cost; see `freebuff-models.ts:1546`). |
+| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** (left `FREEBUFF_PREMIUM_MODEL_IDS` 2026-08-24). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
-| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` per referral). |
-| **Stealth** | **Ox Alpha** | `stealth/ox-alpha` | **Anonymous stealth provider**, Reasoning: mandatory (`low`/`high`/`max`, default `high`). `1M` context, multimodal. |
-| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream. |
+| **Limited offer** | **Claude Fable 5** | `anthropic/claude-fable-5` | **Anthropic's most intelligent model**, Reasoning: through `max`. Metered by its own global pool (`FREEBUFF_LIMITED_OFFER_MODEL_IDS`). |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` per referral), 1-hour sessions. |
+| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
+| **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |
+| **Disabled** | **Ox Alpha** | `stealth/ox-alpha` | **Withdrawn** upstream (2026-08-27, free promotion ended). |
 
 Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
 
@@ -284,7 +285,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
 | `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 2s when unset) |
 | `CLI_VERSION` | `0.10.7` | Informational only: parsed and shown on the admin dashboard (Configuration Studio). No wire impact — the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff`, the ads UA to `Freebuff-CLI/1.0.0`, and session/auth endpoints default to `Bun/1.3.14` |
-| `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:deepseek/deepseek-v4-pro`. When unset (or empty / parsing to no pairs) the built-ins apply: `deepseek-chat` → `deepseek/deepseek-v4-flash`, `gpt-4o` → `deepseek/deepseek-v4-pro`, `claude-3-5-sonnet` → `anthropic/claude-fable-5`. A non-empty value with ≥1 valid pair REPLACES the defaults entirely; the built-ins cannot be disabled (there is no way to express an empty alias map) |
+| `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:openai/gpt-5.6-luna`. There are no built-in aliases (the old `deepseek-chat`/`gpt-4o`/`claude-3-5-sonnet` map was removed when `deepseek-v4-pro` was paused); clients must map aliases explicitly. |
 | `TRANSIENT_RETRIES` | `1` | Max additional attempts after a transient transport failure; `0` disables |
 | `SESSION_PERSIST` | `false` | Persist session state AND active agent runs to disk so a restart resumes them instead of re-creating (new daily slot / re-START) |
 | `SESSION_STATE_FILE` | `.freebuff-session-state.json` | Path of the session state file (used when `SESSION_PERSIST=true`; token-keyed, `0600`) |
@@ -297,7 +298,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `RUNS_DRAIN_QUEUE_CAP` | `64` | Draining-runs list cap; older entries are force-dropped (FINISH is best-effort) |
 | `RUNS_DRAIN_TTL` | `10m` | Draining-runs TTL eviction window |
 | `HTTP2_UPSTREAM` | `true` | Negotiate HTTP/2 with the upstream so the ALPN matches real browsers; `false` forces HTTP/1.1 |
-| `FALLBACK_MODEL` | `""` | Map `model1=fallback1,model2=fallback2` to re-route a request to the fallback model when its queue wait passes `FALLBACK_AFTER_MS` (queue-wait only — never on 429 quota exhaustion). When unset, built-in defaults apply: the premium rows → `deepseek/deepseek-v4-flash`, `meta/muse-spark-1.2-contributor` → `deepseek/deepseek-v4-pro` |
+| `FALLBACK_MODEL` | `""` | Map `model1=fallback1,model2=fallback2` to re-route a request to the fallback model when its queue wait passes `FALLBACK_AFTER_MS` (queue-wait only — never on 429 quota exhaustion). When unset, the built-in default applies: `openai/gpt-5.6-luna` → `deepseek/deepseek-v4-flash` |
 | `FALLBACK_AFTER_MS` | `10000` | Queue-wait threshold (ms) before falling back to `FALLBACK_MODEL` |
 | `CORS_ALLOWED_ORIGIN` | `*` | `Access-Control-Allow-Origin` for `/v1/*` responses |
 | `ADOPT_CLI_SESSION` | `false` | Adopt the upstream CLI's active session instead of creating a new one |

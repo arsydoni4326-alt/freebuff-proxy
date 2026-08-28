@@ -35,6 +35,12 @@ import (
 	"time"
 )
 
+// fallbackDepthKey and maxFallbackDepth bound the QUOTA_FALLBACK_MODELS
+// recursion (issue #219). See Acquire.
+type fallbackDepthKey struct{}
+
+const maxFallbackDepth = 8
+
 // Acquire resolves the model's agent, picks a start token round-robin, and
 // fails over linearly until a token yields both a run and a session. Returns
 // a lease on success. Registry misses (unknown model) are returned as-is.
@@ -777,6 +783,7 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 			}
 		}
 		if len(eligibleTokens) > 1 {
+			p.randMu.Lock()
 			if p.randGen == nil {
 				p.randGen = rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 1))
 			}

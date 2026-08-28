@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"freebuff-proxy/internal/modelcat"
 )
 
 // CreateSession POSTs /api/v1/freebuff/session with no body.
@@ -19,7 +21,8 @@ func (c *Client) CreateSession(ctx context.Context) (*SessionState, error) {
 // model header. The POST carries NO body and therefore no Content-Type
 // (#120): the CLI's session POST is a bare fetch with Authorization + the
 // optional x-freebuff-model header only (reference/freebuff
-// freebuff-session-api.ts callFreebuffSession, codebuff-api.ts sets
+// freebuff-session-api.ts callFreebuffSession; codebuff-api.ts sets the
+// same request shape).
 
 // mockTokenState tracks per-token usage for dummy tokens so the mock behaves
 // like a real upstream session: recentCount rises per model, standing score
@@ -41,16 +44,25 @@ func getMockState(token string) *mockTokenState {
 	return v.(*mockTokenState)
 }
 
-// mockQuotaLimit mirrors the real tier caps for the served models.
+// mockQuotaLimit mirrors the real tier caps for the served models (derived
+// from modelcat: premium pool 4/day, glm-5.3-flash cap 2/day, glm-5.2 promo
+// 1/day, everything else unmetered). Paused models are never admitted so
+// their cap is irrelevant — return 9999.
 func mockQuotaLimit(model string) float64 {
+	if model == "" {
+		model = modelcat.DefaultModelID
+	}
 	switch model {
-	case "openai/gpt-5.6-luna", "deepseek/deepseek-v4-pro":
-		return 5
-	case "z-ai/glm-5.3-flash":
-		return 2
-	case "z-ai/glm-5.2":
+	case modelcat.Glm52ModelID:
 		return 1
-	default: // mimo, ox-alpha, deepseek-flash: unmetered
+	case modelcat.Glm53ModelID:
+		if limit, _ := modelcat.PerModelCap(model); limit > 0 {
+			return float64(limit)
+		}
+		return 9999
+	case "openai/gpt-5.6-luna":
+		return modelcat.PremiumSessionLimit
+	default: // mimo, fable, deepseek-flash: unmetered
 		return 9999
 	}
 }
@@ -60,9 +72,19 @@ func isDummyToken(token string) bool {
 	return strings.HasPrefix(t, "cb_dummy") || strings.HasPrefix(t, "dummy-") || strings.HasPrefix(t, "mock-")
 }
 
+// mockSessionExpiry returns the session TTL for the mock: 1 hour for GLM
+// 5.2 (upstream FREEBUFF_GLM_V52_SESSION_LENGTH_MS), 24 hours for everything
+// else.
+func mockSessionExpiry(model string) time.Duration {
+	if model == modelcat.Glm52ModelID {
+		return modelcat.GLMSessionLength
+	}
+	return 24 * time.Hour
+}
+
 func mockSessionState(token string, requestedModel string, consume bool) *SessionState {
 	if requestedModel == "" {
-		requestedModel = "mimo/mimo-v2.5"
+		requestedModel = modelcat.DefaultModelID
 	}
 	now := time.Now()
 	pacific := pacificLoc()
@@ -115,7 +137,7 @@ func mockSessionState(token string, requestedModel string, consume bool) *Sessio
 		Model:           requestedModel,
 		CurrentModel:    requestedModel,
 		RequestedModel:  requestedModel,
-		ExpiresAt:       now.Add(24 * time.Hour),
+		ExpiresAt:       now.Add(mockSessionExpiry(requestedModel)),
 		AdmittedAt:      now,
 		Position:        0,
 		QueueDepth:      0,
@@ -127,48 +149,29 @@ func mockSessionState(token string, requestedModel string, consume bool) *Sessio
 		RetryAfterMs:    retryAfterMs,
 		RateLimitsByModel: map[string]ModelQuota{
 			"openai/gpt-5.6-luna": {
-				Model:       "openai/gpt-5.6-luna",
-				Limit:       5,
+				Model:       modelcat.DefaultModelID,
+				Limit:       modelcat.PremiumSessionLimit,
 				RecentCount: st.recentCounts["openai/gpt-5.6-luna"],
 				ResetAt:     pacMidnight,
 				Period:      "pacific_day",
 				Pool:        "premium",
 				PoolLabel:   "Premium",
-				Entitlement: map[string]float64{"base": 5},
-			},
-			"deepseek/deepseek-v4-pro": {
-				Model:       "deepseek/deepseek-v4-pro",
-				Limit:       5,
-				RecentCount: st.recentCounts["deepseek/deepseek-v4-pro"],
-				ResetAt:     pacMidnight,
-				Period:      "pacific_day",
-				Pool:        "premium",
-				PoolLabel:   "Premium",
-				Entitlement: map[string]float64{"base": 5},
+				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
 			},
 			"z-ai/glm-5.3-flash": {
-				Model:       "z-ai/glm-5.3-flash",
+				Model:       modelcat.Glm53ModelID,
 				Limit:       2,
 				RecentCount: st.recentCounts["z-ai/glm-5.3-flash"],
 				ResetAt:     pacMidnight,
 				Period:      "pacific_day",
-				Pool:        "premium",
-				PoolLabel:   "Premium",
+				Pool:        "glm_v53_flash",
+				PoolLabel:   "GLM 5.3 Flash",
 				Entitlement: map[string]float64{"base": 2},
 			},
 			"mimo/mimo-v2.5": {
-				Model:       "mimo/mimo-v2.5",
+				Model:       modelcat.FallbackModelID,
 				Limit:       unlimited,
 				RecentCount: st.recentCounts["mimo/mimo-v2.5"],
-				ResetAt:     pacMidnight,
-				Period:      "pacific_day",
-				Pool:        "unlimited",
-				PoolLabel:   "Unlimited",
-			},
-			"stealth/ox-alpha": {
-				Model:       "stealth/ox-alpha",
-				Limit:       unlimited,
-				RecentCount: st.recentCounts["stealth/ox-alpha"],
 				ResetAt:     pacMidnight,
 				Period:      "pacific_day",
 				Pool:        "unlimited",
@@ -183,8 +186,17 @@ func mockSessionState(token string, requestedModel string, consume bool) *Sessio
 				Pool:        "unlimited",
 				PoolLabel:   "Unlimited",
 			},
+			"anthropic/claude-fable-5": {
+				Model:       "anthropic/claude-fable-5",
+				Limit:       unlimited,
+				RecentCount: st.recentCounts["anthropic/claude-fable-5"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "unlimited",
+				PoolLabel:   "Unlimited",
+			},
 			"z-ai/glm-5.2": {
-				Model:       "z-ai/glm-5.2",
+				Model:       modelcat.Glm52ModelID,
 				Limit:       1,
 				RecentCount: st.recentCounts["z-ai/glm-5.2"],
 				ResetAt:     pacMidnight,

@@ -283,38 +283,36 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := remoteHost(r)
-	if r.Method == http.MethodPost {
-		if !s.adminAuth.allow(ip) {
-			// T15: audit the lockout rejection — attempts is the lockout
-			// bound that was crossed; the submitted credential is never
-			// logged.
-			s.logger.Warn("admin login failed", "remote", ip, "attempts", maxLoginFails, "reason", "locked_out")
-			s.dash.RenderLogin(w, r, "Too many failed attempts — try again in a minute.")
-			return
-		}
-		token := r.FormValue("token")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AdminToken)) == 1 {
-			s.adminAuth.clearFails(ip)
-			// Secure only when the login arrived over an actual TLS
-			// connection (direct HTTPS or a TLS-terminating reverse proxy
-			// setting X-Forwarded-Proto). A Secure cookie over plain HTTP is
-			// rejected by browsers, silently breaking remote login.
-			s.adminAuth.setCookie(w, r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
-			http.Redirect(w, r, "/admin", http.StatusFound)
-			return
-		}
-		s.adminAuth.recordFail(ip)
-		attempts, locked := s.adminAuth.loginFailState(ip)
-		if locked {
-			attempts = maxLoginFails
-		}
-		// T15: audit a failed login — remote, running attempt count, and
-		// reason only; the credential itself is never logged.
-		s.logger.Warn("admin login failed", "remote", ip, "attempts", attempts, "reason", "invalid_token")
-		s.dash.RenderLogin(w, r, "Invalid admin token.")
+	// The top-of-function method guard already returned for every non-POST
+	// request, so no inner method check is needed here (issue #222).
+	if !s.adminAuth.allow(ip) {
+		// T15: audit the lockout rejection — attempts is the lockout
+		// bound that was crossed; the submitted credential is never
+		// logged.
+		s.logger.Warn("admin login failed", "remote", ip, "attempts", maxLoginFails, "reason", "locked_out")
+		s.dash.RenderLogin(w, r, "Too many failed attempts — try again in a minute.")
 		return
 	}
-	s.dash.RenderLogin(w, r, "")
+	token := r.FormValue("token")
+	if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AdminToken)) == 1 {
+		s.adminAuth.clearFails(ip)
+		// Secure only when the login arrived over an actual TLS
+		// connection (direct HTTPS or a TLS-terminating reverse proxy
+		// setting X-Forwarded-Proto). A Secure cookie over plain HTTP is
+		// rejected by browsers, silently breaking remote login.
+		s.adminAuth.setCookie(w, r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+		http.Redirect(w, r, "/admin", http.StatusFound)
+		return
+	}
+	s.adminAuth.recordFail(ip)
+	attempts, locked := s.adminAuth.loginFailState(ip)
+	if locked {
+		attempts = maxLoginFails
+	}
+	// T15: audit a failed login — remote, running attempt count, and
+	// reason only; the credential itself is never logged.
+	s.logger.Warn("admin login failed", "remote", ip, "attempts", attempts, "reason", "invalid_token")
+	s.dash.RenderLogin(w, r, "Invalid admin token.")
 }
 
 // handleAdminLogout clears the fb_admin session cookie (MaxAge=-1, same

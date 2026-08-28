@@ -329,6 +329,15 @@ func (d *Dashboard) tokensData() tokensData {
 				if ts, err := time.Parse(time.RFC3339, gp.EndsAt); err == nil {
 					resetAt = ts
 				}
+				resetsIn := ""
+				// Guard the promo countdown (issue #225): an expired promo has
+				// EndsAt in the past, and humanDuration would round the
+				// negative duration to a misleading "1m".
+				if !resetAt.IsZero() {
+					if d := time.Until(resetAt); d > 0 {
+						resetsIn = "in " + humanDuration(d)
+					}
+				}
 				glmRow := quotaRow{
 					Model:          "z-ai/glm-5.2",
 					Limit:          formatQuota(gp.DailySessions),
@@ -337,7 +346,7 @@ func (d *Dashboard) tokensData() tokensData {
 					Period:         "promo",
 					ResetAt:        shortTime(resetAt),
 					ResetAtUTC:     utcAttr(resetAt),
-					ResetsIn:       humanDuration(time.Until(resetAt)),
+					ResetsIn:       resetsIn,
 					Entitled:       "referral",
 					HasEntitlement: true,
 					UsagePct:       0,

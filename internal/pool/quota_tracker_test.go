@@ -33,15 +33,15 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 		{
 			name: "single premium flash",
 			m: map[string]session.QuotaSnapshot{
-				"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 2, Period: "pacific_day", ResetAt: future},
+				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
 			},
 			wantP: true,
 		},
 		{
 			name: "premium pro fallback when flash absent",
 			m: map[string]session.QuotaSnapshot{
-				"deepseek/deepseek-v4-pro": {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 1, Period: "pacific_day", ResetAt: future},
-				"mimo/mimo-v2.5":           {Model: "mimo/mimo-v2.5", Limit: 100, RecentCount: 10, Period: "pacific_day", ResetAt: future},
+				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+				"mimo/mimo-v2.5":      {Model: "mimo/mimo-v2.5", Limit: 100, RecentCount: 10, Period: "pacific_day", ResetAt: future},
 			},
 			wantP: true,
 		},
@@ -61,7 +61,7 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 		{
 			name: "both premium and glm",
 			m: map[string]session.QuotaSnapshot{
-				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 5, RecentCount: 3, Period: "pacific_day", ResetAt: future},
+				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 3, Period: "pacific_day", ResetAt: future},
 				"z-ai/glm-5.3-flash":  {Model: "z-ai/glm-5.3-flash", Limit: 2, RecentCount: 2, Period: "glm_v53_flash", ResetAt: future},
 			},
 			wantP:      true,
@@ -71,7 +71,7 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 		{
 			name: "capped detection future reset",
 			m: map[string]session.QuotaSnapshot{
-				"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 5, Period: "pacific_day", ResetAt: future},
+				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: future},
 			},
 			wantP:      true,
 			wantCapped: true,
@@ -79,16 +79,15 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 		{
 			name: "not capped when reset past",
 			m: map[string]session.QuotaSnapshot{
-				"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 5, Period: "pacific_day", ResetAt: past},
+				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: past},
 			},
 			wantP: true,
 		},
 		{
-			name: "prefer flash over sorted",
+			name: "prefer luna over sorted",
 			m: map[string]session.QuotaSnapshot{
-				"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 2, Period: "pacific_day", ResetAt: future},
-				"deepseek/deepseek-v4-pro":   {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 4, Period: "pacific_day", ResetAt: future},
-				"openai/gpt-5.6-luna":        {Model: "openai/gpt-5.6-luna", Limit: 5, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+				"openai/gpt-5.6-luna":        {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
+				"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 100, RecentCount: 4, Period: "pacific_day", ResetAt: future},
 			},
 			wantP: true,
 		},
@@ -110,7 +109,7 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 				t.Fatalf("expected glm nil, got %+v", glm)
 			}
 			if premium != nil {
-				if premium.Limit != int(tc.m[premiumPoolModels[0]].Limit) && tc.name == "prefer flash over sorted" {
+				if premium.Limit != int(tc.m[premiumPoolModels[0]].Limit) && tc.name == "prefer luna over sorted" {
 					// checked below: must be flash's limit
 				}
 				if premium.PercentUsed < 0 || premium.PercentUsed > 100 {
@@ -141,11 +140,11 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 	}
 }
 
-func TestPremiumSnapshotPreferFlash(t *testing.T) {
+func TestPremiumSnapshotPreferLuna(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	m := map[string]session.QuotaSnapshot{
-		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 5, RecentCount: 2, Period: "pacific_day", ResetAt: future},
-		"deepseek/deepseek-v4-pro":   {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 4, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-5.6-luna":      {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
+		"deepseek/deepseek-v4-pro": {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 4, Period: "pacific_day", ResetAt: future},
 	}
 	premium, _ := premiumSnapshotFromQuotaMap(m)
 	if premium == nil {
@@ -159,16 +158,17 @@ func TestPremiumSnapshotPreferFlash(t *testing.T) {
 func TestPremiumSnapshotSortedFallback(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	m := map[string]session.QuotaSnapshot{
-		"openai/gpt-5.6-luna":      {Model: "openai/gpt-5.6-luna", Limit: 5, RecentCount: 3, Period: "pacific_day", ResetAt: future},
-		"deepseek/deepseek-v4-pro": {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 	}
 	premium, _ := premiumSnapshotFromQuotaMap(m)
 	if premium == nil {
 		t.Fatal("premium nil")
 	}
-	// sorted present = ["deepseek/deepseek-v4-pro","openai/gpt-5.6-luna"] => picks pro
 	if premium.Used != 1 {
-		t.Errorf("sorted fallback: used=%d want 1 (pro)", premium.Used)
+		t.Errorf("sorted fallback: used=%d want 1", premium.Used)
+	}
+	if premium.Limit != 4 {
+		t.Errorf("limit = %d, want 4", premium.Limit)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestBuildPremiumSnapshotFields(t *testing.T) {
 		t.Error("unexpected capped")
 	}
 	// capped case
-	q2 := session.QuotaSnapshot{Limit: 5, RecentCount: 5, Period: "pacific_day", ResetAt: future}
+	q2 := session.QuotaSnapshot{Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: future}
 	snap2 := buildPremiumSnapshot(q2)
 	if !snap2.Capped || snap2.Remaining != 0 || snap2.PercentUsed != 100 {
 		t.Errorf("capped fields mismatch: %+v", snap2)
@@ -201,8 +201,8 @@ func TestBuildPremiumSnapshotFields(t *testing.T) {
 }
 
 func TestIsPremiumModel(t *testing.T) {
-	if !isPremiumModel("deepseek/deepseek-v4-flash") {
-		t.Error("expected premium")
+	if !isPremiumModel("openai/gpt-5.6-luna") {
+		t.Error("expected premium for luna")
 	}
 	if !isPremiumModel("z-ai/glm-5.3-flash") {
 		t.Error("expected glm premium")
@@ -219,9 +219,9 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.RateLimitsByModel = map[string]any{
-		"deepseek/deepseek-v4-flash": map[string]any{
-			"model":       "deepseek/deepseek-v4-flash",
-			"limit":       5,
+		"openai/gpt-5.6-luna": map[string]any{
+			"model":       "openai/gpt-5.6-luna",
+			"limit":       4,
 			"recentCount": 2,
 			"period":      "pacific_day",
 			"resetAt":     "2026-08-27T07:00:00.000Z",
@@ -242,7 +242,7 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 		},
 	}
 	p := newTestPool(t, mock)
-	lease, err := p.Acquire(context.Background(), "deepseek/deepseek-v4-flash")
+	lease, err := p.Acquire(context.Background(), "openai/gpt-5.6-luna")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 	if snap.PremiumQuota == nil {
 		t.Fatal("PremiumQuota nil, want 5/day")
 	}
-	if snap.PremiumQuota.Limit != 5 || snap.PremiumQuota.Used != 2 || snap.PremiumQuota.Remaining != 3 || snap.PremiumQuota.PercentUsed != 40 {
+	if snap.PremiumQuota.Limit != 4 || snap.PremiumQuota.Used != 2 || snap.PremiumQuota.Remaining != 2 || snap.PremiumQuota.PercentUsed != 50 {
 		t.Errorf("premium mismatch: %+v", snap.PremiumQuota)
 	}
 	if snap.Glm53FlashQuota == nil {
@@ -265,10 +265,10 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 		t.Errorf("glm mismatch: %+v", snap.Glm53FlashQuota)
 	}
 	// helper alias
-	if got := p.PremiumQuotaForToken(0); got == nil || got.Limit != 5 {
+	if got := p.PremiumQuotaForToken(0); got == nil || got.Limit != 4 {
 		t.Errorf("PremiumQuotaForToken mismatch: %+v", got)
 	}
-	if got := p.PremiumSnapshotForToken(0); got == nil || got.Limit != 5 {
+	if got := p.PremiumSnapshotForToken(0); got == nil || got.Limit != 4 {
 		t.Errorf("PremiumSnapshotForToken mismatch: %+v", got)
 	}
 	if got := p.Glm53QuotaForToken(0); got == nil || got.Limit != 2 {
@@ -287,7 +287,7 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 		t.Error("json missing glm53flash_quota")
 	}
 	pq := m["premium_quota"].(map[string]any)
-	if int(pq["limit"].(float64)) != 5 {
+	if int(pq["limit"].(float64)) != 4 {
 		t.Errorf("json limit %v", pq["limit"])
 	}
 }
@@ -332,16 +332,16 @@ func TestBridgeSnapshotPremium(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.RateLimitsByModel = map[string]any{
-		"deepseek/deepseek-v4-flash": map[string]any{
-			"model":       "deepseek/deepseek-v4-flash",
-			"limit":       5,
+		"openai/gpt-5.6-luna": map[string]any{
+			"model":       "openai/gpt-5.6-luna",
+			"limit":       4,
 			"recentCount": 4,
 			"period":      "pacific_day",
 			"resetAt":     "2026-08-27T07:00:00.000Z",
 		},
 	}
 	p := newBridgePool(t, mock)
-	lease, err := p.AcquireBridge(context.Background(), "cb_test_bridge_token", "deepseek/deepseek-v4-flash")
+	lease, err := p.AcquireBridge(context.Background(), "cb_test_bridge_token", "openai/gpt-5.6-luna")
 	if err != nil {
 		t.Fatalf("AcquireBridge %v", err)
 	}
@@ -350,7 +350,7 @@ func TestBridgeSnapshotPremium(t *testing.T) {
 	if len(snaps) != 1 {
 		t.Fatalf("bridge snaps %d", len(snaps))
 	}
-	if snaps[0].PremiumQuota == nil || snaps[0].PremiumQuota.Limit != 5 {
+	if snaps[0].PremiumQuota == nil || snaps[0].PremiumQuota.Limit != 4 {
 		t.Errorf("bridge premium %+v", snaps[0].PremiumQuota)
 	}
 	if got := p.PremiumQuotaForBridge(snaps[0].Key); got == nil || got.Used != 4 {

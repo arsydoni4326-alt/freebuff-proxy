@@ -48,11 +48,10 @@
   // Device login flow
   let oauthStarting = $state(false);
   let oauthStatus = $state(null);
-  let oauthTimer = $state(null);
+  let oauthTimer = null;
 
   // Token table
   let expandedToken = $state(null);
-  let spawnModels = $state({});
   let spawnModels = $state({});
   let actionPending = $state(false);
   let now = $state(Date.now());
@@ -551,11 +550,11 @@
                             bind:value={spawnModels[idx]}
                             class="fp-input !text-xs !py-1 !px-2 !h-7 !w-44 !inline-block"
                           >
-                            <option value="stealth/ox-alpha">stealth/ox-alpha (1M)</option>
-                            <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/d)</option>
-                            <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
+                            <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (4/d)</option>
                             <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (2/d)</option>
                             <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash</option>
+                            <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
+                            <option value="anthropic/claude-fable-5">anthropic/claude-fable-5</option>
                             <option value="deepseek/deepseek-v4-pro">deepseek/deepseek-v4-pro</option>
                             <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral)</option>
                           </select>

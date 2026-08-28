@@ -294,16 +294,12 @@ func Load(configPath string) (Config, error) {
 		fallbackAfter = time.Duration(ms) * time.Millisecond
 	}
 
-	// MODEL_ALIASES defaults (issue #42): when the operator has not set any
-	// aliases, common OpenAI/Anthropic/DeepSeek client names map to the
-	// closest FreeBuff free-catalog model so a stock client works out of
-	// the box. An explicit (even empty) value never gets the defaults.
+	// MODEL_ALIASES (issue #42): parsed verbatim — there are no built-in
+	// defaults (the old gpt-4o/deepseek-chat/claude-3-5-sonnet map was
+	// emptied on 2026-08-20 and removed on 2026-08-28: with deepseek-v4-pro
+	// paused, the best-known target of the set was no longer servable, and
+	// an empty map applied silently was dead machinery).
 	modelAliases := parseMap(raw.ModelAliases)
-	if len(modelAliases) == 0 {
-		for alias, real := range defaultModelAliases {
-			modelAliases[alias] = real
-		}
-	}
 
 	// FALLBACK_MODEL defaults (issue #100): when unset, the premium free-
 	// catalog rows fall back to the always-available flash model once their
@@ -572,8 +568,8 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideCSVFrom(&raw.APIKeys, get, "API_KEYS")
 	overrideStringFrom(&raw.AdminToken, get, "ADMIN_TOKEN")
 	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
-	// beats a JSON ACTING_USER_ID (dotenv outranks JSON), ACTING_USER_ID
-	// wins when both are in the .env.
+	// A .env ACTING_USER_ID beats a JSON ACTING_USER_ID (dotenv outranks
+	// JSON); ACTING_USER_ID wins when both are in the .env.
 	overrideStringAlias(&raw.ActingUserID, get, "ACTING_USER_ID", "USER_ID")
 	overrideStringFrom(&raw.TLSFingerprint, get, "TLS_FINGERPRINT")
 	overrideStringFrom(&raw.RegistryRefresh, get, "REGISTRY_REFRESH")

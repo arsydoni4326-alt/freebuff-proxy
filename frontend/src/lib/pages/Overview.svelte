@@ -44,13 +44,18 @@
     if (key.length <= 10) return '••••••••';
     const prefix = key.startsWith('sk-fb-') ? 'sk-fb-' : key.slice(0, 6);
     const suffix = key.slice(-4);
-    return `${prefix}••••••••••••••••••••••••${suffix}`;
+    const padding = '•'.repeat(Math.max(0, key.length - prefix.length - suffix.length));
+    return `${prefix}${padding}${suffix}`;
   }
 
   function openGeneratedKeyModal(key) {
     generatedKey = key;
     showGeneratedModal = true;
     lastFocusedEl = typeof document !== 'undefined' ? document.activeElement : null;
+    // Issue #224: move focus into the dialog on open so keyboard users see it.
+    queueMicrotask(() => {
+      if (showGeneratedModal && modalEl) modalEl.focus();
+    });
   }
 
   function closeGeneratedKeyModal() {
@@ -109,6 +114,7 @@
           ? $tr('Generated & saved client API key (environment notice: server process environment takes precedence until restart)')
           : $tr('Generated & saved client API key');
         fetchData();
+    fetchConfig();
       } else {
         clientKeyMessage = result?.message || $tr('Failed to save client API key');
       }
@@ -159,22 +165,26 @@
     }
   }
 
+  // Config-derived display fields (apiKeys, tokenRotation) change only on
+  // save, so they are fetched once on mount instead of on every 15s poll.
+  async function fetchConfig() {
+    try {
+      const cfgRes = await fetchAPI('/admin/api/config');
+      const envContent = cfgRes?.env_content || '';
+      const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
+      const val = m ? m[1].trim() : '';
+      apiKeys = val ? val.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      const mRot = envContent.match(/^\s*TOKEN_ROTATION=(.*)$/m);
+      const rotVal = mRot ? mRot[1].trim().toLowerCase() : 'drain';
+      tokenRotation = ['drain', 'round_robin', 'least_used', 'random'].includes(rotVal) ? rotVal : 'drain';
+    } catch {
+      apiKeys = [];
+      tokenRotation = 'drain';
+    }
+  }
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/overview');
-      try {
-        const cfgRes = await fetchAPI('/admin/api/config');
-        const envContent = cfgRes?.env_content || '';
-        const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
-        const val = m ? m[1].trim() : '';
-        apiKeys = val ? val.split(',').map((s) => s.trim()).filter(Boolean) : [];
-        const mRot = envContent.match(/^\s*TOKEN_ROTATION=(.*)$/m);
-        const rotVal = mRot ? mRot[1].trim().toLowerCase() : 'drain';
-        tokenRotation = ['drain', 'round_robin', 'least_used', 'random'].includes(rotVal) ? rotVal : 'drain';
-      } catch {
-        apiKeys = [];
-        tokenRotation = 'drain';
-      }
     } catch (e) {
       error = e.message || $tr('Could not reach the proxy API. Check that the server is running.');
     } finally {
@@ -253,6 +263,9 @@
     if (!until) return '';
     const diff = new Date(until).getTime() - Date.now();
     if (diff <= 0) return '';
+    const h = Math.floor(diff / 3_600_000);
+    const m = Math.floor((diff % 3_600_000) / 60_000);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
   }
 </script>
 

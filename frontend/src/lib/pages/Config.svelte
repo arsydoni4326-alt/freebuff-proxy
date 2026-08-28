@@ -55,7 +55,11 @@
     const curKeys = parseKeys(envContent);
     let count = 0;
     for (const key of curKeys) {
-      const regex = new RegExp(`^\\s*${key}=(.*)$`, 'm');
+      // Issue #221: key is user-typed; escape regex metacharacters so an
+      // invalid pattern (e.g. a key containing "(") cannot throw a
+      // SyntaxError and crash the component.
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`^\\s*${escapedKey}=(.*)$`, 'm');
       const o = originalContent.match(regex)?.[1]?.trim();
       const c = envContent.match(regex)?.[1]?.trim();
       if (o !== c) count++;
