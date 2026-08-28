@@ -56,6 +56,7 @@ const fetchTimeout = 30 * time.Second
 // than this fails the fetch, which keeps the previous registry state.
 const maxFetchBytes = 2 << 20
 
+// ServedModels is the code-level gate of the model ids this gateway serves.
 // Derived from modelcat.Catalog (single source of truth): the served set is
 // upstream SUPPORTED_FREEBUFF_MODELS minus FREEBUFF_PAUSED_FREE_MODEL_IDS.
 // The gate therefore moves on every upstream sync by editing the catalog —
