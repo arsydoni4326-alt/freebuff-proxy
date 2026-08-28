@@ -109,9 +109,6 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 				t.Fatalf("expected glm nil, got %+v", glm)
 			}
 			if premium != nil {
-				if premium.Limit != int(tc.m[premiumPoolModels[0]].Limit) && tc.name == "prefer luna over sorted" {
-					// checked below: must be flash's limit
-				}
 				if premium.PercentUsed < 0 || premium.PercentUsed > 100 {
 					t.Errorf("percent_used out of range: %d", premium.PercentUsed)
 				}

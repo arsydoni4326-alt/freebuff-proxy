@@ -45,6 +45,17 @@ const maxFallbackDepth = 8
 // fails over linearly until a token yields both a run and a session. Returns
 // a lease on success. Registry misses (unknown model) are returned as-is.
 func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
+	// Issue #219: the QUOTA_FALLBACK_MODELS recursion (leaseFromOrder →
+	// Acquire) is bounded by a depth counter carried in ctx. Validate()
+	// already rejects fallback cycles at config time; this is the runtime
+	// backstop so a misconfigured pool degrades to an error instead of a
+	// stack overflow.
+	depth, _ := ctx.Value(fallbackDepthKey{}).(int)
+	if depth >= maxFallbackDepth {
+		return nil, errors.New("pool: QUOTA_FALLBACK_MODELS cycle detected (max fallback depth reached); check QUOTA_FALLBACK_MODELS for a loop")
+	}
+	ctx = context.WithValue(ctx, fallbackDepthKey{}, depth+1)
+
 	toks := p.toks.Load()
 	cfg := p.cfg.Load()
 	if len(*toks) == 0 {
