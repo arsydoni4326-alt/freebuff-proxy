@@ -328,6 +328,28 @@
         <Stat label={$tr('Models')} value={data.model_count ?? 0} big />
       </div>
 
+      <!-- Hybrid mode: pool summary above plus a compact bridge-relay card -->
+      {#if data.mode === 'hybrid'}
+        <Card title={$tr('Bridge relay')}>
+          <p class="text-sm text-[var(--fp-muted)]">
+            {$tr('{count} active bridge client(s) relaying their own FreeBuff tokens', { count: data.bridge_tokens ?? 0 })}
+          </p>
+          {#if data.bridge_token_cards?.length}
+            <ul class="mt-2 flex flex-col gap-1.5">
+              {#each data.bridge_token_cards.slice(0, 4) as bc (bc.key)}
+                <li class="flex flex-wrap items-center gap-2 text-xs">
+                  <StatusBadge status={bc.status} />
+                  <code class="fp-num font-mono text-[var(--fp-text)]">{bc.key}</code>
+                  {#if bc.model}
+                    <code class="fp-num font-mono text-[var(--fp-muted)]">{bc.model}</code>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Card>
+      {/if}
+
       <!-- Token risk cards -->
       <RiskCards tokens={atRiskTokens} total={poolTotal} />
 

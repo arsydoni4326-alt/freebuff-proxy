@@ -181,7 +181,11 @@ func remoteHost(r *http.Request) string {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.cfg.Load()
-		if len(cfg.APIKeys) == 0 || cfg.BridgeMode() {
+		// Hybrid mode (AUTH_TOKENS + BRIDGE_ENABLED) passes through too:
+		// the per-request decision — pooled vs bridge — happens in
+		// chatCore, where a credential matching API_KEYS uses the pool and
+		// any other credential is relayed as a bridge token.
+		if len(cfg.APIKeys) == 0 || cfg.BridgeMode() || cfg.HybridBridgeMode() {
 			next(w, r)
 			return
 		}

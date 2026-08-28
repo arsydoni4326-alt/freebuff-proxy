@@ -240,7 +240,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 	}
 	if cfg.IdleRotationTimeout > 0 && p.idleFor() > cfg.IdleRotationTimeout {
 		// Subsequent idle passes (already FINISHed): still sweep idle
-		// bridge entries — without this, entries idle past bridgeIdleEvict
+		// bridge entries — without this, entries idle past the idle-eviction TTL
 		// are never evicted while the pool stays idle and their sessions
 		// stay admitted upstream until expiry.
 		p.bridgeMaintain(ctx, true)
@@ -283,7 +283,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		cancel()
 	}
 	p.sweepIdleSessions(ctx, cfg, toks)
-	// Bridge sweep: drop entries idle past bridgeIdleEvict (runs FINISHed
+	// Bridge sweep: drop entries idle past the idle-eviction TTL (runs FINISHed
 	// best-effort), maintain the rest like the fixed tokens above.
 	p.bridgeMaintain(ctx, false)
 }

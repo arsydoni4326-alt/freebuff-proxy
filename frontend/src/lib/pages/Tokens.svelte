@@ -15,6 +15,7 @@
   import CopyButton from '../components/CopyButton.svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import TokenCard from '../components/TokenCard.svelte';
+  import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
   import { fetchAPI, postAPI } from '../api/client.js';
   import { usePolling } from '../utils/polling.js';
   import { generateRandomApiKey } from '../utils/format.js';
@@ -431,5 +432,18 @@
         </table>
       {/if}
     </Card>
+    {#if data?.show_bridge && data?.bridge_token_cards?.length > 0}
+      <Card
+        title={$tr('Bridge Clients')}
+        description={$tr('{count} active bridge client(s) relaying their own FreeBuff tokens', { count: data.bridge_token_cards.length })}
+        pad="none"
+      >
+        <div class="flex flex-col gap-3 p-4">
+          {#each data.bridge_token_cards as bc}
+            <BridgeTokenCard card={bc} {now} />
+          {/each}
+        </div>
+      </Card>
+    {/if}
   </div>
 </div>

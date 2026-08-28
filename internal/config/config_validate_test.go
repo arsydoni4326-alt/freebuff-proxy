@@ -48,8 +48,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.CORSAllowedOrigin != "*" {
 		t.Errorf("CORSAllowedOrigin = %q, want %q (default)", cfg.CORSAllowedOrigin, "*")
 	}
-	if got := cfg.EffectiveMode(); got != "pooled" {
-		t.Errorf("EffectiveMode = %q, want pooled", got)
+	if got := cfg.EffectiveMode(); got != "hybrid" {
+		t.Errorf("EffectiveMode = %q, want hybrid (default when AUTH_TOKENS set)", got)
 	}
 	if cfg.LogFile != "" {
 		t.Errorf("LogFile = %q, want empty", cfg.LogFile)

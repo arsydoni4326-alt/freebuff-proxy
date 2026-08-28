@@ -131,7 +131,20 @@ const zh = {
 	'Token #{idx} added to pool and saved to .env.': '令牌 #{idx} 已加入池并保存到 .env。',
 	'Login failed: {message}': '登录失败：{message}',
 	'unknown error': '未知错误',
-	'Failed to start login wizard.': '启动登录向导失败。',
+	// Bridge clients (hybrid mode)
+	'Bridge Clients': '桥接客户端',
+	'{count} active bridge client(s) relaying their own FreeBuff tokens':
+		'{count} 个活跃桥接客户端（中继各自的 FreeBuff 令牌）',
+	'Bridge relay': '桥接中继',
+	'Requests': '请求数',
+	'Active runs': '活跃运行',
+	'Session active': '会话活跃',
+	'yes': '是',
+	'no': '否',
+	'Cooldown until': '冷却至',
+	'Spend today': '今日花费',
+	'Locked': '已锁定',
+	'GLM 5.3 Flash': 'GLM 5.3 Flash',
 
 	// Login
 	'Admin token': '管理员令牌',
@@ -236,6 +249,8 @@ const zh = {
 	'How clients authenticate to this gateway': '客户端如何认证到本网关',
 	'Bridge mode — no token pool. Each client sends its own FreeBuff token; the proxy relays the Authorization header straight upstream.':
 		'桥接模式 — 无令牌池。每个客户端使用自己的 FreeBuff 令牌，代理将 Authorization 头直接转发给上游。',
+	'Hybrid mode — pooled tokens plus per-client FreeBuff tokens; a credential matching an API key uses the pool, any other is relayed as a bridge token.':
+		'混合模式 — 池化令牌加按客户端的 FreeBuff 令牌；与 API 密钥匹配的凭据使用令牌池，其余作为桥接令牌中继。',
 	'Pooled mode — the proxy holds the upstream AUTH_TOKENS and selects one per request; clients authenticate with any key.':
 		'池化模式 — 代理持有上游 AUTH_TOKENS 并按请求选取；客户端使用任意密钥认证。',
 	'Client API Key': '客户端 API 密钥',
