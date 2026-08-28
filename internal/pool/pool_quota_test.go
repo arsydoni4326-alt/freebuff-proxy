@@ -471,17 +471,24 @@ func TestAcquireChatConcurrentTokenMutation(t *testing.T) {
 	// order — exactly the path that indexed past the stale snapshot in the
 	// original double-load bug (a success early in the order would return
 	// before the out-of-range index was reached). The sequence is long
-	// enough to cover the whole hammer so the failure mix never exhausts —
-	// 16k entries even under -race, where the driver churn and the walk
-	// consume ~4 session creates per attempt and an exhausted sequence
-	// starves every worker (all-404 -> both tokens cooldown -> 0 chats).
-	seq := make([]string, 16000)
+	// enough to cover the whole hammer so the failure mix never exhausts.
+	seq := make([]string, 8000)
 	for i := range seq {
 		if i%3 == 2 {
 			seq[i] = "active"
 		} else {
 			seq[i] = "404"
 		}
+	}
+	// The last 512 entries are all "active": a guaranteed success window at
+	// the end of the walk, so a race-load timing where both tokens sit in
+	// their 404 cooldowns still ends in chats (success clears cooldowns and
+	// the workers keep scoring). Deliberately NOT relying on sequence
+	// exhaustion — nextMode falls back to SessionMode="active" there, but
+	// pushing the 404 region out (16k) removes that rescue and can starve
+	// the hammer again.
+	for i := len(seq) - 512; i < len(seq); i++ {
+		seq[i] = "active"
 	}
 	mock.SessionSequence = seq
 	// Two fixed tokens to start; the driver churns the list from there.
