@@ -471,8 +471,11 @@ func TestAcquireChatConcurrentTokenMutation(t *testing.T) {
 	// order — exactly the path that indexed past the stale snapshot in the
 	// original double-load bug (a success early in the order would return
 	// before the out-of-range index was reached). The sequence is long
-	// enough to cover the whole hammer so the failure mix never exhausts.
-	seq := make([]string, 8000)
+	// enough to cover the whole hammer so the failure mix never exhausts —
+	// 16k entries even under -race, where the driver churn and the walk
+	// consume ~4 session creates per attempt and an exhausted sequence
+	// starves every worker (all-404 -> both tokens cooldown -> 0 chats).
+	seq := make([]string, 16000)
 	for i := range seq {
 		if i%3 == 2 {
 			seq[i] = "active"
