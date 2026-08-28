@@ -15,7 +15,7 @@
   import { X } from '@lucide/svelte';
   import { fetchAPI } from './lib/api/client.js';
   import { sessionExpired, dismissSessionExpired } from './lib/stores/session.js';
-  import { tr, locale } from './lib/i18n.js';
+  import { tr } from './lib/i18n.js';
   function getInitialTab() {
     if (typeof window === 'undefined') return 'overview';
     const path = window.location.pathname;

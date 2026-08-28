@@ -9,7 +9,7 @@
    * @prop {{ current_version: string, has_update: boolean, latest_version: string, update_url: string }} [versionInfo]
    */
   let { activeTab = $bindable(), versionInfo } = $props();
-  import { tr, locale, setLocale } from './i18n.js';
+  import { tr } from './i18n.js';
   import { onMount } from 'svelte';
   import { fetchAPI } from './api/client.js';
 
@@ -203,7 +203,6 @@
       {/each}
     </ul>
 
-    <!-- Language toggle small at very bottom — EN | 中文 segmented -->
     <div class="mt-auto border-t border-[var(--fp-border)] px-2 pt-3 pb-1">
       {#if versionInfo?.has_update}
         <a
@@ -222,28 +221,6 @@
         <span class="led led-idle" aria-hidden="true"></span>
         <span>freebuff-proxy</span>
         <span class="fp-num ml-auto normal-case tracking-normal text-[var(--fp-muted)]">{versionInfo?.current_version ?? 'dev'}</span>
-      </div>
-    </div>
-    <div class="px-2 pt-2 pb-2">
-      <div class="flex items-center gap-1 rounded-sm border border-[var(--fp-border)] p-0.5 bg-[var(--fp-surface)]">
-        <button
-          type="button"
-          onclick={() => setLocale('en')}
-          aria-label={$tr('Switch to English')}
-          aria-pressed={$locale === 'en'}
-          class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 { $locale === 'en' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]' }"
-        >
-          EN
-        </button>
-        <button
-          type="button"
-          onclick={() => setLocale('zh')}
-          aria-label={$tr('Switch to Chinese')}
-          aria-pressed={$locale === 'zh'}
-          class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 { $locale === 'zh' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]' }"
-        >
-          中文
-        </button>
       </div>
     </div>
   </nav>
@@ -333,28 +310,6 @@
         {/each}
       </ul>
 
-      <div class="px-2 pt-2 pb-2">
-        <div class="flex items-center gap-1 rounded-sm border border-[var(--fp-border)] p-0.5 bg-[var(--fp-surface)]">
-          <button
-            type="button"
-            onclick={() => setLocale('en')}
-            aria-label={$tr('Switch to English')}
-            aria-pressed={$locale === 'en'}
-            class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 {$locale === 'en' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]'}"
-          >
-            EN
-          </button>
-          <button
-            type="button"
-            onclick={() => setLocale('zh')}
-            aria-label={$tr('Switch to Chinese')}
-            aria-pressed={$locale === 'zh'}
-            class="flex-1 inline-flex items-center justify-center gap-1 px-1.5 py-1 rounded-sm text-[10px] font-mono uppercase tracking-[0.12em] transition-colors min-h-6 {$locale === 'zh' ? 'bg-[var(--fp-bg)] text-[var(--fp-text)] shadow-sm' : 'text-[var(--fp-dim)] hover:text-[var(--fp-text)]'}"
-          >
-            中文
-          </button>
-        </div>
-      </div>
 
       <div class="mt-auto border-t border-[var(--fp-border)] px-2 pt-3 pb-1">
         {#if versionInfo?.has_update}
