@@ -56,6 +56,7 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.TLSFingerprint, "TLS_FINGERPRINT")
 	overrideString(&raw.RegistryRefresh, "REGISTRY_REFRESH")
 	overrideBool(&raw.DebugDump, "DEBUG_DUMP")
+	overrideBool(&raw.DevToolsEnabled, "DEVTOOLS_ENABLED")
 	overrideString(&raw.LogFile, "LOG_FILE")
 	overrideString(&raw.LogLevel, "LOG_LEVEL")
 	overrideString(&raw.LogFormat, "LOG_FORMAT")
@@ -375,6 +376,7 @@ func Load(configPath string) (Config, error) {
 		TLSFingerprint:                   strings.TrimSpace(raw.TLSFingerprint),
 		RegistryRefresh:                  registryRefresh,
 		DebugDump:                        raw.DebugDump,
+		DevToolsEnabled:                  raw.DevToolsEnabled,
 		LogFile:                          strings.TrimSpace(raw.LogFile),
 		LogLevel:                         strings.TrimSpace(raw.LogLevel),
 		LogFormat:                        logFormat,
@@ -574,6 +576,7 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.TLSFingerprint, get, "TLS_FINGERPRINT")
 	overrideStringFrom(&raw.RegistryRefresh, get, "REGISTRY_REFRESH")
 	overrideBoolFrom(&raw.DebugDump, get, "DEBUG_DUMP")
+	overrideBoolFrom(&raw.DevToolsEnabled, get, "DEVTOOLS_ENABLED")
 	overrideStringFrom(&raw.LogFile, get, "LOG_FILE")
 	overrideStringFrom(&raw.LogLevel, get, "LOG_LEVEL")
 	overrideStringFrom(&raw.LogFormat, get, "LOG_FORMAT")

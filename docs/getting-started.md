@@ -65,7 +65,6 @@ FreeBuff assigns an access tier at the Cloudflare edge based on your TCP source 
 | **Premium** | **GLM 5.3 Flash** | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. `2/day` fixed `glm_v53_flash` pool. |
 | **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** (left the premium pool 2026-08-24). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers** (sole active model on limited tier). |
-| **Limited offer** | **Claude Fable 5** | `anthropic/claude-fable-5` | **Anthropic's most intelligent model**, Reasoning: through `max`. Metered by its own global pool. |
 | **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1/day promo pool), 1-hour sessions. |
 | **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
 | **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |

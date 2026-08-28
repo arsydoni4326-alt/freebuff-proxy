@@ -72,8 +72,12 @@ var Catalog = []ModelInfo{
 		Efforts: []string{"low", "high", "max"}},
 	{ID: "mimo/mimo-v2.5", DisplayName: "MiMo 2.5",
 		Served: true, Efforts: []string{"high"}},
+	// anthropic/claude-fable-5 stays in the catalog (upstream SUPPORTED list,
+	// parity test) but is NOT served: it is a paid-API model metered by its
+	// own global offer pool that free accounts cannot reach, so advertising
+	// it would surface admissions that always fail.
 	{ID: "anthropic/claude-fable-5", DisplayName: "Claude Fable 5",
-		Served: true, Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+		Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
 }
 
 // DefaultModelID mirrors upstream DEFAULT_FREEBUFF_MODEL_ID, pinned to
@@ -82,7 +86,10 @@ var Catalog = []ModelInfo{
 const DefaultModelID = "openai/gpt-5.6-luna"
 
 // FallbackModelID mirrors upstream FALLBACK_FREEBUFF_MODEL_ID: the model
-// guaranteed available on every tier that unavailable picks are coerced to.
+// guaranteed available on EVERY tier that unavailable picks are coerced to.
+// mimo is region-universal — premium-pool models (luna, glm-5.3-flash) only
+// resolve on full-tier accounts, so any proxy-side "no model" default must
+// be mimo, never the premium picker lead.
 const FallbackModelID = "mimo/mimo-v2.5"
 
 // Glm52ModelID is the referral-reward model, metered by its own promo pool

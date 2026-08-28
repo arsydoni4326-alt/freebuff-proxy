@@ -10,10 +10,15 @@
    */
   let { activeTab = $bindable(), versionInfo } = $props();
   import { tr, locale, setLocale } from './i18n.js';
+  import { onMount } from 'svelte';
+  import { fetchAPI } from './api/client.js';
 
   let mobileOpen = $state(false);
   let drawerEl = $state(null);
   let hamburgerEl = $state(null);
+  // Dev Tools is a manual testing surface (batch chat, session spawn); it is
+  // hidden unless the operator explicitly enables DEVTOOLS_ENABLED=true.
+  let devToolsEnabled = $state(false);
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -21,8 +26,20 @@
     { id: 'models',   label: 'Models',   icon: Cpu },
     { id: 'config',   label: 'Config',   icon: Settings },
     { id: 'logs',     label: 'Logs',     icon: FileText },
-    { id: 'devtools', label: 'Dev Tools', icon: FlaskConical },
+    ...(devToolsEnabled ? [{ id: 'devtools', label: 'Dev Tools', icon: FlaskConical }] : []),
   ];
+  onMount(async () => {
+    try {
+      const cfgRes = await fetchAPI('/admin/api/config');
+      const envContent = cfgRes?.env_content || '';
+      const m = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
+      const val = m ? m[1].trim().toLowerCase() : '';
+      devToolsEnabled = val === 'true' || val === '1';
+    } catch {
+      devToolsEnabled = false;
+    }
+  });
+
   function switchTab(id) {
     activeTab = id;
     window.location.hash = id;

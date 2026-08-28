@@ -85,7 +85,7 @@ func (s *Server) handleTokenSpawnSession(w http.ResponseWriter, r *http.Request)
 	}
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
-		model = modelcat.DefaultModelID
+		model = modelcat.FallbackModelID
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
