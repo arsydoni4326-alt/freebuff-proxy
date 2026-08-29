@@ -144,7 +144,7 @@ func (p *Pool) endIdleSessions(ctx context.Context, cfg *config.Config, toks *[]
 	for i, tok := range *toks {
 		// Upstream calls during a cooldown read as abuse (maintain-pass
 		// policy); skip silently and keep the session.
-		if time.Now().Before(tok.runs.CooldownUntil()) {
+		if time.Now().Before(tok.runs.CooldownUntil()) || tok.runs.BanError() != nil {
 			continue
 		}
 		// Re-checked immediately before the DELETE: an Acquire can land
@@ -252,7 +252,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		// FINISH, queued-session advance). Upstream calls during a cooldown
 		// look like abuse; the skip is silent — the cooldown itself is
 		// already surfaced elsewhere (Acquire logs the skip).
-		if time.Now().Before(tok.runs.CooldownUntil()) {
+		if time.Now().Before(tok.runs.CooldownUntil()) || tok.runs.BanError() != nil {
 			continue
 		}
 		mCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
@@ -308,7 +308,7 @@ func (p *Pool) sessionPollTick(ctx context.Context) {
 	}
 	toks := p.toks.Load()
 	for i, tok := range *toks {
-		if time.Now().Before(tok.runs.CooldownUntil()) {
+		if time.Now().Before(tok.runs.CooldownUntil()) || tok.runs.BanError() != nil {
 			// Cooldown: no session poll (same rule as maintainTick).
 			continue
 		}

@@ -19,6 +19,7 @@ var proxyHeaders = []string{
 	"CF-IPCountry",
 	"CF-Ray",
 	"CF-Visitor",
+	"CF-Worker",
 	"True-Client-IP",
 	"X-Originating-IP",
 	"X-Remote-IP",

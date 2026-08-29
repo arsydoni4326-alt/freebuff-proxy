@@ -955,8 +955,11 @@ func TestDailyCapExactRetryAfter(t *testing.T) {
 
 // TestCooldownAfterBanClearsBanMemory is the pool-level pin for the P2
 // Cooldown bug (see runs.TestCooldownClearsBanAndCountryWindows): after a
-// dashboard Cooldown, an acquire must surface the plain cooldown error, not
-// a stale ban.
+// dashboard Cooldown, the run manager forgets its remembered ban window —
+// but the pool's terminal quarantine is a SEPARATE, permanent entry-level
+// marker that a plain Cooldown must NOT clear (only UnlockToken or an
+// AUTH_TOKENS membership change restores a quarantined token). A
+// ban-quarantined token therefore keeps surfacing ErrBanned.
 func TestCooldownAfterBanClearsBanMemory(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -969,14 +972,16 @@ func TestCooldownAfterBanClearsBanMemory(t *testing.T) {
 		t.Fatalf("want ErrBanned from live ban, got %v", err)
 	}
 
-	// Dashboard-style cooldown clears the remembered ban.
+	// A dashboard Cooldown does NOT revive a ban-quarantined token: the
+	// terminal ban persists (the pool never re-admits a dead account), so
+	// the acquire keeps surfacing ErrBanned.
 	p.CooldownToken(0, time.Hour)
 	_, err = p.Acquire(context.Background(), modelA)
-	if errors.Is(err, upstream.ErrBanned) {
-		t.Fatal("stale ban surfaced after Cooldown")
+	if !errors.Is(err, upstream.ErrBanned) {
+		t.Fatalf("quarantined token after Cooldown: want ErrBanned, got %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "cooling down") {
-		t.Errorf("error = %v, want plain cooldown error", err)
+	if !p.Snapshot()[0].Quarantined {
+		t.Error("quarantine cleared by CooldownToken, want persistent")
 	}
 }
 

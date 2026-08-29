@@ -193,6 +193,13 @@ type TokenSnapshot struct {
 	// Locked is set when the token has been administratively locked by the
 	// operator; Acquire never selects a locked token.
 	Locked bool `json:"locked"`
+	// Quarantined is set when the token's account hit a terminal state
+	// (banned / country_blocked / 401 invalid) and the pool has permanently
+	// stopped leasing it (anti-ban contract). QuarantineReason names the
+	// state ("banned", "country_blocked", "invalid"). Both are surfaced so
+	// the operator sees exactly which fixed token is dead and why.
+	Quarantined      bool   `json:"quarantined,omitempty"`
+	QuarantineReason string `json:"quarantine_reason,omitempty"`
 	// PremiumQuota is the 5/day premium-pool quota (pacific_day) derived from
 	// the live QuotaByModel entry for the premium models. Nil when no premium
 	// quota has been reported.
@@ -364,6 +371,11 @@ type tokenEntry struct {
 	session *session.Manager
 	runs    *runs.RunManager
 	client  *upstream.Client
+	// token is the raw AUTH_TOKENS string this entry was built from. It
+	// anchors the quarantine reset: a config reload that replaces the
+	// account at this slot makes the old entry's terminal state stale, so
+	// quarantine is cleared (see Pool.SetConfig).
+	token string
 
 	// Session-liveness poll schedule (gap #2): nextPollAt is when the next
 	// compact poll is due (zero = due on the next sessionPollTick pass);
@@ -383,6 +395,28 @@ type tokenEntry struct {
 	// locked is set by LockToken/UnlockLockToken to administratively
 	// exclude a token from Acquire without clearing its cooldown state.
 	locked atomic.Bool
+
+	// quarantine, when non-nil, marks this fixed pooled token permanently
+	// ineligible for leasing: its account reached a terminal state (banned,
+	// country_blocked, or 401 invalid) that the pool must never revive —
+	// no re-admission attempts, no automatic unban. Stored on the entry (not
+	// an index-keyed slice) so a concurrent RemoveLastToken index-reuse can
+	// never quarantine the wrong account. Set exactly once per terminal
+	// refusal (CompareAndSwap) and cleared only when the operator changes
+	// AUTH_TOKENS membership at this slot (SetConfig) or explicitly unlocks
+	// the token (UnlockToken).
+	quarantine atomic.Pointer[quarantineState]
+}
+
+// quarantineState is the terminal account state that permanently removes one
+// fixed pooled token from rotation (anti-ban contract). reason is one of
+// "banned", "country_blocked", or "invalid"; err carries the typed upstream
+// error for failover-bucket aggregation (nil for a 401, which has no bucket);
+// detail is the human-readable error string for logging/dashboards.
+type quarantineState struct {
+	reason string
+	err    error
+	detail string
 }
 
 // New builds the pool over the configured tokens. len(clients) and
@@ -424,6 +458,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 			session: sess,
 			runs:    runs.NewRunManagerOpts(clients[i], sess, runOptions(cfg)),
 			client:  clients[i],
+			token:   cfg.AuthTokens[i],
 		})
 	}
 	p.toks.Store(&toks)
@@ -468,6 +503,29 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 		entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Unlock()
+	// Quarantine reset on AUTH_TOKENS membership/order change: a
+	// quarantine is bound to the exact account string an entry was built
+	// from. When a config reload replaces the account at a slot (the
+	// operator edited AUTH_TOKENS, reordered it, or swapped in a fresh
+	// token), the old entry's terminal state no longer describes the
+	// account now configured there, so clear it — an explicit operator
+	// action, never an automatic revival (the pool still refuses to re-admit
+	// a dead account until the operator makes this change or unlocks it).
+	for i, tok := range *toks {
+		if i >= len(cfg.AuthTokens) {
+			// Member removed from config; the caller's membership path
+			// (RemoveLastToken/RemoveAllTokens) drops the entry, so there is
+			// nothing to reset here.
+			break
+		}
+		if tok.token != "" && tok.token != cfg.AuthTokens[i] {
+			if prev := tok.quarantine.Swap(nil); prev != nil {
+				p.logger.Info("pool: token quarantine reset (AUTH_TOKENS membership/order changed)",
+					"token", i+1, "from_token", tok.token, "to_token", cfg.AuthTokens[i],
+					"state", prev.reason)
+			}
+		}
+	}
 
 	// Session persistence is decided at startup: the store is built from the
 	// boot config and injected once via SetSessionStore, so a reload cannot
@@ -505,6 +563,7 @@ func (p *Pool) AddToken(token string) (int, error) {
 		session: sess,
 		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
 		client:  client,
+		token:   token,
 	}
 	next := make([]*tokenEntry, 0, len(*toks)+1)
 	next = append(next, *toks...)

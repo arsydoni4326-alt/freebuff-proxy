@@ -181,7 +181,43 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		}
 		name := fmt.Sprintf("token-%d", idx+1)
 
-		if until := tok.runs.CooldownUntil(); time.Now().Before(until) {
+		// Quarantined tokens (terminal account state: banned,
+		// country_blocked, 401 invalid) are permanently skipped — the pool
+		// never revives a dead account, so they are never re-admitted. Their
+		// remembered terminal error still feeds the failover buckets so a
+		// fully-quarantined pool surfaces the right 403/401 instead of a
+		// generic 502.
+		if q := tok.quarantine.Load(); q != nil {
+			errs = append(errs, fmt.Sprintf("%s: quarantined (%s: %s)", name, q.reason, q.detail))
+			p.logger.Debug("pool: token skipped (quarantined)", "token", idx+1, "state", q.reason, "reason", q.detail)
+			switch terr := q.err.(type) {
+			case *upstream.BanError:
+				dup := false
+				for _, existing := range banned {
+					if existing.Error() == terr.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					banned = append(banned, terr)
+				}
+			case *upstream.CountryBlockedError:
+				dup := false
+				for _, existing := range countryBlocked {
+					if existing.Error() == terr.Error() {
+						dup = true
+						break
+					}
+				}
+				if !dup {
+					countryBlocked = append(countryBlocked, terr)
+				}
+			}
+			continue
+		}
+
+		if until := tok.runs.CooldownUntil(); time.Now().Before(until) || tok.runs.BanError() != nil {
 			// Issue #155: if the cooldown was caused by a specific model's quota exhaustion,
 			// and we are requesting a different model (e.g. fallback to mimo-v2.5),
 			// do not block this token from serving the requested model.
@@ -323,6 +359,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
+				p.quarantineToken(idx, "invalid", err)
 			}
 			var wr *session.WaitingRoomError
 			if errors.As(err, &wr) {
@@ -373,6 +410,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if be := asBan(err); be != nil {
 				tok.runs.CooldownBan(be)
 				p.notifyBan(idx+1, model)
+				p.quarantineToken(idx, "banned", err)
 				dup := false
 				for _, existing := range banned {
 					if existing.Error() == be.Error() {
@@ -386,6 +424,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			}
 			if cbe := asCountryBlocked(err); cbe != nil {
 				tok.runs.CooldownCountryBlocked(cbe)
+				p.quarantineToken(idx, "country_blocked", err)
 				dup := false
 				for _, existing := range countryBlocked {
 					if existing.Error() == cbe.Error() {
@@ -453,6 +492,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
+				p.quarantineToken(idx, "invalid", err)
 			}
 			if rle := asRateLimit(err); rle != nil {
 				// Issue #178: tag the refusal with the requested model when
@@ -497,6 +537,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if be := asBan(err); be != nil {
 				tok.runs.CooldownBan(be)
 				p.notifyBan(idx+1, model)
+				p.quarantineToken(idx, "banned", err)
 				dup := false
 				for _, existing := range banned {
 					if existing.Error() == be.Error() {
@@ -510,6 +551,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			}
 			if cbe := asCountryBlocked(err); cbe != nil {
 				tok.runs.CooldownCountryBlocked(cbe)
+				p.quarantineToken(idx, "country_blocked", err)
 				dup := false
 				for _, existing := range countryBlocked {
 					if existing.Error() == cbe.Error() {

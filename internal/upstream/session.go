@@ -45,8 +45,9 @@ func getMockState(token string) *mockTokenState {
 }
 
 // mockQuotaLimit mirrors the real tier caps for the served models (derived
-// from modelcat: shared premium pool 4/day (luna, solar-pro4, glm-5.3-flash),
-// glm-5.2 promo 1/day, everything else unmetered). Paused models
+// from modelcat: shared premium pool 4/day (luna, solar-pro4; glm-5.3-flash
+// left it 2026-08-28 and is unmetered), glm-5.2 promo 1/day, everything else
+// unmetered). Paused models
 // are never admitted so their cap is irrelevant — return 9999.
 func mockQuotaLimit(model string) float64 {
 	if model == "" {
@@ -363,6 +364,16 @@ func (c *Client) StartRun(ctx context.Context, agentID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Dual-auth parity (current vendor wire): the agent-runtime client sends
+	// BOTH Authorization and x-codebuff-api-key (the same raw token) on its
+	// agent-runs/run POSTs (reference/freebuff packages/agent-runtime/src/
+	// llm-api/codebuff-web-api.ts:70-71,301-302); the shipped CLI confirms
+	// it. Applied AFTER newRequest's scrub, so any relayed/downstream
+	// x-codebuff-api-key copy is overwritten by the authenticated token
+	// (Set, not Add — a foreign value is never forwarded upstream).
+	if !c.authOnly {
+		req.Header.Set("x-codebuff-api-key", c.token)
+	}
 	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
 		return "", err
@@ -443,6 +454,16 @@ func (c *Client) FinishRun(ctx context.Context, runID, status string, totalSteps
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/agent-runs", body)
 	if err != nil {
 		return err
+	}
+	// Dual-auth parity (current vendor wire): agent-runs POSTs carry BOTH
+	// Authorization and x-codebuff-api-key (the same raw token), mirroring
+	// the agent-runtime's agent-runs/run POSTs (reference/freebuff
+	// packages/agent-runtime/src/llm-api/codebuff-web-api.ts:70-71,301-302)
+	// and the shipped CLI. Set after newRequest's scrub overwrites any
+	// relayed/downstream x-codebuff-api-key copy with the authenticated
+	// token (foreign values are never forwarded).
+	if !c.authOnly {
+		req.Header.Set("x-codebuff-api-key", c.token)
 	}
 
 	resp, cancel, err := c.do(req, c.sessionCallTimeout)

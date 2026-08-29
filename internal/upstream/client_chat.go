@@ -73,8 +73,13 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 	// ChatCompletions overrides with cliUserAgent. No browser headers on
 	// any API path (#108/#109 fix option (a)): the utls ClientHello
 	// impersonation stays, the browser header persona does not.
-	// x-codebuff-api-key is never sent — Bearer is the only credential
-	// (#107, reference/freebuff codebuff-api.ts:337-345).
+	// Agent-runs POSTs now carry BOTH Authorization and x-codebuff-api-key
+	// (the same raw token), set by StartRun/FinishRun after newRequest
+	// (current vendor wire: packages/agent-runtime/src/llm-api/
+	// codebuff-web-api.ts:70-71,301-302; shipped CLI confirms dual auth).
+	// newRequest itself never sets x-codebuff-api-key: the chat surface
+	// stays Bearer-only (the pinned ai-sdk openai-compatible client's
+	// Authorization is caller-supplied and never sets x-codebuff-api-key).
 	req.Header.Set("User-Agent", bunUserAgent)
 	ctx = req.Context()
 	if profile := c.currentStealthProfile(); profile != nil {

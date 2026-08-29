@@ -101,6 +101,12 @@ type RunManager struct {
 	// remembered ban error until the unban time.
 	banUntil time.Time
 	ban      *upstream.BanError
+	// banPermanent marks a hard ban (no resumes_at): the account never
+	// self-heals upstream (past_enforcement sticks permanently), so the
+	// remembered ban stays live until the operator unlocks the token —
+	// never auto-lifted (mirrors upstream freebuff-trust.ts cap semantics;
+	// the old 24h safety window re-contacted a dead account daily).
+	banPermanent bool
 	// countryBlock is the last country-block error applied to this token's
 	// cooldown. It is surfaced by CountryBlockedError() so a region-blocked
 	// token keeps returning the block error instead of re-hitting upstream
