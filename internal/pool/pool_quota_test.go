@@ -480,6 +480,16 @@ func TestAcquireChatConcurrentTokenMutation(t *testing.T) {
 			seq[i] = "404"
 		}
 	}
+	// The last 512 entries are all "active": a guaranteed success window at
+	// the end of the walk, so a race-load timing where both tokens sit in
+	// their 404 cooldowns still ends in chats (success clears cooldowns and
+	// the workers keep scoring). Deliberately NOT relying on sequence
+	// exhaustion — nextMode falls back to SessionMode="active" there, but
+	// pushing the 404 region out (16k) removes that rescue and can starve
+	// the hammer again.
+	for i := len(seq) - 512; i < len(seq); i++ {
+		seq[i] = "active"
+	}
 	mock.SessionSequence = seq
 	// Two fixed tokens to start; the driver churns the list from there.
 	p := newTestPoolCfg(t, func(c *config.Config) {

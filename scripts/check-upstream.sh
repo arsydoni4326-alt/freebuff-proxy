@@ -35,6 +35,12 @@ fi
 REF="${1:-main}"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
 BASELINE_FILE="$REPO_ROOT/scripts/wire-baseline.tsv"
+# Vendor npm wrapper version (freebuff CLI package). The published npm version
+# moves in lockstep-ish with the public snapshot; a mismatch against the
+# recorded pin (scripts/vendor-version.txt) means upstream shipped a new
+# wrapper the sync hasn't recorded yet. Informational — best-effort: npm not
+# on PATH is fine, and a mismatch never fails the check (the sync records it).
+VENDOR_VERSION_FILE="$REPO_ROOT/scripts/vendor-version.txt"
 if [[ -n "${2:-}" ]]; then
 	CLONE_DIR="$2"
 elif [[ -n "${FREEBUFF_REFERENCE_DIR:-}" ]]; then
@@ -68,6 +74,9 @@ WIRE_FILES=(
 	common/src/constants/foreign-client-signals.ts
 	common/src/constants/freebuff-spend-ceilings.ts
 	common/src/constants/freebuff-signup-block.ts
+	common/src/constants/freebuff-peak-hours.ts
+	common/src/util/freebuff-model-availability.ts
+	cli/src/components/freebuff-model-selector.tsx
 	common/src/types/freebuff-session.ts
 	packages/agent-runtime/src/constants.ts
 	packages/agent-runtime/src/prompt-agent-stream.ts
@@ -192,6 +201,26 @@ for f in "${WIRE_FILES[@]}"; do
 	check_file "wire" "$f" ""
 done
 
+# Vendor npm wrapper version (informational; never fails the check).
+NPM_VERSION=""
+if command -v npm >/dev/null 2>&1; then
+	NPM_VERSION="$(npm view freebuff version 2>/dev/null || true)"
+fi
+PINNED_VERSION=""
+if [[ -f "$VENDOR_VERSION_FILE" ]]; then
+	PINNED_VERSION="$(tr -d '\r\n' <"$VENDOR_VERSION_FILE")"
+fi
+if [[ -n "$NPM_VERSION" ]]; then
+	if [[ -n "$PINNED_VERSION" && "$NPM_VERSION" != "$PINNED_VERSION" ]]; then
+		printf '%-12s %-64s %-14s %-14s %s\n' "npm" "freebuff" "${PINNED_VERSION:-none}" "$NPM_VERSION" "VERSION"
+		echo "check-upstream: npm freebuff@$NPM_VERSION != pinned ${PINNED_VERSION:-none} (scripts/vendor-version.txt) — record the bump on next sync"
+	else
+		printf '%-12s %-64s %-14s %-14s %s\n' "npm" "freebuff" "${PINNED_VERSION:-none}" "$NPM_VERSION" "SAME"
+	fi
+else
+	echo "check-upstream: npm not on PATH — skipping vendor npm version check"
+fi
+
 # Emit machine-readable summary for the drift workflow. Path is honored
 # by callers (CI sets DRIFT_REPORT; the dashboard loader reads the file from
 # the runtime data dir).
@@ -201,6 +230,8 @@ DRIFT_REPORT="${DRIFT_REPORT:-$REPO_ROOT/.drift-report.json}"
 	printf '  "upstream": "%s",\n' "$VENDOR_URL"
 	printf '  "upstream_sha": "%s",\n' "$UPSTREAM_SHA"
 	printf '  "checked_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	printf '  "vendor_version": "%s",\n' "$NPM_VERSION"
+	printf '  "vendor_version_pinned": "%s",\n' "$PINNED_VERSION"
 	printf '  "files": [\n'
 	i=0
 	for entry in "${JSON_ENTRIES[@]}"; do
@@ -231,6 +262,10 @@ if ((drift)); then
 	echo "TestFallbackParityWithPinnedUpstream passes."
 	echo "Wire files: read the new file, apply the wire-shape change to the Go side"
 	echo "(e.g. injectEnvelope, classifyError, parseSessionResponse), and add a test."
+	echo
+	echo "Recent upstream commits (last 30 on origin/${REF}) — what changed in the batch:"
+	git -C "$CLONE_DIR" log --oneline -30 "origin/${REF}" 2>/dev/null || true
+	echo
 	exit 1
 fi
 echo "check-upstream: OK — all pins match $VENDOR_URL @ ${UPSTREAM_SHA:0:12}."

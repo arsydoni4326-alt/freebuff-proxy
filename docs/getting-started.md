@@ -50,22 +50,26 @@ Using this proxy conflicts with Codebuff's terms of service. Upstream abuse dete
 
 FreeBuff assigns an access tier at the Cloudflare edge based on your TCP source IP's GeoIP location:
 
-- **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, AU, etc.) with a residential/ISP ASN. Access to all premium models including `deepseek/deepseek-v4-flash`. **5 premium sessions/day base** (resets every 24h / Pacific midnight; streaks and trust ladders can raise this further).
+- **Full tier** (`accessTier: "full"`): Tier-1 countries (US, UK, DE, JP, CA, AU, etc.) with a residential/ISP ASN. Access to all premium models including `openai/gpt-5.6-luna`. **5 premium sessions/day base** (resets every 24h / Pacific midnight; streaks and trust ladders can raise this further).
 - **Limited tier** (`accessTier: "limited"`): Non-Tier-1 countries (e.g. `countryCode: ID` → `countryBlockReason: "country_not_allowed"`). All model requests coerced to `mimo/mimo-v2.5` (`MiMo 2.5`). **3 limited sessions/day** (level ladder up to **7**).
 
 ### Current Upstream Model Status & Quotas
 
-> **📢 Official Freebuff Upstream Notice**:
-> *"DeepSeek costs have spiked, so limits are tighter for now: V4 Pro and GPT-5.6 Luna are 1 session a day, V4 Pro pauses at peak times, and MiniMax M3 is unavailable. MiMo 2.5 stays unlimited. —Freebuff Team"*
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `87ef664` · npm `0.0.158`):
+> *"Solar Pro 4 joins as a limited-time premium trial row sharing the normal premium pool; DeepSeek V4 Flash is back to always-available (peak pricing still applies). Every model runs on your normal daily sessions — no per-model caps, and MiMo stays unmetered. —Freebuff Team"*
+> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` shares the premium pool — no per-model cap.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
-| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. Uses standard 5 sessions/day premium pool. |
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **Strictly capped at 1 session/day**. |
-| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. **Strictly capped at 1 session/day; pauses at peak times**. |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool. |
+| **Premium** | **Solar Pro 4** `NEW` | `upstage/solar-pro4` | **Limited-time trial**, experimental, OpenRouter BYOK (Upstage), text-only, context `500_000`. Shares `5/day` premium pool. |
+| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. Shares `5/day` premium pool. |
+| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; off-peak-only serving window removed 2026-08-28). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers** (sole active model on limited tier). |
-| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session per friend referred; streak bonuses). |
-| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost constraints. |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1/day promo pool), 1-hour sessions. |
+| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
+| **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |
+| **Disabled** | **Ox Alpha** | `stealth/ox-alpha` | **Withdrawn** upstream (2026-08-27, free promotion ended). |
 ### Workarounds for limited-tier IPs
 
 **Option A — Tailscale / WireGuard exit node (free, best option):**
@@ -96,12 +100,26 @@ All of the above resolve to known datacenter/VPN ASNs in MaxMind/Spur Intelligen
 
 ## Step 1: Install & Start the Proxy
 
+### Where the files are installed
+
+`freebuff-proxy` follows platform-standard paths and **finds its configuration automatically** — you never need to `cd` into a specific folder for the `.env` to resolve. Default locations:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| **Binary** | `~/.local/bin/freebuff-proxy` | `/usr/local/bin/freebuff-proxy` | `%LOCALAPPDATA%\Programs\freebuff-proxy\freebuff-proxy.exe` |
+| **Config** (`.env`, mode `0600`) | `~/.config/freebuff-proxy/.env` | `~/Library/Application Support/freebuff-proxy/.env` | `%APPDATA%\freebuff-proxy\.env` |
+| **Template** (`.env.example`) | `~/.local/share/freebuff-proxy/.env.example` | `/usr/local/share/freebuff-proxy/.env.example` | `%LOCALAPPDATA%\Programs\freebuff-proxy\.env.example` |
+
+- The **`.env`** file holds your secrets (`AUTH_TOKENS`, `ADMIN_TOKEN`, …). It lives **only** in the platform config directory above (the installer creates it there, `chmod 600` on Linux/macOS) and is resolved automatically by the runtime; a `./.env` in the working directory still wins when present (kept for power users and dev clones).
+- The **`.env.example`** is a **template** — a secrets-free starter shipped next to the install root. It seeds the real `.env` during setup; it is never read as live config.
+- **Overrides:** `--prefix <dir>` / `--dir <dir>` (bash) and `-Dir <dir>` (PowerShell) relocate the install root; `--env-file <path>` (bash) and `-EnvFile <path>` (PowerShell) point `.env` at a specific file. `--dir <dir>` (kept for backward compatibility) and a dev-clone checkout preserve the legacy "`.env` in the current directory" behavior — otherwise the platform directories above are the default.
+
 ### Option A: Portable Release ZIP (Recommended for Windows / Beginners)
 1. Download the latest ZIP from [**GitHub Releases**](https://github.com/trefeon/freebuff-proxy/releases) (e.g. `freebuff-proxy_..._windows_amd64.zip`).
 2. Extract the folder and:
    - **Windows**: Double-click `start-proxy.cmd`.
    - **Linux / macOS**: Open terminal in the folder and run `./start-proxy.sh`.
-3. Press Enter to sign in via your browser. Your token is saved automatically!
+3. Press Enter to sign in via your browser. Your token is saved automatically — it is written to `.env` in your platform config directory (see [Where the files are installed](#where-the-files-are-installed)).
 
 ---
 
@@ -122,7 +140,7 @@ irm https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/instal
 ### Option C: Docker Compose
 
 ```bash
-cp .env.example .env
+cp .env.example .env   # dev clone: seed the template next to the compose file
 # Edit .env and set AUTH_TOKENS=your_token
 git fetch --tags 2>/dev/null || true
 VERSION=$(git describe --tags 2>/dev/null || echo dev) docker compose up -d --build

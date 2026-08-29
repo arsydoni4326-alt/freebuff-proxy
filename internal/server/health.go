@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/telemetry"
 )
 
@@ -49,6 +50,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"session_remaining_seconds": snap.SessionRemainingSeconds,
 			"health_score":              snap.HealthScore,
 			"health_score_label":        snap.HealthScoreLabel,
+			"quarantined":               snap.Quarantined,
+			"quarantine_reason":         snap.QuarantineReason,
 		}
 		// Background health probe results (TOKEN_HEALTH_PROBES).
 		if probeResults != nil {
@@ -81,6 +84,9 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			}
 			tok["quota"] = quota
 		}
+		if snap.PremiumQuota != nil {
+			tok["premium_quota"] = premiumQuotaMap(snap.PremiumQuota)
+		}
 		if len(snap.Entitlement) > 0 {
 			tok["entitlement"] = snap.Entitlement
 		}
@@ -103,6 +109,27 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		}
 		if bs.CooldownUntil.After(time.Now()) {
 			entry["cooldown_until"] = bs.CooldownUntil
+		}
+		if len(bs.QuotaByModel) > 0 {
+			quota := make(map[string]any, len(bs.QuotaByModel))
+			for model, q := range bs.QuotaByModel {
+				qEntry := map[string]any{
+					"limit":        q.Limit,
+					"recent_count": q.RecentCount,
+					"period":       q.Period,
+				}
+				if !q.ResetAt.IsZero() {
+					qEntry["reset_at"] = q.ResetAt
+				}
+				if len(q.Entitlement) > 0 {
+					qEntry["entitlement"] = q.Entitlement
+				}
+				quota[model] = qEntry
+			}
+			entry["quota"] = quota
+		}
+		if bs.PremiumQuota != nil {
+			entry["premium_quota"] = premiumQuotaMap(bs.PremiumQuota)
 		}
 		bridgeEntries = append(bridgeEntries, entry)
 	}
@@ -154,6 +181,24 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		"circuit_breaker": circuitBreaker,
 		"registry":        registryFreshness,
 	})
+}
+
+// premiumQuotaMap renders a PremiumQuotaSnapshot as the healthz JSON map.
+// reset_at is RFC3339; model is fixed to the premium pool sentinel for
+// clients that key off it.
+func premiumQuotaMap(q *pool.PremiumQuotaSnapshot) map[string]any {
+	m := map[string]any{
+		"limit":        q.Limit,
+		"used":         q.Used,
+		"remaining":    q.Remaining,
+		"period":       q.Period,
+		"reset_at":     q.ResetAt.Format(time.RFC3339),
+		"percent_used": q.PercentUsed,
+		"entitled":     q.Entitled,
+		"capped":       q.Capped,
+		"model":        "_premium_pool",
+	}
+	return m
 }
 
 // escapeLabelValue escapes a Prometheus label value per the text exposition
@@ -328,15 +373,60 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	sb.WriteString("\n")
 
-	// Phase 5.1: token health score gauge.
-	sb.WriteString("# HELP freebuff_proxy_token_health_score Composite token health score (0-100) from quota, cooldown, spend, error rate, session freshness\n")
-	sb.WriteString("# TYPE freebuff_proxy_token_health_score gauge\n")
+	// Premium quota metrics (quota_tracker.go): one gauge family per field,
+	// emitted only when the premium snapshot is present (nil means no data).
+	sb.WriteString("# HELP freebuff_proxy_premium_quota_limit Premium quota limit (4 for pacific_day pool) per token\n")
+	sb.WriteString("# TYPE freebuff_proxy_premium_quota_limit gauge\n")
 	for _, snap := range snaps {
-		fmt.Fprintf(&sb, "freebuff_proxy_token_health_score{token=\"%d\",label=\"%s\"} %d\n",
-			snap.Token+1, escapeLabelValue(snap.HealthScoreLabel), snap.HealthScore)
+		if snap.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_limit{token=\"%d\"} %d\n", snap.Token+1, snap.PremiumQuota.Limit)
+		}
+	}
+	for _, bs := range s.pool.BridgeSnapshot() {
+		if bs.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_limit{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.PremiumQuota.Limit)
+		}
 	}
 	sb.WriteString("\n")
-
+	sb.WriteString("# HELP freebuff_proxy_premium_quota_used Premium quota used per token\n")
+	sb.WriteString("# TYPE freebuff_proxy_premium_quota_used gauge\n")
+	for _, snap := range snaps {
+		if snap.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_used{token=\"%d\"} %d\n", snap.Token+1, snap.PremiumQuota.Used)
+		}
+	}
+	for _, bs := range s.pool.BridgeSnapshot() {
+		if bs.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_used{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.PremiumQuota.Used)
+		}
+	}
+	sb.WriteString("\n")
+	sb.WriteString("# HELP freebuff_proxy_premium_quota_remaining Premium quota remaining per token\n")
+	sb.WriteString("# TYPE freebuff_proxy_premium_quota_remaining gauge\n")
+	for _, snap := range snaps {
+		if snap.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_remaining{token=\"%d\"} %d\n", snap.Token+1, snap.PremiumQuota.Remaining)
+		}
+	}
+	for _, bs := range s.pool.BridgeSnapshot() {
+		if bs.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_remaining{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.PremiumQuota.Remaining)
+		}
+	}
+	sb.WriteString("\n")
+	sb.WriteString("# HELP freebuff_proxy_premium_quota_percent Premium quota percent used per token\n")
+	sb.WriteString("# TYPE freebuff_proxy_premium_quota_percent gauge\n")
+	for _, snap := range snaps {
+		if snap.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_percent{token=\"%d\"} %d\n", snap.Token+1, snap.PremiumQuota.PercentUsed)
+		}
+	}
+	for _, bs := range s.pool.BridgeSnapshot() {
+		if bs.PremiumQuota != nil {
+			fmt.Fprintf(&sb, "freebuff_proxy_premium_quota_percent{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.PremiumQuota.PercentUsed)
+		}
+	}
+	sb.WriteString("\n")
 	if s.logs != nil {
 		// T20: handled-record counters from the dashboard log ring. The key
 		// is logring's "level|msg" (level lowercased). msg is a free-form

@@ -348,8 +348,8 @@ func TestE2EServeAndDrain(t *testing.T) {
 	if err := json.Unmarshal(body, &hz); err != nil {
 		t.Fatalf("healthz is not JSON: %v: %s", err, body)
 	}
-	if hz.Mode != "pooled" {
-		t.Errorf("healthz mode = %q, want pooled", hz.Mode)
+	if hz.Mode != "hybrid" {
+		t.Errorf("healthz mode = %q, want hybrid (default when AUTH_TOKENS set)", hz.Mode)
 	}
 
 	// /v1/models carries the deepseek models from the offline fallback
@@ -502,8 +502,8 @@ func TestE2EConfigJSON(t *testing.T) {
 	startProcess(t, cmd)
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
-	if mode := healthzMode(t, base); mode != "pooled" {
-		t.Errorf("-config JSON healthz mode = %q, want pooled", mode)
+	if mode := healthzMode(t, base); mode != "hybrid" {
+		t.Errorf("-config JSON healthz mode = %q, want hybrid (default when AUTH_TOKENS set)", mode)
 	}
 	shutdownAndExpectExit(t, cmd)
 	if !strings.Contains(stderr.String(), `msg="shutdown complete"`) {

@@ -1,16 +1,12 @@
 package dashboard
 
 import (
-	"encoding/json"
 	"fmt"
-	"freebuff-proxy/internal/phasetiming"
 	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/stealth"
 	"net"
-	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -660,8 +656,10 @@ type circuitBreakerInfo struct {
 }
 
 type overviewData struct {
+	BaseURL              string            `json:"base_url"`
 	Mode                 string            `json:"mode"`
 	InBridge             bool              `json:"in_bridge"`
+	ShowBridge           bool              `json:"show_bridge"`
 	BridgeTokens         int               `json:"bridge_tokens"`
 	BridgeTokenCards     []bridgeTokenCard `json:"bridge_token_cards,omitempty"`
 	Models               []string          `json:"models"`
@@ -741,6 +739,13 @@ type tokenCard struct {
 	StandingCappedReason string             `json:"standing_capped_reason,omitempty"`
 	StandingBlurb        string             `json:"standing_blurb,omitempty"`
 	StandingNextSteps    []standingStepCard `json:"standing_next_steps,omitempty"`
+	// Referral (FreebuffReferralInfo): invite program state for this token.
+	HasReferral            bool   `json:"has_referral"`
+	ReferralCode           string `json:"referral_code,omitempty"`
+	ReferralQualifiedCount int    `json:"referral_qualified_count"`
+	ReferralSessionsLeft   int    `json:"referral_sessions_left"`
+	ReferralGithubLinked   bool   `json:"referral_github_linked"`
+	ReferralResetAt        string `json:"referral_reset_at,omitempty"`
 }
 
 // standingStepCard is one dashboard-ready earn-back action
@@ -777,6 +782,7 @@ type bridgeTokenCard struct {
 	SpendLimit      int64            `json:"spend_limit"`
 	BanType         string           `json:"ban_type,omitempty"`
 	BannedUntil     string           `json:"banned_until,omitempty"`
+	PremiumQuota  	*pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
 	Quota           []bridgeQuotaRow `json:"quota,omitempty"`
 	RateLimitHits   int64            `json:"rate_limit_hits"`
 	RateLimitMisses int64            `json:"rate_limit_misses"`
@@ -823,6 +829,7 @@ func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot, spendLimit int64) bri
 		SpendLimit:      spendLimit,
 		BanType:         snap.BanType,
 		BannedUntil:     bannedUntil,
+		PremiumQuota:  snap.PremiumQuota,
 		Quota:           quota,
 		RateLimitHits:   snap.RateLimitHits,
 		RateLimitMisses: snap.RateLimitMisses,
@@ -924,12 +931,17 @@ func (d *Dashboard) overviewData() overviewData {
 	// Phase 3.5: read the shared passive ban-risk engine verdict for the
 	// dashboard overview.
 	rs := stealth.DefaultRiskEngine.Score()
+	host := "localhost"
+	if h, _, err := net.SplitHostPort(cfg.ListenAddr); err == nil && h != "" && h != "0.0.0.0" && h != "::" {
+		host = h
+	}
 	od := overviewData{
+		BaseURL:              "http://" + host + "/v1",
 		Mode:                 mode,
 		InBridge:             mode == "bridge",
+		ShowBridge:           mode == "bridge" || mode == "hybrid",
 		Models:               servedModels(d.reg),
 		ModelCount:           len(servedModels(d.reg)),
-		Uptime:               time.Since(d.started).Round(time.Second).String(),
 		SafeMode:             cfg.SafeMode,
 		MaxMessagesPerDay:    cfg.MaxMessagesPerDay,
 		TransientRetries:     ps.TransientRetries,
@@ -975,6 +987,8 @@ func (d *Dashboard) overviewData() overviewData {
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
 	if od.InBridge {
 		spendLimit := cfg.MaxSpendPerDay
+	}
+	if od.ShowBridge {
 		for _, snap := range d.pool.BridgeSnapshot() {
 			od.BridgeTokenCards = append(od.BridgeTokenCards, bridgeCardFromSnapshot(snap, spendLimit))
 		}

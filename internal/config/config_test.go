@@ -27,6 +27,7 @@ var envKeys = []string{
 	"RUN_FINISH_QUEUE_SIZE", "RUN_FINISH_INLINE_TIMEOUT", "RUNS_DRAIN_QUEUE_CAP", "RUNS_DRAIN_TTL",
 	"WEBHOOK_URL", "FALLBACK_AFTER_MS", "FALLBACK_MODEL", "ADOPT_CLI_SESSION", "WAITING_ROOM_CHAIN",
 	"SCARCE_SESSION_MODELS", "QUOTA_FALLBACK_MODELS",
+	"BRIDGE_ENABLED", "BRIDGE_IDLE_EVICT",
 }
 
 // TestMain strips ambient freebuff-proxy config env vars for the whole test
@@ -423,7 +424,7 @@ func TestScarceSessionModels(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"}
+		want := []string{"openai/gpt-5.6-luna"}
 		if len(cfg.ScarceSessionModels) != len(want) {
 			t.Fatalf("len(ScarceSessionModels) = %d, want %d", len(cfg.ScarceSessionModels), len(want))
 		}

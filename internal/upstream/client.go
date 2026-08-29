@@ -273,12 +273,13 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 				return errors.New("too many redirects")
 			}
 			// Go strips Authorization/Cookie on cross-host redirects but not
-			// x-codebuff-api-key, which carried the same raw token (defensive —
-			// newRequest no longer sets it, #107). Drop both when the redirect
-			// target is a different host OR downgrades the scheme https->http
-			// (same host, plaintext) so the token never leaks to a redirect
-			// target; same-scheme same-host redirects (e.g. CDN or bare-host
-			// -> www) keep their credentials.
+			// x-codebuff-api-key, which carries the same raw token (defensive —
+			// agent-runs START/FINISH now set it after newRequest, and this
+			// strip is what keeps it from leaking to a redirect target). Drop
+			// both when the redirect target is a different host OR downgrades
+			// the scheme https->http (same host, plaintext) so the token never
+			// leaves the trusted origin; same-scheme same-host redirects (e.g.
+			// CDN or bare-host -> www) keep their credentials.
 			if !strings.EqualFold(via[0].URL.Host, req.URL.Host) ||
 				(strings.EqualFold(via[0].URL.Scheme, "https") && strings.EqualFold(req.URL.Scheme, "http")) {
 				req.Header.Del("Authorization")

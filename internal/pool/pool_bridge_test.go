@@ -323,12 +323,12 @@ func TestBridgeMaintainEvictHonorsCtx(t *testing.T) {
 	}
 	p.LeaseRelease(lease)
 
-	// Age the entry past bridgeIdleEvict so the sweep evicts it.
+	// Age the entry past defaultBridgeIdleEvict so the sweep evicts it.
 	entry := p.bridgeToken("idle-bridge-tok")
 	if entry == nil {
 		t.Fatal("bridge entry missing")
 	}
-	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+	entry.lastUsed = time.Now().Add(-defaultBridgeIdleEvict - time.Minute)
 
 	mock.SetFinishDelay(time.Hour)
 
@@ -585,7 +585,7 @@ func TestBridgeLockNotFound(t *testing.T) {
 }
 
 // TestBridgeSlidingTTL verifies the 24h idle eviction window: entries idle
-// less than bridgeIdleEvict are kept; entries idle longer are evicted (#187).
+// less than defaultBridgeIdleEvict are kept; entries idle longer are evicted (#187).
 func TestBridgeSlidingTTL(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -605,7 +605,7 @@ func TestBridgeSlidingTTL(t *testing.T) {
 	// Manipulate lastUsed to simulate an old entry (just past 24h).
 	key := tokenKey("ttl-token")
 	entry := p.bridgeToken("ttl-token")
-	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+	entry.lastUsed = time.Now().Add(-defaultBridgeIdleEvict - time.Minute)
 
 	// Run the idle-eviction maintain pass (idle=true only runs sweep).
 	p.bridgeMaintain(context.Background(), true)

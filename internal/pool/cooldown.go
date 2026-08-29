@@ -61,6 +61,7 @@ func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
 	}
 	(*toks)[token].runs.CooldownBan(be)
 	p.notifyBan(token+1, "")
+	p.quarantineToken(token, "banned", be)
 }
 
 // CooldownTokenCountryBlocked applies a country-block cooldown to token
@@ -72,6 +73,7 @@ func (p *Pool) CooldownTokenCountryBlocked(token int, cbe *upstream.CountryBlock
 		return
 	}
 	(*toks)[token].runs.CooldownCountryBlocked(cbe)
+	p.quarantineToken(token, "country_blocked", cbe)
 }
 
 // CooldownBridge puts the bridge entry's token in a cooldown window of
@@ -205,14 +207,45 @@ func (p *Pool) recordMismatchEscalation(tokenIndex int, rle *upstream.RateLimitE
 }
 
 // UnlockToken clears any cooldown/rate-limit/ban lock on token so Acquire
-// can use it again (dashboard unlock action).
+// can use it again (dashboard unlock action). The dashboard unlock is the
+// operator's explicit action to restore a token after appealing the account
+// upstream, so it also clears any terminal-quarantine marker.
 func (p *Pool) UnlockToken(token int) error {
 	toks := p.toks.Load()
 	if token < 0 || token >= len(*toks) {
 		return fmt.Errorf("pool: token %d out of range", token)
 	}
 	(*toks)[token].runs.ClearCooldowns()
+	(*toks)[token].quarantine.Store(nil)
 	return nil
+}
+
+// quarantineToken marks the fixed pooled token at idx permanently
+// ineligible for leasing: its account reached a terminal state (banned,
+// country_blocked, or 401 invalid) that the pool must never revive. The
+// marker survives across Acquire calls (the failover loop skips it every
+// pass, so no re-admission attempts) and is cleared only when the operator
+// changes AUTH_TOKENS membership/order at this slot (SetConfig) or
+// explicitly unlocks the token (UnlockToken) after appealing upstream. It
+// is a no-op for out-of-range indices and for bridge entries (per-request
+// tokens are never quarantined — a bridge refusal surfaces to the client
+// as today). Logs exactly one slog.Warn per token: CompareAndSwap guards
+// the single fire, so a token that re-hits the same terminal refusal while
+// already quarantined does not re-log.
+func (p *Pool) quarantineToken(idx int, reason string, err error) {
+	toks := p.toks.Load()
+	if idx < 0 || idx >= len(*toks) {
+		return
+	}
+	tok := (*toks)[idx]
+	rec := &quarantineState{reason: reason, err: err}
+	if err != nil {
+		rec.detail = err.Error()
+	}
+	if tok.quarantine.CompareAndSwap(nil, rec) {
+		p.logger.Warn("pool: token quarantined (terminal account state)",
+			"token", idx+1, "state", reason, "reason", rec.detail)
+	}
 }
 
 // LockToken administratively excludes token from Acquire without clearing

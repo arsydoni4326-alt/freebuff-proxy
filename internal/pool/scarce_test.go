@@ -260,7 +260,7 @@ func TestBridgeMaintainSkipsActiveScarceEviction(t *testing.T) {
 	}
 	p.LeaseRelease(lease)
 
-	// Age the entry past bridgeIdleEvict (2 hours)
+	// Age the entry past defaultBridgeIdleEvict (2 hours)
 	key := tokenKey("cb_token_scarce")
 	p.bridgeMu.Lock()
 	entry := p.bridge[key]

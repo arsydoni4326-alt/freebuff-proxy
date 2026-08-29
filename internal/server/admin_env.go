@@ -116,6 +116,8 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 	switch cfg.EffectiveMode() {
 	case "bridge":
 		checks = append(checks, dashboard.DiagCheck{OK: true, Message: "Configuration: bridge mode (clients relay their own token)"})
+	case "hybrid":
+		checks = append(checks, dashboard.DiagCheck{OK: true, Message: fmt.Sprintf("Configuration: hybrid mode, %d pooled token(s) + bridge relay", len(cfg.AuthTokens))})
 	default:
 		checks = append(checks, dashboard.DiagCheck{OK: true, Message: fmt.Sprintf("Configuration: pooled mode, %d token(s)", len(cfg.AuthTokens))})
 	}
@@ -389,6 +391,8 @@ func effectiveConfigKV(cfg *config.Config) map[string]string {
 		"WAITING_ROOM_CHAIN":                    strconv.FormatBool(cfg.WaitingRoomChain),
 		"SCARCE_SESSION_MODELS":                 strings.Join(cfg.ScarceSessionModels, ","),
 		"QUOTA_FALLBACK_MODELS":                 strconv.Itoa(len(cfg.QuotaFallbackModels)),
+		"BRIDGE_ENABLED":                        strconv.FormatBool(cfg.BridgeEnabled),
+		"BRIDGE_IDLE_EVICT":                     cfg.BridgeIdleEvict.String(),
 	}
 }
 

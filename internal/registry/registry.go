@@ -1,11 +1,3 @@
-// Package registry maintains the live model→agent map for FreeBuff free
-// sessions, parsed from the Codebuff TS constant sources and refreshed on a
-// timer. Port of reference/proxy-freebuff/lib/registry.js.
-//
-// Refresh fetches the 5 TS files in parallel; any failure keeps the previous
-// mapping (the hardcoded fallback at boot). FREEBUFF_ROOT_AGENT_ID_BY_MODEL
-// wins over first-seen FREE_MODE_AGENT_MODELS assignment, exactly like the
-// JS.
 package registry
 
 import (
@@ -25,6 +17,7 @@ import (
 	"time"
 
 	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/modelcat"
 )
 
 // RawBase is the upstream source of the Codebuff TS constant files.
@@ -63,14 +56,11 @@ const fetchTimeout = 30 * time.Second
 // than this fails the fetch, which keeps the previous registry state.
 const maxFetchBytes = 2 << 20
 
-// ServedModels is the hardcoded set of model ids this gateway serves (mirrors
-// the model set 9router's free-pool "smart_toy" component offers). Used as a
-// code-level gate so the proxy never serves or advertises a model the account
-// cannot use, regardless of MODELS_ALLOW configuration. The -max variants are
-// deliberately EXCLUDED (issue #153): upstream's session admission resolves
-// any id outside SUPPORTED_FREEBUFF_MODELS to the always-available fallback
-// mimo/mimo-v2.5 (FALLBACK_FREEBUFF_MODEL_ID), so a -max request would be
-// served by a different model while advertising a name it does not honor.
+// ServedModels is the code-level gate of the model ids this gateway serves.
+// Derived from modelcat.Catalog (single source of truth): the served set is
+// upstream SUPPORTED_FREEBUFF_MODELS minus FREEBUFF_PAUSED_FREE_MODEL_IDS.
+// The gate therefore moves on every upstream sync by editing the catalog —
+// no separate list to keep in step.
 //
 // openai/gpt-5.6-luna-es was served until 2026-08-23 (issue #201). Vendor
 // snapshot 0603bc1 moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex (test)",
@@ -81,71 +71,54 @@ const maxFetchBytes = 2 << 20
 // real client can reach makes proxy traffic to it indistinguishable from
 // probing a hidden eval route, so the gate excludes it.
 // stealth/ox-alpha rejoined the served set with vendor cce4800 (2026-08-24,
-// issue #209): SUPPORTED_FREEBUFF_MODELS gained it as the first row of the
-// CLI/Desktop catalog, ending its web/cloud-only fencing.
-var ServedModels = map[string]bool{
-	"deepseek/deepseek-v4-flash": true,
-	"deepseek/deepseek-v4-pro":   true,
-	"openai/gpt-5.6-luna":        true,
-	"z-ai/glm-5.2":               true,
-	"mimo/mimo-v2.5":             true,
-	"stealth/ox-alpha":           true,
-}
+// issue #209) and LEFT it with vendor 5951772 (2026-08-27), when its anonymous
+// host ended the free promotion: FREEBUFF_PAUSED_FREE_MODEL_IDS now lists it,
+// so the catalog row is Paused, not Served.
+var ServedModels = modelcat.ServedMap()
 
-// SupportedModelIDs is the canonical list of the 6 active models served by the gateway.
-var SupportedModelIDs = []string{
-	"deepseek/deepseek-v4-flash",
-	"deepseek/deepseek-v4-pro",
-	"openai/gpt-5.6-luna",
-	"z-ai/glm-5.2",
-	"mimo/mimo-v2.5",
-	"stealth/ox-alpha",
-}
+// SupportedModelIDs is the canonical list of the active models served by the
+// gateway (served catalog rows in upstream order).
+var SupportedModelIDs = modelcat.ServedIDs()
 
 // SupportedModelsHelpText is the formatted list of models for error messages (issue #189).
-const SupportedModelsHelpText = "deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro, openai/gpt-5.6-luna, z-ai/glm-5.2, mimo/mimo-v2.5, stealth/ox-alpha"
+var SupportedModelsHelpText = modelcat.ServedHelpText()
 
-// IsServedModel reports whether model is in the 6 active served models.
+// IsServedModel reports whether model is in the active served models.
 func IsServedModel(model string) bool {
 	return ServedModels[model]
 }
 
-// PausedModels mirrors upstream FREEBUFF_PAUSED_FREE_MODEL_IDS (pinned
-// freebuff-models.ts:1401-1413): ids upstream still RECOGNIZES but refuses at
-// admission with `model_unavailable` naming the replacement
-// (freebuffWithdrawnModelMessage, freebuff-models.ts:1422-1429). minimax/
-// minimax-m3 was withdrawn from free mode on 2026-08-20 ($213/hr); serving it
-// here would burn a doomed admission per request — admission refusal is not
-// session-ending upstream, so the retry loop would amplify exactly the
-// issue-#1801-shaped load the pause exists to stop.
+// PausedModels mirrors upstream FREEBUFF_PAUSED_FREE_MODEL_IDS: ids upstream
+// still RECOGNIZES but refuses at admission with `model_unavailable` naming
+// the replacement (freebuffWithdrawnModelMessage, freebuff-models.ts:1685).
+// minimax/minimax-m3 was withdrawn from free mode on 2026-08-20 ($213/hr),
+// deepseek-v4-pro on 2026-08-26 (cost), stealth/ox-alpha on 2026-08-27 (its
+// anonymous host ended the free promotion). Serving a paused model would burn
+// a doomed admission per request — admission refusal is not session-ending
+// upstream, so the retry loop would amplify exactly the issue-#1801-shaped
+// load the pause exists to stop.
 //
 // The id stays in the catalog maps (count_tokens, alias resolution) but is
-// refused by the chat handlers before any lease is acquired.
-var PausedModels = map[string]string{
-	"minimax/minimax-m3": "deepseek/deepseek-v4-flash",
-}
+// refused by the chat handlers before any lease is acquired. Values name the
+// replacement model from the catalog (the upstream default-model copy).
+var PausedModels = modelcat.PausedMap()
 
-// WithdrawnModelMessage mirrors upstream freebuffWithdrawnModelMessage:
-// names the model asked for and what to use instead.
+// WithdrawnModelMessage mirrors upstream freebuffWithdrawnModelMessage
+// (freebuff-models.ts:1685-1697): names the model asked for and what to use
+// instead — the client that sends this id is a released binary whose picker
+// still lists it, so "unavailable" alone leaves the user staring at a row
+// that looks fine and does not work.
 func WithdrawnModelMessage(id string) string {
 	replacement := PausedModels[id]
 	if replacement == "" {
-		return id + " is no longer available in Freebuff."
+		return modelcat.DisplayName(id) + " is no longer available in Freebuff."
 	}
-	name := id
-	if name == "minimax/minimax-m3" {
-		name = "MiniMax M3"
-	}
-	if replacement == "deepseek/deepseek-v4-flash" {
-		return name + " is no longer available in Freebuff. We recommend using DeepSeek V4 Flash instead."
-	}
-	return name + " is no longer available in Freebuff. We recommend using " + replacement + " instead."
+	return modelcat.DisplayName(id) + " is no longer available in Freebuff. We recommend using " + modelcat.DisplayName(replacement) + " instead."
 }
 
 // IsPausedModel reports whether model is recognized-but-withdrawn upstream.
 func IsPausedModel(model string) bool {
-	_, ok := PausedModels[model]
-	return ok
+	return modelcat.IsPaused(model)
 }
 
 // fallbackAgents is the hardcoded model→agent fallback used when the sources
@@ -176,7 +149,9 @@ var fallbackAgents = []agentModels{
 	{agent: "base2-free-mimo", models: []string{"mimo/mimo-v2.5"}},
 	{agent: "base2-free-minimax-m3", models: []string{"minimax/minimax-m3"}},
 	{agent: "base2-free-luna", models: []string{"openai/gpt-5.6-luna"}},
+	{agent: "base2-free-solar-pro4", models: []string{"upstage/solar-pro4"}},
 	{agent: "base2-free-glm", models: []string{"z-ai/glm-5.2"}},
+	{agent: "base2-free-glm-5-3-flash", models: []string{"z-ai/glm-5.3-flash"}},
 	{agent: "base2-free-kimi-k3-eco", models: []string{"crof/kimi-k3-eco"}},
 	{agent: "base2-free-luna-es", models: []string{"openai/gpt-5.6-luna-es"}},
 	{agent: "base3-free-luna-es", models: []string{"openai/gpt-5.6-luna-es"}},
@@ -197,6 +172,7 @@ var fallbackAgents = []agentModels{
 	{agent: "tmux-cli", models: []string{"deepseek/deepseek-v4-flash"}},
 	{agent: "code-reviewer-minimax-m3", models: []string{"minimax/minimax-m3"}},
 	{agent: "code-reviewer-luna", models: []string{"openai/gpt-5.6-luna"}},
+	{agent: "code-reviewer-solar-pro4", models: []string{"upstage/solar-pro4"}},
 	// Vendor cce4800 (2026-08-24): Ox Alpha reached CLI/Desktop, so its
 	// reviewer needs its own allowlist row — without it a base2 session falls
 	// back to the DeepSeek Flash reviewer, which that session's allowlist does
@@ -206,6 +182,7 @@ var fallbackAgents = []agentModels{
 	{agent: "code-reviewer-deepseek-flash", models: []string{"deepseek/deepseek-v4-flash"}},
 	{agent: "code-reviewer-mimo", models: []string{"mimo/mimo-v2.5"}},
 	{agent: "code-reviewer-glm", models: []string{"z-ai/glm-5.2"}},
+	{agent: "code-reviewer-glm-5-3-flash", models: []string{"z-ai/glm-5.3-flash"}},
 	{agent: "code-reviewer-fable", models: []string{"anthropic/claude-fable-5"}},
 	{agent: "code-reviewer-lite", models: []string{"deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash", "mimo/mimo-v2.5"}},
 }
@@ -220,11 +197,12 @@ var fallbackRootByModel = map[string]string{
 	"mimo/mimo-v2.5":                  "base2-free-mimo",
 	"minimax/minimax-m3":              "base2-free-minimax-m3",
 	"openai/gpt-5.6-luna":             "base2-free-luna",
+	"upstage/solar-pro4":              "base2-free-solar-pro4",
 	"deepseek/deepseek-v4-pro":        "base2-free-deepseek",
 	"deepseek/deepseek-v4-flash":      "base2-free-deepseek-flash",
 	"z-ai/glm-5.2":                    "base2-free-glm",
+	"z-ai/glm-5.3-flash":              "base2-free-glm-5-3-flash",
 	"crof/kimi-k3-eco":                "base2-free-kimi-k3-eco",
-	"openai/gpt-5.6-luna-es":          "base2-free-luna-es",
 	"anthropic/claude-fable-5":        "base2-free-fable",
 	"meta/muse-spark-1.2-contributor": "base2-free-muse-spark",
 	"stealth/ox-alpha":                "base2-free-ox-alpha",

@@ -48,8 +48,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.CORSAllowedOrigin != "*" {
 		t.Errorf("CORSAllowedOrigin = %q, want %q (default)", cfg.CORSAllowedOrigin, "*")
 	}
-	if got := cfg.EffectiveMode(); got != "pooled" {
-		t.Errorf("EffectiveMode = %q, want pooled", got)
+	if got := cfg.EffectiveMode(); got != "hybrid" {
+		t.Errorf("EffectiveMode = %q, want hybrid (default when AUTH_TOKENS set)", got)
 	}
 	if cfg.LogFile != "" {
 		t.Errorf("LogFile = %q, want empty", cfg.LogFile)
@@ -241,6 +241,9 @@ func TestValidate(t *testing.T) {
 		{"invalid listen port non-int", func(c *Config) { c.ListenAddr = "127.0.0.1:abc" }},
 		{"invalid listen port overflow", func(c *Config) { c.ListenAddr = "127.0.0.1:99999" }},
 		{"invalid listen port zero", func(c *Config) { c.ListenAddr = "127.0.0.1:0" }},
+		{"quota fallback self-loop", func(c *Config) { c.QuotaFallbackModels = map[string]string{"a": "a"} }},
+		{"quota fallback multi-hop cycle", func(c *Config) { c.QuotaFallbackModels = map[string]string{"a": "b", "b": "a"} }},
+		{"quota fallback three-hop cycle", func(c *Config) { c.QuotaFallbackModels = map[string]string{"a": "b", "b": "c", "c": "a"} }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

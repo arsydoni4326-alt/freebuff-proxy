@@ -67,21 +67,23 @@ If you are a beginner, you don't need to write code or compile anything:
 | Keep the pool **draining one key at a time** | **Don't hammer many tokens from one public IP** (`ip_capped`) |
 
 
-**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
+**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base** — 4 at the floor when trust levels are enforced). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
 
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot 2026-08-23):
-> *"GPT-5.6 Luna is 3 sessions a day. V4 Pro and Flash use your daily sessions; MiMo is unmetered. —❤️ Freebuff Team"*
-> (DeepSeek models remain unavailable during weekday peak hours; Beijing-weekend Saturdays/Sundays are always off-peak.)
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `87ef664` · npm `0.0.158` `2026-08-28`):
+> *"Solar Pro 4 joins as a limited-time premium trial row sharing the normal premium pool; DeepSeek V4 Flash is back to always-available (peak pricing still applies). Every model runs on your normal daily sessions — no per-model caps, and MiMo stays unmetered. —❤️ Freebuff Team"*
+> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` shares the premium pool — no per-model cap.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
-| **Premium** | **DeepSeek V4 Flash 07/31** *(Recommended)* | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`, `NEW`. 5 sessions/day premium pool. |
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. **3 sessions/day limit** (raised from 1 → 2 → 3 in the Aug 21–23 vendor snapshots). |
-| **Premium** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Deep reasoning**, Reasoning: `high`. Per-model cap removed upstream (Aug 23 snapshot) — draws from the shared daily premium pool; weekday peak-hour pauses lifted. |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool (`PREMIUM 0/5`). |
+| **Premium** | **Solar Pro 4** `NEW` | `upstage/solar-pro4` | **Limited-time trial**, experimental, OpenRouter BYOK (Upstage), text-only, context `500_000`. Shares `5/day` premium pool. |
+| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. Shares `5/day` premium pool. |
+| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; off-peak-only serving window removed 2026-08-28). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
-| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1 session/referral). |
-| **Stealth** | **Ox Alpha** | `stealth/ox-alpha` | **Anonymous stealth provider**, Reasoning: mandatory (`low`/`high`/`max`, default `high`). 1M-token context, multimodal. Free tier. |
-| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Temporarily Unavailable** upstream due to server-side cost spikes. |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` per referral), 1-hour sessions. |
+| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
+| **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |
+| **Disabled** | **Ox Alpha** | `stealth/ox-alpha` | **Withdrawn** upstream (2026-08-27, free promotion ended). |
 
 Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
 
@@ -106,7 +108,7 @@ For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 min
 - **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application built with self-hosted **IBM Plex Sans & IBM Plex Mono** typography and an "instrument panel" operational design. Features a live overview with 6 KPIs and token risk cards, runtime token pool & quota management with in-browser OAuth device login, served models catalog, hot-reloading `.env` Configuration Studio, in-memory structured log viewer with level filtering, and universal 1-click client setup snippets. Zero external CDN or runtime Node.js dependency.
 - **Dynamic Reasoning Effort**: OpenAI `reasoning_effort` (`low`/`medium`/`high`/`max`) and Codex/Anthropic `reasoning.effort` are normalized and mapped to upstream reasoning engines.
 - **Session & Run Lifecycle**: Upstream session handshakes, model-lock recovery (`DELETE` → re-`POST`), grace draining, and idle-run finishing, all automatic.
-- **Token Pooling & Bridge Mode**: Hot-session-first pooling with round-robin start and failover across `AUTH_TOKENS`, or zero-storage relay when clients bring their own token. See [Key Concepts](#key-concepts).
+- **Token Pooling & Hybrid/Bridge Mode**: Hot-session-first pooling with round-robin start and failover across `AUTH_TOKENS`, zero-storage relay when clients bring their own token, or **both at once** — `AUTH_TOKENS` plus `BRIDGE_ENABLED` (default) serves API-key clients from the pool and other credentials as bridge tokens on one instance. See [Key Concepts](#key-concepts).
 - **Token Auto-Discovery**: With empty `AUTH_TOKENS`, credentials are read from the official CLI login files (`~/.config/manicode/credentials.json`, `~/.config/codebuff/credentials.json`). Disable with `AUTO_DISCOVER_TOKEN=false`.
 - **TLS Stealth**: browser TLS fingerprinting via uTLS (Chrome, Firefox, Safari, Edge) plus sanitized request headers so upstream traffic reads as a browser client.
 - **CLI Impersonation**: egress presents as the official FreeBuff CLI — `Freebuff-CLI/1.0.0` ads-API User-Agent with a **Chrome/124 body UA**, `ai-sdk/openai-compatible/1.0.0/codebuff` chat UA, Bun/1.3.14 on session/auth endpoints, and your real device timezone/locale.
@@ -120,7 +122,7 @@ For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 min
 One chat request, end to end:
 
 1. **Your tool calls the proxy.** It POSTs a standard OpenAI request to `http://127.0.0.1:3457/v1/chat/completions`, same shape it would send to any OpenAI-compatible endpoint.
-2. **A token is chosen.** The proxy prefers the token that already holds a live session (hot-session-first), starting from a round-robin index and skipping tokens in cooldown or locked by a rate limit; in bridge mode it uses the token your client sent in its `Authorization` header.
+2. **A token is chosen.** The proxy prefers the token that already holds a live session (hot-session-first), starting from a round-robin index and skipping tokens in cooldown or locked by a rate limit; in bridge mode (or hybrid, for a credential that does not match `API_KEYS`) it uses the token your client sent in its `Authorization` header.
 3. **The request is translated.** The model id is resolved through the catalog to the upstream agent that runs it, the message list is sanitized and re-wrapped in the CLI request envelope, and OpenAI extras (`reasoning_effort`, tool schemas, etc.) are mapped to what upstream expects.
 4. **It goes out stealthily.** The upstream call uses a browser-like TLS handshake and sanitized headers.
 5. **The stream comes back translated.** The upstream SSE stream is converted into OpenAI `chat.completion.chunk` events and relayed to your client in real time.
@@ -147,7 +149,8 @@ graph TD
 | **Run** | One upstream agent execution for a model, shared across many requests. Runs start on first use, live for `ROTATION_INTERVAL` (default `6h`), then are rotated (fresh start, old one drained/finished) so no run accumulates suspiciously long-lived activity. Idle tokens get their runs finished too. |
 | **Model** | A catalog entry addressed as `provider/model` (e.g. `deepseek/deepseek-v4-flash`). The registry serves `/v1/models` and maps each model to the upstream agent that runs it. |
 | **Pooled mode** | You configure several tokens in `AUTH_TOKENS`. Requests stick to the token with a live session and fail over only when it is rate-limited or errors: a reactive drain, not aggressive rotation. Best for one user with several accounts who wants maximum uptime and quota headroom. |
-| **Bridge mode** | You configure no tokens. Each client sends its own token as `Authorization: Bearer <token>`, and the proxy relays with it, caching per-client state (LRU, max 32). Includes circuit breaker protection against batch upstream failures (configurable via `BRIDGE_CIRCUIT_BREAKER_*`). Best for a shared router (e.g. 9router) serving many users who each bring their own account. |
+| **Bridge mode** | You configure no tokens. Each client sends its own token as `Authorization: Bearer <token>`, and the proxy relays with it, caching per-client state (LRU, max 32, 72h idle eviction). Best for a shared router (e.g. 9router) serving many users who each bring their own account. |
+| **Hybrid mode** | **The default when `AUTH_TOKENS` is set.** The pool and the bridge run side by side: a request whose credential matches an `API_KEYS` entry is served from the pool, any other credential is relayed upstream as the client's own bridge token, and a missing credential is rejected `401` when `API_KEYS` are configured (open pooled otherwise). Set `BRIDGE_ENABLED=0` for a locked-down pooled-only instance. |
 | **Safe mode** | Default-on anti-ban presets: TLS stealth, proxy-header sanitization, request jitter, and idle rotation. See [Safe Mode](#safe-mode--zero-spam-quota-handling). |
 | **Quota lock** | When a token hits its daily limit, the proxy parses the upstream `429` reset timestamp and refuses local requests for that token until reset, fast (`<1ms`), silent, and spam-free. |
 
@@ -156,6 +159,20 @@ graph TD
 ## Quick Start
 
 ### 1. Install
+
+### Where the files are installed
+
+`freebuff-proxy` follows platform-standard paths, and it **finds its configuration automatically** — you never need to `cd` into a specific folder for the `.env` to resolve.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| **Binary** | `~/.local/bin/freebuff-proxy` | `/usr/local/bin/freebuff-proxy` | `%LOCALAPPDATA%\Programs\freebuff-proxy\freebuff-proxy.exe` |
+| **Config** (`.env`, mode `0600`) | `~/.config/freebuff-proxy/.env` | `~/Library/Application Support/freebuff-proxy/.env` | `%APPDATA%\freebuff-proxy\.env` |
+| **Template** (`.env.example`) | `~/.local/share/freebuff-proxy/.env.example` | `/usr/local/share/freebuff-proxy/.env.example` | `%LOCALAPPDATA%\Programs\freebuff-proxy\.env.example` |
+
+- The **`.env`** file holds your secrets (`AUTH_TOKENS`, `ADMIN_TOKEN`, …). It lives **only** in the platform config directory above (the installer creates it there, `chmod 600` on Linux/macOS) and is resolved automatically by the runtime. As a legacy convenience for power users and dev clones, a `./.env` in the working directory still wins when present.
+- The **`.env.example`** is a **template** — a secrets-free starter shipped next to the install root. It seeds the real `.env` during setup; it is never read as live config.
+- **Overrides:** `--prefix <dir>` / `--dir <dir>` (bash) and `-Dir <dir>` (PowerShell) relocate the install root; `--env-file <path>` (bash) and `-EnvFile <path>` (PowerShell) point `.env` at a specific file. `--dir <dir>` (kept for backward compatibility) and a dev-clone checkout preserve the legacy "`.env` in the current directory" behavior — the platform directories above are the default.
 
 **One-command installer (Linux/macOS):**
 
@@ -169,17 +186,17 @@ curl -sSL https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/
 irm https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/install-freebuff-proxy.ps1 | iex
 ```
 
-The bash installer prompts for an install method (easy, manual binary, Docker Compose, bridge mode); both installers mint/read your token and write `.env`.
+The bash installer prompts for an install method (easy, manual binary, Docker Compose, bridge mode); both installers mint/read your token and write `.env` in your platform config directory.
 
-**Alternatively**, run with Docker Compose:
+**Alternatively**, run with Docker Compose (a dev clone — the installers place `.env` for you):
 
 ```bash
-cp .env.example .env   # then set AUTH_TOKENS
+cp .env.example .env   # dev clone: seed the template next to the compose file, then set AUTH_TOKENS
 git fetch --tags 2>/dev/null || true
 VERSION=$(git describe --tags 2>/dev/null || echo dev) docker compose up -d --build
 ```
 
-**Or** download a release binary from [Releases](https://github.com/trefeon/freebuff-proxy/releases) (Linux/macOS/Windows × amd64/arm64), unzip it, right-click the extracted folder → **Open in Terminal**, and run `./start-proxy.sh` (Windows: `.\start-proxy.cmd`; the `.cmd` wrappers bypass the PowerShell execution policy). The bundled scripts also include a headless token generator (`gen-token.sh` / `gen-token.cmd`).
+**Or** download a release binary from [Releases](https://github.com/trefeon/freebuff-proxy/releases) (Linux/macOS/Windows × amd64/arm64), unzip it, right-click the extracted folder → **Open in Terminal**, and run `./start-proxy.sh` (Windows: `.\start-proxy.cmd`; the `.cmd` wrappers bypass the PowerShell execution policy). `start-proxy.*` resolves `.env` from your platform config directory, so it works no matter which directory you launch it from. The bundled scripts also include a headless token generator (`gen-token.sh` / `gen-token.cmd`).
 
 ### 2. Obtain an Auth Token
 
@@ -203,21 +220,24 @@ Alternatively, log in with the official CLI (`npm i -g freebuff && freebuff`): t
 
 ### 3. Configure
 
-Copy the example and set your token:
+The installers already wrote `.env` for you (in your platform config directory — see [Where the files are installed](#where-the-files-are-installed)). For a manual or dev-clone run, seed the template and set your token:
 
 ```bash
+# defaults to the platform config dir; pass --env-file <path> to target a specific file
 cp .env.example .env
 # AUTH_TOKENS=cb_xxx        ← paste your token (comma-separate for pooling)
 # SAFE_MODE=true            ← default (set false to disable)
 ```
 
-Leave `AUTH_TOKENS=` empty for **bridge mode** (clients bring their own tokens). Not sure which to pick? One user with a few accounts → pooled mode; a shared router serving many users → bridge mode. See [Key Concepts](#key-concepts). `config.example.json` shows the common keys in JSON form, loaded with `-config`; the [Configuration Reference](#configuration-reference) below documents every key. Its `cb_xxx`/`cb_yyy` auth placeholders are deliberately rejected by validation — edit the file with real token values before passing `-config`.
+Leave `AUTH_TOKENS=` empty for **bridge mode** (clients bring their own tokens). Set `AUTH_TOKENS` for **pooled mode** — and because bridge relay is **on by default** (`BRIDGE_ENABLED`), a token pool also accepts clients who bring their own tokens (**hybrid mode**); set `BRIDGE_ENABLED=0` for pooled-only. Not sure which to pick? One user with a few accounts → pooled/hybrid; a shared router serving many users → bridge mode. See [Key Concepts](#key-concepts). `config.example.json` shows the common keys in JSON form, loaded with `-config`; the [Configuration Reference](#configuration-reference) below documents every key. Its `cb_xxx`/`cb_yyy` auth placeholders are deliberately rejected by validation — edit the file with real token values before passing `-config`.
 
 ### 4. Run & Verify
 
 ```bash
 ./freebuff-proxy            # or: docker compose up -d
 ```
+
+The binary reads `.env` from your platform config directory automatically — run it from anywhere.
 
 Check health and run diagnostics:
 
@@ -243,7 +263,7 @@ curl http://127.0.0.1:3457/healthz
 | `-setup` | Interactive client setup (detects installed clients) |
 | `-yes` | Auto-confirm `-setup` prompts |
 | `-refresh-token N` | Re-authenticate token #N in `.env` via the headless GitHub login flow and exit. Interactive: prints a login URL and polls. With `-yes` and `GITHUB_USER` / `GITHUB_PASSWORD` / `GITHUB_TOTP` set: protocol login |
-| `-install-service` | Register the current binary as a background service and start it: Task Scheduler on Windows (per-user, no admin), systemd `--user` unit on Linux, launchd LaunchAgent on macOS. Runs from the executable's directory so `.env` resolves, and auto-starts on logon/boot |
+| `-install-service` | Register the current binary as a background service and start it: Task Scheduler on Windows (per-user, no admin), systemd `--user` unit on Linux, launchd LaunchAgent on macOS. Resolves `.env` from your platform config directory (a `./.env` in the working directory still wins), and auto-starts on logon/boot |
 | `-uninstall-service` | Stop and unregister the background service (idempotent) |
 | `-service-status` | Check whether the service is registered and running; exits `0` when registered, `1` when not (scriptable) |
 
@@ -251,17 +271,19 @@ curl http://127.0.0.1:3457/healthz
 
 ## Configuration Reference
 
-All keys can be set via environment variables or the JSON config file passed to `-config` (`AUTO_DISCOVER_TOKEN` is environment-only); a local `.env` file (if present) is also read, and for the keys it covers it behaves like the environment. Precedence, lowest to highest: **built-in defaults < JSON `-config` < `./.env` < environment**. List values (`AUTH_TOKENS`, `API_KEYS`, `MODELS_ALLOW`) are comma-separated in env and arrays in JSON (`MODELS_ALLOW` also accepts a plain comma-separated JSON string).
+All keys can be set via environment variables or the JSON config file passed to `-config` (`AUTO_DISCOVER_TOKEN` is environment-only); a `.env` file (resolved automatically from your platform config directory, or `./.env` in the working directory when present) is also read, and for the keys it covers it behaves like the environment. Precedence, lowest to highest: **built-in defaults < JSON `-config` < `.env` < environment**. List values (`AUTH_TOKENS`, `API_KEYS`, `MODELS_ALLOW`) are comma-separated in env and arrays in JSON (`MODELS_ALLOW` also accepts a plain comma-separated JSON string).
 
 | Environment Variable | Default | Description |
 |---|---|---|
 | `LISTEN_ADDR` | `127.0.0.1:3457` | Host and port to bind (loopback; containers set `:3457`) |
 | `UPSTREAM_BASE_URL` | `https://codebuff.com` | Upstream API endpoint (normalized to `www.codebuff.com`) |
-| `AUTH_TOKENS` | `""` | Comma-separated upstream tokens (empty = bridge mode) |
+| `AUTH_TOKENS` | `""` | Comma-separated upstream tokens (empty = bridge mode; set = pooled or hybrid) |
+| `BRIDGE_ENABLED` | `true` | With `AUTH_TOKENS` set, accept bridge-mode clients (their own token relayed) alongside the pool — **hybrid mode**. `0` = locked-down pooled-only instance (the pre-hybrid behavior) |
+| `BRIDGE_IDLE_EVICT` | `72h` | How long a bridge entry may sit unused before its runs are FINISHed and it is evicted from the cache (sliding TTL; zero or invalid → 72h) |
 | `MODELS_HIDE_UNAVAILABLE` | `false` | `/v1/models` prunes models marked unavailable (region/tier demotion, quota exhaustion) so picker clients cannot select them; off by default so a stale signal never hides a working model |
 | `MODELS_ALLOW` | `""` | Comma-separated model allowlist (JSON array or string). When set, only these model ids are served — `/v1/models` lists only them, and `chat/messages/responses` requests whose resolved model (after alias resolution) is not listed are rejected with `404 model_not_found` (`"model not allowed by MODELS_ALLOW"`). Empty = all models allowed |
 | `AUTO_DISCOVER_TOKEN` | `true` | When `AUTH_TOKENS` is empty, read credentials from the official CLI login files (`false` disables) |
-| `API_KEYS` | `""` | Comma-separated client keys required for `/v1/*` (empty = open; ignored in bridge mode) |
+| `API_KEYS` | `""` | Comma-separated client keys required for `/v1/*` (empty = open; ignored in bridge mode). **In hybrid mode `API_KEYS` is the discriminator**: a credential matching an entry uses the pool, any other is relayed as a bridge token |
 | `ADMIN_TOKEN` | `123456` | Login password for the [admin dashboard](#admin-dashboard) and the bearer token `POST /admin/reload` requires. Defaults to the factory password `123456` (a startup warning is logged and the dashboard shows a change banner until you rotate it): **change it before exposing the port** — while the factory default is active, sensitive dashboard routes (config editor, logs, token management, reload) additionally require a loopback client |
 | `ROTATION_INTERVAL` | `6h` | Agent-run rotation interval |
 | `REQUEST_TIMEOUT` | `15m` | Upstream request timeout |
@@ -271,6 +293,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `ACTING_USER_ID` | `""` | Optional FreeBuff account id; sent on every chat call as `x-freebuff-acting-user-id`. BAN RISK: only the token's own account id is safe (the CLI derives it from `GET /api/v1/me`; the server honors the header only for the FreeBuff Web service account) — any other value impersonates another user. Pre-rename name `USER_ID` still works. Empty = header omitted |
 | `TLS_FINGERPRINT` | `auto` | `auto`, `chrome120`, `chrome126`, `safari17`, `safari18`, `firefox120`, `firefox128`, `edge126`, `random` |
 | `DEBUG_DUMP` | `false` | Persist redacted traffic dumps to `./dump/` (mode 0600) |
+| `DEVTOOLS_ENABLED` | `false` | Show the Dev Tools page (batch chat, session spawner) in the admin dashboard. Default **off** — it is a manual testing surface that hammers `/v1/*` and is not for public dashboards. |
 | `LOG_FILE` | `""` | Append log lines to a file (e.g. `./logs/proxy.log`) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, `trace` (trace = wire-level bodies) |
 | `LOG_FORMAT` | `text` | `text` (key=value, colored) or `json` (one JSON object per line) |
@@ -283,7 +306,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
 | `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 2s when unset) |
 | `CLI_VERSION` | `0.10.7` | Informational only: parsed and shown on the admin dashboard (Configuration Studio). No wire impact — the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff`, the ads UA to `Freebuff-CLI/1.0.0`, and session/auth endpoints default to `Bun/1.3.14` |
-| `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:deepseek/deepseek-v4-pro`. When unset (or empty / parsing to no pairs) the built-ins apply: `deepseek-chat` → `deepseek/deepseek-v4-flash`, `gpt-4o` → `deepseek/deepseek-v4-pro`, `claude-3-5-sonnet` → `anthropic/claude-fable-5`. A non-empty value with ≥1 valid pair REPLACES the defaults entirely; the built-ins cannot be disabled (there is no way to express an empty alias map) |
+| `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:openai/gpt-5.6-luna`. There are no built-in aliases (the old `deepseek-chat`/`gpt-4o`/`claude-3-5-sonnet` map was removed when `deepseek-v4-pro` was paused); clients must map aliases explicitly. |
 | `TRANSIENT_RETRIES` | `1` | Max additional attempts after a transient transport failure; `0` disables |
 | `SESSION_PERSIST` | `false` | Persist session state AND active agent runs to disk so a restart resumes them instead of re-creating (new daily slot / re-START) |
 | `SESSION_STATE_FILE` | `.freebuff-session-state.json` | Path of the session state file (used when `SESSION_PERSIST=true`; token-keyed, `0600`) |
@@ -296,12 +319,12 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `RUNS_DRAIN_QUEUE_CAP` | `64` | Draining-runs list cap; older entries are force-dropped (FINISH is best-effort) |
 | `RUNS_DRAIN_TTL` | `10m` | Draining-runs TTL eviction window |
 | `HTTP2_UPSTREAM` | `true` | Negotiate HTTP/2 with the upstream so the ALPN matches real browsers; `false` forces HTTP/1.1 |
-| `FALLBACK_MODEL` | `""` | Map `model1=fallback1,model2=fallback2` to re-route a request to the fallback model when its queue wait passes `FALLBACK_AFTER_MS` (queue-wait only — never on 429 quota exhaustion). When unset, built-in defaults apply: the premium rows → `deepseek/deepseek-v4-flash`, `meta/muse-spark-1.2-contributor` → `deepseek/deepseek-v4-pro` |
+| `FALLBACK_MODEL` | `""` | Map `model1=fallback1,model2=fallback2` to re-route a request to the fallback model when its queue wait passes `FALLBACK_AFTER_MS` (queue-wait only — never on 429 quota exhaustion). When unset, the built-in default applies: `openai/gpt-5.6-luna` → `deepseek/deepseek-v4-flash` |
 | `FALLBACK_AFTER_MS` | `10000` | Queue-wait threshold (ms) before falling back to `FALLBACK_MODEL` |
 | `CORS_ALLOWED_ORIGIN` | `*` | `Access-Control-Allow-Origin` for `/v1/*` responses |
 | `ADOPT_CLI_SESSION` | `false` | Adopt the upstream CLI's active session instead of creating a new one |
-| `WAITING_ROOM_CHAIN` | `false` | After an upstream 428 `waiting_room_required`, fire the reference ad-chain (POST `/api/v1/ads` per provider) + GET `/api/v1/freebuff/streak` before the next session create (issue #94(b), gated stub — best-effort, never blocks the request; not a queue-across-tokens mechanism) |
-| `WEBHOOK_URL` | `""` | Best-effort alert POSTs for three events: `pool_exhausted` (all tokens rate-limited), `token_banned`, and `agent_model_mismatch_escalation` (3+ allowlist refusals in 60s on one token — issue #140 P1; empty = disabled; at most one POST per event type per 5m, never blocks the request path) |
+| `WAITING_ROOM_CHAIN` | `false` | After an upstream 428 `waiting_room_required`, fire the reference ad-chain (POST `/api/v1/ads` per provider) + GET `/api/v1/freebuff/streak` before the next session create — on both the pooled and bridge paths (issue #94(b), gated stub — best-effort, never blocks the request; not a queue-across-tokens mechanism) |
+| `WEBHOOK_URL` | `""` | Best-effort alert POSTs for three events: `pool_exhausted` (all tokens rate-limited), `token_banned` (from chat **or** admission — including bridge tokens, sent with `token_index 0`), and `agent_model_mismatch_escalation` (3+ allowlist refusals in 60s on one token — issue #140 P1; empty = disabled; at most one POST per event type per 5m, never blocks the request path) |
 | `RATE_LIMIT_PER_IP` | `0` | Requests/second allowed per client IP (`0` = disabled; e.g. `20`) |
 | `RATE_LIMIT_BURST` | `0` | Burst request capacity per client IP (`0` = default `2 * RATE_LIMIT_PER_IP`) |
 | `BRIDGE_RATE_LIMIT_PER_TOKEN` | `0` | Per-client-token rate limit in req/s in bridge mode (`0` = unlimited). Independent of the per-IP limiter; each bridge token is throttled individually |
@@ -366,7 +389,7 @@ opt out). It enables essential anti-ban protections and presets:
   signal (also transient). Only `403` with `banned` / `country_blocked`
   means the account itself is gone: stop using it and move to a fresh established account.
 - **For ~24h of continuous coding, budget 4-5 keys.** Each FreeBuff account has a daily session
-  quota (premium 4/day, limited 3/day, trust-level ladder up to 7) and the CLI holds **one session
+  quota (premium 5/day, limited 3/day, trust-level ladder up to 7) and the CLI holds **one session
   at a time** (concurrent sessions are a Desktop multi-tab feature, not CLI).
   One key ≈ one day of moderate use. Configure `AUTH_TOKENS` with multiple tokens to pool session
   headroom across tokens and let the proxy drain them one at a time.
@@ -399,7 +422,7 @@ opt out). It enables essential anti-ban protections and presets:
 | `POST /admin/config` | session cookie | Validate and persist the `.env` file, then hot-reload the config (rolls back on rejection) |
 | `POST /admin/smoke` | session cookie (loopback when `ADMIN_TOKEN` unset) | One real chat through the pool: reports model, token, latency, and a content preview (bridge mode needs a client token in the payload) |
 | `POST /admin/diag` | session cookie (loopback when `ADMIN_TOKEN` unset) | Dashboard diagnostics (same checks as `-doctor`): config state, DNS + TCP reachability, registry count; zero-cost per-token validity probes run on every request |
-| `POST /admin/mode` | session cookie (loopback when `ADMIN_TOKEN` unset) | Runtime pooled↔bridge switch; `{"mode":"bridge"}` empties the pool and clears `AUTH_TOKENS` in `.env` |
+| `POST /admin/mode` | session cookie (loopback when `ADMIN_TOKEN` unset) | Runtime mode switch: `{"mode":"hybrid"}` (pooled + bridge), `{"mode":"pooled"}` (bridge relay disabled, `BRIDGE_ENABLED=0`), `{"mode":"bridge"}` (empties `AUTH_TOKENS`). All changes persisted to `.env` |
 | `POST /admin/tokens/...` | session cookie (loopback when `ADMIN_TOKEN` unset) | Runtime pool management: `/add`, `/remove` (last token), `/test-all`, and per-token `/test`, `/unlock`, `/finish`, persisted to `.env` |
 
 ## Admin Dashboard
@@ -407,8 +430,8 @@ opt out). It enables essential anti-ban protections and presets:
 The proxy ships with a built-in modern SPA web dashboard: single binary, no external dependencies, and zero runtime Node.js requirement (the Svelte 5 production build is compiled and embedded into the binary at build time). Open `http://127.0.0.1:3457/admin` (or your `LISTEN_ADDR`).
 
 - **Login**: enter your `ADMIN_TOKEN` on the login page. It is the same value as the bearer token for `POST /admin/reload`. It defaults to the factory password `123456` — until you change it, sensitive routes (config editor, logs, token management, reload) require a loopback client even when logged in (a startup warning and a persistent dashboard banner prompt the rotation; `/admin/api/change-password` works from anywhere since it requires the current password). Failed logins are rate-limited per IP (5 fails → 1 minute lockout), and the session cookie is `HttpOnly` + `SameSite=Strict` (+ `Secure` when TLS or `X-Forwarded-Proto: https` is present).
-- **Overview**: live relay state (pooled/bridge mode, model count, uptime, safe mode) with per-token cards: session status, risk score, usage vs `MAX_MESSAGES_PER_DAY`, transient-retry counters, plus a **smoke test** that sends one real chat through the pool (status, latency, preview).
-- **Tokens & Quotas**: per-token session detail + live per-model session quota table with usage bars and reset times; per-token **Unlock** (clears cooldown/ban), **Finish runs**, and **Test** (zero-cost validity probe). Features an **always-visible 2-mode pool switcher** (`Pooled`, `Bridge`), runtime **Add Token to Pool** form, and **Test all**, with changes automatically persisted to `.env`.
+- **Overview**: live relay state (pooled/bridge/**hybrid** mode, model count, uptime, safe mode) with per-token cards: session status, risk score, usage vs `MAX_MESSAGES_PER_DAY`, transient-retry counters, a **bridge relay** summary (active client count), plus a **smoke test** that sends one real chat through the pool (status, latency, preview).
+- **Tokens & Quotas**: **two sections side by side in hybrid mode** — the pooled token table **and** live bridge-client cards (masked key, status, model, requests, spend, premium/GLM quota, ban state) so both surfaces are trackable from one page. Per-token **Unlock**, **Finish runs**, and **Test**; runtime **Add Token to Pool**; a **3-mode switcher** (`Pooled`, `Hybrid`, `Bridge`) — changes automatically persisted to `.env`.
 - **Models**: live catalog with upstream agent mappings, default model badges, and `MODEL_ALIASES`.
 - **Traces**: recent chat requests and their routing outcome (token, model, status, duration, error class), the observability view for ban-avoidance debugging.
 - **Playground**: interactive prompt console with real-time SSE chat streaming, model selector, and collapsible thinking/reasoning blocks.

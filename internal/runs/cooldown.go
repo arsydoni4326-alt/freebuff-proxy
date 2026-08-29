@@ -72,6 +72,7 @@ func (m *RunManager) Cooldown(d time.Duration) {
 	m.cooldownUntil = time.Now().Add(d)
 	m.rateLimit = nil
 	m.ban = nil
+	m.banPermanent = false
 	m.countryBlock = nil
 	m.ipCapped = nil
 	// The ban/country windows die with their remembered errors: leaving the
@@ -92,6 +93,7 @@ func (m *RunManager) ClearCooldowns() {
 	m.cooldownUntil = time.Time{}
 	m.rateLimit = nil
 	m.ban = nil
+	m.banPermanent = false
 	m.banUntil = time.Time{}
 	m.countryBlock = nil
 	m.countryUntil = time.Time{}
@@ -222,10 +224,27 @@ func (m *RunManager) CooldownBan(be *upstream.BanError) {
 	}
 	m.mu.Lock()
 	m.ban = be
-	if be.ResumesAt.After(time.Now()) {
-		m.banUntil = be.ResumesAt
+	if be.ResumesAt.IsZero() {
+		// Hard ban (no resumes_at): the account is dead upstream — trust
+		// caps (past_enforcement) make it permanent, and a timed retry only
+		// generates repeated 403 contacts against a banned account. Keep
+		// the remembered ban live indefinitely (banUntil zero = permanent:
+		// BanError() returns it, banView renders hard/zero, Acquire skips
+		// via the BanError guard) until the operator clears it (dashboard
+		// unlock / AUTH_TOKENS change).
+		m.banUntil = time.Time{}
+		m.banPermanent = true
+	} else if !be.ResumesAt.After(time.Now()) {
+		// resumes_at present but past: an expired temporary ban — already
+		// lifted upstream, so keep no ban memory at all. Retiring it would
+		// wrongly kill a merely-expired temporary ban; a stale window would
+		// only delay the next (correct) admission.
+		m.ban = nil
+		m.banUntil = time.Time{}
+		m.banPermanent = false
 	} else {
-		m.banUntil = time.Now().Add(24 * time.Hour) // no timestamp: safe default
+		m.banUntil = be.ResumesAt
+		m.banPermanent = false
 	}
 	// The ban also fills the shared cooldown deadline so Acquire skips the
 	// token entirely during the window (the remembered error is surfaced by
@@ -238,11 +257,11 @@ func (m *RunManager) CooldownBan(be *upstream.BanError) {
 }
 
 // BanError returns the remembered ban error while the ban window is
-// active, nil otherwise.
+// active, nil otherwise. A permanent (hard) ban is always live.
 func (m *RunManager) BanError() *upstream.BanError {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if time.Now().Before(m.banUntil) && m.ban != nil {
+	if m.ban != nil && (m.banPermanent || time.Now().Before(m.banUntil)) {
 		return m.ban
 	}
 	return nil
@@ -260,7 +279,7 @@ func (m *RunManager) CooldownCountryBlocked(cbe *upstream.CountryBlockedError) {
 	// A ban outranks a country block (pool precedence ban > country): keep
 	// the ban window and its remembered error instead of downgrading to the
 	// shorter country cooldown.
-	if time.Now().Before(m.banUntil) && m.ban != nil {
+	if m.ban != nil && (m.banPermanent || time.Now().Before(m.banUntil)) {
 		return
 	}
 	m.countryBlock = cbe
@@ -271,6 +290,7 @@ func (m *RunManager) CooldownCountryBlocked(cbe *upstream.CountryBlockedError) {
 	m.cooldownUntil = m.countryUntil
 	m.rateLimit = nil
 	m.ban = nil
+	m.banPermanent = false
 	m.banUntil = time.Time{}
 	m.ipCapped = nil
 }

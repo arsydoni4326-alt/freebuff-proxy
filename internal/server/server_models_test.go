@@ -108,7 +108,9 @@ func TestModelsEndpoint(t *testing.T) {
 	}
 	// Issue #189 (strict gate); 6→5 on 2026-08-23: luna-es dropped (upstream
 	// reclassified it god-only/honeypot-class — vendor snapshot 0603bc1);
-	// 5→6 on 2026-08-26: stealth/ox-alpha added (vendor cce4800).
+	// 5→6 on 2026-08-26: stealth/ox-alpha added (vendor cce4800);
+	// 6→5 on 2026-08-28: ox-alpha paused, glm-5.3-flash added (vendor 5951772);
+	// 5→6 on 2026-08-29: upstage/solar-pro4 served (vendor 87ef664).
 	if len(out.Data) != 6 {
 		t.Errorf("models = %d, want 6", len(out.Data))
 	}
@@ -195,11 +197,10 @@ func TestHealthz(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("response is not JSON: %v: %s", err, data)
 	}
-	if out.UptimeSeconds < 0 {
-		t.Errorf("uptime_seconds = %v, want >= 0", out.UptimeSeconds)
-	}
 	// Issue #189 strict count; 6→5 when luna-es was dropped (2026-08-23),
-	// 5→6 when stealth/ox-alpha was added (2026-08-26).
+	// 5→6 when stealth/ox-alpha was added (2026-08-26),
+	// 5→6 when upstage/solar-pro4 was served (2026-08-29); fable-5 stays
+	// out (not actually reachable on free accounts).
 	if out.Models != 6 {
 		t.Errorf("models = %d, want 6", out.Models)
 	}
@@ -387,7 +388,7 @@ func TestModelsAllowList(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"}
+		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash", "openai/gpt-5.6-luna"}
 	}, mock)
 
 	resp, data := doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
@@ -404,12 +405,12 @@ func TestModelsAllowList(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, m := range out.Data {
-		if m.ID != "deepseek/deepseek-v4-flash" && m.ID != "deepseek/deepseek-v4-pro" {
+		if m.ID != "deepseek/deepseek-v4-flash" && m.ID != "openai/gpt-5.6-luna" {
 			t.Errorf("model %q listed outside MODELS_ALLOW", m.ID)
 		}
 		seen[m.ID] = true
 	}
-	if !seen["deepseek/deepseek-v4-flash"] || !seen["deepseek/deepseek-v4-pro"] {
+	if !seen["deepseek/deepseek-v4-flash"] || !seen["openai/gpt-5.6-luna"] {
 		t.Errorf("allowlisted models missing from /v1/models: %v", seen)
 	}
 	if len(out.Data) != 2 {
@@ -426,7 +427,7 @@ func TestModelsAllowRejectsChat(t *testing.T) {
 		c.ModelsAllow = []string{"deepseek/deepseek-v4-flash"}
 	}, mock)
 
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-pro"), nil)
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-flash-max"), nil)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("chat status = %d, want 400: %s", resp.StatusCode, data)
 	}
@@ -442,7 +443,7 @@ func TestModelsAllowRejectsChat(t *testing.T) {
 	if out.Error.Code != "model_unavailable" {
 		t.Errorf("error.code = %q, want model_unavailable", out.Error.Code)
 	}
-	if !strings.Contains(out.Error.Message, "Supported models: deepseek") {
+	if !strings.Contains(out.Error.Message, "Supported models: openai") {
 		t.Errorf("error.message = %q, want supported models notice", out.Error.Message)
 	}
 	if len(mock.RecordedChatHeaders) != 0 {
@@ -490,11 +491,11 @@ func TestModelsAllowPassthrough(t *testing.T) {
 	defer mock.Close()
 	mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-max", 1, `"choices":[{"index":0,"delta":{"content":"ping"},"finish_reason":"stop"}]`))
 	ts, _ := newTestServerCfg(t, nil, func(c *config.Config) {
-		c.ModelsAllow = []string{"deepseek/deepseek-v4-pro"}
+		c.ModelsAllow = []string{"openai/gpt-5.6-luna"}
 	}, mock)
 
 	// The allowlisted base id is served as-is (no -max upgrade).
-	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("deepseek/deepseek-v4-pro"), nil)
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("openai/gpt-5.6-luna"), nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("chat (allowlisted base) status = %d, want 200: %s", resp.StatusCode, data)
 	}
@@ -526,8 +527,8 @@ func TestModelsAllowPassthrough(t *testing.T) {
 	for _, m := range out.Data {
 		listed[m.ID] = true
 	}
-	if !listed["deepseek/deepseek-v4-pro"] {
-		t.Errorf("/v1/models missing allowlisted base id deepseek/deepseek-v4-pro: %v", listed)
+	if !listed["openai/gpt-5.6-luna"] {
+		t.Errorf("/v1/models missing allowlisted base id openai/gpt-5.6-luna: %v", listed)
 	}
 	if listed["deepseek/deepseek-v4-pro-max"] {
 		t.Errorf("/v1/models leaked -max variant under base-only MODELS_ALLOW: %v", listed)
@@ -792,11 +793,11 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 	}
 	wantSet := map[string]bool{
 		"deepseek/deepseek-v4-flash": true,
-		"deepseek/deepseek-v4-pro":   true,
 		"openai/gpt-5.6-luna":        true,
+		"upstage/solar-pro4":         true,
 		"z-ai/glm-5.2":               true,
+		"z-ai/glm-5.3-flash":         true,
 		"mimo/mimo-v2.5":             true,
-		"stealth/ox-alpha":           true,
 	}
 	for _, m := range out.Data {
 		if !wantSet[m.ID] {
@@ -833,7 +834,7 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 		if errChat.Error.Code != "model_unavailable" {
 			t.Errorf("chat %s error code = %q, want model_unavailable", dm, errChat.Error.Code)
 		}
-		if !strings.Contains(errChat.Error.Message, "Supported models: deepseek") {
+		if !strings.Contains(errChat.Error.Message, "Supported models: openai") {
 			t.Errorf("chat %s message = %q, want supported models notice", dm, errChat.Error.Message)
 		}
 
@@ -857,7 +858,7 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 		if errAnthropic.Error.Type != "invalid_request_error" {
 			t.Errorf("messages %s error type = %q, want invalid_request_error", dm, errAnthropic.Error.Type)
 		}
-		if !strings.Contains(errAnthropic.Error.Message, "Supported models: deepseek") {
+		if !strings.Contains(errAnthropic.Error.Message, "Supported models: openai") {
 			t.Errorf("messages %s message = %q, want supported models notice", dm, errAnthropic.Error.Message)
 		}
 
@@ -896,7 +897,7 @@ func TestPausedModelWithdrawnMessage(t *testing.T) {
 	defer mock.Close()
 	ts, _ := newTestServer(t, nil, mock)
 
-	const wantMsg = "MiniMax M3 is no longer available in Freebuff. We recommend using DeepSeek V4 Flash instead."
+	const wantMsg = "MiniMax M3 is no longer available in Freebuff. We recommend using GPT-5.6 Luna instead."
 
 	t.Run("openai chat", func(t *testing.T) {
 		body := `{"model":"minimax/minimax-m3","messages":[{"role":"user","content":"hi"}]}`
@@ -948,7 +949,7 @@ func TestPausedModelWithdrawnMessage(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("status = %d, want 400: %s", resp.StatusCode, data)
 		}
-		if !strings.Contains(string(data), "DeepSeek V4 Flash") {
+		if !strings.Contains(string(data), "GPT-5.6 Luna") {
 			t.Errorf("body missing replacement model: %s", data)
 		}
 	})

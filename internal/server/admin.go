@@ -81,6 +81,10 @@ func (s *Server) handleSmoke(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		lease, err = s.pool.AcquireBridge(ctx, req.Token, req.Model)
+	} else if cfg.HybridBridgeMode() && req.Token != "" {
+		// Hybrid: a supplied client token smoke-tests the bridge surface;
+		// without one the pooled surface is probed.
+		lease, err = s.pool.AcquireBridge(ctx, req.Token, req.Model)
 	} else {
 		lease, err = s.pool.Acquire(ctx, req.Model)
 	}

@@ -19,8 +19,11 @@ type BridgeTokenSnapshot struct {
 	SessionActive bool                             `json:"session_active"`
 	Model         string                           `json:"model"`
 	QuotaByModel  map[string]session.QuotaSnapshot `json:"quota_by_model,omitempty"`
-	SpendDay      float64                          `json:"spend_day"`
-	SpendPct      int                              `json:"spend_pct"`
+	// PremiumQuota mirrors TokenSnapshot's premium view (quota_tracker.go).
+	// Nil when the bridge entry has no premium quota.
+	PremiumQuota *PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
+	SpendDay     float64               `json:"spend_day"`
+	SpendPct     int                   `json:"spend_pct"`
 	// BanType / BannedUntil mirror TokenSnapshot's active-ban view
 	// (issues #198/#199): "temporary" (auto-lifts at BannedUntil) vs
 	// "hard" (never self-heals); zero values when no ban is active.
@@ -111,7 +114,11 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		spend := p.spendSnapshot(i)
 
 		sessionRemaining := int64(0)
-		if ss.Status == "active" && !ss.ExpiresAt.IsZero() {
+		if ss.RemainingMs > 0 {
+			// Server-authoritative countdown (wire remainingMs) — prefer over
+			// the local expiresAt approximation to avoid clock-skew drift.
+			sessionRemaining = ss.RemainingMs / 1000
+		} else if ss.Status == "active" && !ss.ExpiresAt.IsZero() {
 			if rem := time.Until(ss.ExpiresAt); rem > 0 {
 				sessionRemaining = int64(rem.Seconds())
 			}
@@ -129,6 +136,12 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		}
 		// Active-ban view for healthz/dashboard consumers (issues #198/#199).
 		banType, bannedUntil := banView(rs.BanError, rs.BannedUntil)
+		premium := premiumSnapshotFromQuotaMap(ss.QuotaByModel)
+		q := tok.quarantine.Load()
+		quarantineReason := ""
+		if q != nil {
+			quarantineReason = q.reason
+		}
 
 		// Phase 5.1: token health score — composite 0–100 from quota,
 		// cooldown, spend, error rate, and session freshness.
@@ -163,10 +176,14 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			CountryBlockReason:      countryReason,
 			SessionActiveUsersForIP: ss.ActiveUsersForIP,
 			QuotaByModel:            ss.QuotaByModel,
+			PremiumQuota:            premium,
 			Entitlement:             ss.Entitlement,
 			GlmPromo:                ss.GlmPromo,
 			Standing:                ss.Standing,
+			Referral:                ss.Referral,
 			Locked:                  tok.locked.Load(),
+			Quarantined:             q != nil,
+			QuarantineReason:        quarantineReason,
 			TransientRetries:        tok.client.TransientRetries(),
 			FingerprintRotations:    tok.client.FingerprintRotations(),
 			RateLimitEvents:         tok.client.RateLimitEvents(),
@@ -204,6 +221,11 @@ type PoolSnapshot struct {
 	FingerprintRotations int64
 	RequestsServed       uint64
 	Tokens               []TokenSnapshot
+	// Quarantined is the count of fixed pooled tokens currently in
+	// terminal-quarantine (banned / country_blocked / 401 invalid). Surfaced
+	// so the operator can see at a glance how many accounts the pool has
+	// permanently stopped leasing.
+	Quarantined int
 }
 
 // PoolSnapshot returns the pool-wide snapshot with aggregate counters.
@@ -213,6 +235,9 @@ func (p *Pool) PoolSnapshot() PoolSnapshot {
 	for _, tok := range *toks {
 		ps.TransientRetries += tok.client.TransientRetries()
 		ps.FingerprintRotations += tok.client.FingerprintRotations()
+		if tok.quarantine.Load() != nil {
+			ps.Quarantined++
+		}
 	}
 	// Live bridge entries: their counters survive while the entry is cached
 	// (LRU eviction drops old ones — the view is "recent bridge activity").

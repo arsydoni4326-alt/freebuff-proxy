@@ -5,6 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"freebuff-proxy/internal/modelcat"
 )
 
 // CreateSession POSTs /api/v1/freebuff/session with no body.
@@ -16,9 +21,223 @@ func (c *Client) CreateSession(ctx context.Context) (*SessionState, error) {
 // model header. The POST carries NO body and therefore no Content-Type
 // (#120): the CLI's session POST is a bare fetch with Authorization + the
 // optional x-freebuff-model header only (reference/freebuff
-// freebuff-session-api.ts callFreebuffSession, codebuff-api.ts sets
-// Content-Type only when body !== undefined).
+// freebuff-session-api.ts callFreebuffSession; codebuff-api.ts sets the
+// same request shape).
+
+// mockTokenState tracks per-token usage for dummy tokens so the mock behaves
+// like a real upstream session: recentCount rises per model, standing score
+// degrades on cooldown, and quota resets at Pacific midnight.
+type mockTokenState struct {
+	mu           sync.Mutex
+	recentCounts map[string]float64 // model -> recentCount
+	standing     float64            // current standing score (0-100)
+}
+
+var mockStates sync.Map // token -> *mockTokenState
+
+// getMockState returns the (lazily created) usage state for a dummy token.
+func getMockState(token string) *mockTokenState {
+	v, _ := mockStates.LoadOrStore(token, &mockTokenState{
+		recentCounts: map[string]float64{},
+		standing:     95.0,
+	})
+	return v.(*mockTokenState)
+}
+
+// mockQuotaLimit mirrors the real tier caps for the served models (derived
+// from modelcat: shared premium pool 4/day (luna, solar-pro4; glm-5.3-flash
+// left it 2026-08-28 and is unmetered), glm-5.2 promo 1/day, everything else
+// unmetered). Paused models
+// are never admitted so their cap is irrelevant — return 9999.
+func mockQuotaLimit(model string) float64 {
+	if model == "" {
+		model = modelcat.DefaultModelID
+	}
+	switch model {
+	case modelcat.Glm52ModelID:
+		return 1
+	default:
+		if limit, _ := modelcat.PerModelCap(model); limit > 0 {
+			return float64(limit)
+		}
+		if modelcat.IsPremium(model) {
+			return modelcat.PremiumSessionLimit
+		}
+		return 9999 // mimo, fable, deepseek-flash: unmetered
+	}
+}
+
+func isDummyToken(token string) bool {
+	t := strings.ToLower(strings.TrimSpace(token))
+	return strings.HasPrefix(t, "cb_dummy") || strings.HasPrefix(t, "dummy-") || strings.HasPrefix(t, "mock-")
+}
+
+// mockSessionExpiry returns the session TTL for the mock: 1 hour for GLM
+// 5.2 (upstream FREEBUFF_GLM_V52_SESSION_LENGTH_MS), 24 hours for everything
+// else.
+func mockSessionExpiry(model string) time.Duration {
+	if model == modelcat.Glm52ModelID {
+		return modelcat.GLMSessionLength
+	}
+	return 24 * time.Hour
+}
+
+func mockSessionState(token string, requestedModel string, consume bool) *SessionState {
+	if requestedModel == "" {
+		requestedModel = modelcat.FallbackModelID
+	}
+	now := time.Now()
+	pacific := pacificLoc()
+	pacNow := now.In(pacific)
+	pacMidnight := time.Date(pacNow.Year(), pacNow.Month(), pacNow.Day(), 0, 0, 0, 0, pacific)
+	if !pacNow.Before(pacMidnight) {
+		pacMidnight = pacMidnight.AddDate(0, 0, 1)
+	}
+
+	st := getMockState(token)
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	limit := mockQuotaLimit(requestedModel)
+	if consume {
+		st.recentCounts[requestedModel]++
+	}
+	recent := st.recentCounts[requestedModel]
+	score := st.standing
+
+	// Status transitions: active while quota remains; cooldown once recent >= limit.
+	status := "active"
+	var retryAfterMs int64
+	if limit <= 9999 && recent >= limit {
+		status = "cooldown"
+		retryAfterMs = int64(time.Until(pacMidnight).Seconds() * 1000)
+		if score > 60 {
+			score -= 10
+			st.standing = score
+		}
+	}
+	if status == "active" && score < 95 {
+		score++
+		if score > 95 {
+			score = 95
+		}
+		st.standing = score
+	}
+
+	instanceID := fmt.Sprintf("a%08x-b%04x-4%03x-8%03x-e%012x",
+		now.UnixMilli()&0xFFFFFFFF, now.UnixMilli()&0xFFFF,
+		now.UnixMilli()&0x0FFF, now.UnixMilli()&0x0FFF,
+		now.UnixMilli()&0xFFFFFFFFFFFF)
+
+	unlimited := float64(9999)
+
+	state := &SessionState{
+		Status:          status,
+		InstanceID:      instanceID,
+		Model:           requestedModel,
+		CurrentModel:    requestedModel,
+		RequestedModel:  requestedModel,
+		ExpiresAt:       now.Add(mockSessionExpiry(requestedModel)),
+		AdmittedAt:      now,
+		Position:        0,
+		QueueDepth:      0,
+		EstimatedWaitMs: 0,
+		PollAt:          now.Add(30 * time.Second),
+		Limit:           limit,
+		RecentCount:     recent,
+		ResetAt:         pacMidnight,
+		RetryAfterMs:    retryAfterMs,
+		RateLimitsByModel: map[string]ModelQuota{
+			"openai/gpt-5.6-luna": {
+				Model:       modelcat.DefaultModelID,
+				Limit:       modelcat.PremiumSessionLimit,
+				RecentCount: st.recentCounts["openai/gpt-5.6-luna"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "premium",
+				PoolLabel:   "Premium",
+				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
+			},
+			"upstage/solar-pro4": {
+				Model:       modelcat.SolarPro4ModelID,
+				Limit:       modelcat.PremiumSessionLimit,
+				RecentCount: st.recentCounts["upstage/solar-pro4"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "premium",
+				PoolLabel:   "Premium",
+				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
+			},
+			"z-ai/glm-5.3-flash": {
+				Model:       modelcat.Glm53ModelID,
+				Limit:       modelcat.PremiumSessionLimit,
+				RecentCount: st.recentCounts["z-ai/glm-5.3-flash"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "premium",
+				PoolLabel:   "Premium",
+				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
+			},
+			"mimo/mimo-v2.5": {
+				Model:       modelcat.FallbackModelID,
+				Limit:       unlimited,
+				RecentCount: st.recentCounts["mimo/mimo-v2.5"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "unlimited",
+				PoolLabel:   "Unlimited",
+			},
+			"deepseek/deepseek-v4-flash": {
+				Model:       "deepseek/deepseek-v4-flash",
+				Limit:       unlimited,
+				RecentCount: st.recentCounts["deepseek/deepseek-v4-flash"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "unlimited",
+				PoolLabel:   "Unlimited",
+			},
+			"z-ai/glm-5.2": {
+				Model:       modelcat.Glm52ModelID,
+				Limit:       1,
+				RecentCount: st.recentCounts["z-ai/glm-5.2"],
+				ResetAt:     pacMidnight,
+				Period:      "promo",
+				Pool:        "glm-promo",
+				PoolLabel:   "GLM Referral",
+				Entitlement: map[string]float64{"referral": 1},
+			},
+		},
+		Standing: &SessionStanding{
+			Level:       "trusted",
+			Label:       "Trusted",
+			Score:       score,
+			NextLevel:   "",
+			CappedBy:    "third_party_client",
+			Blurb:       "Your account is in good standing. Full access to all models.",
+			NextLevelAt: time.Time{},
+		},
+		Referral: &SessionReferral{
+			Code:                    "CB-MOCK0",
+			ReferrerName:            "",
+			QualifiedCount:          2,
+			WeeklySessionsRemaining: 3,
+			ResetAt:                 pacMidnight,
+			GithubLinked:            true,
+		},
+	}
+
+	if requestedModel == "z-ai/glm-5.2" {
+		state.GlmPromo = fmt.Sprintf("{\"dailySessions\":%d,\"endsAt\":%q}",
+			int(limit), pacMidnight.UTC().Format(time.RFC3339))
+	}
+
+	return state
+}
+
 func (c *Client) CreateSessionForModel(ctx context.Context, model string) (*SessionState, error) {
+	if isDummyToken(c.token) {
+		return mockSessionState(c.token, model, true), nil
+	}
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/freebuff/session", nil)
 	if err != nil {
 		return nil, err
@@ -42,6 +261,9 @@ func (c *Client) GetSession(ctx context.Context, instanceID string) (*SessionSta
 // freebuff-models.ts:1212-1215); liveness comes from the recurring compact
 // GET itself (gap #2).
 func (c *Client) GetSessionWithOpts(ctx context.Context, instanceID string, compact bool) (*SessionState, error) {
+	if isDummyToken(c.token) {
+		return mockSessionState(c.token, "", false), nil
+	}
 	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/freebuff/session", nil)
 	if err != nil {
 		return nil, err
@@ -73,6 +295,9 @@ func (c *Client) GetSessionWithOpts(ctx context.Context, instanceID string, comp
 // failures as-is. A 200 with any other status (active/queued/disabled/…)
 // returns the full *SessionState.
 func (c *Client) ProbeAccount(ctx context.Context) (*SessionState, error) {
+	if isDummyToken(c.token) {
+		return mockSessionState(c.token, "", false), nil
+	}
 	req, err := c.newRequest(ctx, http.MethodGet, "/api/v1/freebuff/session", nil)
 	if err != nil {
 		return nil, err
@@ -101,6 +326,9 @@ func (c *Client) ProbeAccount(ctx context.Context) (*SessionState, error) {
 // Authorization only, no x-freebuff-instance-id header (#120,
 // reference/freebuff freebuff-session-api.ts releaseFreebuffSlot → DELETE).
 func (c *Client) EndSession(ctx context.Context) error {
+	if isDummyToken(c.token) {
+		return nil
+	}
 	req, err := c.newRequest(ctx, http.MethodDelete, "/api/v1/freebuff/session", nil)
 	if err != nil {
 		return err
@@ -124,6 +352,9 @@ func (c *Client) EndSession(ctx context.Context) error {
 
 // StartRun POSTs /api/v1/agent-runs with action START and returns the run id.
 func (c *Client) StartRun(ctx context.Context, agentID string) (string, error) {
+	if isDummyToken(c.token) {
+		return fmt.Sprintf("run-%s-%d", c.token, time.Now().UnixMilli()), nil
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"action":         "START",
 		"agentId":        agentID,
@@ -132,6 +363,16 @@ func (c *Client) StartRun(ctx context.Context, agentID string) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/agent-runs", payload)
 	if err != nil {
 		return "", err
+	}
+	// Dual-auth parity (current vendor wire): the agent-runtime client sends
+	// BOTH Authorization and x-codebuff-api-key (the same raw token) on its
+	// agent-runs/run POSTs (reference/freebuff packages/agent-runtime/src/
+	// llm-api/codebuff-web-api.ts:70-71,301-302); the shipped CLI confirms
+	// it. Applied AFTER newRequest's scrub, so any relayed/downstream
+	// x-codebuff-api-key copy is overwritten by the authenticated token
+	// (Set, not Add — a foreign value is never forwarded upstream).
+	if !c.authOnly {
+		req.Header.Set("x-codebuff-api-key", c.token)
 	}
 	resp, cancel, err := c.do(req, c.sessionCallTimeout)
 	if err != nil {
@@ -188,6 +429,9 @@ type RunStep struct {
 // errorMessage is omitted when empty and truncated to 5000 runes otherwise,
 // exactly like the CLI's truncateString(errorMessage, 5000).
 func (c *Client) FinishRun(ctx context.Context, runID, status string, totalSteps int, steps []RunStep, errorMessage string) error {
+	if isDummyToken(c.token) {
+		return nil
+	}
 	if steps == nil {
 		steps = []RunStep{}
 	}
@@ -210,6 +454,16 @@ func (c *Client) FinishRun(ctx context.Context, runID, status string, totalSteps
 	req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/agent-runs", body)
 	if err != nil {
 		return err
+	}
+	// Dual-auth parity (current vendor wire): agent-runs POSTs carry BOTH
+	// Authorization and x-codebuff-api-key (the same raw token), mirroring
+	// the agent-runtime's agent-runs/run POSTs (reference/freebuff
+	// packages/agent-runtime/src/llm-api/codebuff-web-api.ts:70-71,301-302)
+	// and the shipped CLI. Set after newRequest's scrub overwrites any
+	// relayed/downstream x-codebuff-api-key copy with the authenticated
+	// token (foreign values are never forwarded).
+	if !c.authOnly {
+		req.Header.Set("x-codebuff-api-key", c.token)
 	}
 
 	resp, cancel, err := c.do(req, c.sessionCallTimeout)

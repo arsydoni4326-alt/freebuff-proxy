@@ -7,9 +7,8 @@
   import Models from './lib/pages/Models.svelte';
   import Config from './lib/pages/Config.svelte';
   import Logs from './lib/pages/Logs.svelte';
-  import Setup from './lib/pages/Setup.svelte';
+  import DevTools from './lib/pages/DevTools.svelte';
   import Login from './lib/pages/Login.svelte';
-  import SecurityBanner from './lib/components/SecurityBanner.svelte';
   import ChangePasswordModal from './lib/components/ChangePasswordModal.svelte';
   import Alert from './lib/components/Alert.svelte';
   import Button from './lib/components/Button.svelte';
@@ -17,7 +16,6 @@
   import { fetchAPI } from './lib/api/client.js';
   import { sessionExpired, dismissSessionExpired } from './lib/stores/session.js';
   import { tr } from './lib/i18n.js';
-
   function getInitialTab() {
     if (typeof window === 'undefined') return 'overview';
     const path = window.location.pathname;
@@ -104,7 +102,7 @@
   {/if}
 
   <div class="flex-1 flex flex-col {activeTab !== 'login' ? 'md:pl-56' : ''}">
-    <main id="main-content" class="flex-1 w-full max-w-[1200px] mx-auto px-6 py-8">
+    <main id="main-content" tabindex="-1" class="flex-1 w-full max-w-[1200px] mx-auto px-6 py-8">
       {#if $sessionExpired && activeTab !== 'login'}
         <div class="mb-6">
           <Alert tone="error" title={$tr('Session expired')}>
@@ -143,8 +141,8 @@
             <Config />
           {:else if activeTab === 'logs'}
             <Logs />
-          {:else if activeTab === 'setup'}
-            <Setup />
+          {:else if activeTab === 'devtools'}
+            <DevTools />
           {:else if activeTab === 'login'}
             <Login />
           {/if}

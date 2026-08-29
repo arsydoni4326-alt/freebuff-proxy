@@ -56,6 +56,7 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.TLSFingerprint, "TLS_FINGERPRINT")
 	overrideString(&raw.RegistryRefresh, "REGISTRY_REFRESH")
 	overrideBool(&raw.DebugDump, "DEBUG_DUMP")
+	overrideBool(&raw.DevToolsEnabled, "DEVTOOLS_ENABLED")
 	overrideString(&raw.LogFile, "LOG_FILE")
 	overrideString(&raw.LogLevel, "LOG_LEVEL")
 	overrideString(&raw.LogFormat, "LOG_FORMAT")
@@ -64,6 +65,8 @@ func Load(configPath string) (Config, error) {
 	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
 	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
+	overrideBool(&raw.BridgeEnabled, "BRIDGE_ENABLED")
+	overrideString(&raw.BridgeIdleEvict, "BRIDGE_IDLE_EVICT")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
 	overrideString(&raw.SessionIdleEnd, "SESSION_IDLE_END")
 	overrideBool(&raw.SafeMode, "SAFE_MODE")
@@ -101,6 +104,7 @@ func Load(configPath string) (Config, error) {
 	overrideInt(&raw.BridgeCircuitBreakerFailures, "BRIDGE_CIRCUIT_BREAKER_FAILURES")
 	overrideString(&raw.BridgeCircuitBreakerWindow, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
 	overrideString(&raw.BridgeCircuitBreakerCooldown, "BRIDGE_CIRCUIT_BREAKER_COOLDOWN")
+	overrideString(&raw.TokenRotation, "TOKEN_ROTATION")
 	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
 	overrideBool(&raw.AutoRotateOnExhaustion, "AUTO_ROTATE_ON_EXHAUSTION")
 	overrideString(&raw.ExhaustionWarningThreshold, "EXHAUSTION_WARNING_THRESHOLD")
@@ -254,6 +258,19 @@ func Load(configPath string) (Config, error) {
 	if raw.BridgeDailyLimit != nil {
 		bridgeDailyLimit = *raw.BridgeDailyLimit
 	}
+	// BRIDGE_IDLE_EVICT is zero-tolerant: "" or "0" fall back to the 72h
+	// default (a zero TTL would evict every bridge entry on the first idle
+	// pass, defeating the cache).
+	bridgeIdleEvict := 72 * time.Hour
+	if v := strings.TrimSpace(raw.BridgeIdleEvict); v != "" {
+		bridgeIdleEvict, err = parseDuration(v, "BRIDGE_IDLE_EVICT")
+		if err != nil {
+			return Config{}, err
+		}
+		if bridgeIdleEvict <= 0 {
+			bridgeIdleEvict = 72 * time.Hour
+		}
+	}
 
 	// MAX_SPEND_PER_DAY (issue #122): advisory per-token Pacific-day spend
 	// ceiling in ledger units, default 0 (unlimited). Deliberately NOT
@@ -377,16 +394,12 @@ func Load(configPath string) (Config, error) {
 		fallbackAfter = time.Duration(ms) * time.Millisecond
 	}
 
-	// MODEL_ALIASES defaults (issue #42): when the operator has not set any
-	// aliases, common OpenAI/Anthropic/DeepSeek client names map to the
-	// closest FreeBuff free-catalog model so a stock client works out of
-	// the box. An explicit (even empty) value never gets the defaults.
+	// MODEL_ALIASES (issue #42): parsed verbatim — there are no built-in
+	// defaults (the old gpt-4o/deepseek-chat/claude-3-5-sonnet map was
+	// emptied on 2026-08-20 and removed on 2026-08-28: with deepseek-v4-pro
+	// paused, the best-known target of the set was no longer servable, and
+	// an empty map applied silently was dead machinery).
 	modelAliases := parseMap(raw.ModelAliases)
-	if len(modelAliases) == 0 {
-		for alias, real := range defaultModelAliases {
-			modelAliases[alias] = real
-		}
-	}
 
 	// FALLBACK_MODEL defaults (issue #100): when unset, the premium free-
 	// catalog rows fall back to the always-available flash model once their
@@ -431,6 +444,21 @@ func Load(configPath string) (Config, error) {
 	if adminToken == "" {
 		adminToken = DefaultAdminToken
 	}
+
+	tokenRotation := strings.ToLower(strings.TrimSpace(raw.TokenRotation))
+	switch tokenRotation {
+	case "", "drain":
+		tokenRotation = "drain"
+	case "round_robin", "roundrobin", "rr":
+		tokenRotation = "round_robin"
+	case "least_used", "leastused":
+		tokenRotation = "least_used"
+	case "random", "rand":
+		tokenRotation = "random"
+	default:
+		return Config{}, fmt.Errorf("invalid TOKEN_ROTATION: %q (must be drain, round_robin, least_used, or random)", raw.TokenRotation)
+	}
+
 	cfg := Config{
 		ListenAddr:                       strings.TrimSpace(raw.ListenAddr),
 		UpstreamBaseURL:                  upstreamBaseURL,
@@ -438,6 +466,7 @@ func Load(configPath string) (Config, error) {
 		RotationInterval:                 rotationInterval,
 		RequestTimeout:                   requestTimeout,
 		SessionCallTimeout:               sessionCallTimeout,
+		TokenRotation:                    tokenRotation,
 		APIKeys:                          dedupeStrings(raw.APIKeys),
 		AdminToken:                       adminToken,
 		HTTP2Upstream:                    raw.HTTP2Upstream,
@@ -446,6 +475,7 @@ func Load(configPath string) (Config, error) {
 		TLSFingerprint:                   strings.TrimSpace(raw.TLSFingerprint),
 		RegistryRefresh:                  registryRefresh,
 		DebugDump:                        raw.DebugDump,
+		DevToolsEnabled:                  raw.DevToolsEnabled,
 		LogFile:                          strings.TrimSpace(raw.LogFile),
 		LogLevel:                         strings.TrimSpace(raw.LogLevel),
 		LogFormat:                        logFormat,
@@ -454,6 +484,8 @@ func Load(configPath string) (Config, error) {
 		MaxMessagesPerDay:                maxMessagesPerDay,
 		BridgeDailyLimit:                 bridgeDailyLimit,
 		MaxSpendPerDay:                   maxSpendPerDay,
+		BridgeEnabled:                    raw.BridgeEnabled,
+		BridgeIdleEvict:                  bridgeIdleEvict,
 		IdleRotationTimeout:              idleRotationTimeout,
 		SessionIdleEnd:                   sessionIdleEnd,
 		SafeMode:                         raw.SafeMode,
@@ -646,16 +678,17 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.RotationInterval, get, "ROTATION_INTERVAL")
 	overrideStringFrom(&raw.RequestTimeout, get, "REQUEST_TIMEOUT")
 	overrideStringFrom(&raw.SessionCallTimeout, get, "SESSION_CALL_TIMEOUT")
+	overrideStringFrom(&raw.TokenRotation, get, "TOKEN_ROTATION")
 	overrideCSVFrom(&raw.APIKeys, get, "API_KEYS")
 	overrideStringFrom(&raw.AdminToken, get, "ADMIN_TOKEN")
 	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
-	// ACTING_USER_ID / legacy USER_ID (#126), same-source: a .env USER_ID
-	// beats a JSON ACTING_USER_ID (dotenv outranks JSON), ACTING_USER_ID
-	// wins when both are in the .env.
+	// A .env ACTING_USER_ID beats a JSON ACTING_USER_ID (dotenv outranks
+	// JSON); ACTING_USER_ID wins when both are in the .env.
 	overrideStringAlias(&raw.ActingUserID, get, "ACTING_USER_ID", "USER_ID")
 	overrideStringFrom(&raw.TLSFingerprint, get, "TLS_FINGERPRINT")
 	overrideStringFrom(&raw.RegistryRefresh, get, "REGISTRY_REFRESH")
 	overrideBoolFrom(&raw.DebugDump, get, "DEBUG_DUMP")
+	overrideBoolFrom(&raw.DevToolsEnabled, get, "DEVTOOLS_ENABLED")
 	overrideStringFrom(&raw.LogFile, get, "LOG_FILE")
 	overrideStringFrom(&raw.LogLevel, get, "LOG_LEVEL")
 	overrideStringFrom(&raw.LogFormat, get, "LOG_FORMAT")
@@ -664,6 +697,8 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
 	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
 	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
+	overrideBoolFrom(&raw.BridgeEnabled, get, "BRIDGE_ENABLED")
+	overrideStringFrom(&raw.BridgeIdleEvict, get, "BRIDGE_IDLE_EVICT")
 	overrideStringFrom(&raw.IdleRotationTimeout, get, "IDLE_ROTATION_TIMEOUT")
 	overrideStringFrom(&raw.SessionIdleEnd, get, "SESSION_IDLE_END")
 	// The remaining keys mirror the real-environment override set in Load.

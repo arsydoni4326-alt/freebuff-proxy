@@ -19,15 +19,8 @@ func TestDefaultModelAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{
-		"deepseek-chat":     "deepseek/deepseek-v4-flash",
-		"gpt-4o":            "deepseek/deepseek-v4-pro",
-		"claude-3-5-sonnet": "anthropic/claude-fable-5",
-	}
-	for alias, real := range want {
-		if got := cfg.ModelAliases[alias]; got != real {
-			t.Errorf("ModelAliases[%q] = %q, want default %q", alias, got, real)
-		}
+	if len(cfg.ModelAliases) != 0 {
+		t.Errorf("ModelAliases len = %d, want empty by default", len(cfg.ModelAliases))
 	}
 }
 
@@ -120,11 +113,8 @@ func TestDefaultFallbackModels(t *testing.T) {
 	}
 	// Every default fallback target must exist in the free catalog
 	// (deepseek-v4-flash is the guaranteed-available row).
-	if cfg.FallbackModels["deepseek/deepseek-v4-pro"] != "deepseek/deepseek-v4-flash" {
-		t.Error("deepseek-v4-pro must fall back to deepseek-v4-flash")
-	}
 	if cfg.FallbackModels["openai/gpt-5.6-luna"] != "deepseek/deepseek-v4-flash" {
-		t.Error("openai/gpt-5.6-luna must fall back to deepseek-v4-flash")
+		t.Error("gpt-5.6-luna must fall back to deepseek-v4-flash")
 	}
 }
 
@@ -140,8 +130,10 @@ func TestFallbackModelsExplicitSuppressesDefaults(t *testing.T) {
 	if got := cfg.FallbackModels["openai/gpt-5.6-luna"]; got != "deepseek/deepseek-v4-flash" {
 		t.Errorf("FallbackModels[gpt-5.6-luna] = %q, want explicit", got)
 	}
-	if _, ok := cfg.FallbackModels["deepseek/deepseek-v4-pro"]; ok {
-		t.Error("default fallback for deepseek-v4-pro applied despite explicit FALLBACK_MODEL")
+	// With v4-pro's default fallback removed (paused), luna→flash is the only
+	// built-in; an explicit FALLBACK_MODEL replaces the defaults wholesale.
+	if len(cfg.FallbackModels) != 1 {
+		t.Errorf("FallbackModels = %v, want exactly the explicit entry", cfg.FallbackModels)
 	}
 }
 

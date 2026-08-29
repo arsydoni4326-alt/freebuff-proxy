@@ -81,6 +81,25 @@ func (c Config) Validate() error {
 			return fmt.Errorf("QUOTA_FALLBACK_MODELS source and target cannot be identical: %q", src)
 		}
 	}
+	// Multi-hop cycle detection (issue #219): a→b→a passes the self-loop
+	// check above but drives unbounded Acquire recursion (stack overflow)
+	// when every token is quota-capped. Walk each chain to its sink and
+	// reject any revisit.
+	for src := range c.QuotaFallbackModels {
+		seen := map[string]bool{}
+		cur := src
+		for {
+			next, ok := c.QuotaFallbackModels[cur]
+			if !ok {
+				break
+			}
+			if seen[cur] {
+				return fmt.Errorf("QUOTA_FALLBACK_MODELS contains a cycle: %q", cur)
+			}
+			seen[cur] = true
+			cur = next
+		}
+	}
 
 	if c.WebhookURL != "" {
 		u, err := url.Parse(c.WebhookURL)

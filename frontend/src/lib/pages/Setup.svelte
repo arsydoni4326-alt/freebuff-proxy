@@ -56,11 +56,14 @@
 
   // Mode facts straight from the /admin/api/setup payload.
   const isBridge = $derived(data?.bridge ?? false);
+  const isHybrid = $derived(data?.mode === 'hybrid');
   const modeTone = $derived(isBridge ? 'info' : 'good');
   const modeBlurb = $derived(
     isBridge
       ? $tr('Bridge mode — no token pool. Each client sends its own FreeBuff token; the proxy relays the Authorization header straight upstream.')
-      : $tr('Pooled mode — the proxy holds the upstream AUTH_TOKENS and selects one per request; clients authenticate with any key.')
+      : isHybrid
+        ? $tr('Hybrid mode — pooled tokens plus per-client FreeBuff tokens; a credential matching an API key uses the pool, any other is relayed as a bridge token.')
+        : $tr('Pooled mode — the proxy holds the upstream AUTH_TOKENS and selects one per request; clients authenticate with any key.')
   );
 
   // Snippet templates are the real strings from the previous Setup page,
@@ -149,6 +152,9 @@
           <span class="text-xs text-[var(--fp-dim)]">bridge tokens <span class="fp-num">{data.bridge_tokens}</span></span>
         {:else}
           <span class="text-xs text-[var(--fp-dim)]">pool size <span class="fp-num">{data.token_count}</span></span>
+          {#if isHybrid}
+            <span class="text-xs text-[var(--fp-dim)]">bridge tokens <span class="fp-num">{data.bridge_tokens}</span></span>
+          {/if}
         {/if}
       </div>
       <p class="text-sm text-[var(--fp-muted)] mt-3">{modeBlurb}</p>

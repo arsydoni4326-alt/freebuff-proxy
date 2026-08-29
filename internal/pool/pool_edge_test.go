@@ -343,7 +343,7 @@ func TestBridgeIdlePause(t *testing.T) {
 
 // TestBridgeMaintainRunsOnIdlePass is the regression guard for the P2 idle
 // sweep bug: maintainTick's idle branch returned before bridgeMaintain, so
-// in mixed mode bridge entries idle past bridgeIdleEvict were never swept
+// in mixed mode bridge entries idle past defaultBridgeIdleEvict were never swept
 // while the pool stayed idle — their sessions stayed admitted upstream until
 // expiry. An idle pass must still run the bridge sweep (only the per-token
 // session-poll/queued-advance pauses). Fails before the fix (the idle branch
@@ -359,7 +359,7 @@ func TestBridgeMaintainRunsOnIdlePass(t *testing.T) {
 	p.cfg.Store(cfg)
 
 	// A pooled acquire marks the pool active (lastActive); then a bridge
-	// entry is created and aged past bridgeIdleEvict.
+	// entry is created and aged past defaultBridgeIdleEvict.
 	lease, err := p.Acquire(context.Background(), modelA)
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +374,7 @@ func TestBridgeMaintainRunsOnIdlePass(t *testing.T) {
 	if entry == nil {
 		t.Fatal("bridge entry missing")
 	}
-	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+	entry.lastUsed = time.Now().Add(-defaultBridgeIdleEvict - time.Minute)
 
 	// Cross the idle threshold by mutating lastActive (deterministic).
 	p.lastActiveMu.Lock()
@@ -398,7 +398,7 @@ func TestBridgeMaintainRunsOnIdlePass(t *testing.T) {
 
 // TestBridgeIdleSweepSkipsBusy pins the busy-entry rule for the IDLE sweep
 // (TestBridgeEvictionSkipsBusyEntry covers LRU eviction): an entry idle past
-// bridgeIdleEvict with an outstanding lease must NOT be evicted — FINISHing
+// defaultBridgeIdleEvict with an outstanding lease must NOT be evicted — FINISHing
 // its run would kill the in-flight chat — even though the sweep considers
 // it idle.
 func TestBridgeIdleSweepSkipsBusy(t *testing.T) {
@@ -416,7 +416,7 @@ func TestBridgeIdleSweepSkipsBusy(t *testing.T) {
 	if entry == nil {
 		t.Fatal("bridge entry missing")
 	}
-	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+	entry.lastUsed = time.Now().Add(-defaultBridgeIdleEvict - time.Minute)
 
 	p.bridgeMaintain(context.Background(), false)
 
@@ -436,7 +436,7 @@ func TestBridgeIdleSweepSkipsBusy(t *testing.T) {
 // stream's draining run outside bridgeMaintain's and Pool.Shutdown's
 // reach. The eviction is deferred to the idle sweep: the entry stays
 // cached (cooled down, so no new request passes it) until its leases
-// drain and it sits idle past bridgeIdleEvict. Fails before the fix (the
+// drain and it sits idle past defaultBridgeIdleEvict. Fails before the fix (the
 // dead-token path FINISHed the busy entry's run and ended its session).
 func TestBridgeDeadTokenEvictDefersWhenBusy(t *testing.T) {
 	mock := testutil.NewMock()
@@ -485,7 +485,7 @@ func TestBridgeDeadTokenEvictDefersWhenBusy(t *testing.T) {
 	if entry == nil {
 		t.Fatal("deferred dead-token entry missing")
 	}
-	entry.lastUsed = time.Now().Add(-bridgeIdleEvict - time.Minute)
+	entry.lastUsed = time.Now().Add(-defaultBridgeIdleEvict - time.Minute)
 	p.bridgeMaintain(context.Background(), false)
 	if got := p.bridgeToken("dead-tok"); got != nil {
 		t.Error("idle dead-token entry not evicted by the sweep")
@@ -502,7 +502,7 @@ func TestBridgeDeadTokenEvictDefersWhenBusy(t *testing.T) {
 // gate: a dead token with NO outstanding lease is still evicted
 // immediately (run FINISHed + session ended, entry dropped from the
 // cache), not left for the idle sweep — that is the point of B6 (a dead
-// token must not sit in the cache for the full bridgeIdleEvict window).
+// token must not sit in the cache for the full defaultBridgeIdleEvict window).
 // The acquire-path wiring is exercised by
 // TestBridgeDeadTokenEvictDefersWhenBusy; this test calls the eviction
 // directly so the cleanup assertions are deterministic (the mock's
@@ -955,8 +955,11 @@ func TestDailyCapExactRetryAfter(t *testing.T) {
 
 // TestCooldownAfterBanClearsBanMemory is the pool-level pin for the P2
 // Cooldown bug (see runs.TestCooldownClearsBanAndCountryWindows): after a
-// dashboard Cooldown, an acquire must surface the plain cooldown error, not
-// a stale ban.
+// dashboard Cooldown, the run manager forgets its remembered ban window —
+// but the pool's terminal quarantine is a SEPARATE, permanent entry-level
+// marker that a plain Cooldown must NOT clear (only UnlockToken or an
+// AUTH_TOKENS membership change restores a quarantined token). A
+// ban-quarantined token therefore keeps surfacing ErrBanned.
 func TestCooldownAfterBanClearsBanMemory(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -969,14 +972,16 @@ func TestCooldownAfterBanClearsBanMemory(t *testing.T) {
 		t.Fatalf("want ErrBanned from live ban, got %v", err)
 	}
 
-	// Dashboard-style cooldown clears the remembered ban.
+	// A dashboard Cooldown does NOT revive a ban-quarantined token: the
+	// terminal ban persists (the pool never re-admits a dead account), so
+	// the acquire keeps surfacing ErrBanned.
 	p.CooldownToken(0, time.Hour)
 	_, err = p.Acquire(context.Background(), modelA)
-	if errors.Is(err, upstream.ErrBanned) {
-		t.Fatal("stale ban surfaced after Cooldown")
+	if !errors.Is(err, upstream.ErrBanned) {
+		t.Fatalf("quarantined token after Cooldown: want ErrBanned, got %v", err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "cooling down") {
-		t.Errorf("error = %v, want plain cooldown error", err)
+	if !p.Snapshot()[0].Quarantined {
+		t.Error("quarantine cleared by CooldownToken, want persistent")
 	}
 }
 

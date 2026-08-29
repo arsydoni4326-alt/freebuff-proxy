@@ -3,26 +3,22 @@
   import {
     LogIn,
     Key,
-    Lock,
     Plus,
-    Trash2,
-    Unlock,
     ExternalLink,
-    ChevronDown,
-    ChevronRight,
     RefreshCw,
   } from '@lucide/svelte';
   import Button from '../components/Button.svelte';
   import Card from '../components/Card.svelte';
   import Field from '../components/Field.svelte';
-  import StatusBadge from '../components/StatusBadge.svelte';
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import PageHeader from '../components/PageHeader.svelte';
+  import TokenCard from '../components/TokenCard.svelte';
+  import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
   import { fetchAPI, postAPI } from '../api/client.js';
   import { usePolling } from '../utils/polling.js';
-  import { formatLocalDate, generateRandomApiKey } from '../utils/format.js';
+  import { generateRandomApiKey } from '../utils/format.js';
   import { tr } from '../i18n.js';
 
   let data = $state(null);
@@ -45,7 +41,7 @@
   // Device login flow
   let oauthStarting = $state(false);
   let oauthStatus = $state(null);
-  let oauthTimer = $state(null);
+  let oauthTimer = null;
 
   // Auto-dismiss action messages
   $effect(() => {
@@ -58,6 +54,7 @@
 
   // Token table
   let expandedToken = $state(null);
+  let spawnModels = $state({});
   let actionPending = $state(false);
   let now = $state(Date.now());
   let quotaModelFilter = $state('');
@@ -89,49 +86,6 @@
       ? null
       : /^cb_[A-Za-z0-9_-]{20,}$/.test(newToken.trim())
   );
-
-  function banBadge(token) {
-    if (token.ban_type === 'hard') {
-      return { label: $tr('banned — appeal required'), tone: 'critical', pulse: true };
-    }
-    if (token.ban_type === 'temporary') {
-      const until = formatLocalDate(token.banned_until);
-      return { label: until ? $tr('banned until {time}', { time: until }) : $tr('banned (temporary)'), tone: 'bad' };
-    }
-    return null;
-  }
-
-  function statusFor(token) {
-    const ban = banBadge(token);
-    if (ban) return ban;
-    if (token.locked) return { label: $tr('locked'), tone: 'warn' };
-    if (token.cooldown_active) return { label: $tr('cooldown'), tone: 'warn' };
-    const s = token.session_status || '';
-    if (s === 'active') return { label: $tr('leased'), tone: 'good', pulse: true };
-    if (s === 'queued') return { label: $tr('queued'), tone: 'info' };
-    if (s === 'banned') return { label: $tr('banned'), tone: 'bad' };
-    return { label: $tr('idle'), tone: 'idle' };
-  }
-
-  function cooldownLabel(token) {
-    if (!token.cooldown_active || !token.cooldown_until) return '—';
-    const ms = new Date(token.cooldown_until).getTime() - now;
-    if (ms <= 0) return 'expiring';
-    const s = Math.floor(ms / 1000);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    if (h > 0) return `${h}h ${m}m`;
-    if (m > 0) return `${m}m ${sec}s`;
-    return `${sec}s`;
-  }
-
-  function cooldownTone(token) {
-    if (!token.cooldown_until) return 'default';
-    const ms = new Date(token.cooldown_until).getTime() - now;
-    if (ms >= 0 && ms < 5 * 60_000) return 'warn';
-    return 'default';
-  }
 
   async function fetchData() {
     try {
@@ -187,6 +141,33 @@
     } finally {
       actionPending = false;
     }
+  }
+
+  function handleTokenAction(token, idx, action) {
+    switch (action) {
+      case 'clear':
+        return triggerAction(`/admin/tokens/${idx}/unlock`, {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }));
+      case 'unlock':
+        return triggerAction(`/admin/tokens/${idx}/unlock-lock`, {}, $tr('Unlock token {idx}?', { idx }));
+      case 'lock':
+        return triggerAction(`/admin/tokens/${idx}/lock`, {}, $tr('Lock token {idx}?', { idx }));
+      case 'remove':
+        return triggerAction('/admin/tokens/remove', { token: idx }, $tr('Remove token {idx} from the pool and .env?', { idx }));
+      default:
+        return;
+    }
+  }
+
+  function handleSpawn(idx, model) {
+    const m = model || 'mimo/mimo-v2.5';
+    triggerAction(`/admin/tokens/${idx}/session`, { model: m }, $tr('Create upstream session for token #{idx} on {model}?', { idx, model: m }));
+  }
+
+  function handleRefresh(idx, action) {
+    if (action === 'probe') {
+      return triggerAction(`/admin/tokens/${idx}/test`, {}, $tr('Probe token #{idx} against upstream?', { idx }));
+    }
+    return triggerAction(`/admin/tokens/${idx}/finish`, {}, $tr('Finish active runs on token #{idx}?', { idx }));
   }
 
   async function generateClientKey() {
@@ -819,10 +800,35 @@
                   </td>
                 </tr>
               {/if}
+              <TokenCard
+                {token}
+                {idx}
+                expanded={expandedToken === idx}
+                bind:spawnModel={spawnModels[idx]}
+                {actionPending}
+                {now}
+                onToggle={() => toggleExpand(idx)}
+                onAction={(action) => handleTokenAction(token, idx, action)}
+                onSpawn={(model) => handleSpawn(idx, model)}
+                onRefresh={(action) => handleRefresh(idx, action)}
+              />
             {/each}
           </tbody>
         </table>
       {/if}
     </Card>
+    {#if data?.show_bridge && data?.bridge_token_cards?.length > 0}
+      <Card
+        title={$tr('Bridge Clients')}
+        description={$tr('{count} active bridge client(s) relaying their own FreeBuff tokens', { count: data.bridge_token_cards.length })}
+        pad="none"
+      >
+        <div class="flex flex-col gap-3 p-4">
+          {#each data.bridge_token_cards as bc}
+            <BridgeTokenCard card={bc} {now} />
+          {/each}
+        </div>
+      </Card>
+    {/if}
   </div>
 </div>

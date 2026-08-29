@@ -46,6 +46,7 @@ type Config struct {
 	TLSFingerprint  string // "" (plain Go transport) | chrome120 | chrome126 | safari17 | safari18 | firefox120 | firefox128 | edge126 | random | auto
 	RegistryRefresh time.Duration
 	DebugDump       bool
+	DevToolsEnabled bool
 	LogFile         string
 	LogLevel        string // "" (use -v/default) or debug|info|warn|error|trace
 	LogFormat       string // "text" (default) or "json"
@@ -97,6 +98,17 @@ type Config struct {
 	// passive risk engine classifies the verdict as "high" (RISK_THRESHOLD_HIGH;
 	// default 40).  Must be strictly greater than RiskMediumThreshold.
 	RiskHighThreshold int
+	// BridgeEnabled gates bridge-mode traffic when AUTH_TOKENS are configured
+	// (BRIDGE_ENABLED; default true). When enabled alongside a token pool the
+	// proxy runs in hybrid mode: a request whose credential matches an
+	// API_KEYS entry uses the pool, every other credential is relayed upstream
+	// as a bridge token. Set BRIDGE_ENABLED=0 for a locked-down pooled-only
+	// instance (the pre-hybrid behavior).
+	BridgeEnabled bool
+	// BridgeIdleEvict is how long a bridge entry may sit unused before the
+	// maintain loop FINISHes its runs, ends its upstream session, and drops it
+	// from the cache (BRIDGE_IDLE_EVICT; default 72h, sliding TTL).
+	BridgeIdleEvict       time.Duration
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
@@ -107,6 +119,7 @@ type Config struct {
 	CORSAllowedOrigin string            // Access-Control-Allow-Origin for /v1/* responses (CORS_ALLOWED_ORIGIN; default "*")
 	RequestJitter     time.Duration     // random delay range [0, RequestJitter) before upstream chat calls
 	CLIVersion        string            // upstream CLI version string (default: 0.10.7)
+	TokenRotation     string            // "drain" (default) | "round_robin" | "least_used" | "random"
 	ModelAliases      map[string]string // map model alias -> real model ID (#25)
 	TransientRetries  int               // max additional attempts after a transient transport failure (0 = disabled; default 1)
 	SessionPersist    bool              // true = persist session state to disk so restart resumes unexpired sessions (SESSION_PERSIST)
@@ -253,13 +266,26 @@ func (c *Config) IsDefaultAdminToken() bool {
 // or x-api-key), and the proxy relays with that token upstream.
 func (c Config) BridgeMode() bool { return len(c.AuthTokens) == 0 }
 
+// HybridBridgeMode reports whether the proxy runs pooled AND bridge
+// simultaneously: AUTH_TOKENS are configured AND BRIDGE_ENABLED (the
+// default). A request whose credential matches an API_KEYS entry uses the
+// pooled path; any other credential is relayed upstream as a bridge token.
+func (c Config) HybridBridgeMode() bool {
+	return len(c.AuthTokens) > 0 && c.BridgeEnabled
+}
+
 // EffectiveMode reports the routing mode label for dashboards and healthz:
-// "bridge" when no AUTH_TOKENS are configured, else "pooled".
+// "bridge" when no AUTH_TOKENS are configured, "hybrid" when AUTH_TOKENS
+// are set with BRIDGE_ENABLED (the default), else "pooled".
 func (c Config) EffectiveMode() string {
-	if c.BridgeMode() {
+	switch {
+	case c.BridgeMode():
 		return "bridge"
+	case c.HybridBridgeMode():
+		return "hybrid"
+	default:
+		return "pooled"
 	}
-	return "pooled"
 }
 
 // rawConfig mirrors the JSON file / env keys as strings so that parsing and
@@ -287,6 +313,7 @@ type rawConfig struct {
 	TLSFingerprint     string `json:"TLS_FINGERPRINT"`
 	RegistryRefresh    string `json:"REGISTRY_REFRESH"`
 	DebugDump          bool   `json:"DEBUG_DUMP"`
+	DevToolsEnabled    bool   `json:"DEVTOOLS_ENABLED"`
 	LogFile            string `json:"LOG_FILE"`
 	LogLevel           string `json:"LOG_LEVEL"`
 	LogFormat          string `json:"LOG_FORMAT"`
@@ -302,6 +329,13 @@ type rawConfig struct {
 	BridgeCircuitBreakerFailures     *int                    `json:"BRIDGE_CIRCUIT_BREAKER_FAILURES"`
 	BridgeCircuitBreakerWindow       string                  `json:"BRIDGE_CIRCUIT_BREAKER_WINDOW"`
 	BridgeCircuitBreakerCooldown     string                  `json:"BRIDGE_CIRCUIT_BREAKER_COOLDOWN"`
+	// BridgeEnabled records BRIDGE_ENABLED (default true via
+	// defaultRawConfig): whether bridge-mode traffic is accepted alongside
+	// the AUTH_TOKENS pool (hybrid mode).
+	BridgeEnabled bool `json:"BRIDGE_ENABLED"`
+	// BridgeIdleEvict is the sliding-TTL string for idle bridge-entry
+	// eviction (BRIDGE_IDLE_EVICT; default "72h", zero-tolerant → 72h).
+	BridgeIdleEvict                  string                  `json:"BRIDGE_IDLE_EVICT"`
 	MaxSpendPerDay                   *int                    `json:"MAX_SPEND_PER_DAY"`
 	IdleRotationTimeout              string                  `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                         bool                    `json:"SAFE_MODE"`
@@ -336,6 +370,7 @@ type rawConfig struct {
 	RateLimitBurst                   *int                    `json:"RATE_LIMIT_BURST"`
 	RiskMediumThreshold              *int                    `json:"RISK_THRESHOLD_MEDIUM"`
 	RiskHighThreshold                *int                    `json:"RISK_THRESHOLD_HIGH"`
+	TokenRotation                    string                  `json:"TOKEN_ROTATION"`
 	DashboardEnabled                 bool                    `json:"DASHBOARD_ENABLED"`
 	AutoRotateOnExhaustion           bool                    `json:"AUTO_ROTATE_ON_EXHAUSTION"`
 	ExhaustionWarningThreshold       string                  `json:"EXHAUSTION_WARNING_THRESHOLD"`
@@ -414,15 +449,18 @@ func defaultRawConfig() rawConfig {
 		RotationInterval:                 "6h",
 		RequestTimeout:                   "15m",
 		SessionCallTimeout:               "30s",
+		TokenRotation:                    "drain",
+		CostMode:                         "free",
 		RegistryRefresh:                  "6h",
-		CostMode:                         "free", // free-tier mode; omission routes requests as PAID and fresh free accounts get 402 "Out of credits" (upstream check: cost_mode !== 'free' → billing)
-		MaxMessagesPerDay:                nil,
-		MaxSpendPerDay:                   nil,         // 0 = unlimited advisory spend ceiling (never enforced)
-		IdleRotationTimeout:              "",          // "" = disabled (unset → SAFE_MODE preset may fill)
-		SafeMode:                         true,        // anti-ban presets on by default; set SAFE_MODE=false to disable
-		SessionIdleEnd:                   "",          // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
-		DashboardEnabled:                 true,        // dashboard on by default; set DASHBOARD_ENABLED=false to disable
-		LogAccess:                        true,        // per-request access lines on by default; LOG_ACCESS=false disables them
+		MaxSpendPerDay:                   nil,   // 0 = unlimited advisory spend ceiling (never enforced)
+		IdleRotationTimeout:              "",    // "" = disabled (unset → SAFE_MODE preset may fill)
+		BridgeEnabled:                    true,  // hybrid by default: AUTH_TOKENS + bridge relay share one instance
+		BridgeIdleEvict:                  "72h", // sliding-TTL for idle bridge-entry eviction
+		SafeMode:                         true,  // anti-ban presets on by default; set SAFE_MODE=false to disable
+		SessionIdleEnd:                   "",    // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
+		DashboardEnabled:                 true,  // dashboard on by default; set DASHBOARD_ENABLED=false to disable
+		LogAccess:                        true,
+		DevToolsEnabled:                  false,       // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
 		CORSAllowedOrigin:                "*",         // browser clients reach /v1/* cross-origin by default
 		RequestJitter:                    "",          // "" = disabled (unset → SAFE_MODE preset may fill)
@@ -448,37 +486,22 @@ func defaultRawConfig() rawConfig {
 // ptrInt returns a pointer to n for *int raw fields with a non-nil default.
 func ptrInt(n int) *int { return &n }
 
-// defaultModelAliases are applied when MODEL_ALIASES is unset (issue #42):
-// common OpenAI/Anthropic/DeepSeek client model names map to the closest
-// FreeBuff free-catalog model, so a stock client works out of the box.
-// gpt-4o maps to deepseek-v4-pro (the strongest agentic catalog row,
-// closest to GPT-4-class expectations); deepseek-chat maps to the fast
-// flash row (the DeepSeek API's own chat alias); claude-3-5-sonnet maps to
-// the Claude-line fable-5 row. An explicitly-set MODEL_ALIASES (even
-// empty) suppresses all defaults.
-var defaultModelAliases = map[string]string{
-	"deepseek-chat":     "deepseek/deepseek-v4-flash",
-	"gpt-4o":            "deepseek/deepseek-v4-pro",
-	"claude-3-5-sonnet": "anthropic/claude-fable-5",
-}
-
 // defaultFallbackModels returns the FALLBACK_MODEL defaults (issue #100):
-// the daily premium free-catalog rows (deepseek-v4-pro, gpt-5.6-luna) fall back
-// to the always-available flash model once their queue wait passes FALLBACK_AFTER_MS
+// the premium free-catalog row (gpt-5.6-luna) falls back to the always-
+// available flash model once its queue wait passes FALLBACK_AFTER_MS
 // (issue #189). Trigger is queue-wait ≥ FALLBACK_AFTER_MS only — never 429s.
 func defaultFallbackModels() map[string]string {
 	return map[string]string{
-		"deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-flash",
-		"openai/gpt-5.6-luna":      "deepseek/deepseek-v4-flash",
+		"openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash",
 	}
 }
 
 // defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155, #183):
-// when a model's session quota is exhausted (all 5 premium sessions used for flash,
-// luna's 1-session quota, or unentitled referral-only GLM 5.2), the proxy falls
-// back to an available model (flash for GLM/luna, mimo for flash). Luna fallback
-// (#203) reduces retry pressure on an exhausted scarce model that upstream flags
-// as abuse when hammered.
+// when a model's session quota is exhausted (all 4 premium sessions used for
+// luna, or unentitled referral-only GLM 5.2), the proxy falls back to an
+// available model (flash for GLM/luna, mimo for flash). Luna fallback (#203)
+// reduces retry pressure on an exhausted scarce model that upstream flags as
+// abuse when hammered.
 func defaultQuotaFallbackModels() map[string]string {
 	return map[string]string{
 		"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
@@ -488,10 +511,11 @@ func defaultQuotaFallbackModels() map[string]string {
 }
 
 // defaultScarceSessionModels returns the SCARCE_SESSION_MODELS defaults (issue #155):
-// the 1-session/day irreplaceable models kept alive for their full 1 hour.
+// the 4-session/day premium model kept alive for its full session.
+// deepseek-v4-pro left this list with its pause (2026-08-26): a paused model
+// is refused before a lease is acquired, so keeping its slot warm is dead work.
 func defaultScarceSessionModels() []string {
 	return []string{
-		"deepseek/deepseek-v4-pro",
 		"openai/gpt-5.6-luna",
 	}
 }

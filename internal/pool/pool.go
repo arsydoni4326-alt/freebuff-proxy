@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -177,8 +178,6 @@ type TokenSnapshot struct {
 	SessionActiveUsersForIP int
 	// QuotaByModel is the live per-model session quota from the last
 	// admission (key = model id); empty until the session reports it.
-	// Entitlement is a top-level per-token view (empty: the upstream wire
-	// nests entitlement inside each rate-limit entry).
 	QuotaByModel map[string]session.QuotaSnapshot
 	Entitlement  map[string]float64
 	// GlmPromo is the raw upstream glmPromo block ({dailySessions, endsAt})
@@ -188,6 +187,9 @@ type TokenSnapshot struct {
 	// Standing is the upstream account standing block (issue #96); nil until
 	// the session reports it.
 	Standing *upstream.SessionStanding
+	// Referral is the upstream referral block (FreebuffReferralInfo); nil until
+	// the session reports it.
+	Referral *upstream.SessionReferral
 	// TransientRetries / FingerprintRotations are this token's upstream
 	// client counters (TRANSIENT_RETRIES): retried transport failures and
 	// pinned TLS fingerprint swaps. Surfaced per-token in /metrics.
@@ -213,6 +215,17 @@ type TokenSnapshot struct {
 	// Locked is set when the token has been administratively locked by the
 	// operator; Acquire never selects a locked token.
 	Locked bool `json:"locked"`
+	// Quarantined is set when the token's account hit a terminal state
+	// (banned / country_blocked / 401 invalid) and the pool has permanently
+	// stopped leasing it (anti-ban contract). QuarantineReason names the
+	// state ("banned", "country_blocked", "invalid"). Both are surfaced so
+	// the operator sees exactly which fixed token is dead and why.
+	Quarantined      bool   `json:"quarantined,omitempty"`
+	QuarantineReason string `json:"quarantine_reason,omitempty"`
+	// PremiumQuota is the 5/day premium-pool quota (pacific_day) derived from
+	// the live QuotaByModel entry for the premium models. Nil when no premium
+	// quota has been reported.
+	PremiumQuota *PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
 	// BanType / BannedUntil surface the token's active upstream ban
 	// (issues #198/#199): BanType is "temporary" when the ban carries a
 	// resumes_at deadline (auto-lifts at BannedUntil) and "hard" when it
@@ -288,7 +301,7 @@ type Pool struct {
 
 	// Bridge mode (no AUTH_TOKENS): lazily-created per-client-token entries.
 	// bridgeOrder keeps the LRU order, oldest first. Guarded by bridgeMu.
-	bridgeMu    sync.Mutex
+	bridgeMu    sync.RWMutex
 	bridge      map[string]*bridgeEntry
 	bridgeOrder []string
 
@@ -339,13 +352,15 @@ type Pool struct {
 	admissions   map[string]int
 
 	// modelAdmissionGate serializes cold-path Acquire per model: the leader
-	// creates a channel on registration; concurrent followers block on it
-	// until the leader either picks a token (and they follow) or fails.
+	// creates a gate on registration; concurrent followers block on it
 	// Guarded by modelAdmissionGateMu; entries are deleted when the channel
 	// is closed.
 	modelAdmissionGateMu sync.Mutex
-	modelAdmissionGate   map[string]chan struct{}
-
+	modelAdmissionGate   map[string]*admissionGate
+	// testGatePark, when non-nil (tests only), runs while modelAdmissionGateMu is held
+	// at the moment a follower is about to park on the leader's gate. Lets tests
+	// deterministically count parked waiters before the leader releases.
+	testGatePark func()
 	// store persists session state across restarts (SESSION_PERSIST); nil
 	// disables. Injected by the caller (main) via SetSessionStore so there
 	// is exactly one store shared by pooled and bridge entries.
@@ -381,12 +396,29 @@ type Pool struct {
 	// probeResults stores the last background health probe outcome per
 	// token (TOKEN_HEALTH_PROBES). Surfaced in /healthz and dashboard.
 	probeResults *probeState
+	// randMu and randGen support stochastic rotation ("random" TokenRotation mode)
+	randMu  sync.Mutex
+	randGen *rand.Rand
+}
+
+// admissionGate is the per-model leader election gate: the leader creates
+// the gate, followers block on gate.ch, and the chosen token is
+// communicated via gate.token/hasToken (guarded by modelAdmissionGateMu).
+type admissionGate struct {
+	ch       chan struct{}
+	token    int
+	hasToken bool
 }
 
 type tokenEntry struct {
 	session *session.Manager
 	runs    *runs.RunManager
 	client  *upstream.Client
+	// token is the raw AUTH_TOKENS string this entry was built from. It
+	// anchors the quarantine reset: a config reload that replaces the
+	// account at this slot makes the old entry's terminal state stale, so
+	// quarantine is cleared (see Pool.SetConfig).
+	token string
 
 	// Session-liveness poll schedule (gap #2): nextPollAt is when the next
 	// compact poll is due (zero = due on the next sessionPollTick pass);
@@ -406,6 +438,28 @@ type tokenEntry struct {
 	// locked is set by LockToken/UnlockLockToken to administratively
 	// exclude a token from Acquire without clearing its cooldown state.
 	locked atomic.Bool
+
+	// quarantine, when non-nil, marks this fixed pooled token permanently
+	// ineligible for leasing: its account reached a terminal state (banned,
+	// country_blocked, or 401 invalid) that the pool must never revive —
+	// no re-admission attempts, no automatic unban. Stored on the entry (not
+	// an index-keyed slice) so a concurrent RemoveLastToken index-reuse can
+	// never quarantine the wrong account. Set exactly once per terminal
+	// refusal (CompareAndSwap) and cleared only when the operator changes
+	// AUTH_TOKENS membership at this slot (SetConfig) or explicitly unlocks
+	// the token (UnlockToken).
+	quarantine atomic.Pointer[quarantineState]
+}
+
+// quarantineState is the terminal account state that permanently removes one
+// fixed pooled token from rotation (anti-ban contract). reason is one of
+// "banned", "country_blocked", or "invalid"; err carries the typed upstream
+// error for failover-bucket aggregation (nil for a 401, which has no bucket);
+// detail is the human-readable error string for logging/dashboards.
+type quarantineState struct {
+	reason string
+	err    error
+	detail string
 }
 
 // New builds the pool over the configured tokens. len(clients) and
@@ -425,7 +479,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]chan struct{}), mismatch: make(map[int]mismatchEscalation), healthTracker: newHealthState(), probeResults: newProbeState()}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), mismatch: make(map[int]mismatchEscalation), healthTracker: newHealthState(), probeResults: newProbeState()}
 	p.cfg.Store(cfg)
 	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
 	p.spendPerToken = make([]*spendLedger, len(cfg.AuthTokens))
@@ -447,6 +501,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 			session: sess,
 			runs:    runs.NewRunManagerOpts(clients[i], sess, runOptions(cfg)),
 			client:  clients[i],
+			token:   cfg.AuthTokens[i],
 		})
 	}
 	p.toks.Store(&toks)
@@ -491,6 +546,29 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 		entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Unlock()
+	// Quarantine reset on AUTH_TOKENS membership/order change: a
+	// quarantine is bound to the exact account string an entry was built
+	// from. When a config reload replaces the account at a slot (the
+	// operator edited AUTH_TOKENS, reordered it, or swapped in a fresh
+	// token), the old entry's terminal state no longer describes the
+	// account now configured there, so clear it — an explicit operator
+	// action, never an automatic revival (the pool still refuses to re-admit
+	// a dead account until the operator makes this change or unlocks it).
+	for i, tok := range *toks {
+		if i >= len(cfg.AuthTokens) {
+			// Member removed from config; the caller's membership path
+			// (RemoveLastToken/RemoveAllTokens) drops the entry, so there is
+			// nothing to reset here.
+			break
+		}
+		if tok.token != "" && tok.token != cfg.AuthTokens[i] {
+			if prev := tok.quarantine.Swap(nil); prev != nil {
+				p.logger.Info("pool: token quarantine reset (AUTH_TOKENS membership/order changed)",
+					"token", i+1, "from_token", tok.token, "to_token", cfg.AuthTokens[i],
+					"state", prev.reason)
+			}
+		}
+	}
 
 	// Session persistence is decided at startup: the store is built from the
 	// boot config and injected once via SetSessionStore, so a reload cannot
@@ -528,6 +606,7 @@ func (p *Pool) AddToken(token string) (int, error) {
 		session: sess,
 		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
 		client:  client,
+		token:   token,
 	}
 	next := make([]*tokenEntry, 0, len(*toks)+1)
 	next = append(next, *toks...)
@@ -720,4 +799,14 @@ func bestRateLimit(entries []*upstream.RateLimitError) *upstream.RateLimitError 
 		}
 	}
 	return best
+}
+
+// EnsureTokenSession admits/creates an upstream session for a specific model on a specific token (dashboard dev action).
+func (p *Pool) EnsureTokenSession(ctx context.Context, token int, model string) (string, error) {
+	toks := p.toks.Load()
+	if token < 0 || token >= len(*toks) {
+		return "", fmt.Errorf("pool: token %d out of range", token)
+	}
+	tok := (*toks)[token]
+	return tok.session.EnsureSessionForModel(ctx, model)
 }
