@@ -1,6 +1,16 @@
 # install.ps1 - download the latest freebuff-proxy release for
 # this machine, verify it, set up .env, and print the next steps.
 #
+# Default per-user layout (no admin rights required):
+#   binary + template:  %LOCALAPPDATA%\Programs\freebuff-proxy\freebuff-proxy.exe
+#   live .env:          %APPDATA%\freebuff-proxy\.env (created from .env.example;
+#                       the runtime resolves it there when no ./.env is in the
+#                       working directory)
+# Pass -Dir <path> to install elsewhere and keep the legacy layout: the binary
+# and the .env both live in <path>, config resolved from the working directory.
+# Make sure the .gitignore entry for .env covers the data dirs too when you
+# override -Dir into a repository checkout.
+#
 # Zero-knowledge user flow:
 #   1. Open PowerShell (Windows Terminal / pwsh or powershell.exe)
 #   2. Run:
@@ -11,19 +21,25 @@
 #      and either stores the token or leaves AUTH_TOKENS empty for bridge mode.
 #
 # What it does NOT do: modify system paths, install services, or touch your
-# token except writing it into the local .env (gitignored).
+# token except writing it into the per-user config .env.
 
 param(
-  [string]$Dir = "",          # install directory; default: current directory
+  [string]$Dir = "",          # install directory; default: %LOCALAPPDATA%\Programs\freebuff-proxy (pass -Dir for the legacy cwd-based layout)
   [switch]$SkipToken,         # do not look for a token (set AUTH_TOKENS later)
   [switch]$NoEnv,             # do not create .env (advanced)
-  [switch]$Force,             # re-download even if the binary already exists
+  [switch]$Force,             # re-download even if the binary already exists (default layout: never overwrites an existing live .env)
   [switch]$Logout,            # clear existing CLI credentials to log in with a new account
   [string]$EnvFile = ""       # explicit .env target (advanced)
 )
 $ErrorActionPreference = "Stop"
 $Repo = "trefeon/freebuff-proxy"
 $CliUserAgent = "ai-sdk/openai-compatible/1.0.0/codebuff"
+# Per-user paths; fall back to home-based paths when the env vars are unset
+# (the same fallback the runtime uses in internal/config).
+$localAppData = $env:LOCALAPPDATA
+if (-not $localAppData) { $localAppData = Join-Path $env:USERPROFILE "AppData\Local" }
+$appData = $env:APPDATA
+if (-not $appData) { $appData = Join-Path $env:USERPROFILE "AppData\Roaming" }
 # Windows PowerShell 5.1 does not load System.Net.Http into the default
 # AppDomain; Invoke-FreebuffApi's HttpClient needs it. No-op on PS 7.
 Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
@@ -73,8 +89,19 @@ Write-Host "account to be banned eventually. You accept this risk by continuing.
 Write-Host ""
 
 # --- 1. target directory -----------------------------------------------------
-if (-not $Dir) { $Dir = (Get-Location).Path }
+# Default: the per-user program directory (%LOCALAPPDATA%\Programs\freebuff-proxy)
+# so no admin rights are needed. An explicit -Dir keeps the legacy layout: the
+# binary and the .env both live in $Dir (dev checkouts, custom locations).
+$UseLegacyLayout = [bool]$Dir
+if (-not $Dir) { $Dir = Join-Path $localAppData "Programs\freebuff-proxy" }
 New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+
+# Live config path. Default layout: %APPDATA%\freebuff-proxy\.env (the runtime's
+# Windows config dir). Legacy (-Dir) and -EnvFile keep the historic behavior.
+$envPath = $EnvFile
+if (-not $envPath) {
+  if ($UseLegacyLayout) { $envPath = Join-Path $Dir ".env" } else { $envPath = Join-Path $appData "freebuff-proxy\.env" }
+}
 
 # --- 2. TOKEN PREREQUISITE (before downloading the proxy) --------------------
 # Reuse existing CLI credentials when present; otherwise offer headless-browser
@@ -131,7 +158,7 @@ function Get-HeadlessToken {
   $bytes = New-Object byte[] 32
   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
   $rng.GetBytes($bytes)
-  # CLI-parity base64url shape (43 chars) — same charset as the official
+  # CLI-parity base64url shape (43 chars) - same charset as the official
   # CLI fingerprint.
   $hash = ([Convert]::ToBase64String($bytes) -replace '\+', '-' -replace '/', '_' -replace '=', '')
   $fingerprintId = "enhanced-$hash"
@@ -184,7 +211,7 @@ function Get-HeadlessToken {
       }
     } catch {
       # 401/404 = not yet authenticated upstream; a transient network blip
-      # must not abort the whole login either — keep polling either way.
+      # must not abort the whole login either - keep polling either way.
     }
   }
   Write-Host "Login timed out after 300s." -ForegroundColor Red
@@ -250,7 +277,7 @@ if (-not (Test-Path -LiteralPath $exe) -or $Force) {
   $asset = $release.assets | Where-Object { $_.name -eq $want } | Select-Object -First 1
   $checksumAsset = $release.assets | Where-Object { $_.name -eq "checksums.txt" } | Select-Object -First 1
   if (-not $asset) { Write-Host "ERROR: asset $want not found in the release." -ForegroundColor Red; exit 1 }
-  if (-not $checksumAsset) { Write-Host "ERROR: release has no checksums.txt — refusing to install" -ForegroundColor Red; exit 1 }
+  if (-not $checksumAsset) { Write-Host "ERROR: release has no checksums.txt - refusing to install" -ForegroundColor Red; exit 1 }
 
   # --- 5. download + verify ----------------------------------------------------
   $tmp = Join-Path $env:TEMP "freebuff-proxy-install"
@@ -291,16 +318,20 @@ if (-not (Test-Path -LiteralPath $exe) -or $Force) {
   }
 }
 
-# --- 7. .env - always copied from the shipped example ------------------------
+# --- 7. .env - created from the shipped example in the config dir ------------
+# Default layout: the live .env goes to %APPDATA%\freebuff-proxy\.env (the
+# runtime's Windows config dir) while .env.example stays in the install root as
+# a template. -Force re-runs the download but never overwrites an existing live
+# .env. Legacy (-Dir) mode keeps the historic behavior (recreate with -Force).
 Write-Host "Step 3/3: configuration (.env)" -ForegroundColor Cyan
-$envPath = $EnvFile
-if (-not $envPath) { $envPath = Join-Path $Dir ".env" }
 if (-not $NoEnv) {
-  $example = Join-Path $Dir ".env.example"
-  if (-not (Test-Path -LiteralPath $envPath) -or $Force) {
+  $recreateEnv = $UseLegacyLayout -and $Force
+  if (-not (Test-Path -LiteralPath $envPath) -or $recreateEnv) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $envPath) | Out-Null
+    $example = Join-Path $Dir ".env.example"
     if (Test-Path -LiteralPath $example) {
       Copy-Item -LiteralPath $example -Destination $envPath -Force
-      Write-Host ".env copied from .env.example" -ForegroundColor Green
+      Write-Host ".env created from .env.example: $envPath" -ForegroundColor Green
     } else {
       $exampleUrl = "https://raw.githubusercontent.com/$Repo/main/.env.example"
       try {
@@ -312,7 +343,12 @@ if (-not $NoEnv) {
       }
     }
   } else {
-    Write-Host ".env already exists; keeping it (use -Force to recreate)." -ForegroundColor Green
+    if ($UseLegacyLayout) {
+      Write-Host ".env already exists; keeping it (re-run with -Force to recreate)." -ForegroundColor Green
+    } else {
+      Write-Host ".env already exists; keeping it: $envPath" -ForegroundColor Green
+      Write-Host "(-Force updates the binary and keeps the live config.)" -ForegroundColor Yellow
+    }
   }
 }
 
@@ -368,8 +404,9 @@ if (Test-Path -LiteralPath $exe) {
 }
 
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "  1. 1-Click Client Setup:   cd $Dir; .\freebuff-proxy.exe -setup"
-Write-Host "  2. Start the proxy server: cd $Dir; .\freebuff-proxy.exe"
+Write-Host "  1. 1-Click Client Setup:   cd `"$Dir`"; .\freebuff-proxy.exe -setup"
+Write-Host "  2. Start the proxy server: cd `"$Dir`"; .\start-proxy.cmd"
+Write-Host "     (or run freebuff-proxy.exe directly; the runtime finds its config in %APPDATA%\freebuff-proxy)"
 Write-Host ""
 Write-Host "Test the proxy:" -ForegroundColor Cyan
 Write-Host "  curl http://localhost:3457/healthz"
