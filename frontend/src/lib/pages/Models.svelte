@@ -34,20 +34,16 @@
 
   function quotaFor(id) {
     switch (id) {
-      case 'z-ai/glm-5.3-flash':
-        return '2/day glm_v53_flash';
       case 'openai/gpt-5.6-luna':
+      case 'upstage/solar-pro4':
         return '5/day shared premium';
-      case 'deepseek/deepseek-v4-pro':
+      case 'z-ai/glm-5.3-flash':
         return '5/day shared premium';
       case 'deepseek/deepseek-v4-flash':
-        return 'unmetered';
       case 'mimo/mimo-v2.5':
         return 'unmetered';
       case 'z-ai/glm-5.2':
         return 'referral +1/day';
-      case 'stealth/ox-alpha':
-        return 'unmetered';
       default:
         return '—';
     }

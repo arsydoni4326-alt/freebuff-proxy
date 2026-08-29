@@ -45,9 +45,9 @@ func getMockState(token string) *mockTokenState {
 }
 
 // mockQuotaLimit mirrors the real tier caps for the served models (derived
-// from modelcat: premium pool 4/day, glm-5.3-flash cap 2/day, glm-5.2 promo
-// 1/day, everything else unmetered). Paused models are never admitted so
-// their cap is irrelevant — return 9999.
+// from modelcat: shared premium pool 4/day (luna, solar-pro4, glm-5.3-flash),
+// glm-5.2 promo 1/day, everything else unmetered). Paused models
+// are never admitted so their cap is irrelevant — return 9999.
 func mockQuotaLimit(model string) float64 {
 	if model == "" {
 		model = modelcat.DefaultModelID
@@ -55,15 +55,14 @@ func mockQuotaLimit(model string) float64 {
 	switch model {
 	case modelcat.Glm52ModelID:
 		return 1
-	case modelcat.Glm53ModelID:
+	default:
 		if limit, _ := modelcat.PerModelCap(model); limit > 0 {
 			return float64(limit)
 		}
-		return 9999
-	case "openai/gpt-5.6-luna":
-		return modelcat.PremiumSessionLimit
-	default: // mimo, fable, deepseek-flash: unmetered
-		return 9999
+		if modelcat.IsPremium(model) {
+			return modelcat.PremiumSessionLimit
+		}
+		return 9999 // mimo, fable, deepseek-flash: unmetered
 	}
 }
 
@@ -158,15 +157,25 @@ func mockSessionState(token string, requestedModel string, consume bool) *Sessio
 				PoolLabel:   "Premium",
 				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
 			},
+			"upstage/solar-pro4": {
+				Model:       modelcat.SolarPro4ModelID,
+				Limit:       modelcat.PremiumSessionLimit,
+				RecentCount: st.recentCounts["upstage/solar-pro4"],
+				ResetAt:     pacMidnight,
+				Period:      "pacific_day",
+				Pool:        "premium",
+				PoolLabel:   "Premium",
+				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
+			},
 			"z-ai/glm-5.3-flash": {
 				Model:       modelcat.Glm53ModelID,
-				Limit:       2,
+				Limit:       modelcat.PremiumSessionLimit,
 				RecentCount: st.recentCounts["z-ai/glm-5.3-flash"],
 				ResetAt:     pacMidnight,
 				Period:      "pacific_day",
-				Pool:        "glm_v53_flash",
-				PoolLabel:   "GLM 5.3 Flash",
-				Entitlement: map[string]float64{"base": 2},
+				Pool:        "premium",
+				PoolLabel:   "Premium",
+				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
 			},
 			"mimo/mimo-v2.5": {
 				Model:       modelcat.FallbackModelID,

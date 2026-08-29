@@ -1,7 +1,6 @@
-// Package modelcat is the single source of truth for every proxy-side fact
 // about the FreeBuff free catalog. One row per model in upstream
 // SUPPORTED_FREEBUFF_MODELS (reference/freebuff/common/src/constants/
-// freebuff-models.ts, pinned snapshot 5951772, vendor 0.0.157).
+// freebuff-models.ts, pinned snapshot 4a42903e5007, vendor 0.0.158).
 //
 // Every package that needs a per-model fact — registry (served/paused gate,
 // withdrawn-model copy), convert (effort ladders), pool (premium pool and
@@ -63,9 +62,11 @@ var Catalog = []ModelInfo{
 	{ID: "openai/gpt-5.6-luna", DisplayName: "GPT-5.6 Luna",
 		Served: true, Premium: true, ContextWindow: 1_000_000,
 		Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+	{ID: "upstage/solar-pro4", DisplayName: "Solar Pro 4",
+		Served: true, Premium: true, ContextWindow: 500_000},
 	{ID: "z-ai/glm-5.2", DisplayName: "GLM 5.2", Served: true},
 	{ID: "z-ai/glm-5.3-flash", DisplayName: "GLM 5.3 Flash",
-		Served: true, Premium: true, Cap: 2, CapPool: "glm_v53_flash",
+		Served: true, Premium: true,
 		ContextWindow: 1_000_000},
 	{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash",
 		Served: true, ContextWindow: 1_048_576,
@@ -96,11 +97,21 @@ const FallbackModelID = "mimo/mimo-v2.5"
 // rather than the shared premium pool.
 const Glm52ModelID = "z-ai/glm-5.2"
 
-// Glm53ModelID is the capped premium row with its own per-model lane.
+// Glm53ModelID is a premium row metered by the shared daily premium pool.
 const Glm53ModelID = "z-ai/glm-5.3-flash"
 
-// PremiumSessionLimit mirrors upstream FREEBUFF_PREMIUM_SESSION_LIMIT: base
-// premium sessions per Pacific day (5 → 4 when Levels shipped).
+// SolarPro4ModelID mirrors FREEBUFF_SOLAR_PRO_4_MODEL_ID: the Upstage
+// experimental premium row, metered by the shared premium pool (no
+// per-model cap lane, OpenRouter BYOK route).
+const SolarPro4ModelID = "upstage/solar-pro4"
+
+// PremiumSessionLimit mirrors upstream FREEBUFF_PREMIUM_SESSION_LIMIT: the
+// LEVEL-0 premium floor per Pacific day (4). The runtime default
+// entitlement is 5/day: under FREEBUFF_TRUST_LEVELS=observe (the default)
+// the flat base applies, and under FREEBUFF_LEVEL_SESSIONS=off the
+// pre-Levels base (5) is selected. 4 only applies with trust levels
+// enforced at the floor; the ladder raises it back (5 at level 2+, 7
+// ceiling).
 const PremiumSessionLimit = 4
 
 // GLMSessionLength mirrors upstream FREEBUFF_GLM_V52_SESSION_LENGTH_MS: GLM
@@ -157,7 +168,7 @@ func PausedReplacement(id string) string {
 }
 
 // IsPremium reports whether id is in the shared daily premium pool
-// (FREEBUFF_PREMIUM_MODEL_IDS) or its own capped lane.
+// (FREEBUFF_PREMIUM_MODEL_IDS)
 func IsPremium(id string) bool {
 	if m := byID(id); m != nil {
 		return m.Premium || m.Cap > 0
@@ -166,9 +177,7 @@ func IsPremium(id string) bool {
 }
 
 // SharedPremiumModels returns the ids metered by the shared daily premium
-// pool (FREEBUFF_PREMIUM_MODEL_IDS), excluding per-model cap lanes that the
-// proxy tracks separately. Currently just Luna: GLM 5.3 Flash carries its own
-// glm_v53_flash lane and is surfaced independently.
+// pool (FREEBUFF_PREMIUM_MODEL_IDS). Currently Luna, Solar Pro 4, and GLM 5.3 Flash.
 func SharedPremiumModels() []string {
 	var out []string
 	for i := range Catalog {

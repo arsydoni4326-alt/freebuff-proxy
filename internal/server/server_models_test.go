@@ -109,9 +109,10 @@ func TestModelsEndpoint(t *testing.T) {
 	// Issue #189 (strict gate); 6→5 on 2026-08-23: luna-es dropped (upstream
 	// reclassified it god-only/honeypot-class — vendor snapshot 0603bc1);
 	// 5→6 on 2026-08-26: stealth/ox-alpha added (vendor cce4800);
-	// 6→6 on 2026-08-28: z-ai/glm-5.3-flash added (vendor d64972c).
-	if len(out.Data) != 5 {
-		t.Errorf("models = %d, want 5", len(out.Data))
+	// 6→5 on 2026-08-28: ox-alpha paused, glm-5.3-flash added (vendor 5951772);
+	// 5→6 on 2026-08-29: upstage/solar-pro4 served (vendor 87ef664).
+	if len(out.Data) != 6 {
+		t.Errorf("models = %d, want 6", len(out.Data))
 	}
 	for i, m := range out.Data {
 		if m.ID == "" || m.Object != "model" || m.OwnedBy == "" {
@@ -198,8 +199,9 @@ func TestHealthz(t *testing.T) {
 	}
 	// Issue #189 strict count; 6→5 when luna-es was dropped (2026-08-23),
 	// 5→6 when stealth/ox-alpha was added (2026-08-26),
-	// 5 served: fable-5 kept out (not actually reachable on free accounts).
-	if out.Models != 5 {
+	// 5→6 when upstage/solar-pro4 was served (2026-08-29); fable-5 stays
+	// out (not actually reachable on free accounts).
+	if out.Models != 6 {
 		t.Errorf("models = %d, want 6", out.Models)
 	}
 	if len(out.Tokens) != 2 {
@@ -560,8 +562,8 @@ func TestModelsAllowEmptyIsOpen(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("models is not JSON: %v: %s", err, data)
 	}
-	if len(out.Data) != 5 {
-		t.Errorf("model count = %d, want 5 (all operational models served)", len(out.Data))
+	if len(out.Data) != 6 {
+		t.Errorf("model count = %d, want 6 (all operational models served)", len(out.Data))
 	}
 	var hasModelA, hasFlash bool
 	for _, m := range out.Data {
@@ -764,10 +766,10 @@ func TestMetricsTransientRetryCounters(t *testing.T) {
 }
 
 // TestStrictServedModelsEnforced pins issue #189 end-to-end:
-//  1. GET /v1/models returns strictly the 7 operational models.
+//  1. GET /v1/models returns strictly the 6 operational models.
 //  2. Any request targeting a disabled model on OpenAI chat, Anthropic messages,
 //     or OpenAI responses returns immediate fast-fail with model_unavailable.
-//  3. /healthz reports models: 7.
+//  3. /healthz reports models: 6.
 func TestStrictServedModelsEnforced(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -786,12 +788,13 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal /v1/models: %v", err)
 	}
-	if len(out.Data) != 5 {
-		t.Fatalf("models count = %d, want exactly 5", len(out.Data))
+	if len(out.Data) != 6 {
+		t.Fatalf("models count = %d, want exactly 6", len(out.Data))
 	}
 	wantSet := map[string]bool{
 		"deepseek/deepseek-v4-flash": true,
 		"openai/gpt-5.6-luna":        true,
+		"upstage/solar-pro4":         true,
 		"z-ai/glm-5.2":               true,
 		"z-ai/glm-5.3-flash":         true,
 		"mimo/mimo-v2.5":             true,
@@ -878,8 +881,8 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 	if err := json.Unmarshal(dataH, &health); err != nil {
 		t.Fatalf("unmarshal healthz: %v", err)
 	}
-	if health.Models != 5 {
-		t.Errorf("health.Models = %d, want 5", health.Models)
+	if health.Models != 6 {
+		t.Errorf("health.Models = %d, want 6", health.Models)
 	}
 }
 

@@ -28,13 +28,6 @@ func TestHealthzPremiumQuotaEmitted(t *testing.T) {
 			"period":      "pacific_day",
 			"resetAt":     future,
 		},
-		"z-ai/glm-5.3-flash": map[string]any{
-			"model":       "z-ai/glm-5.3-flash",
-			"limit":       2,
-			"recentCount": 1,
-			"period":      "glm_v53_flash",
-			"resetAt":     future,
-		},
 	}
 	ts, p := newTestServer(t, nil, mock)
 	if _, err := p.Acquire(t.Context(), "deepseek/deepseek-v4-flash"); err != nil {
@@ -87,26 +80,6 @@ func TestHealthzPremiumQuotaEmitted(t *testing.T) {
 	if m["model"] != "_premium_pool" {
 		t.Errorf("premium model = %v want _premium_pool", m["model"])
 	}
-	gq, ok := tok["glm53flash_quota"]
-	if !ok {
-		t.Fatalf("glm53flash_quota missing")
-	}
-	gm, ok := gq.(map[string]any)
-	if !ok {
-		t.Fatalf("glm53flash_quota not map")
-	}
-	if int(gm["limit"].(float64)) != 2 {
-		t.Errorf("glm limit = %v want 2", gm["limit"])
-	}
-	if int(gm["used"].(float64)) != 1 {
-		t.Errorf("glm used = %v want 1", gm["used"])
-	}
-	if gm["period"] != "glm_v53_flash" {
-		t.Errorf("glm period = %v want glm_v53_flash", gm["period"])
-	}
-	if gm["model"] != "z-ai/glm-5.3-flash" {
-		t.Errorf("glm model = %v want z-ai/glm-5.3-flash", gm["model"])
-	}
 
 	resp, body = doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -117,7 +90,6 @@ func TestHealthzPremiumQuotaEmitted(t *testing.T) {
 		`freebuff_proxy_premium_quota_limit{token="1"} 4`,
 		`freebuff_proxy_premium_quota_used{token="1"} 2`,
 		`freebuff_proxy_premium_quota_remaining{token="1"} 2`,
-		`freebuff_proxy_glm53flash_quota_limit{token="1"} 2`,
 	} {
 		if !strings.Contains(metrics, want) {
 			t.Errorf("metrics missing %q\nmetrics:\n%s", want, metrics)
@@ -144,9 +116,6 @@ func TestHealthzPremiumQuotaOmittedWhenNil(t *testing.T) {
 	}
 	if _, ok := hz.Tokens[0]["premium_quota"]; ok {
 		t.Errorf("premium_quota present want omitted, token=%+v", hz.Tokens[0])
-	}
-	if _, ok := hz.Tokens[0]["glm53flash_quota"]; ok {
-		t.Errorf("glm53flash_quota present want omitted")
 	}
 	resp, body = doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
 	metrics := string(body)

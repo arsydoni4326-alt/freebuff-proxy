@@ -27,9 +27,24 @@ The extracted release folder contains `freebuff-proxy` (Linux/macOS) or `freebuf
 ```
 
 `start-proxy.*` handles the entire setup automatically:
-1. Creates `.env` from `.env.example` if missing.
+1. Creates `.env` in your **platform config directory** from `.env.example` if missing (see the table below).
 2. If `AUTH_TOKENS` is empty, offers to generate one now via browser login (appends to `.env`).
-3. Starts the proxy and prints its address — point your AI client at `http://127.0.0.1:3457/v1`, model `deepseek/deepseek-v4-flash`.
+3. Starts the proxy and prints its address — point your AI client at `http://127.0.0.1:3457/v1`, model `deepseek/deepseek-v4-flash` (`.env` is resolved by the runtime, so it works from any directory).
+
+### Installer flags
+
+`install.sh` / `install-freebuff-proxy.sh` (bash) and `install.ps1` / `install-freebuff-proxy.ps1` (PowerShell) accept the following overrides:
+
+| Behavior | bash | PowerShell |
+| :--- | :--- | :--- |
+| Install root (binary + template) | `--prefix <dir>` / `--dir <dir>` | `-Dir <dir>` |
+| Target `.env` file | `--env-file <path>` | `-EnvFile <path>` |
+| Skip token prompt | `--skip-token` | `-SkipToken` |
+| Do not create `.env` | `--no-env` | `-NoEnv` |
+| Force re-download | `--force` | `-Force` |
+| Skip the interactive menu | `--method=binary` / `--method=docker` / `--method=bridge` | *(menu only)* |
+
+The default install root is the platform directory (see [README → Where the files are installed](../README.md#where-the-files-are-installed)); `--dir <dir>` / `-Dir <dir>` and a dev-clone checkout preserve the legacy "config in the current directory" behavior.
 
 > **Windows execution policy:** If PowerShell blocks `.ps1` execution, use the `.cmd` wrappers (`.\start-proxy.cmd`, `.\gen-token.cmd`, `.\install.cmd`) which run with `-ExecutionPolicy Bypass`.
 

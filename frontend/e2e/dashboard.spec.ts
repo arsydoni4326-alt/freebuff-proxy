@@ -288,7 +288,7 @@ test.describe('dashboard hermetic mocks', () => {
     }
   });
 
-  test('Models lists 7 served models and aliases', async ({ page }) => {
+  test('Models lists 6 served models', async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
 
@@ -296,14 +296,14 @@ test.describe('dashboard hermetic mocks', () => {
     await page.waitForResponse((r) => r.url().includes('/admin/api/models') && r.status() === 200, { timeout: 5000 }).catch(() => {});
     await expect(page.getByRole('heading', { name: 'Models' })).toBeVisible();
 
-    // Models fixture has 7 rows
+    // Models fixture has 6 rows
     await expect(page.getByRole('table')).toBeVisible();
     await expect(page.getByText('deepseek/deepseek-v4-flash')).toBeVisible();
-    await expect(page.getByText('stealth/ox-alpha')).toBeVisible();
+    await expect(page.getByText('upstage/solar-pro4')).toBeVisible();
     await expect(page.getByText('z-ai/glm-5.3-flash')).toBeVisible();
-    // Count rows: header + 7 data rows
+    // Count rows: header + 6 data rows
     const rows = page.locator('table tbody tr');
-    await expect(rows).toHaveCount(7);
+    await expect(rows).toHaveCount(6);
   });
 
   test('Overview shows client integration and base_url', async ({ page }) => {

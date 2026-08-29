@@ -167,15 +167,12 @@
   <tr>
     <td colspan="6" class="!p-0">
       <div class="fp-inset m-2 rounded p-3">
-        <!-- Premium Quota Tracker — pacific_day 5/day pool + glm_v53_flash lane -->
+        <!-- Premium Quota Tracker — pacific_day 5/day shared premium pool -->
         <div class="flex flex-col gap-2 mb-3">
           {#if token.premium_quota}
             <PremiumQuotaBar quota={token.premium_quota} title={$tr('Premium pool')} {now} />
           {:else}
             <p class="text-xs text-[var(--fp-dim)] italic">{$tr('No premium quota data — run a request or -test-token to populate.')}</p>
-          {/if}
-          {#if token.glm53flash_quota}
-            <PremiumQuotaBar quota={token.glm53flash_quota} title={$tr('GLM 5.3 Flash pool')} {now} />
           {/if}
         </div>
         <!-- Dev Tools: Session Generator & Diagnostics Toolbar -->
@@ -186,11 +183,11 @@
               bind:value={spawnModel}
               class="fp-input !text-xs !py-1 !px-2 !h-7 !w-44 !inline-block"
             >
-              <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (4/d)</option>
-              <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (2/d)</option>
+              <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/d)</option>
+              <option value="upstage/solar-pro4">upstage/solar-pro4 (5/d · experimental)</option>
+              <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (5/d)</option>
               <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash</option>
               <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
-              <option value="deepseek/deepseek-v4-pro">deepseek/deepseek-v4-pro</option>
               <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral)</option>
             </select>
             <Button

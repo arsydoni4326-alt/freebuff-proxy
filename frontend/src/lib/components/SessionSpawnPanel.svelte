@@ -29,10 +29,10 @@
     class="fp-input !text-xs !py-1 !px-2 !h-8 !w-48"
   >
     <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/d)</option>
+    <option value="upstage/solar-pro4">upstage/solar-pro4 (5/d · experimental)</option>
     <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
-    <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (2/d)</option>
+    <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (5/d)</option>
     <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash</option>
-    <option value="deepseek/deepseek-v4-pro">deepseek/deepseek-v4-pro</option>
     <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral)</option>
   </select>
 </td>

@@ -4,14 +4,13 @@
   "in_bridge": false,
   "models": [
     "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro",
     "mimo/mimo-v2.5",
     "openai/gpt-5.6-luna",
-    "stealth/ox-alpha",
+    "upstage/solar-pro4",
     "z-ai/glm-5.2",
     "z-ai/glm-5.3-flash"
   ],
-  "model_count": 7,
+  "model_count": 6,
   "uptime": "4h32m18s",
   "safe_mode": true,
   "max_messages_per_day": 0,

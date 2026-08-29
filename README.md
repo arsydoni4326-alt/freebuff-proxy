@@ -67,17 +67,18 @@ If you are a beginner, you don't need to write code or compile anything:
 | Keep the pool **draining one key at a time** | **Don't hammer many tokens from one public IP** (`ip_capped`) |
 
 
-**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**4 premium sessions/day base**). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
+**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base** — 4 at the floor when trust levels are enforced). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
 
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot `440b7ad` · npm `0.0.157` `2026-08-28`):
-> *"GLM 5.3 Flash is 2 sessions a day while we see what it costs; every other model runs on your normal daily sessions. MiMo and DeepSeek V4 Flash stay unmetered. —❤️ Freebuff Team"*
-> (Premium pool `4/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` `2/day` fixed `glm_v53_flash` pool; `V4 Flash 07/31` off-peak `Back at 10:00 AM`.)
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `87ef664` · npm `0.0.158` `2026-08-28`):
+> *"Solar Pro 4 joins as a limited-time premium trial row sharing the normal premium pool; DeepSeek V4 Flash is back to always-available (peak pricing still applies). Every model runs on your normal daily sessions — no per-model caps, and MiMo stays unmetered. —❤️ Freebuff Team"*
+> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` shares the premium pool — no per-model cap.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `4/day` premium pool (`PREMIUM 0/4`). |
-| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. `2/day` fixed pool `glm_v53_flash` (cheap lane, measuring cache-hit cost; see `freebuff-models.ts:1546`). |
-| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** (left `FREEBUFF_PREMIUM_MODEL_IDS` 2026-08-24). |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool (`PREMIUM 0/5`). |
+| **Premium** | **Solar Pro 4** `NEW` | `upstage/solar-pro4` | **Limited-time trial**, experimental, OpenRouter BYOK (Upstage), text-only, context `500_000`. Shares `5/day` premium pool. |
+| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. Shares `5/day` premium pool. |
+| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; off-peak-only serving window removed 2026-08-28). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
 | **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` per referral), 1-hour sessions. |
 | **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
@@ -159,6 +160,20 @@ graph TD
 
 ### 1. Install
 
+### Where the files are installed
+
+`freebuff-proxy` follows platform-standard paths, and it **finds its configuration automatically** — you never need to `cd` into a specific folder for the `.env` to resolve.
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| **Binary** | `~/.local/bin/freebuff-proxy` | `/usr/local/bin/freebuff-proxy` | `%LOCALAPPDATA%\Programs\freebuff-proxy\freebuff-proxy.exe` |
+| **Config** (`.env`, mode `0600`) | `~/.config/freebuff-proxy/.env` | `~/Library/Application Support/freebuff-proxy/.env` | `%APPDATA%\freebuff-proxy\.env` |
+| **Template** (`.env.example`) | `~/.local/share/freebuff-proxy/.env.example` | `/usr/local/share/freebuff-proxy/.env.example` | `%LOCALAPPDATA%\Programs\freebuff-proxy\.env.example` |
+
+- The **`.env`** file holds your secrets (`AUTH_TOKENS`, `ADMIN_TOKEN`, …). It lives **only** in the platform config directory above (the installer creates it there, `chmod 600` on Linux/macOS) and is resolved automatically by the runtime. As a legacy convenience for power users and dev clones, a `./.env` in the working directory still wins when present.
+- The **`.env.example`** is a **template** — a secrets-free starter shipped next to the install root. It seeds the real `.env` during setup; it is never read as live config.
+- **Overrides:** `--prefix <dir>` / `--dir <dir>` (bash) and `-Dir <dir>` (PowerShell) relocate the install root; `--env-file <path>` (bash) and `-EnvFile <path>` (PowerShell) point `.env` at a specific file. `--dir <dir>` (kept for backward compatibility) and a dev-clone checkout preserve the legacy "`.env` in the current directory" behavior — the platform directories above are the default.
+
 **One-command installer (Linux/macOS):**
 
 ```bash
@@ -171,17 +186,17 @@ curl -sSL https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/
 irm https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/install-freebuff-proxy.ps1 | iex
 ```
 
-The bash installer prompts for an install method (easy, manual binary, Docker Compose, bridge mode); both installers mint/read your token and write `.env`.
+The bash installer prompts for an install method (easy, manual binary, Docker Compose, bridge mode); both installers mint/read your token and write `.env` in your platform config directory.
 
-**Alternatively**, run with Docker Compose:
+**Alternatively**, run with Docker Compose (a dev clone — the installers place `.env` for you):
 
 ```bash
-cp .env.example .env   # then set AUTH_TOKENS
+cp .env.example .env   # dev clone: seed the template next to the compose file, then set AUTH_TOKENS
 git fetch --tags 2>/dev/null || true
 VERSION=$(git describe --tags 2>/dev/null || echo dev) docker compose up -d --build
 ```
 
-**Or** download a release binary from [Releases](https://github.com/trefeon/freebuff-proxy/releases) (Linux/macOS/Windows × amd64/arm64), unzip it, right-click the extracted folder → **Open in Terminal**, and run `./start-proxy.sh` (Windows: `.\start-proxy.cmd`; the `.cmd` wrappers bypass the PowerShell execution policy). The bundled scripts also include a headless token generator (`gen-token.sh` / `gen-token.cmd`).
+**Or** download a release binary from [Releases](https://github.com/trefeon/freebuff-proxy/releases) (Linux/macOS/Windows × amd64/arm64), unzip it, right-click the extracted folder → **Open in Terminal**, and run `./start-proxy.sh` (Windows: `.\start-proxy.cmd`; the `.cmd` wrappers bypass the PowerShell execution policy). `start-proxy.*` resolves `.env` from your platform config directory, so it works no matter which directory you launch it from. The bundled scripts also include a headless token generator (`gen-token.sh` / `gen-token.cmd`).
 
 ### 2. Obtain an Auth Token
 
@@ -205,9 +220,10 @@ Alternatively, log in with the official CLI (`npm i -g freebuff && freebuff`): t
 
 ### 3. Configure
 
-Copy the example and set your token:
+The installers already wrote `.env` for you (in your platform config directory — see [Where the files are installed](#where-the-files-are-installed)). For a manual or dev-clone run, seed the template and set your token:
 
 ```bash
+# defaults to the platform config dir; pass --env-file <path> to target a specific file
 cp .env.example .env
 # AUTH_TOKENS=cb_xxx        ← paste your token (comma-separate for pooling)
 # SAFE_MODE=true            ← default (set false to disable)
@@ -220,6 +236,8 @@ Leave `AUTH_TOKENS=` empty for **bridge mode** (clients bring their own tokens).
 ```bash
 ./freebuff-proxy            # or: docker compose up -d
 ```
+
+The binary reads `.env` from your platform config directory automatically — run it from anywhere.
 
 Check health and run diagnostics:
 
@@ -245,7 +263,7 @@ curl http://127.0.0.1:3457/healthz
 | `-setup` | Interactive client setup (detects installed clients) |
 | `-yes` | Auto-confirm `-setup` prompts |
 | `-refresh-token N` | Re-authenticate token #N in `.env` via the headless GitHub login flow and exit. Interactive: prints a login URL and polls. With `-yes` and `GITHUB_USER` / `GITHUB_PASSWORD` / `GITHUB_TOTP` set: protocol login |
-| `-install-service` | Register the current binary as a background service and start it: Task Scheduler on Windows (per-user, no admin), systemd `--user` unit on Linux, launchd LaunchAgent on macOS. Runs from the executable's directory so `.env` resolves, and auto-starts on logon/boot |
+| `-install-service` | Register the current binary as a background service and start it: Task Scheduler on Windows (per-user, no admin), systemd `--user` unit on Linux, launchd LaunchAgent on macOS. Resolves `.env` from your platform config directory (a `./.env` in the working directory still wins), and auto-starts on logon/boot |
 | `-uninstall-service` | Stop and unregister the background service (idempotent) |
 | `-service-status` | Check whether the service is registered and running; exits `0` when registered, `1` when not (scriptable) |
 
@@ -253,7 +271,7 @@ curl http://127.0.0.1:3457/healthz
 
 ## Configuration Reference
 
-All keys can be set via environment variables or the JSON config file passed to `-config` (`AUTO_DISCOVER_TOKEN` is environment-only); a local `.env` file (if present) is also read, and for the keys it covers it behaves like the environment. Precedence, lowest to highest: **built-in defaults < JSON `-config` < `./.env` < environment**. List values (`AUTH_TOKENS`, `API_KEYS`, `MODELS_ALLOW`) are comma-separated in env and arrays in JSON (`MODELS_ALLOW` also accepts a plain comma-separated JSON string).
+All keys can be set via environment variables or the JSON config file passed to `-config` (`AUTO_DISCOVER_TOKEN` is environment-only); a `.env` file (resolved automatically from your platform config directory, or `./.env` in the working directory when present) is also read, and for the keys it covers it behaves like the environment. Precedence, lowest to highest: **built-in defaults < JSON `-config` < `.env` < environment**. List values (`AUTH_TOKENS`, `API_KEYS`, `MODELS_ALLOW`) are comma-separated in env and arrays in JSON (`MODELS_ALLOW` also accepts a plain comma-separated JSON string).
 
 | Environment Variable | Default | Description |
 |---|---|---|
@@ -360,7 +378,7 @@ opt out). It enables essential anti-ban protections and presets:
   signal (also transient). Only `403` with `banned` / `country_blocked`
   means the account itself is gone: stop using it and move to a fresh established account.
 - **For ~24h of continuous coding, budget 4-5 keys.** Each FreeBuff account has a daily session
-  quota (premium 4/day, limited 3/day, trust-level ladder up to 7) and the CLI holds **one session
+  quota (premium 5/day, limited 3/day, trust-level ladder up to 7) and the CLI holds **one session
   at a time** (concurrent sessions are a Desktop multi-tab feature, not CLI).
   One key ≈ one day of moderate use. Configure `AUTH_TOKENS` with multiple tokens to pool session
   headroom across tokens and let the proxy drain them one at a time.
