@@ -43,6 +43,7 @@ var expectedFallback = map[string]string{
 	// base2-free-luna is retired upstream (free_mode_legacy_luna_agent);
 	// retiredRootOverrides remaps it — see parse.go.
 	"openai/gpt-5.6-luna":             "base3-free-luna",
+	"upstage/solar-pro4":              "base2-free-solar-pro4",
 	"deepseek/deepseek-v4-pro":        "base2-free-deepseek",
 	"deepseek/deepseek-v4-flash":      "base2-free-deepseek-flash",
 	"mimo/mimo-v2.5":                  "base2-free-mimo",
@@ -905,8 +906,9 @@ func TestResolveModelMaxUpgradeRemoved(t *testing.T) {
 // TestStrictServedModelsPinned pins issue #189 (strict gate) as amended by
 // #201 and the 2026-08-23 luna-es drop, and by #209, and by d64972c (2026-08-27)
 // adding z-ai/glm-5.3-flash, and by 5951772 (2026-08-28) pausing
-// deepseek-v4-pro + ox-alpha and keeping claude-fable-5 gated: ServedModels contains ONLY the 5 operational
-// FreeBuff models. openai/gpt-5.6-luna-es was removed
+// deepseek-v4-pro + ox-alpha and keeping claude-fable-5 gated, and by 87ef664
+// (2026-08-28) serving upstage/solar-pro4: ServedModels contains ONLY the 6
+// operational FreeBuff models. openai/gpt-5.6-luna-es was removed
 // after the vendor moved it into FREEBUFF_WEB_GOD_ONLY_MODELS ("Codex
 // (test)" — Novita route, evaluation only; hidden from the CLI picker and
 // SUPPORTED_FREEBUFF_MODELS in snapshot 0603bc1) — not the documented
@@ -918,12 +920,13 @@ func TestStrictServedModelsPinned(t *testing.T) {
 	wantModels := []string{
 		"deepseek/deepseek-v4-flash",
 		"openai/gpt-5.6-luna",
+		"upstage/solar-pro4",
 		"z-ai/glm-5.2",
 		"z-ai/glm-5.3-flash",
 		"mimo/mimo-v2.5",
 	}
-	if len(ServedModels) != 5 {
-		t.Fatalf("len(ServedModels) = %d, want exactly 5", len(ServedModels))
+	if len(ServedModels) != 6 {
+		t.Fatalf("len(ServedModels) = %d, want exactly 6", len(ServedModels))
 	}
 	for _, m := range wantModels {
 		if !ServedModels[m] {

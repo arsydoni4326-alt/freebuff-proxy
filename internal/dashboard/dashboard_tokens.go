@@ -28,7 +28,6 @@ type tokenDetail struct {
 	Quota                   []quotaRow                 `json:"quota"`
 	HasQuota                bool                       `json:"has_quota"`
 	PremiumQuota            *pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
-	Glm53FlashQuota         *pool.PremiumQuotaSnapshot `json:"glm53flash_quota,omitempty"`
 }
 
 type quotaRow struct {
@@ -71,7 +70,6 @@ func (d *Dashboard) tokensData() tokensData {
 			SessionModel:            t.SessionModel,
 			SessionRemainingSeconds: t.SessionRemainingSeconds,
 			PremiumQuota:            t.PremiumQuota,
-			Glm53FlashQuota:         t.Glm53FlashQuota,
 		}
 		for model, q := range t.QuotaByModel {
 			rem := float64(0)

@@ -327,23 +327,22 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 			}
 		}
 		banType, bannedUntil := banView(eRuns.BanError, eRuns.BannedUntil)
-		premium, glm53 := premiumSnapshotFromQuotaMap(quotaByModel)
+		premium := premiumSnapshotFromQuotaMap(quotaByModel)
 		snaps = append(snaps, BridgeTokenSnapshot{
-			Key:             ke.key,
-			LastUsed:        e.lastUsed,
-			ActiveRuns:      eRuns.ActiveRuns,
-			Requests:        eRuns.Requests,
-			Locked:          e.locked.Load(),
-			CooldownUntil:   cooldownUntil,
-			SessionActive:   sess.Status == "active",
-			Model:           model,
-			QuotaByModel:    quotaByModel,
-			SpendDay:        float64(spend.Day),
-			SpendPct:        spendPct,
-			PremiumQuota:    premium,
-			Glm53FlashQuota: glm53,
-			BanType:         banType,
-			BannedUntil:     bannedUntil,
+			Key:           ke.key,
+			LastUsed:      e.lastUsed,
+			ActiveRuns:    eRuns.ActiveRuns,
+			Requests:      eRuns.Requests,
+			Locked:        e.locked.Load(),
+			CooldownUntil: cooldownUntil,
+			SessionActive: sess.Status == "active",
+			Model:         model,
+			QuotaByModel:  quotaByModel,
+			SpendDay:      float64(spend.Day),
+			SpendPct:      spendPct,
+			PremiumQuota:  premium,
+			BanType:       banType,
+			BannedUntil:   bannedUntil,
 		})
 	}
 	return snaps

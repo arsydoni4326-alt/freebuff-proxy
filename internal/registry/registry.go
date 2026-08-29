@@ -149,6 +149,7 @@ var fallbackAgents = []agentModels{
 	{agent: "base2-free-mimo", models: []string{"mimo/mimo-v2.5"}},
 	{agent: "base2-free-minimax-m3", models: []string{"minimax/minimax-m3"}},
 	{agent: "base2-free-luna", models: []string{"openai/gpt-5.6-luna"}},
+	{agent: "base2-free-solar-pro4", models: []string{"upstage/solar-pro4"}},
 	{agent: "base2-free-glm", models: []string{"z-ai/glm-5.2"}},
 	{agent: "base2-free-glm-5-3-flash", models: []string{"z-ai/glm-5.3-flash"}},
 	{agent: "base2-free-kimi-k3-eco", models: []string{"crof/kimi-k3-eco"}},
@@ -171,6 +172,7 @@ var fallbackAgents = []agentModels{
 	{agent: "tmux-cli", models: []string{"deepseek/deepseek-v4-flash"}},
 	{agent: "code-reviewer-minimax-m3", models: []string{"minimax/minimax-m3"}},
 	{agent: "code-reviewer-luna", models: []string{"openai/gpt-5.6-luna"}},
+	{agent: "code-reviewer-solar-pro4", models: []string{"upstage/solar-pro4"}},
 	// Vendor cce4800 (2026-08-24): Ox Alpha reached CLI/Desktop, so its
 	// reviewer needs its own allowlist row — without it a base2 session falls
 	// back to the DeepSeek Flash reviewer, which that session's allowlist does
@@ -195,6 +197,7 @@ var fallbackRootByModel = map[string]string{
 	"mimo/mimo-v2.5":                  "base2-free-mimo",
 	"minimax/minimax-m3":              "base2-free-minimax-m3",
 	"openai/gpt-5.6-luna":             "base2-free-luna",
+	"upstage/solar-pro4":              "base2-free-solar-pro4",
 	"deepseek/deepseek-v4-pro":        "base2-free-deepseek",
 	"deepseek/deepseek-v4-flash":      "base2-free-deepseek-flash",
 	"z-ai/glm-5.2":                    "base2-free-glm",

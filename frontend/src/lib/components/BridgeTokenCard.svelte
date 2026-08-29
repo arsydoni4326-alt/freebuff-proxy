@@ -68,7 +68,4 @@
   {#if card.premium_quota}
     <PremiumQuotaBar quota={card.premium_quota} title={$tr('Premium pool')} {now} />
   {/if}
-  {#if card.glm53flash_quota}
-    <PremiumQuotaBar quota={card.glm53flash_quota} title={$tr('GLM 5.3 Flash')} {now} />
-  {/if}
 </div>

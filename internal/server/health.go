@@ -69,9 +69,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		if snap.PremiumQuota != nil {
 			tok["premium_quota"] = premiumQuotaMap(snap.PremiumQuota)
 		}
-		if snap.Glm53FlashQuota != nil {
-			tok["glm53flash_quota"] = premiumQuotaMap(snap.Glm53FlashQuota)
-		}
 		if len(snap.Entitlement) > 0 {
 			tok["entitlement"] = snap.Entitlement
 		}
@@ -115,9 +112,6 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		if bs.PremiumQuota != nil {
 			entry["premium_quota"] = premiumQuotaMap(bs.PremiumQuota)
 		}
-		if bs.Glm53FlashQuota != nil {
-			entry["glm53flash_quota"] = premiumQuotaMap(bs.Glm53FlashQuota)
-		}
 		bridgeEntries = append(bridgeEntries, entry)
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
@@ -145,11 +139,6 @@ func premiumQuotaMap(q *pool.PremiumQuotaSnapshot) map[string]any {
 		"entitled":     q.Entitled,
 		"capped":       q.Capped,
 		"model":        "_premium_pool",
-	}
-	// Keep glm_v53_flash distinguishable for the dedicated lane; the period
-	// already carries it but the model sentinel helps the frontend.
-	if q.Period == "glm_v53_flash" {
-		m["model"] = "z-ai/glm-5.3-flash"
 	}
 	return m
 }
@@ -380,47 +369,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sb.WriteString("\n")
-	// GLM 5.3 Flash lane (2/day)
-	sb.WriteString("# HELP freebuff_proxy_glm53flash_quota_limit GLM 5.3 Flash quota limit per token\n")
-	sb.WriteString("# TYPE freebuff_proxy_glm53flash_quota_limit gauge\n")
-	for _, snap := range snaps {
-		if snap.Glm53FlashQuota != nil {
-			fmt.Fprintf(&sb, "freebuff_proxy_glm53flash_quota_limit{token=\"%d\"} %d\n", snap.Token+1, snap.Glm53FlashQuota.Limit)
-		}
-	}
-	for _, bs := range s.pool.BridgeSnapshot() {
-		if bs.Glm53FlashQuota != nil {
-			fmt.Fprintf(&sb, "freebuff_proxy_glm53flash_quota_limit{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.Glm53FlashQuota.Limit)
-		}
-	}
-	sb.WriteString("\n")
-	sb.WriteString("# HELP freebuff_proxy_glm53flash_quota_used GLM 5.3 Flash quota used per token\n")
-	sb.WriteString("# TYPE freebuff_proxy_glm53flash_quota_used gauge\n")
-	for _, snap := range snaps {
-		if snap.Glm53FlashQuota != nil {
-			fmt.Fprintf(&sb, "freebuff_proxy_glm53flash_quota_used{token=\"%d\"} %d\n", snap.Token+1, snap.Glm53FlashQuota.Used)
-		}
-	}
-	for _, bs := range s.pool.BridgeSnapshot() {
-		if bs.Glm53FlashQuota != nil {
-			fmt.Fprintf(&sb, "freebuff_proxy_glm53flash_quota_used{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.Glm53FlashQuota.Used)
-		}
-	}
-	sb.WriteString("\n")
-	sb.WriteString("# HELP freebuff_proxy_glm53flash_quota_remaining GLM 5.3 Flash quota remaining per token\n")
-	sb.WriteString("# TYPE freebuff_proxy_glm53flash_quota_remaining gauge\n")
-	for _, snap := range snaps {
-		if snap.Glm53FlashQuota != nil {
-			fmt.Fprintf(&sb, "freebuff_proxy_glm53flash_quota_remaining{token=\"%d\"} %d\n", snap.Token+1, snap.Glm53FlashQuota.Remaining)
-		}
-	}
-	for _, bs := range s.pool.BridgeSnapshot() {
-		if bs.Glm53FlashQuota != nil {
-			fmt.Fprintf(&sb, "freebuff_proxy_glm53flash_quota_remaining{token=\"bridge_%s\"} %d\n", escapeLabelValue(bs.Key), bs.Glm53FlashQuota.Remaining)
-		}
-	}
-	sb.WriteString("\n")
-
 	if s.logs != nil {
 		// T20: handled-record counters from the dashboard log ring. The key
 		// is logring's "level|msg" (level lowercased). msg is a free-form

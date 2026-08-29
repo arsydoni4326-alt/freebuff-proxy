@@ -19,7 +19,6 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 		name       string
 		m          map[string]session.QuotaSnapshot
 		wantP      bool
-		wantGLM    bool
 		wantCapped bool
 	}{
 		{
@@ -52,21 +51,19 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 			},
 		},
 		{
-			name: "glm lane only",
+			name: "premium via shared pool member",
 			m: map[string]session.QuotaSnapshot{
-				"z-ai/glm-5.3-flash": {Model: "z-ai/glm-5.3-flash", Limit: 2, RecentCount: 1, Period: "glm_v53_flash", ResetAt: future},
+				"z-ai/glm-5.3-flash": {Model: "z-ai/glm-5.3-flash", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 			},
-			wantGLM: true,
+			wantP: true,
 		},
 		{
-			name: "both premium and glm",
+			name: "both premium members",
 			m: map[string]session.QuotaSnapshot{
 				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 3, Period: "pacific_day", ResetAt: future},
-				"z-ai/glm-5.3-flash":  {Model: "z-ai/glm-5.3-flash", Limit: 2, RecentCount: 2, Period: "glm_v53_flash", ResetAt: future},
+				"z-ai/glm-5.3-flash":  {Model: "z-ai/glm-5.3-flash", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
 			},
-			wantP:      true,
-			wantGLM:    true,
-			wantCapped: true,
+			wantP: true,
 		},
 		{
 			name: "capped detection future reset",
@@ -95,24 +92,18 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			premium, glm := premiumSnapshotFromQuotaMap(tc.m)
+			premium := premiumSnapshotFromQuotaMap(tc.m)
 			if tc.wantP && premium == nil {
 				t.Fatalf("expected premium snapshot, got nil")
 			}
 			if !tc.wantP && premium != nil {
 				t.Fatalf("expected premium nil, got %+v", premium)
 			}
-			if tc.wantGLM && glm == nil {
-				t.Fatalf("expected glm snapshot, got nil")
-			}
-			if !tc.wantGLM && glm != nil {
-				t.Fatalf("expected glm nil, got %+v", glm)
-			}
 			if premium != nil {
 				if premium.PercentUsed < 0 || premium.PercentUsed > 100 {
 					t.Errorf("percent_used out of range: %d", premium.PercentUsed)
 				}
-				if tc.wantCapped && !premium.Capped && glm == nil {
+				if tc.wantCapped && !premium.Capped {
 					t.Errorf("expected capped true, got false: %+v", premium)
 				}
 				if !tc.wantCapped && tc.name == "not capped when reset past" && premium.Capped {
@@ -128,11 +119,6 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 					}
 				}
 			}
-			if glm != nil && tc.wantCapped && glm.Limit == 2 && glm.Used == 2 {
-				if !glm.Capped {
-					t.Errorf("glm expected capped")
-				}
-			}
 		})
 	}
 }
@@ -143,7 +129,7 @@ func TestPremiumSnapshotPreferLuna(t *testing.T) {
 		"openai/gpt-5.6-luna":      {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
 		"deepseek/deepseek-v4-pro": {Model: "deepseek/deepseek-v4-pro", Limit: 5, RecentCount: 4, Period: "pacific_day", ResetAt: future},
 	}
-	premium, _ := premiumSnapshotFromQuotaMap(m)
+	premium := premiumSnapshotFromQuotaMap(m)
 	if premium == nil {
 		t.Fatal("premium nil")
 	}
@@ -157,7 +143,7 @@ func TestPremiumSnapshotSortedFallback(t *testing.T) {
 	m := map[string]session.QuotaSnapshot{
 		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 	}
-	premium, _ := premiumSnapshotFromQuotaMap(m)
+	premium := premiumSnapshotFromQuotaMap(m)
 	if premium == nil {
 		t.Fatal("premium nil")
 	}
@@ -225,9 +211,9 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 		},
 		"z-ai/glm-5.3-flash": map[string]any{
 			"model":       "z-ai/glm-5.3-flash",
-			"limit":       2,
+			"limit":       4,
 			"recentCount": 1,
-			"period":      "glm_v53_flash",
+			"period":      "pacific_day",
 			"resetAt":     "2026-08-27T07:00:00.000Z",
 		},
 		"mimo/mimo-v2.5": map[string]any{
@@ -255,21 +241,12 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 	if snap.PremiumQuota.Limit != 4 || snap.PremiumQuota.Used != 2 || snap.PremiumQuota.Remaining != 2 || snap.PremiumQuota.PercentUsed != 50 {
 		t.Errorf("premium mismatch: %+v", snap.PremiumQuota)
 	}
-	if snap.Glm53FlashQuota == nil {
-		t.Fatal("Glm53FlashQuota nil")
-	}
-	if snap.Glm53FlashQuota.Limit != 2 || snap.Glm53FlashQuota.Used != 1 {
-		t.Errorf("glm mismatch: %+v", snap.Glm53FlashQuota)
-	}
 	// helper alias
 	if got := p.PremiumQuotaForToken(0); got == nil || got.Limit != 4 {
 		t.Errorf("PremiumQuotaForToken mismatch: %+v", got)
 	}
 	if got := p.PremiumSnapshotForToken(0); got == nil || got.Limit != 4 {
 		t.Errorf("PremiumSnapshotForToken mismatch: %+v", got)
-	}
-	if got := p.Glm53QuotaForToken(0); got == nil || got.Limit != 2 {
-		t.Errorf("Glm53QuotaForToken mismatch: %+v", got)
 	}
 	// JSON omitempty check
 	b, _ := json.Marshal(snap)
@@ -280,8 +257,8 @@ func TestSnapshotPremiumQuotaIntegration(t *testing.T) {
 	if _, ok := m["premium_quota"]; !ok {
 		t.Error("json missing premium_quota")
 	}
-	if _, ok := m["glm53flash_quota"]; !ok {
-		t.Error("json missing glm53flash_quota")
+	if _, ok := m["glm53flash_quota"]; ok {
+		t.Error("json should not contain glm53flash_quota")
 	}
 	pq := m["premium_quota"].(map[string]any)
 	if int(pq["limit"].(float64)) != 4 {
@@ -310,9 +287,6 @@ func TestSnapshotPremiumQuotaNilWhenNoPremium(t *testing.T) {
 	snap := p.Snapshot()[0]
 	if snap.PremiumQuota != nil {
 		t.Errorf("expected nil premium, got %+v", snap.PremiumQuota)
-	}
-	if snap.Glm53FlashQuota != nil {
-		t.Errorf("expected nil glm, got %+v", snap.Glm53FlashQuota)
 	}
 	b, _ := json.Marshal(snap)
 	var m map[string]any
