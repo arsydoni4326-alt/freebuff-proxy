@@ -18,8 +18,28 @@
 #      from GitHub if the archive did not ship one), then filled with your token,
 #      LISTEN_ADDR for containers, and the account-safety knobs.
 #
+# Layout (default install; no --dir / --prefix flags):
+#   binary   Linux & git-bash: ~/.local/bin/freebuff-proxy
+#            macOS: /usr/local/bin/freebuff-proxy (sudo only when needed,
+#            prompted, never silent; falls back to ~/.local/bin)
+#   config   Linux: $XDG_CONFIG_HOME/freebuff-proxy/.env (~/.config/...)
+#            macOS: ~/Library/Application Support/freebuff-proxy/.env
+#            Windows: %APPDATA%\freebuff-proxy\.env
+#   template .env.example ships in the template dir (Linux
+#            $XDG_DATA_HOME/freebuff-proxy, usually ~/.local/share/...;
+#            macOS /usr/local/share/freebuff-proxy; Windows next to the
+#            binary). The .env is created from it - never the other way round.
+#   The proxy resolves the config dir automatically, so you can start it from
+#   anywhere: just run freebuff-proxy (no cd, no cwd .env needed).
+#
 # Non-interactive flags (scripted use):
-#   --dir=<path> / --dir <path>   target directory (default: current dir)
+#   --dir=<path> / --dir <path>   target directory. Keeps the legacy cwd-based
+#                                 layout (binary, .env and .env.example all in
+#                                 that dir). A repo checkout (docker-compose
+#                                 .yml or .git present) is detected as dev mode.
+#   --prefix=<dir> / --prefix <d> binary directory (default: platform dirs
+#                                 above; a non-writable default falls back to
+#                                 ~/.local/bin after a visible sudo prompt)
 #   --skip-token                  do not touch AUTH_TOKENS
 #   --no-env                      do not create/update .env
 #   --force                       re-download / overwrite even if present
@@ -30,13 +50,15 @@
 #                                 installer never installs or waits for a CLI
 #   -h|--help                     this header
 #
-# What it does NOT do: modify system paths, install services, or touch your
-# token except writing it into the local .env (gitignored).
+# What it does NOT do: install system services, or touch your token except
+# writing it into the config-dir .env (0600, never committed).
 set -euo pipefail
 
 REPO="trefeon/freebuff-proxy"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/main"
 DIR=""
+DIR_GIVEN=0
+PREFIX=""
 SKIP_TOKEN=0
 NO_ENV=0
 FORCE=0
@@ -51,8 +73,10 @@ CLI_UA="ai-sdk/openai-compatible/1.0.0/codebuff"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dir=*) DIR="${1#*=}"; shift ;;
-    --dir) DIR="${2:-}"; shift 2 ;;
+    --dir=*) DIR="${1#*=}"; DIR_GIVEN=1; shift ;;
+    --dir) DIR="${2:-}"; DIR_GIVEN=1; shift 2 ;;
+    --prefix=*) PREFIX="${1#*=}"; shift ;;
+    --prefix) PREFIX="${2:-}"; shift 2 ;;
     --skip-token) SKIP_TOKEN=1; shift ;;
     --no-env) NO_ENV=1; shift ;;
     --force) FORCE=1; shift ;;
@@ -63,7 +87,7 @@ while [ $# -gt 0 ]; do
     --method) METHOD="${2:-}"; shift 2 ;;
     --no-prompt) NO_PROMPT=1; shift ;;
     --no-cli-install) NO_CLI_INSTALL=1; shift ;;
-    --help) grep '^#' "$0" | head -36; exit 0 ;;
+    --help) grep '^#' "$0" | head -54; exit 0 ;;
     *) echo "unknown arg: $1 (see header)" >&2; exit 1 ;;
   esac
 done
@@ -392,6 +416,7 @@ if [ "$METHOD" = "docker" ]; then
   fi
   cd "$REPO_DIR"
   CONFIG_DIR="$REPO_DIR"
+  TEMPLATE_DIR="$REPO_DIR"
 else
   c "Resolving the latest release..."
   RELEASE="$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest")"
@@ -401,9 +426,9 @@ else
 
   OS="$(uname -s)"
   case "$OS" in
-    Linux*) GOOS="linux" ;;
-    Darwin*) GOOS="darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) GOOS="windows" ;;
+    Linux*) PLAT="linux"; GOOS="linux" ;;
+    Darwin*) PLAT="darwin"; GOOS="darwin" ;;
+    MINGW*|MSYS*|CYGWIN*|Windows_NT*) PLAT="windows"; GOOS="windows" ;;
     *) die "unsupported OS: $OS" ;;
   esac
   ARCH="$(uname -m)"
@@ -420,7 +445,82 @@ else
   fi
   ok "Asset: $ASSET"
 
-  EXISTING_BIN="$(find "$DIR" -maxdepth 2 -type f -name 'freebuff-proxy*' 2>/dev/null | head -1)"
+  # --- layout: platform dirs (default) vs explicit --dir (legacy cwd) ---------
+  # The config loader in the Go runtime searches the platform config dir, so
+  # .env must land where the runtime looks. Explicit --dir keeps the legacy
+  # cwd-based behavior (backward compatible); a repo checkout (docker-compose
+  # .yml or .git present) is treated as dev mode.
+  if [ "$DIR_GIVEN" = "1" ]; then
+    DEV_MODE=1
+    BIN_DIR="$DIR"
+    CONFIG_DIR="$DIR"
+    TEMPLATE_DIR="$DIR"
+    if [ -f "$DIR/docker-compose.yml" ] || [ -d "$DIR/.git" ]; then
+      ok "$DIR looks like a repo checkout - dev mode (legacy cwd-based layout)."
+    else
+      ok "Using --dir=$DIR as the target directory (legacy cwd-based layout)."
+    fi
+  else
+    DEV_MODE=0
+    case "$PLAT" in
+      linux)
+        BIN_DIR="$HOME/.local/bin"
+        CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/freebuff-proxy"
+        DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/freebuff-proxy" ;;
+      darwin)
+        BIN_DIR="/usr/local/bin"
+        CONFIG_DIR="$HOME/Library/Application Support/freebuff-proxy"
+        DATA_DIR="/usr/local/share/freebuff-proxy" ;;
+      *)
+        # git-bash / MSYS: mirror the Windows installer layout.
+        BIN_DIR="${LOCALAPPDATA:-$HOME/AppData/Local}/Programs/freebuff-proxy"
+        BIN_DIR="${BIN_DIR//\\//\/}"
+        CONFIG_DIR="${XDG_CONFIG_HOME:-${APPDATA:-$HOME/AppData/Roaming}}/freebuff-proxy"
+        CONFIG_DIR="${CONFIG_DIR//\\//\/}"
+        if [ -n "${XDG_DATA_HOME:-}" ]; then DATA_DIR="${XDG_DATA_HOME}/freebuff-proxy"
+        else DATA_DIR="$BIN_DIR"; fi ;;
+    esac
+    [ -n "$PREFIX" ] && BIN_DIR="$PREFIX"
+
+    # Binary dir: create it, then test writability. A non-writable default
+    # (macOS /usr/local/bin) gets a VISIBLE sudo prompt - never a silent sudo;
+    # on failure we fall back to the user-writable ~/.local/bin.
+    mkdir -p "$BIN_DIR" 2>/dev/null || true
+    SUDO=""
+    if [ ! -w "$BIN_DIR" ]; then
+      if [ "$(id -u)" = "0" ]; then
+        :  # root: writable by definition
+      elif [ "$NO_PROMPT" = "0" ] && command -v sudo >/dev/null 2>&1; then
+        warn "$BIN_DIR is not writable by you; requesting elevated privileges (sudo)."
+        if sudo -v 2>/dev/null; then SUDO="sudo"; else warn "sudo not available; falling back to a writable prefix."; fi
+      else
+        warn "$BIN_DIR is not writable by you and sudo is unavailable/non-interactive."
+      fi
+      if [ -z "$SUDO" ] && [ ! -w "$BIN_DIR" ]; then
+        BIN_DIR="$HOME/.local/bin"
+        warn "Installing the binary to $BIN_DIR instead."
+        mkdir -p "$BIN_DIR" 2>/dev/null || true
+      fi
+    fi
+    if [ -n "$SUDO" ]; then
+      $SUDO mkdir -p "$BIN_DIR" || die "cannot create $BIN_DIR"
+    else
+      [ -w "$BIN_DIR" ] || die "cannot write to $BIN_DIR (choose a writable --prefix)"
+    fi
+
+    # Config dir: first non-cwd candidate the runtime checks for .env.
+    mkdir -p "$CONFIG_DIR" || die "cannot create $CONFIG_DIR"
+    chmod 0700 "$CONFIG_DIR" 2>/dev/null || true  # no-op on Windows git-bash
+  fi
+
+  EXISTING_BIN=""
+  if [ "$DEV_MODE" = "1" ]; then
+    EXISTING_BIN="$(find "$DIR" -maxdepth 2 -type f -name 'freebuff-proxy*' 2>/dev/null | head -1)"
+  elif [ "$GOOS" = "windows" ]; then
+    [ -f "$BIN_DIR/freebuff-proxy.exe" ] && EXISTING_BIN="$BIN_DIR/freebuff-proxy.exe"
+  else
+    [ -x "$BIN_DIR/freebuff-proxy" ] && EXISTING_BIN="$BIN_DIR/freebuff-proxy"
+  fi
   if [ -n "$EXISTING_BIN" ] && [ "$FORCE" = "0" ]; then
     warn "freebuff-proxy already exists: $EXISTING_BIN"
     warn "Skipping the download (re-run with --force to update)."
@@ -446,19 +546,61 @@ else
       exit 1
     fi
     ok "Checksum OK."
-    if [ "$GOOS" = "windows" ]; then
-      unzip -o -q "$TMP/$ASSET" -d "$DIR"
-      BIN="$DIR/freebuff-proxy.exe"
-      [ -f "$BIN" ] || BIN="$(find "$DIR" -maxdepth 2 -type f -name 'freebuff-proxy*.exe' | head -1)"
+    if [ "$DEV_MODE" = "1" ]; then
+      # legacy: extract into the --dir target, run from there.
+      if [ "$GOOS" = "windows" ]; then
+        unzip -o -q "$TMP/$ASSET" -d "$DIR"
+        BIN="$DIR/freebuff-proxy.exe"
+        [ -f "$BIN" ] || BIN="$(find "$DIR" -maxdepth 2 -type f -name 'freebuff-proxy*.exe' | head -1)"
+      else
+        tar xzf "$TMP/$ASSET" -C "$DIR"
+        BIN="$DIR/freebuff-proxy"
+        [ -x "$BIN" ] || BIN="$(find "$DIR" -maxdepth 2 -type f -name freebuff-proxy | head -1)"
+        [ -n "$BIN" ] && chmod +x "$BIN"
+      fi
     else
-      tar xzf "$TMP/$ASSET" -C "$DIR"
-      BIN="$DIR/freebuff-proxy"
-      [ -x "$BIN" ] || BIN="$(find "$DIR" -maxdepth 2 -type f -name freebuff-proxy | head -1)"
-      [ -n "$BIN" ] && chmod +x "$BIN"
+      # platform layout: install into the resolved binary dir.
+      if [ "$GOOS" = "windows" ]; then
+        unzip -o -q "$TMP/$ASSET" -d "$TMP"
+        SRC="$TMP/freebuff-proxy.exe"
+        [ -f "$SRC" ] || SRC="$(find "$TMP" -maxdepth 2 -type f -name 'freebuff-proxy*.exe' | head -1)"
+        [ -n "$SRC" ] || die "release does not contain freebuff-proxy.exe"
+        cp "$SRC" "$BIN_DIR/"
+        BIN="$BIN_DIR/$(basename "$SRC")"
+      else
+        tar xzf "$TMP/$ASSET" -C "$TMP"
+        SRC="$TMP/freebuff-proxy"
+        [ -x "$SRC" ] || SRC="$(find "$TMP" -maxdepth 2 -type f -name freebuff-proxy | head -1)"
+        [ -n "$SRC" ] || die "release does not contain the freebuff-proxy binary"
+        if [ -n "$SUDO" ]; then
+          $SUDO cp "$SRC" "$BIN_DIR/freebuff-proxy"
+          $SUDO chmod 0755 "$BIN_DIR/freebuff-proxy"
+        else
+          cp "$SRC" "$BIN_DIR/freebuff-proxy"
+          chmod 0755 "$BIN_DIR/freebuff-proxy"
+        fi
+        BIN="$BIN_DIR/freebuff-proxy"
+      fi
     fi
     c "Binary: $BIN"
   fi
-  CONFIG_DIR="$DIR"
+
+  # --- template dir (platform mode): where .env.example ships ---------------
+  # The template is NEVER the live config: the .env created from it is.
+  if [ "$DEV_MODE" = "0" ]; then
+    if [ "$PLAT" = "windows" ] && [ -z "${XDG_DATA_HOME:-}" ]; then
+      TEMPLATE_DIR="$BIN_DIR"
+    else
+      if [ -n "$SUDO" ]; then $SUDO mkdir -p "$DATA_DIR" 2>/dev/null || true; fi
+      mkdir -p "$DATA_DIR" 2>/dev/null || true
+      if [ -w "$DATA_DIR" ]; then
+        TEMPLATE_DIR="$DATA_DIR"
+      else
+        TEMPLATE_DIR="$(dirname "$BIN")"
+        warn "Template dir $DATA_DIR is not writable; the .env.example template will live next to the binary ($TEMPLATE_DIR)."
+      fi
+    fi
+  fi
 fi
 
 # --- 6. .env - always produced, adapted to the chosen option -------------------
@@ -467,27 +609,25 @@ c "Step 3/3: configuration (.env)"
 ENVPATH="$ENV_FILE"
 [ -z "$ENVPATH" ] && ENVPATH="$CONFIG_DIR/.env"
 
-ensure_env_file() {
-  [ "$NO_ENV" = "1" ] && return 0
-  if [ -f "$ENVPATH" ] && [ "$FORCE" = "0" ]; then
-    ok ".env already exists at $ENVPATH, keeping it (use --force to recreate)"
+# ensure_template <dir> - ship the .env.example TEMPLATE into the template dir.
+# It is never treated as the live config: the .env created from it IS the setup
+# step. Chain: existing template, repo copy (dev mode), GitHub fetch, minimal
+# fallback.
+ensure_template() {
+  local tdir="$1"
+  mkdir -p "$tdir" 2>/dev/null || true
+  [ -s "$tdir/.env.example" ] && return 0
+  if [ "$DEV_MODE" = "1" ] && [ -f "$DIR/.env.example" ]; then
+    cp "$DIR/.env.example" "$tdir/.env.example" 2>/dev/null || true
+    [ -s "$tdir/.env.example" ] && return 0
+  fi
+  if curl -fsSL -o "$tdir/.env.example.tmp" "$RAW_BASE/.env.example" 2>/dev/null && [ -s "$tdir/.env.example.tmp" ]; then
+    mv "$tdir/.env.example.tmp" "$tdir/.env.example"
+    ok ".env.example template: $tdir/.env.example (fetched from GitHub)"
     return 0
   fi
-  [ -f "$ENVPATH" ] && [ "$FORCE" = "1" ] && warn "Recreating $ENVPATH (--force)."
-  for cand in "$CONFIG_DIR/.env.example" "$(dirname "$ENVPATH")/.env.example"; do
-    if [ -f "$cand" ]; then
-      cp "$cand" "$ENVPATH"
-      ok ".env created from $cand"
-      return 0
-    fi
-  done
-  if curl -fsSL -o "$ENVPATH.tmp" "$RAW_BASE/.env.example" 2>/dev/null && [ -s "$ENVPATH.tmp" ]; then
-    mv "$ENVPATH.tmp" "$ENVPATH"
-    ok ".env created from the documented .env.example (fetched from GitHub)"
-    return 0
-  fi
-  rm -f "$ENVPATH.tmp" 2>/dev/null || true
-  cat > "$ENVPATH" <<'MINIENV'
+  rm -f "$tdir/.env.example.tmp" 2>/dev/null || true
+  cat > "$tdir/.env.example" <<'MINIENV'
 # freebuff-proxy config (minimal fallback - see the README for every key)
 AUTH_TOKENS=
 LISTEN_ADDR=127.0.0.1:3457
@@ -495,7 +635,38 @@ COST_MODE=free
 MAX_MESSAGES_PER_DAY=0
 IDLE_ROTATION_TIMEOUT=0
 MINIENV
-  warn ".env created (minimal fallback - .env.example was not reachable)"
+  warn ".env.example template: minimal fallback at $tdir/.env.example"
+}
+
+ensure_env_file() {
+  [ "$NO_ENV" = "1" ] && return 0
+  mkdir -p "$(dirname "$ENVPATH")" 2>/dev/null || true
+  if [ -f "$ENVPATH" ] && [ "$FORCE" = "0" ]; then
+    ok ".env already exists at $ENVPATH, keeping it (use --force to recreate)"
+    return 0
+  fi
+  [ -f "$ENVPATH" ] && [ "$FORCE" = "1" ] && warn "Recreating $ENVPATH (--force)."
+  if [ -n "$TEMPLATE_DIR" ] && [ -s "$TEMPLATE_DIR/.env.example" ]; then
+    cp "$TEMPLATE_DIR/.env.example" "$ENVPATH"
+    ok ".env created from $TEMPLATE_DIR/.env.example"
+  else
+    [ -n "$TEMPLATE_DIR" ] && ensure_template "$TEMPLATE_DIR"
+    if [ -n "$TEMPLATE_DIR" ] && [ -s "$TEMPLATE_DIR/.env.example" ]; then
+      cp "$TEMPLATE_DIR/.env.example" "$ENVPATH"
+      ok ".env created from $TEMPLATE_DIR/.env.example"
+    else
+      cat > "$ENVPATH" <<'MINIENV'
+# freebuff-proxy config (minimal fallback - see the README for every key)
+AUTH_TOKENS=
+LISTEN_ADDR=127.0.0.1:3457
+COST_MODE=free
+MAX_MESSAGES_PER_DAY=0
+IDLE_ROTATION_TIMEOUT=0
+MINIENV
+      warn ".env created (minimal fallback - .env.example was not reachable)"
+    fi
+  fi
+  chmod 0600 "$ENVPATH" 2>/dev/null || true  # umask-safe; no-op on Windows git-bash
 }
 ensure_env_file
 
@@ -622,6 +793,14 @@ echo ""
 ok "Installation complete! Config: $ENVPATH"
 echo ""
 
+if [ "$METHOD" != "docker" ]; then
+  c "Layout:"
+  echo "  binary  : $BIN"
+  echo "  config  : $ENVPATH"
+  echo "  template: $TEMPLATE_DIR/.env.example"
+  echo ""
+fi
+
 if [ -n "${BIN:-}" ] && [ -x "$BIN" ]; then
   c "Running self-diagnostic doctor..."
   "$BIN" -doctor || true
@@ -633,8 +812,18 @@ if [ "$METHOD" = "docker" ]; then
   echo "  1. View container status:  cd $REPO_DIR && docker compose ps"
   echo "  2. Follow container logs:  docker compose logs -f"
 else
-  echo "  1. 1-Click Client Setup:   cd $CONFIG_DIR && ${BIN:-./freebuff-proxy} -setup"
-  echo "  2. Start the proxy server: cd $CONFIG_DIR && ${BIN:-./freebuff-proxy}"
+  echo "  1. 1-Click Client Setup:   $BIN -setup   (config resolves automatically, no cd needed)"
+  echo "  2. Start the proxy server: $BIN          (config resolves automatically, no cd needed)"
+  echo "  3. start: freebuff-proxy (config resolves automatically)"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) echo ""
+       warn "$BIN_DIR is not on your PATH."
+       echo "  Add it to your shell profile:"
+       echo "    export PATH=\"$BIN_DIR:\$PATH\""
+       echo "  or use the full path: $BIN"
+       ;;
+  esac
 fi
 echo ""
 c "Test the proxy:"
