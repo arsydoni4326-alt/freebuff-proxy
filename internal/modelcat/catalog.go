@@ -66,8 +66,7 @@ var Catalog = []ModelInfo{
 		Served: true, Premium: true, ContextWindow: 500_000},
 	{ID: "z-ai/glm-5.2", DisplayName: "GLM 5.2", Served: true},
 	{ID: "z-ai/glm-5.3-flash", DisplayName: "GLM 5.3 Flash",
-		Served: true, Premium: true,
-		ContextWindow: 1_000_000},
+		Served: true, ContextWindow: 1_000_000},
 	{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash",
 		Served: true, ContextWindow: 1_048_576,
 		Efforts: []string{"low", "high", "max"}},
@@ -88,7 +87,7 @@ const DefaultModelID = "openai/gpt-5.6-luna"
 
 // FallbackModelID mirrors upstream FALLBACK_FREEBUFF_MODEL_ID: the model
 // guaranteed available on EVERY tier that unavailable picks are coerced to.
-// mimo is region-universal — premium-pool models (luna, glm-5.3-flash) only
+// mimo is region-universal — premium-pool models (luna, solar-pro4) only
 // resolve on full-tier accounts, so any proxy-side "no model" default must
 // be mimo, never the premium picker lead.
 const FallbackModelID = "mimo/mimo-v2.5"
@@ -97,7 +96,12 @@ const FallbackModelID = "mimo/mimo-v2.5"
 // rather than the shared premium pool.
 const Glm52ModelID = "z-ai/glm-5.2"
 
-// Glm53ModelID is a premium row metered by the shared daily premium pool.
+// Glm53ModelID is an UNMETERED standard row since 2026-08-28 (left the shared
+// daily premium pool: it bills $0.000249/msg via the Merge lane, cheaper than
+// any other served row, so it joins MiMo and DeepSeek V4 Flash with no
+// ceiling). The premium flag must always agree with the upstream
+// FREEBUFF_PREMIUM_MODEL_IDS list (isFreebuffPremiumModelId and the
+// FREEBUFF_STANDARD_MODEL_IDS derivation disagree if not).
 const Glm53ModelID = "z-ai/glm-5.3-flash"
 
 // SolarPro4ModelID mirrors FREEBUFF_SOLAR_PRO_4_MODEL_ID: the Upstage
