@@ -53,7 +53,7 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 		{
 			name: "premium via shared pool member",
 			m: map[string]session.QuotaSnapshot{
-				"z-ai/glm-5.3-flash": {Model: "z-ai/glm-5.3-flash", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+				"upstage/solar-pro4": {Model: "upstage/solar-pro4", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 			},
 			wantP: true,
 		},
@@ -61,7 +61,7 @@ func TestPremiumSnapshotFromQuotaMap(t *testing.T) {
 			name: "both premium members",
 			m: map[string]session.QuotaSnapshot{
 				"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 3, Period: "pacific_day", ResetAt: future},
-				"z-ai/glm-5.3-flash":  {Model: "z-ai/glm-5.3-flash", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
+				"upstage/solar-pro4":  {Model: "upstage/solar-pro4", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
 			},
 			wantP: true,
 		},
@@ -187,8 +187,8 @@ func TestIsPremiumModel(t *testing.T) {
 	if !isPremiumModel("openai/gpt-5.6-luna") {
 		t.Error("expected premium for luna")
 	}
-	if !isPremiumModel("z-ai/glm-5.3-flash") {
-		t.Error("expected glm premium")
+	if isPremiumModel("z-ai/glm-5.3-flash") {
+		t.Error("glm-5.3-flash left the premium pool on 2026-08-28 (unmetered)")
 	}
 	if isPremiumModel("mimo/mimo-v2.5") {
 		t.Error("unexpected premium for mimo")
