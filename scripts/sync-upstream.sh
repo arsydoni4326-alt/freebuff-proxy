@@ -34,6 +34,7 @@ RUN_TESTS=1
 TEST_ALL=0
 REF="main"
 CLONE_DIR=""
+REF_SET=""
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -59,8 +60,14 @@ while [[ $# -gt 0 ]]; do
 			exit 2
 			;;
 		*)
-			if [[ "$REF" == "main" && -z "$CLONE_DIR" && "$1" != "main" ]]; then
+			# Positional args follow the documented [ref] [clone-dir] order:
+			# the first positional is the ref (even the literal "main"), the
+			# second the clone dir. The old `"$1" != "main"` guard made an
+			# explicit "main" ref land in CLONE_DIR, cloning a fresh copy
+			# into ./main and silently dropping the real clone-dir arg.
+			if [[ -z "$REF_SET" ]]; then
 				REF="$1"
+				REF_SET=1
 			elif [[ -z "$CLONE_DIR" ]]; then
 				CLONE_DIR="$1"
 			fi
