@@ -23,14 +23,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
+
 	"freebuff-proxy/internal/config"
 	"freebuff-proxy/internal/notify"
 	"freebuff-proxy/internal/phasetiming"
 	"freebuff-proxy/internal/runs"
 	"freebuff-proxy/internal/session"
 	"freebuff-proxy/internal/upstream"
-	"strings"
-	"time"
 )
 
 // fallbackDepthKey and maxFallbackDepth bound the QUOTA_FALLBACK_MODELS
