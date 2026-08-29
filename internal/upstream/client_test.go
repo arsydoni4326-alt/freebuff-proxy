@@ -158,7 +158,7 @@ func TestCrossHostRedirectStripsToken(t *testing.T) {
 	}
 	_ = sameResp.Body.Close()
 	if got := <-sameKey; got != "" {
-		t.Errorf("same-host request carried x-codebuff-api-key %q, want absent (client no longer sends it, issue #107)", got)
+		t.Errorf("same-host request carried x-codebuff-api-key %q, want absent (newRequest-only paths never set it; agent-runs set it separately)", got)
 	}
 }
 
@@ -256,10 +256,13 @@ func TestWrapDecompress(t *testing.T) {
 }
 
 // TestDumpRedactsTokenHeaders verifies the debug dump redacts the
-// Authorization header (the only credential on the wire since #107 dropped
-// x-codebuff-api-key; the redaction list still covers it defensively).
-// Regression: dump() only redacted Authorization, so DEBUG_DUMP=true leaked
-// the plaintext token into dump/ files via x-codebuff-api-key.
+// Authorization header, and that a chat dump never contains an
+// x-codebuff-api-key line: chat is the only credential on its wire path
+// (agent-runs START/FINISH set x-codebuff-api-key, but dump() only runs on
+// the chat/session paths, and the redaction list still covers it
+// defensively). Regression: dump() only redacted Authorization, so
+// DEBUG_DUMP=true leaked the plaintext token into dump/ files via
+// x-codebuff-api-key.
 func TestDumpRedactsTokenHeaders(t *testing.T) {
 	t.Chdir(t.TempDir())
 	mock := testutil.NewMock()
@@ -297,11 +300,12 @@ func TestDumpRedactsTokenHeaders(t *testing.T) {
 	if !strings.Contains(dump, "Authorization: [redacted]") {
 		t.Errorf("dump file missing redacted Authorization header:\n%s", dump)
 	}
-	// #107: x-codebuff-api-key is no longer sent, so it must not appear in
-	// the dump at all (the defensive redaction list stays for any future
-	// setter).
+	// The chat request never carries x-codebuff-api-key (agent-runs
+	// START/FINISH set it, but dump() does not run on the agent-runs path),
+	// so it must not appear in the chat dump (the defensive redaction list
+	// stays for any future setter).
 	if strings.Contains(strings.ToLower(dump), "x-codebuff-api-key") {
-		t.Errorf("dump file contains an x-codebuff-api-key header line (never sent now):\n%s", dump)
+		t.Errorf("dump file contains an x-codebuff-api-key header line (absent on the chat path):\n%s", dump)
 	}
 }
 
@@ -386,7 +390,7 @@ func TestRedirectMultihop(t *testing.T) {
 			t.Errorf("intermediate host B received token %q, want stripped", got)
 		}
 		if got := <-aKeySeen; got != "" {
-			t.Errorf("loop-back hop to A carried %q, want absent (client no longer sends x-codebuff-api-key, issue #107)", got)
+			t.Errorf("loop-back hop to A carried %q, want absent (newRequest-only paths never set x-codebuff-api-key)", got)
 		}
 	})
 

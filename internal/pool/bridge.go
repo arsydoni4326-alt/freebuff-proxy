@@ -66,7 +66,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	// instead of a generic failure (mirrors the fixed-token cooldown-skip
 	// branch). The remembered errors are mutually exclusive in the run
 	// manager; checked in pool precedence order.
-	if until := entry.runs.CooldownUntil(); time.Now().Before(until) {
+	if until := entry.runs.CooldownUntil(); time.Now().Before(until) || entry.runs.BanError() != nil {
 		if rle := entry.runs.RateLimitError(); rle != nil && rle.Model != "" && rle.Model != model && isQuotaExhaustedError(rle) {
 			// Entry is only quota-capped for rle.Model, proceed for `model`.
 		} else {

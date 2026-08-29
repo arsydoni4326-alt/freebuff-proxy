@@ -47,6 +47,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"country":                   snap.CountryCode,
 			"session_model":             snap.SessionModel,
 			"session_remaining_seconds": snap.SessionRemainingSeconds,
+			"quarantined":               snap.Quarantined,
+			"quarantine_reason":         snap.QuarantineReason,
 		}
 		if len(snap.QuotaByModel) > 0 {
 			quota := make(map[string]any, len(snap.QuotaByModel))

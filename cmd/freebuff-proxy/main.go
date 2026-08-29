@@ -52,6 +52,8 @@ func main() {
 	showUpdate := flag.Bool("update", false, "check for and download the latest release update")
 	showSetup := flag.Bool("setup", false, "run interactive client configuration helper")
 	testToken := flag.Bool("test-token", false, "probe the first configured token with a zero-cost GET probe (no session consumed) and exit 0/1")
+	validateTokens := &tokenListFlag{}
+	flag.Var(validateTokens, "validate-tokens", "validate every configured token with non-mutating upstream probes, print a health report, and exit 0 (healthy) / 1 (banned, invalid, or disposable mailbox) / 2 (config error); a comma-separated list overrides AUTH_TOKENS (-validate-tokens=tok1,tok2)")
 	installService := flag.Bool("install-service", false, "register the current binary as a background service and start it (Task Scheduler / systemd --user / launchd)")
 	uninstallService := flag.Bool("uninstall-service", false, "stop and unregister the background service")
 	serviceStatus := flag.Bool("service-status", false, "check whether the background service is registered and running (exit 0 registered, 1 not)")
@@ -59,7 +61,7 @@ func main() {
 	refreshToken := flag.Int("refresh-token", -1, "re-authenticate token #N in .env via the headless GitHub login flow and exit (interactive: start → print login URL → poll; with -yes and GITHUB_USER/GITHUB_PASSWORD/GITHUB_TOTP set: protocol login)")
 	flag.Parse()
 
-	if w := modeFlagsExclusiveWarning(*showDoctor, *showUpdate, *showSetup, *testToken, *installService, *uninstallService, *serviceStatus); w != "" {
+	if w := modeFlagsExclusiveWarning(*showDoctor, *showUpdate, *showSetup, *testToken, *installService, *uninstallService, *serviceStatus, validateTokens.set); w != "" {
 		fmt.Fprintln(os.Stderr, w)
 	}
 
@@ -69,6 +71,16 @@ func main() {
 	}
 	if *testToken {
 		runTokenTest(*configPath)
+	}
+	if validateTokens.set && validateTokens.value != "false" {
+		// Bare -validate-tokens (flag parses it as Set("true")) probes the
+		// configured AUTH_TOKENS; -validate-tokens=tok1,tok2 probes the
+		// override list. Both paths run runTokenValidate and exit there.
+		override := ""
+		if v := validateTokens.value; v != "" && v != "true" {
+			override = v
+		}
+		runTokenValidate(*configPath, override)
 	}
 	if *refreshToken >= 0 {
 		runTokenRefresh(*configPath, *refreshToken, *autoYes)
@@ -442,11 +454,11 @@ func holdForExitIfConsole() {
 
 // modeFlagsExclusiveWarning returns the warning printed when 2+ of the
 // mutually-exclusive mode flags (-doctor/-update/-setup/-test-token/
-// -install-service/-uninstall-service/-service-status) are set; "" when at
-// most one is set (only the first flag then runs).
-func modeFlagsExclusiveWarning(doctor, update, setup, testToken, installService, uninstallService, serviceStatus bool) string {
+// -validate-tokens/-install-service/-uninstall-service/-service-status)
+// are set; "" when at most one is set (only the first flag then runs).
+func modeFlagsExclusiveWarning(flags ...bool) string {
 	n := 0
-	for _, set := range []bool{doctor, update, setup, testToken, installService, uninstallService, serviceStatus} {
+	for _, set := range flags {
 		if set {
 			n++
 		}
@@ -454,7 +466,85 @@ func modeFlagsExclusiveWarning(doctor, update, setup, testToken, installService,
 	if n <= 1 {
 		return ""
 	}
-	return "freebuff-proxy: warning: -doctor, -update, -setup, -test-token, -install-service, -uninstall-service and -service-status are mutually exclusive; only the first will run"
+	return "freebuff-proxy: warning: -doctor, -update, -setup, -test-token, -validate-tokens, -install-service, -uninstall-service and -service-status are mutually exclusive; only the first will run"
+}
+
+// tokenListFlag is a tri-state flag value for -validate-tokens: the flag
+// package parses a bare "-validate-tokens" as Set("true") (validate the
+// configured tokens), "-validate-tokens=tok1,tok2" as the override list,
+// and "-validate-tokens=false" as the off switch (bool-flag semantics).
+type tokenListFlag struct {
+	set   bool
+	value string
+}
+
+func (f *tokenListFlag) String() string { return f.value }
+
+func (f *tokenListFlag) Set(s string) error {
+	f.set = true
+	f.value = s
+	return nil
+}
+
+// IsBoolFlag lets -validate-tokens be passed with no value, like the other
+// mode flags, while Set still accepts the comma-separated override.
+func (f *tokenListFlag) IsBoolFlag() bool { return true }
+
+// runTokenValidate implements -validate-tokens: for each configured token
+// (or an explicit comma-separated override list) it runs ONLY non-mutating
+// upstream probes (GET /api/v1/me + the zero-cost session probe), prints a
+// one-row-per-token health report, and exits 0 (all healthy / soft
+// cooldown states), 1 (any BANNED, INVALID, or DISPOSABLE-mailbox token)
+// or 2 (config error). The pool state, sessions, and AUTH_TOKENS are never
+// touched: no POST, no DELETE, no writes.
+func runTokenValidate(configPath, override string) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "freebuff-proxy: -validate-tokens: config load failed: %v\n", err)
+		os.Exit(2)
+	}
+	tokens := cfg.AuthTokens
+	if override != "" {
+		tokens = splitTokenOverride(override)
+	}
+	if len(tokens) == 0 {
+		fmt.Fprintln(os.Stderr, "freebuff-proxy: -validate-tokens: no tokens to validate (AUTH_TOKENS empty — bridge mode); pass -validate-tokens=tok1,tok2 to validate specific tokens")
+		os.Exit(2)
+	}
+	rows, err := upstream.ValidateTokens(context.Background(), &cfg, tokens)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "freebuff-proxy: -validate-tokens: %v\n", err)
+		os.Exit(2)
+	}
+	upstream.FlagSharedMailboxes(rows)
+	fmt.Print(upstream.FormatHealthReport(rows))
+	exit := 0
+	for _, r := range rows {
+		if r.State == upstream.TokenBanned || r.State == upstream.TokenInvalid || r.Risk == upstream.EmailRiskDisposable {
+			exit = 1
+		}
+	}
+	os.Exit(exit)
+}
+
+// splitTokenOverride splits a -validate-tokens override on commas (or
+// newlines), trimming whitespace and dropping duplicates — the same list
+// semantics config.Load applies to AUTH_TOKENS.
+func splitTokenOverride(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	seen := map[string]bool{}
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+	return out
 }
 
 // resolveLogLevel applies the effective log-level precedence: a set
