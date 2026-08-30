@@ -675,7 +675,7 @@ func TestReAdmitStormTracksPreemptiveTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var buf bytes.Buffer
+	var buf lockedBuf
 	restore := captureLogs(&buf)
 	defer restore()
 	for i := 0; i < 4; i++ {
