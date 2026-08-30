@@ -129,8 +129,12 @@ func (m *RunManager) CooldownRateLimit(rle *upstream.RateLimitError) {
 	}
 	m.rateLimit = rle
 	m.ban = nil
+	m.banUntil = time.Time{}
+	m.banPermanent = false
 	m.countryBlock = nil
+	m.countryUntil = time.Time{}
 	m.ipCapped = nil
+	m.ipCappedUntil = time.Time{}
 }
 
 // CooldownIpCapped applies an ip_capped cooldown bounded to the body's
@@ -161,7 +165,10 @@ func (m *RunManager) CooldownIpCapped(ice *upstream.IpCappedError) {
 	m.ipCappedReAdmits++
 	m.rateLimit = nil
 	m.ban = nil
+	m.banUntil = time.Time{}
+	m.banPermanent = false
 	m.countryBlock = nil
+	m.countryUntil = time.Time{}
 	if m.ipCappedReAdmits >= maxIpCappedReAdmitsPerDay {
 		// Budget exhausted: terminal until the next Pacific reset. Surface
 		// the REMAINING window as Retry-After so downstream 429s are honest

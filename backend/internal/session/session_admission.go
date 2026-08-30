@@ -397,7 +397,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			if errors.Is(err, upstream.ErrWaitingRoomRequired) {
 				dropped := false
 				m.mu.Lock()
-				if m.state != nil && m.state.instanceID == cached.instanceID {
+				if cached != nil && m.state != nil && m.state.instanceID == cached.instanceID {
 					m.commit(nil)
 					dropped = true
 				}

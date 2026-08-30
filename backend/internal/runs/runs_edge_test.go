@@ -354,3 +354,139 @@ func TestCooldownClearsBanAndCountryWindows(t *testing.T) {
 		t.Error("country block not cleared by Cooldown")
 	}
 }
+
+// TestCooldownRateLimitClearsBanWindow pins the stale-window half of the
+// cooldown zeroing contract once more: CooldownRateLimit (and
+// CooldownIpCapped) supersede an active ban, so they must clear the ban's
+// window deadline AND its permanent flag — otherwise Snapshot().BannedUntil
+// keeps reporting a stale future deadline (healthz risk gating) with no ban
+// attached, and the hard-ban flag survives into a token that is no longer
+// banned (mirrors the Cooldown/CooldownCountryBlocked regression).
+func TestCooldownRateLimitClearsBanWindow(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mgr, _ := newTestManager(t, mock, time.Hour)
+
+	// Temporary ban first: live window + remembered error.
+	mgr.CooldownBan(&upstream.BanError{Body: "banned", ResumesAt: time.Now().Add(time.Hour)})
+	if mgr.BanError() == nil {
+		t.Fatal("ban not live after CooldownBan")
+	}
+	if snap := mgr.Snapshot(); snap.BannedUntil.IsZero() {
+		t.Fatal("BannedUntil not set during the ban window")
+	}
+
+	// A rate-limit supersedes the ban: the remembered error dies AND the
+	// stale deadline + permanent flag must not survive.
+	mgr.CooldownRateLimit(&upstream.RateLimitError{Status: "rate_limited", RetryAfter: 10 * time.Minute})
+	if mgr.BanError() != nil {
+		t.Error("BanError() != nil after rate-limit cooldown, want nil")
+	}
+	mgr.mu.Lock()
+	permanent := mgr.banPermanent
+	mgr.mu.Unlock()
+	if permanent {
+		t.Error("banPermanent not cleared by rate-limit cooldown")
+	}
+	if snap := mgr.Snapshot(); !snap.BannedUntil.IsZero() {
+		t.Errorf("BannedUntil = %v after rate-limit cooldown, want zero (stale ban deadline)", snap.BannedUntil)
+	}
+
+	// Same for a HARD ban (no resumes_at): the permanent flag must clear
+	// when a rate-limit supersedes it.
+	mgr.ClearCooldowns()
+	mgr.CooldownBan(&upstream.BanError{Body: "banned"})
+	if mgr.BanError() == nil {
+		t.Fatal("hard ban not live")
+	}
+	mgr.CooldownRateLimit(&upstream.RateLimitError{Status: "rate_limited", RetryAfter: time.Minute})
+	mgr.mu.Lock()
+	permanent = mgr.banPermanent
+	mgr.mu.Unlock()
+	if permanent {
+		t.Error("banPermanent not cleared by rate-limit cooldown after hard ban")
+	}
+	if snap := mgr.Snapshot(); !snap.BannedUntil.IsZero() {
+		t.Errorf("BannedUntil = %v, want zero after rate-limit supersedes hard ban", snap.BannedUntil)
+	}
+
+	// The ip_capped cooldown clears the same stale window.
+	mgr.ClearCooldowns()
+	mgr.CooldownBan(&upstream.BanError{Body: "banned", ResumesAt: time.Now().Add(time.Hour)})
+	mgr.CooldownIpCapped(&upstream.IpCappedError{ActiveUsersForIP: 5, Limit: 4, RetryAfter: time.Minute})
+	if mgr.BanError() != nil {
+		t.Error("BanError() != nil after ip-capped cooldown, want nil")
+	}
+	if snap := mgr.Snapshot(); !snap.BannedUntil.IsZero() {
+		t.Errorf("BannedUntil = %v after ip-capped cooldown, want zero", snap.BannedUntil)
+	}
+}
+
+// TestRotateStoreResumeShutdownReleasesWaiters pins the single-flight
+// cleanup in rotate's store-resume branch: when Shutdown begins between the
+// leader's flight registration and its persisted-run resume check, the
+// leader returns ErrShuttingDown AND must close the flight channel and drop
+// its starting entry — otherwise every waiter parked on the flight blocks
+// until its own ctx dies (stalling graceful shutdown) instead of learning
+// the shutdown.
+func TestRotateStoreResumeShutdownReleasesWaiters(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	store := session.NewStore(t.TempDir() + "/state.json")
+	mgr, _ := newTestManagerOpts(t, mock, Options{RotationInterval: time.Hour, Store: store})
+
+	// A resumable run in the store: fresh enough (within the rotation
+	// interval) that the leader takes the resume branch.
+	store.SaveRun(mgr.key, agentA, session.PersistedRun{
+		RunID:     "run-0001",
+		AgentID:   agentA,
+		StartedAt: time.Now().Add(-time.Minute),
+		Requests:  1,
+	})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	mgr.testBeforeStoreResume = func() {
+		close(entered)
+		<-release
+		mgr.mu.Lock()
+		mgr.shuttingDown = true
+		mgr.mu.Unlock()
+	}
+
+	// Leader: registers the flight, parks in the hook, then hits the resume
+	// branch with shuttingDown set. The waiter below parks on the flight
+	// while the hook still holds the leader (its own first shuttingDown
+	// check sees false).
+	leaderErr := make(chan error, 1)
+	go func() {
+		err := mgr.rotate(context.Background(), agentA)
+		leaderErr <- err
+	}()
+	<-entered
+
+	waiterCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	waiterErr := make(chan error, 1)
+	go func() {
+		err := mgr.rotate(waiterCtx, agentA)
+		waiterErr <- err
+	}()
+
+	// Give the waiter a moment to park on the flight, then unblock the
+	// leader so Shutdown lands between the two checks.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+
+	if err := <-leaderErr; !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("leader rotate error = %v, want ErrShuttingDown", err)
+	}
+	select {
+	case err := <-waiterErr:
+		if !errors.Is(err, ErrShuttingDown) {
+			t.Fatalf("waiter rotate error = %v, want ErrShuttingDown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter still blocked after the leader returned: flight channel never closed")
+	}
+}
