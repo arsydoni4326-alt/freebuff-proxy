@@ -57,6 +57,14 @@ func usageTotalTokens(usage any) int64 {
 // proxies/clients may treat silence as a dead connection. The timer keys
 // on client writes only: dropped upstream comment/junk lines never count
 // as liveness (#161). A var (not const) so tests can shrink it.
+//
+// The 15s cadence must stay below every client chunk/idle timeout: harness
+// stall detectors abort a stream that merely goes silent even when keepalive
+// frames are tolerated — kilocode's per-chunk SSE idle timeout (chunkTimeout,
+// when configured; reference/harnesses/kilocode/WIRE-NOTES.md aisdk.ts:54-82)
+// and codex's 5-minute stream idle timeout (reference/harnesses/codex/
+// WIRE-NOTES.md). At 15s two orphan keepalives always land inside a 30s+
+// window, so a keepalive-only gap can never trip one.
 var keepaliveInterval = 15 * time.Second
 
 // lineChunk is one upstream SSE line or the terminal send. done is set only
