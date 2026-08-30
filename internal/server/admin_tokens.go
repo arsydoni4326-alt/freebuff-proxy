@@ -273,6 +273,13 @@ func (s *Server) handleTokenAdd(w http.ResponseWriter, r *http.Request) {
 		s.dash.RenderConfigResult(w, r, false, "Invalid token (must not start with 'Bearer ').")
 		return
 	}
+	// AUTH_TOKENS is comma-joined in .env, so a pasted token with an
+	// interior comma or newline would corrupt the file on the next reload.
+	// Reject before the (validity) probe and any pool mutation.
+	if strings.ContainsAny(req.Token, ",\r\n") {
+		s.dash.RenderConfigResult(w, r, false, "Invalid token: must not contain commas or newlines (AUTH_TOKENS is comma-separated in .env).")
+		return
+	}
 
 	// adminSaveMu serializes the pool mutation + persist + reload with the
 	// other .env writers (config editor, token remove, mode switch) so a

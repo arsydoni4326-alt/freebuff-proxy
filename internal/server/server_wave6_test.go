@@ -286,6 +286,9 @@ func newServerOpts(t *testing.T, mock *testutil.MockUpstream, mut func(*config.C
 		UpstreamBaseURL:    "https://www.codebuff.com",
 		LogAccess:          true,
 		DashboardEnabled:   true,
+		// Dev tools default off in production; the playground/smoke tests
+		// use this fixture, so keep them on unless a test flips it.
+		DevToolsEnabled: true,
 	}
 	if mut != nil {
 		mut(cfg)

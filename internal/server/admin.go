@@ -25,6 +25,16 @@ type smokeRequest struct {
 const maxSmokeBytes = 32 << 10
 
 func (s *Server) handleSmoke(w http.ResponseWriter, r *http.Request) {
+	// Server-side DEVTOOLS_ENABLED gate: the UI hides the Dev Tools
+	// page when the knob is off, but a direct POST must be refused too —
+	// the handlers are real upstream consumers.
+	cfg := s.cfg.Load()
+	if !cfg.DevToolsEnabled {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": "Dev tools are disabled — set DEVTOOLS_ENABLED=true to enable the smoke test."})
+		return
+	}
 	var req smokeRequest
 	// The dashboard form posts urlencoded model=&prompt=&token=; read those
 	// first and only fall back to JSON for programmatic clients (mirrors
@@ -68,7 +78,6 @@ func (s *Server) handleSmoke(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	ctx, phases := phasetiming.WithContext(ctx)
 
-	cfg := s.cfg.Load()
 	chatBody := []byte(`{"model":` + strconv.Quote(req.Model) + `,"messages":[{"role":"user","content":` + strconv.Quote(req.Prompt) + `}],"stream":false}`)
 	chatOpts := upstream.ChatOptions{Model: req.Model}
 
@@ -118,6 +127,12 @@ func (s *Server) handleSmoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePlaygroundChat(w http.ResponseWriter, r *http.Request) {
+	// Server-side DEVTOOLS_ENABLED gate: a direct POST must be
+	// refused when the knob is off, matching the hidden UI page.
+	if !s.cfg.Load().DevToolsEnabled {
+		s.writeJSONError(w, http.StatusNotFound, "dev tools are disabled — set DEVTOOLS_ENABLED=true to enable the playground", "invalid_request_error", "devtools_disabled", 0)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -276,6 +291,12 @@ func (s *Server) pruneLoginFlows() {
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("admin reload requested", "remote", remoteHost(r), "path", r.URL.Path)
+	// Serialize with the .env writers (config editor, token add/remove,
+	// mode switch): the reload re-reads the SAME files those writers mutate,
+	// and applying a load raced against a save could store stale config
+	// over a just-saved one (disk NEW, memory OLD).
+	s.adminSaveMu.Lock()
+	defer s.adminSaveMu.Unlock()
 	newCfg, err := config.Load(s.configPath)
 	if err != nil {
 		s.logger.Warn("admin reload failed", "remote", remoteHost(r), "path", r.URL.Path, "err", err)

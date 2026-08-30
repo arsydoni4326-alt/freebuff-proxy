@@ -108,9 +108,17 @@ func TestDashboardCookieSecureFollowsTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	c := resp.Cookies()
-	if len(c) != 1 || !c[0].Secure {
-		t.Error("X-Forwarded-Proto: https login did not set a Secure cookie")
+	// The response carries fb_admin plus fb_csrf; only fb_admin's Secure
+	// flag is the subject here.
+	var admin *http.Cookie
+	for _, cc := range resp.Cookies() {
+		if cc.Name == "fb_admin" {
+			admin = cc
+			break
+		}
+	}
+	if admin == nil || !admin.Secure {
+		t.Error("X-Forwarded-Proto: https login from loopback did not set a Secure fb_admin cookie")
 	}
 }
 
@@ -171,11 +179,19 @@ func TestDashboardLoginFlow(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/admin" {
 		t.Fatalf("login redirect = %q, want /admin", loc)
 	}
-	cookies := resp.Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("got %d cookies, want 1", len(cookies))
+	// The login response carries the session cookie plus the double-submit
+	// CSRF cookie (fb_csrf, readable by the SPA); the session cookie is the
+	// one that must be HttpOnly + SameSite=Strict.
+	var c *http.Cookie
+	for _, cc := range resp.Cookies() {
+		if cc.Name == "fb_admin" {
+			c = cc
+			break
+		}
 	}
-	c := cookies[0]
+	if c == nil || c.Value == "" {
+		t.Fatal("login did not set the fb_admin session cookie")
+	}
 	if !c.HttpOnly || c.SameSite != http.SameSiteStrictMode {
 		t.Errorf("cookie flags wrong: HttpOnly=%v SameSite=%v", c.HttpOnly, c.SameSite)
 	}
@@ -459,16 +475,20 @@ func postConfig(t *testing.T, url, cookie, content string) *http.Response {
 	return resp
 }
 
-// authedCookie logs into the test dashboard and returns the session cookie.
+// authedCookie logs into the test dashboard and returns the fb_admin
+// session cookie (the login response also carries the non-HttpOnly
+// double-submit CSRF cookie, so the session cookie is matched by name).
 func authedCookie(t *testing.T, ts *httptest.Server) string {
 	t.Helper()
 	resp := postLogin(t, ts.URL+"/admin/login", "secret")
 	defer func() { _ = resp.Body.Close() }()
-	cookies := resp.Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("login issued %d cookies, want 1", len(cookies))
+	for _, c := range resp.Cookies() {
+		if c.Name == "fb_admin" {
+			return c.Name + "=" + c.Value
+		}
 	}
-	return cookies[0].Name + "=" + cookies[0].Value
+	t.Fatal("login did not set the fb_admin session cookie")
+	return ""
 }
 
 // Token actions: unlock/finish/test endpoints work with a session cookie.
@@ -993,16 +1013,25 @@ func TestDashboardCSRF(t *testing.T) {
 	}
 }
 
-// After a config-editor AUTH_TOKENS edit, cfg.AuthTokens diverges from the
-// live pool; removing "the last token" from the stale list must be rejected
-// instead of persisting a wrong .env.
-func TestDashboardTokenRemoveRejectsDiverged(t *testing.T) {
+// TestDashboardTokenRemoveRejectsShorterDivergence pins the divergence guard
+// on the direction the pool cannot reconcile: SetConfig adopts tokens ADDED
+// to AUTH_TOKENS (a config-editor save extends the pool), but it never
+// REMOVES entries — removal belongs to RemoveLastToken/RemoveAllTokens. So
+// when a config-editor save shrinks AUTH_TOKENS below the live pool, removing
+// "the last token" from the stale list must be rejected instead of persisting
+// a wrong .env.
+func TestDashboardTokenRemoveRejectsShorterDivergence(t *testing.T) {
 	t.Chdir(t.TempDir())
 	ts := dashboardServer(t, "secret", nil) // 1 pooled token
 	cookie := authedCookie(t, ts)
 
-	// Config editor lists two tokens; the pool still holds one.
-	resp := postConfig(t, ts.URL, cookie, "AUTH_TOKENS=tok-0,extra-token\nSAFE_MODE=true\n")
+	// Grow the live pool to two entries through the token-add path.
+	if resp := postJSON(t, ts.URL, cookie, "/admin/tokens/add", `{"token":"cb-extra"}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("token add status = %d, want 200", resp.StatusCode)
+	}
+
+	// Config editor lists one token while the pool holds two.
+	resp := postConfig(t, ts.URL, cookie, "AUTH_TOKENS=tok-0\nSAFE_MODE=true\n")
 	if body := bodyOf(t, resp); !strings.Contains(body, "Saved and reloaded") {
 		t.Fatalf("config save failed: %s", body)
 	}
@@ -1019,8 +1048,40 @@ func TestDashboardTokenRemoveRejectsDiverged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(env), "extra-token") {
-		t.Error("diverged .env must be left untouched")
+	if strings.Contains(string(env), "AUTH_TOKENS=") && !strings.Contains(string(env), "AUTH_TOKENS=tok-0\n") {
+		t.Errorf("diverged .env content = %q, want untouched AUTH_TOKENS=tok-0", env)
+	}
+}
+
+// TestDashboardTokenRemoveAfterEditorExtends pins the adopted-token
+// direction: SetConfig reconciles appended AUTH_TOKENS entries into the
+// pool, so after a config-editor save with two tokens the remove legitimately
+// succeeds and persists only the remainder.
+func TestDashboardTokenRemoveAfterEditorExtends(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ts := dashboardServer(t, "secret", nil) // 1 pooled token
+	cookie := authedCookie(t, ts)
+
+	// Config editor adopts an extra token (SetConfig appends the entry).
+	resp := postConfig(t, ts.URL, cookie, "AUTH_TOKENS=tok-0,extra-token\nSAFE_MODE=true\n")
+	if body := bodyOf(t, resp); !strings.Contains(body, "Saved and reloaded") {
+		t.Fatalf("config save failed: %s", body)
+	}
+
+	resp = doTokenAction(t, ts.URL, cookie, "/admin/tokens/remove")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("remove status = %d, want 200 (pool adopted the editor list)", resp.StatusCode)
+	}
+	body := bodyOf(t, resp)
+	if !strings.Contains(body, "removed and persisted") {
+		t.Errorf("remove response = %q, want success message", body)
+	}
+	env, err := os.ReadFile(".env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), "AUTH_TOKENS=tok-0\n") || strings.Contains(string(env), "extra-token") {
+		t.Errorf(".env after remove = %q, want AUTH_TOKENS=tok-0 only", env)
 	}
 }
 
@@ -1080,7 +1141,7 @@ func TestDashboardTokenRemoveRollsBackOnPersistFailure(t *testing.T) {
 // reported reachable (a host that already has a port must never become
 // "host:PORT:443"). The DNS row must also strip the port: LookupHost of
 // "127.0.0.1:PORT" would treat the whole string as a DNS name and NXDOMAIN,
-// a false red row next to a green TCP row (regression for the P3 finding).
+// a false red row next to a green TCP row (regression).
 func TestDashboardDiagPortHandling(t *testing.T) {
 	t.Chdir(t.TempDir())
 	mock := testutil.NewMock()
