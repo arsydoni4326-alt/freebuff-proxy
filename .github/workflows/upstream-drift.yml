@@ -1,7 +1,7 @@
 # Upstream drift detection (CodebuffAI/freebuff).
 #
 # Three automations:
-#  1. **Registry pin drift** (the 5 files in internal/registry/testdata/upstream/):
+#  1. **Registry pin drift** (the 5 files in backend/internal/registry/testdata/upstream/):
 #     auto-open a PR that runs sync-upstream so the change lands in front of a
 #     human reviewer. Idempotent: reruns reuse the same branch + open PR.
 #  2. **Wire-shape file drift** (freebuff-trust.ts, foreign-client-signals.ts,
@@ -146,7 +146,7 @@ jobs:
 
       - name: Commit any changes
         run: |
-          git add internal/registry/testdata/upstream internal/registry/registry.go || true
+          git add backend/internal/registry/testdata/upstream backend/internal/registry/registry.go || true
           if git diff --cached --quiet; then
             # No new changes this run. A branch that already carries the
             # sync commit (pushed by an earlier run whose PR creation
@@ -248,16 +248,16 @@ jobs:
 
       - name: Refresh drift.json
         env:
-          DRIFT_REPORT: internal/dashboard/data/upstream_drift.json
+          DRIFT_REPORT: backend/internal/dashboard/data/upstream_drift.json
         run: |
           # check-upstream writes the JSON report before exiting 1 on drift;
           # a drift report is exactly what the embed must publish.
           bash scripts/check-upstream.sh main || true
-          head -20 internal/dashboard/data/upstream_drift.json
+          head -20 backend/internal/dashboard/data/upstream_drift.json
 
       - name: Verify the embed still parses
         run: |
-          go build ./internal/dashboard/... ./internal/server/...
+          go build ./backend/internal/dashboard/... ./backend/internal/server/...
 
       - name: Open or update drift-data PR
         env:
@@ -267,11 +267,11 @@ jobs:
           BRANCH="chore/upstream-drift-data-${UPSTREAM_SHA:0:7}"
           if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
             git checkout -B "$BRANCH" origin/"$BRANCH"
-            git checkout main -- internal/dashboard/data/upstream_drift.json || true
+            git checkout main -- backend/internal/dashboard/data/upstream_drift.json || true
           else
             git checkout -b "$BRANCH"
           fi
-          git add internal/dashboard/data/upstream_drift.json
+          git add backend/internal/dashboard/data/upstream_drift.json
           if git diff --cached --quiet; then
             # Same orphan-branch recovery as the registry sync job: a branch
             # already carrying the refresh commit must still reach the PR step.
@@ -295,5 +295,5 @@ jobs:
           fi
           gh pr create --base main \
             --title "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
-            --body "Refreshes internal/dashboard/data/upstream_drift.json against CodebuffAI/freebuff @ ${UPSTREAM_SHA}." \
+            --body "Refreshes backend/internal/dashboard/data/upstream_drift.json against CodebuffAI/freebuff @ ${UPSTREAM_SHA}." \
             --label "dependencies"

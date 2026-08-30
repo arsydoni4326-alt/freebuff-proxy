@@ -9,25 +9,25 @@ web-build:
 	npm --prefix frontend run build
 
 build-proxy:
-	go build -tags dashboard -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/freebuff-proxy
+	go build -tags dashboard -o $(BIN_DIR)/$(BINARY_NAME) ./backend/cmd/freebuff-proxy
 
 build: web-build build-proxy
 
 test:
-	env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
+	env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/...
 
 test-race:
-	env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./...
+	env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./backend/...
 
 lint:
-	go vet ./...
-	golangci-lint run ./...
+	go vet ./backend/...
+	golangci-lint run ./backend/...
 
 web-dev:
 	npm --prefix frontend run dev
 
 dev-proxy:
-	go run -tags dashboard ./cmd/freebuff-proxy
+	go run -tags dashboard ./backend/cmd/freebuff-proxy
 
 clean:
 	rm -rf $(BIN_DIR)

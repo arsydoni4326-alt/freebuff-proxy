@@ -21,7 +21,7 @@ config.*.json
 dump/
 *.log
 dist/
-!internal/dashboard/dist/
+!backend/internal/dashboard/dist/
 out/
 bin/
 tmp/

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check-upstream.sh — detect drift between the pinned upstream registry files
-# (internal/registry/testdata/upstream/) and CodebuffAI/freebuff at a ref.
+# (backend/internal/registry/testdata/upstream/) and CodebuffAI/freebuff at a ref.
 #
 # Usage:
 #   scripts/check-upstream.sh [--update-wire-baseline] [--group <registry|wire>]
@@ -74,11 +74,11 @@ else
 	CLONE_DIR="$REPO_ROOT/../freebuff-reference"
 fi
 UPSTREAM_PREFIX="common/src/constants"
-PINNED_DIR="$REPO_ROOT/internal/registry/testdata/upstream"
+PINNED_DIR="$REPO_ROOT/backend/internal/registry/testdata/upstream"
 
-# Registry mirror files: pinned into internal/registry/testdata/upstream/ and
+# Registry mirror files: pinned into backend/internal/registry/testdata/upstream/ and
 # diffed hash-for-hash. Keep in sync with sourceFiles in
-# internal/registry/registry.go.
+# backend/internal/registry/registry.go.
 REGISTRY_FILES=(
 	free-agents.ts
 	freebuff-model-ids.ts
@@ -281,7 +281,7 @@ fi
 if ((drift)); then
 	echo "check-upstream: DRIFT detected."
 	echo "Registry pins: refresh by running scripts/sync-upstream.sh and updating"
-	echo "fallbackAgents/fallbackRootByModel in internal/registry/registry.go until"
+	echo "fallbackAgents/fallbackRootByModel in backend/internal/registry/registry.go until"
 	echo "TestFallbackParityWithPinnedUpstream passes."
 	echo "Wire files: read the new file, apply the wire-shape change to the Go side"
 	echo "(e.g. injectEnvelope, classifyError, parseSessionResponse), and add a test."

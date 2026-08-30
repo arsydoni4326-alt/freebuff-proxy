@@ -129,7 +129,7 @@ One chat request, end to end:
 5. **The stream comes back translated.** The upstream SSE stream is converted into OpenAI `chat.completion.chunk` events and relayed to your client in real time.
 6. **State is cleaned up.** When the request finishes, the run is drained; once a run or token ages out (rotation interval, idle timeout), it is rotated or finished so the next request starts clean. A token that hit a quota limit (`429`) is locked locally until its reset time. The proxy answers `429` + `Retry-After` itself, with no traffic sent upstream.
 
-The translation layer reimplements the official CLI's wire protocol and session lifecycle, sourced from the open-source Freebuff client (Apache-2.0). It changes when the upstream changes. The translation lives in `internal/convert`, `internal/upstream`, `internal/stealth`, and `internal/registry`.
+The translation layer reimplements the official CLI's wire protocol and session lifecycle, sourced from the open-source Freebuff client (Apache-2.0). It changes when the upstream changes. The translation lives in `backend/internal/convert`, `backend/internal/upstream`, `backend/internal/stealth`, and `backend/internal/registry`.
 
 ```mermaid
 graph TD
@@ -466,7 +466,7 @@ production build (single binary), run `task frontend:build`.
 
 ### Upstream Drift Tracking & Sync
 
-The offline model registry pins five upstream constant files in `internal/registry/testdata/upstream/`.
+The offline model registry pins five upstream constant files in `backend/internal/registry/testdata/upstream/`.
 
 To automatically fetch upstream changes from `CodebuffAI/freebuff`, update the pinned definitions, verify hash parity, and run the test suite:
 

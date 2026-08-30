@@ -35,7 +35,7 @@ $ErrorActionPreference = "Stop"
 $Repo = "trefeon/freebuff-proxy"
 $CliUserAgent = "ai-sdk/openai-compatible/1.0.0/codebuff"
 # Per-user paths; fall back to home-based paths when the env vars are unset
-# (the same fallback the runtime uses in internal/config).
+# (the same fallback the runtime uses in backend/internal/config).
 $localAppData = $env:LOCALAPPDATA
 if (-not $localAppData) { $localAppData = Join-Path $env:USERPROFILE "AppData\Local" }
 $appData = $env:APPDATA

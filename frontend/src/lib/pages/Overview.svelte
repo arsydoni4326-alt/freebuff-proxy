@@ -241,7 +241,7 @@
 
   <!-- Upstream sync banner: warns operators that the running build is
        behind CodebuffAI/freebuff@main. Data ships compiled into the
-       binary (see internal/dashboard/data/upstream_drift.json) and is
+       binary (see backend/internal/dashboard/data/upstream_drift.json) and is
        refreshed by .github/workflows/upstream-drift.yml. -->
   {#if data?.upstream_sync}
     {@const us = data.upstream_sync}

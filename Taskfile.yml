@@ -13,7 +13,7 @@ tasks:
       - task: build:proxy
 
   frontend:build:
-    desc: Build Svelte 5 frontend into internal/dashboard/dist
+    desc: Build Svelte 5 frontend into backend/internal/dashboard/dist
     cmds:
       - npm --prefix frontend run build
 
@@ -30,25 +30,25 @@ tasks:
   build:proxy:
     desc: Compile the Go proxy binary
     cmds:
-      - go build -tags dashboard -o bin/freebuff-proxy{{exeExt}} ./cmd/freebuff-proxy
+      - go build -tags dashboard -o bin/freebuff-proxy{{exeExt}} ./backend/cmd/freebuff-proxy
 
   test:
     desc: Run the hermetic Go test suite
     cmds:
-      - env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
+      - env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/...
 
   test:race:
     desc: Run the Go test suite with -race detector
     cmds:
-      - env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./...
+      - env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./backend/...
 
   lint:
     desc: Run static analysis and linting (go vet + golangci-lint)
     cmds:
-      - go vet ./...
-      - golangci-lint run ./...
+      - go vet ./backend/...
+      - golangci-lint run ./backend/...
 
   dev:
     desc: Run proxy server
     cmds:
-      - go run -tags dashboard ./cmd/freebuff-proxy
+      - go run -tags dashboard ./backend/cmd/freebuff-proxy

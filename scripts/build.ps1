@@ -3,7 +3,7 @@
     Builds the Svelte 5 frontend and compiles the freebuff-proxy binary.
 .DESCRIPTION
     1. Installs/updates frontend dependencies if needed.
-    2. Compiles the frontend SPA bundle to internal/dashboard/dist.
+    2. Compiles the frontend SPA bundle to backend/internal/dashboard/dist.
     3. Compiles the Go binary to bin/freebuff-proxy.exe.
 #>
 
@@ -40,7 +40,7 @@ if (-not (Test-Path $OutDir)) {
 Write-Host "==> Compiling Go binary to $OutputPath..." -ForegroundColor Yellow
 Push-Location $RepoRoot
 try {
-    go build -o $OutputPath ./cmd/freebuff-proxy
+    go build -o $OutputPath ./backend/cmd/freebuff-proxy
     Write-Host "==> Build successful: $OutputPath" -ForegroundColor Green
 } finally {
     Pop-Location
