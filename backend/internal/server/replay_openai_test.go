@@ -318,7 +318,7 @@ func TestReplayOpencodeChatStream(t *testing.T) {
 	if reasoningIdx < 0 || contentIdx < 0 || toolIdx < 0 || usageIdx < 0 {
 		t.Fatalf("delta sequence element missing: reasoning=%d content=%d toolCalls=%d usage=%d", reasoningIdx, contentIdx, toolIdx, usageIdx)
 	}
-	if !(reasoningIdx < contentIdx && contentIdx < toolIdx && toolIdx < usageIdx) {
+	if reasoningIdx >= contentIdx || contentIdx >= toolIdx || toolIdx >= usageIdx {
 		t.Errorf("delta sequence order got reasoning=%d content=%d toolCalls=%d usage=%d, want strictly ascending", reasoningIdx, contentIdx, toolIdx, usageIdx)
 	}
 

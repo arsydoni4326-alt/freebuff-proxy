@@ -70,7 +70,7 @@ func TestAdminAuthGlobalBudget(t *testing.T) {
 			a.recordFail(testIP(30000 + i))
 		}
 	}
-	if until := a.globalUntil.Sub(time.Now()); until > loginGlobalLockoutMax {
+	if until := time.Until(a.globalUntil); until > loginGlobalLockoutMax {
 		t.Errorf("global lockout = %v exceeds the cap %v", until, loginGlobalLockoutMax)
 	}
 }

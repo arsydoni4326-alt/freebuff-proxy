@@ -177,9 +177,6 @@ func TestResponsesStreamFunctionCallArgumentsDoneSequence(t *testing.T) {
 		testutilSSE(`{"id":"chatcmpl-fc","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
 	}, "")
 	s.relayResponsesStream(context.Background(), rec, strings.NewReader(ss), &relayStats{}, time.Now(), "m", "resp_fc")
-	type evType struct {
-		typ string
-	}
 	var seq []string
 	var done map[string]any
 	for _, ev := range collectSSEFrames(t, rec.Body.String()) {

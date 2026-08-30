@@ -100,7 +100,7 @@ func TestReplayResponsesForwardReasoning(t *testing.T) {
 	}
 
 	firstReasoningDelta := indexOfType(events, "response.reasoning_text.delta")
-	if !(reasoningAdded < firstReasoningDelta && firstReasoningDelta < msgAdded) {
+	if reasoningAdded >= firstReasoningDelta || firstReasoningDelta >= msgAdded {
 		t.Errorf("event order reasoningAdded(%d) < firstReasoningDelta(%d) < msgAdded(%d) violated; sequence: %v", reasoningAdded, firstReasoningDelta, msgAdded, types)
 	}
 
@@ -127,7 +127,7 @@ func TestReplayResponsesForwardReasoning(t *testing.T) {
 	// completed; the reasoning item's output_item.done carries it too.
 	doneIdx := indexOfType(events, "response.reasoning_text.done")
 	completedIdx := indexOfType(events, "response.completed")
-	if doneIdx == -1 || !(doneIdx < completedIdx) {
+	if doneIdx == -1 || doneIdx >= completedIdx {
 		t.Errorf("reasoning_text.done index = %d, want before response.completed(%d)", doneIdx, completedIdx)
 	}
 	var reasoningDoneText, reasoningDoneItemText string
@@ -289,7 +289,7 @@ func TestReplayResponsesForwardCustomToolCall(t *testing.T) {
 			itemDoneFC = i
 		}
 	}
-	if !(fcArgsDone < customDone && customDone < itemDoneFC && itemDoneFC < indexOfType(events, "response.completed")) {
+	if fcArgsDone >= customDone || customDone >= itemDoneFC || itemDoneFC >= indexOfType(events, "response.completed") {
 		t.Errorf("done ordering = argsDone(%d) < customDone(%d) < outputItemDone(%d) violated; sequence: %v", fcArgsDone, customDone, itemDoneFC, types)
 	}
 	var customInput string
