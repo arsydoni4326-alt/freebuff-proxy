@@ -25,19 +25,13 @@ tasks:
 
   test:
     desc: Run the hermetic Go test suite
-    env:
-      AUTH_TOKENS: ''
-      ADMIN_TOKEN: ''
     cmds:
-      - go test ./...
+      - env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 
   test:race:
     desc: Run the Go test suite with -race detector
-    env:
-      AUTH_TOKENS: ''
-      ADMIN_TOKEN: ''
     cmds:
-      - go test -race ./...
+      - env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./...
 
   lint:
     desc: Run static analysis and linting (go vet + golangci-lint)
