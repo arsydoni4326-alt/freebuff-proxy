@@ -470,7 +470,7 @@ func TestPoolChat(t *testing.T) {
 	}
 }
 
-// TestChatDispatchesThroughLeaseEntry is the regression guard for the P2
+// TestChatDispatchesThroughLeaseEntry is the regression guard for the
 // chat dispatch bug: Chat used the lease's Token index against a FRESH
 // token snapshot, so a concurrent RemoveAllTokens+AddToken left the index
 // pointing at a DIFFERENT token — the chat went through the wrong account's

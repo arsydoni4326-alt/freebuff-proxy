@@ -122,7 +122,7 @@ func TestPoll(t *testing.T) {
 	})
 }
 
-// TestPollRidesGraceEndedWithInstance verifies gap #13 on the poll path: an
+// TestPollRidesGraceEndedWithInstance verifies the grace drain on the poll path: an
 // "ended" response that still carries the instance id (with a future grace
 // end) is kept as a usable ended-with-instance row — the fast path keeps
 // serving it until grace closes, with no fresh admission.
@@ -270,7 +270,7 @@ func TestPollDropsRowOnWaitingRoomRequired(t *testing.T) {
 	}
 }
 
-// TestRefreshDropsQueueRowOnWaitingRoomRequired verifies #140 P2: a 428
+// TestRefreshDropsQueueRowOnWaitingRoomRequired verifies #140: a 428
 // waiting_room_required on the queued row's refresh GET is session-ENDING
 // (same as Poll's #116 handling) — refresh drops the dead queued row so the
 // next EnsureSession re-admits fresh instead of GETting a dead row, and
@@ -517,7 +517,7 @@ func TestSnapshotActiveUsersForIP(t *testing.T) {
 	}
 }
 
-// TestHeartbeatPollFields pins T11: the liveness poll's Debug line carries
+// TestHeartbeatPollFields pins that the liveness poll's Debug line carries
 // instance/ms/status so ops can see each heartbeat beat and its latency.
 func TestHeartbeatPollFields(t *testing.T) {
 	mock := testutil.NewMock()

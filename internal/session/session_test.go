@@ -26,7 +26,7 @@ func newTestManager(t *testing.T, mock *testutil.MockUpstream) *Manager {
 	return NewManager(client)
 }
 
-// — T9/T10/T11: session lifecycle telemetry (wave 2). —
+// — Session lifecycle telemetry —
 
 // captureLogs swaps slog's default handler for a buffer-backed text handler
 // at Debug level and returns the restore function. Session tests run

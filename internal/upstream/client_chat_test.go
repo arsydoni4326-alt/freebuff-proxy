@@ -335,8 +335,8 @@ func TestAbortPropagation(t *testing.T) {
 	}
 }
 
-// TestEnsureCliSystemMarkerBranches covers the system-marker merge matrix
-// (G5): empty messages, already-present marker, non-string content, merge
+// TestEnsureCliSystemMarkerBranches covers the system-marker merge matrix:
+// empty messages, already-present marker, non-string content, merge
 // into the first system message, and the unshift path.
 func TestEnsureCliSystemMarkerBranches(t *testing.T) {
 	t.Run("missing messages gets marker-only system", func(t *testing.T) {
@@ -579,8 +579,8 @@ func TestEnsureCliSystemMarkerBranches(t *testing.T) {
 	})
 }
 
-// TestInjectEnvelopeBranchMatrix covers injectEnvelope's override behavior
-// (G5): stream:false is force-overridden, provider is replaced, stop is
+// TestInjectEnvelopeBranchMatrix covers injectEnvelope's override behavior:
+// stream:false is force-overridden, provider is replaced, stop is
 // preserved, and a non-object body is rejected.
 func TestInjectEnvelopeBranchMatrix(t *testing.T) {
 	t.Run("stream false overridden to true", func(t *testing.T) {
@@ -649,7 +649,7 @@ func TestInjectEnvelopeBranchMatrix(t *testing.T) {
 	})
 }
 
-// TestRequestJitter guards the REQUEST_JITTER gate (G6): the request is held
+// TestRequestJitter guards the REQUEST_JITTER gate: the request is held
 // before any upstream contact, and canceling during the window aborts with
 // context.Canceled and no upstream hit.
 func TestRequestJitter(t *testing.T) {
@@ -996,7 +996,7 @@ func TestWaitingRoomChainWireFidelity(t *testing.T) {
 		t.Error("ads body carries sessionId, want omitted (fresh waiting-room)")
 	}
 	// Streak GET: no UA override — it inherits newRequest's bunUserAgent
-	// (plain Bun fetch traffic, audit G5).
+	// (plain Bun fetch traffic).
 	if got := streakHeaders.Get("User-Agent"); got != bunUserAgent {
 		t.Errorf("streak User-Agent = %q, want %q (bunUserAgent, no override)", got, bunUserAgent)
 	}

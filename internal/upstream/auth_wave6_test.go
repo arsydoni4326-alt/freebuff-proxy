@@ -323,7 +323,7 @@ func TestPollCLILoginTransportErrorTransient(t *testing.T) {
 	}
 }
 
-// TestAuthLoginRequestsCarryBunUA verifies the G5 UA scoping: the
+// TestAuthLoginRequestsCarryBunUA verifies the UA scoping: the
 // /api/auth/cli/code and /api/auth/cli/status calls go through plain Bun
 // fetch in the real CLI (login-flow.ts request() sets no UA override), so
 // they carry bunUserAgent (Bun/1.3.14) — never the chat ai-sdk cliUserAgent.
@@ -364,7 +364,7 @@ func TestAuthLoginRequestsCarryBunUA(t *testing.T) {
 	}
 }
 
-// --- G7: stable machine-derived login fingerprint ----------------------------
+// --- Stable machine-derived login fingerprint ---------------------------------
 
 // TestGenerateFingerprintIDStableShape pins the official fingerprint shape
 // (cli/src/utils/fingerprint.ts:88-128): "enhanced-" + base64url(sha256) is

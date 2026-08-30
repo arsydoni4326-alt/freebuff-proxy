@@ -645,7 +645,7 @@ func TestClassifySessionLimitReached(t *testing.T) {
 // zero-cost GET probe sends NO x-freebuff-include-unused-rate-limits header
 // (a third-party-proxy fingerprint the vendored CLI never sends; its session
 // GET returns the same response shape without it). The probe carries only
-// the standard Authorization + the plain Bun fetch UA (audit G5: session
+// the standard Authorization + the plain Bun fetch UA (session
 // paths are bare Bun traffic in the real CLI), and sessionCall still parses
 // glmPromo/rateLimitsByModel when the response includes them.
 func TestProbeAccountDoesNotSendIncludeUnusedRateLimits(t *testing.T) {

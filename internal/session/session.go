@@ -44,7 +44,7 @@ const (
 	// (issue #99) so a hung upstream never leaks a goroutine.
 	asyncReAdmitTimeout = time.Minute
 
-	// Terminal-event reasons (T9): the standardized session/invalidation
+	// Terminal-event reasons: the standardized session/invalidation
 	// cause vocabulary shared by every terminal session log line. The
 	// poll/refresh drop paths map upstream statuses through tableReason;
 	// InvalidateWithReason accepts these so callers can name the cause.
@@ -57,12 +57,12 @@ const (
 	reasonPoll       = "poll"
 	reasonStore      = "store"
 
-	// ReasonSuperseded is the T9 terminal-event reason for a session another
+	// ReasonSuperseded is the terminal-event reason for a session another
 	// instance took over (session_superseded, endsTheSession:true); exported
-	// so the chat recovery path feeds the re-admit storm detector (T10).
+	// so the chat recovery path feeds the re-admit storm detector.
 	ReasonSuperseded = reasonSuperseded
 
-	// Re-admit storm detector (T10): more than stormThreshold terminal
+	// Re-admit storm detector: more than stormThreshold terminal
 	// session events within stormWindow is a session re-admit storm — each
 	// invalidation is followed by a fresh admission that burns a daily
 	// session slot, so the burst is surfaced once (one Info summary) and
@@ -164,7 +164,7 @@ type Manager struct {
 
 	// invalidationEvents is the rolling stormWindow of terminal session
 	// events (timestamps + reason) feeding the re-admit storm detector
-	// (T10); reAdmitTriggers records pre-emptive re-admit trigger times so
+	// reAdmitTriggers records pre-emptive re-admit trigger times so
 	// a storm summary can report how many daily slots the burst burned;
 	// lastStormAt suppresses repeat summaries until a quiet window passes.
 	invalidationEvents []invalidationEvent
@@ -181,7 +181,7 @@ type Manager struct {
 }
 
 // invalidationEvent is one terminal session event in the re-admit storm
-// window (T10): when the cached session was dropped and why.
+// window: when the cached session was dropped and why.
 type invalidationEvent struct {
 	at     time.Time
 	reason string
@@ -246,7 +246,7 @@ func NewManagerWithStore(client *upstream.Client, store *Store) *Manager {
 // sessionUsable reports whether the cached state can serve a chat right now:
 // an active session until expiresAt-5s (the reference safety margin), or any
 // state that still holds a live instance id within the 30-minute grace drain
-// after expiry (gap #13, FREEBUFF_SESSION_GRACE_MS: within grace the row
+// after expiry (FREEBUFF_SESSION_GRACE_MS: within grace the row
 // stays alive and chat passes — reference/freebuff freebuff-session.ts). The
 // instance-id test guards the grace extension: an ended row whose instance id
 // is gone cannot be ridden, and an expired active cache is only reusable
@@ -344,7 +344,7 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 			switch s.status {
 			case "active", "ended":
 				// Fast path: reuse the cached instance while it is usable —
-				// an active session until expiresAt-5s, or (gap #13) a
+				// an active session until expiresAt-5s, or a
 				// session whose instance id survives the 30-minute grace
 				// drain (FREEBUFF_SESSION_GRACE_MS: within grace the row
 				// stays alive and chat passes).
@@ -441,8 +441,7 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 					}
 					// Issue #99: a failed pre-emptive re-admit leaves the old
 					// session authoritative — ride it rather than erroring a
-					// request that could still be served (through the grace
-					// drain, gap #13).
+					// request that could still be served (through the grace drain).
 					if s != nil && sessionUsable(s) {
 						return s.instanceID, nil
 					}
@@ -661,7 +660,7 @@ func (m *Manager) Invalidate() {
 	m.InvalidateWithReason(reason409, 0)
 }
 
-// InvalidateWithReason drops the cached session, recording WHY (T9/T10) and
+// InvalidateWithReason drops the cached session, recording WHY and
 // feeding the re-admit storm detector. reason is a terminal-event cause from
 // the vocabulary (ended|superseded|shutdown|model_lock|expired|409|poll|
 // store); status is the triggering HTTP status when known (e.g. 409 from the
@@ -693,7 +692,7 @@ func (m *Manager) InvalidateInstance(instanceID string) {
 }
 
 // InvalidateInstanceWithReason is the reason-aware form of InvalidateInstance
-// (#159): additionally records WHY (T9/T10) and the triggering HTTP status.
+// (#159): additionally records WHY and the triggering HTTP status.
 func (m *Manager) InvalidateInstanceWithReason(instanceID, reason string, status int) {
 	if instanceID == "" {
 		return

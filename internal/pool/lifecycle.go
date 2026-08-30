@@ -147,8 +147,8 @@ func (p *Pool) InvalidateSession(token int, instanceID string) {
 }
 
 // InvalidateSessionWithReason drops the cached session of token only when
-// its instance id matches instanceID (issue #132 guard), recording WHY
-// (T9/T10). The superseded chat recovery path passes session.ReasonSuperseded
+// its instance id matches instanceID (issue #132 guard), recording WHY.
+// The superseded chat recovery path passes session.ReasonSuperseded
 // (#159) so the re-admit storm detector can attribute the invalidation; the
 // other session-invalid paths keep the generic instance_invalidated reason.
 func (p *Pool) InvalidateSessionWithReason(token int, instanceID, reason string, status int) {
@@ -268,7 +268,10 @@ func (p *Pool) drainRemovedToken(entry *tokenEntry) {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		entry.runs.FinishAllRuns(ctx)
-		_ = entry.session.EndSession(ctx)
+		if err := entry.session.EndSession(ctx); err != nil {
+			p.logger.Warn("pool: removed token EndSession failed",
+				"err", err, "token_label", tokenEntryLabel(entry))
+		}
 		p.retiredMu.Lock()
 		defer p.retiredMu.Unlock()
 		delete(p.retired, entry)
@@ -282,7 +285,10 @@ func (p *Pool) RemoveAllTokens(ctx context.Context) {
 	toks := p.toks.Load()
 	for _, t := range *toks {
 		t.runs.FinishAllRuns(ctx)
-		_ = t.session.EndSession(ctx)
+		if err := t.session.EndSession(ctx); err != nil {
+			p.logger.Warn("pool: removed token EndSession failed",
+				"err", err, "token_label", tokenEntryLabel(t))
+		}
 	}
 	empty := make([]*tokenEntry, 0)
 	p.toks.Store(&empty)
@@ -310,6 +316,10 @@ func (p *Pool) FinishTokenRuns(ctx context.Context, token int) error {
 // the fixed tokens: FINISH all runs and end each entry's session so no
 // upstream activity is left behind.
 func (p *Pool) Shutdown(ctx context.Context) {
+	// Set BEFORE the drain: an in-flight request still in its acquire phase
+	// must not admit a session/run after the drain released the upstream
+	// sessions (post-drain re-admission gate; Acquire/AcquireBridge check).
+	p.draining.Store(true)
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -322,7 +332,7 @@ func (p *Pool) Shutdown(ctx context.Context) {
 		tok.runs.Shutdown(tokCtx)
 		cancel()
 		// With run persistence the runs are intentionally kept alive for
-		// restart-resume — not a drain failure (review P3).
+		// restart-resume — not a drain failure.
 		if !tok.runs.KeptForPersistence() {
 			if snap := tok.runs.Snapshot(); snap.ActiveRuns > 0 {
 				errs = append(errs, fmt.Sprintf("token-%d: %d runs left after shutdown", i+1, snap.ActiveRuns))

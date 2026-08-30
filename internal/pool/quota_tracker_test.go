@@ -332,3 +332,40 @@ func TestBridgeSnapshotPremium(t *testing.T) {
 		t.Error("raw token lookup failed")
 	}
 }
+
+// TestPremiumSnapshotForBridge pins the bridge-lease premium quota view
+// (alias of PremiumQuotaForBridge) for both the hashed key and the raw
+// token, and its nil-for-unknown-key behavior.
+func TestPremiumSnapshotForBridge(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.RateLimitsByModel = map[string]any{
+		"openai/gpt-5.6-luna": map[string]any{
+			"model":       "openai/gpt-5.6-luna",
+			"limit":       4,
+			"recentCount": 2,
+			"period":      "pacific_day",
+			"resetAt":     "2026-08-27T07:00:00.000Z",
+		},
+	}
+	p := newBridgePool(t, mock)
+	lease, err := p.AcquireBridge(context.Background(), "premium_bridge_token", "openai/gpt-5.6-luna")
+	if err != nil {
+		t.Fatalf("AcquireBridge %v", err)
+	}
+	_ = lease
+
+	snaps := p.BridgeSnapshot()
+	if len(snaps) != 1 {
+		t.Fatalf("bridge snaps %d", len(snaps))
+	}
+	if ps := p.PremiumSnapshotForBridge(snaps[0].Key); ps == nil || ps.Limit != 4 || ps.Used != 2 {
+		t.Errorf("PremiumSnapshotForBridge(key) = %+v, want limit 4 used 2", ps)
+	}
+	if ps := p.PremiumSnapshotForBridge("premium_bridge_token"); ps == nil || ps.Used != 2 {
+		t.Errorf("PremiumSnapshotForBridge(raw) = %+v, want used 2", ps)
+	}
+	if ps := p.PremiumSnapshotForBridge("no-such-key"); ps != nil {
+		t.Errorf("PremiumSnapshotForBridge(unknown) = %+v, want nil", ps)
+	}
+}

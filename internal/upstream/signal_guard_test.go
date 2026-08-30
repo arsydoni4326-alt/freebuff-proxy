@@ -367,7 +367,7 @@ func TestAgentRunsDualAuthScrubsRelayedKey(t *testing.T) {
 
 // TestSignalGuardChatUserAgent pins the chat POST User-Agent to the exact
 // ai-sdk/openai-compatible/1.0.0/codebuff string the official CLI pins on
-// model calls (audit G5: chat is the ONLY path carrying it).
+// model calls (chat is the ONLY path carrying it).
 func TestSignalGuardChatUserAgent(t *testing.T) {
 	srv := newRecordingUpstream()
 	defer srv.Close()

@@ -54,6 +54,13 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 	}
 	ctx = context.WithValue(ctx, fallbackDepthKey{}, depth+1)
 
+	// Post-drain re-admission gate: once Shutdown starts draining, no new
+	// session POST or run START may be admitted — an admission landing
+	// after the drain would leak an owned session row upstream.
+	if p.draining.Load() {
+		return nil, errors.New("pool: shutting down")
+	}
+
 	toks := p.toks.Load()
 	cfg := p.cfg.Load()
 	if len(*toks) == 0 {
@@ -337,6 +344,21 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			p.admissionsMu.Unlock()
 			return nil, err
 		}
+		// Re-validate the entry is still current BEFORE the admission POST:
+		// a concurrent RemoveLastToken/RemoveAllTokens must never admit a
+		// NEW session for an entry the pool no longer owns — a drained
+		// entry's freshly-created session would leak upstream. The
+		// post-admission check below stays: the removal can still land
+		// during the create.
+		if cur := p.toks.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
+			permit.Release()
+			p.admissionsMu.Lock()
+			if p.admissions != nil && (p.admissions[model] == idx || p.admissions[model] == -1) {
+				delete(p.admissions, model)
+			}
+			p.admissionsMu.Unlock()
+			continue
+		}
 		sessionStart := time.Now()
 		// Issue #94(b): WAITING_ROOM_CHAIN gate — when the upstream last
 		// refused this token with 428 waiting_room_required, fire the
@@ -359,7 +381,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
-				p.quarantineToken(idx, "invalid", err)
+				p.quarantineToken(tok, "invalid", err)
 			}
 			var wr *session.WaitingRoomError
 			if errors.As(err, &wr) {
@@ -410,7 +432,13 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if be := asBan(err); be != nil {
 				tok.runs.CooldownBan(be)
 				p.notifyBan(idx+1, model)
-				p.quarantineToken(idx, "banned", err)
+				// Quarantine only while the ban is still live after
+				// CooldownBan (hard, or a future resumes_at): an expired
+				// temporary ban is already lifted upstream and must not
+				// mark the token terminal.
+				if tok.runs.BanError() != nil {
+					p.quarantineToken(tok, "banned", err)
+				}
 				dup := false
 				for _, existing := range banned {
 					if existing.Error() == be.Error() {
@@ -424,7 +452,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			}
 			if cbe := asCountryBlocked(err); cbe != nil {
 				tok.runs.CooldownCountryBlocked(cbe)
-				p.quarantineToken(idx, "country_blocked", err)
+				p.quarantineToken(tok, "country_blocked", err)
 				dup := false
 				for _, existing := range countryBlocked {
 					if existing.Error() == cbe.Error() {
@@ -437,7 +465,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				}
 			}
 			if lie := asLimitedIp(err); lie != nil {
-				// Issue #74 P2: the egress IP cannot serve this model
+				// Issue #74: the egress IP cannot serve this model
 				// (limited_ip). The session row is fine — it stays bound to
 				// its admitted model — so nothing is invalidated or cooled
 				// per-token: the (egress, model) pair is marked unfit so
@@ -492,7 +520,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if errors.Is(err, upstream.ErrAuthRejected) {
 				tok.runs.Cooldown(runs.DefaultCooldown)
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
-				p.quarantineToken(idx, "invalid", err)
+				p.quarantineToken(tok, "invalid", err)
 			}
 			if rle := asRateLimit(err); rle != nil {
 				// Issue #178: tag the refusal with the requested model when
@@ -537,7 +565,13 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if be := asBan(err); be != nil {
 				tok.runs.CooldownBan(be)
 				p.notifyBan(idx+1, model)
-				p.quarantineToken(idx, "banned", err)
+				// Quarantine only while the ban is still live after
+				// CooldownBan (hard, or a future resumes_at): an expired
+				// temporary ban is already lifted upstream and must not
+				// mark the token terminal.
+				if tok.runs.BanError() != nil {
+					p.quarantineToken(tok, "banned", err)
+				}
 				dup := false
 				for _, existing := range banned {
 					if existing.Error() == be.Error() {
@@ -551,7 +585,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			}
 			if cbe := asCountryBlocked(err); cbe != nil {
 				tok.runs.CooldownCountryBlocked(cbe)
-				p.quarantineToken(idx, "country_blocked", err)
+				p.quarantineToken(tok, "country_blocked", err)
 				dup := false
 				for _, existing := range countryBlocked {
 					if existing.Error() == cbe.Error() {

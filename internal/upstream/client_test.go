@@ -187,7 +187,7 @@ func TestWrapDecompress(t *testing.T) {
 		}, ""},
 		// RFC 9110 §8.4.1.3: deflate = zlib-wrapped (RFC 1950). A conforming
 		// server's body must decode; the raw-flate fallback must not break
-		// the existing raw case above. (Audit B1.)
+		// the existing raw case above.
 		{"deflate zlib-wrapped", "deflate", func(b []byte) []byte {
 			var buf bytes.Buffer
 			zw := zlib.NewWriter(&buf)
@@ -199,7 +199,7 @@ func TestWrapDecompress(t *testing.T) {
 			return []byte("this is not gzip data")
 		}, "gzip:"},
 		// Multi-value Content-Encoding is rejected with a clear error, not
-		// silently mis-decoded. (Audit G1.)
+		// silently mis-decoded.
 		{"multi-value encoding rejected", "gzip, br", nil, "unsupported Content-Encoding"},
 		{"brotli", "br", func(b []byte) []byte {
 			var buf bytes.Buffer
@@ -309,7 +309,7 @@ func TestDumpRedactsTokenHeaders(t *testing.T) {
 	}
 }
 
-// TestWrapDecompressZstdDecoderClosed guards Audit B9 (fix 6): closing a
+// TestWrapDecompressZstdDecoderClosed guards the zstd decoder lifecycle: closing a
 // zstd-wrapped response body must release the per-response decoder, not just
 // the underlying socket (decoder buffers would otherwise linger until GC).
 func TestWrapDecompressZstdDecoderClosed(t *testing.T) {
@@ -340,7 +340,7 @@ func TestWrapDecompressZstdDecoderClosed(t *testing.T) {
 	}
 }
 
-// TestRedirectMultihop guards multi-hop redirect token semantics (G7): an
+// TestRedirectMultihop guards multi-hop redirect token semantics: an
 // A→B→A loop keeps the token at the origin (B never sees it, A receives its
 // own token on the loop-back hop), the 3-hop limit errors out, and a
 // port-differing same-host hop is treated as cross-host (token stripped).
@@ -476,7 +476,7 @@ func TestReqIDContextHelpers(t *testing.T) {
 	}
 }
 
-// TestDumpWriteFailureLogsWarn verifies T18: when DEBUG_DUMP is enabled but
+// TestDumpWriteFailureLogsWarn verifies the dump-write failure log: when DEBUG_DUMP is enabled but
 // the dump write fails (a regular file occupies the dump/ path), the failure
 // is logged as a WARN with path and err instead of being swallowed.
 func TestDumpWriteFailureLogsWarn(t *testing.T) {

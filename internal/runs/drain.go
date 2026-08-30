@@ -20,7 +20,7 @@ import (
 // recording used to be a second kind (#91) but is now a synchronous
 // in-memory append (issue #114: steps are batched and sent WITH FINISH —
 // the CLI has no /steps endpoint). The context-pruner child-run job (#91)
-// was removed with G4: the newest CLI UNTRACKS pruner runs entirely
+// was removed because the newest CLI UNTRACKS pruner runs entirely
 // (reference/freebuff packages/agent-runtime/src/run-agent-step.ts:785-795
 // mints a local untracked run id, zero ledger POSTs).
 type asyncJobKind uint8
@@ -42,7 +42,7 @@ type asyncJob struct {
 // so a run with inflight > 0 was skipped by finishIfReadyCtx AND became
 // unreachable — Release only decremented, ReleaseAbandoned only re-queued
 // runs still current in m.runs, and Maintain iterates the current sets —
-// so its upstream FINISH never ran (P1, anti-ban contract): the terminal
+// so its upstream FINISH never ran (anti-ban contract): the terminal
 // status was lost and the run leaked upstream until its own rotation
 // expiry.
 func (m *RunManager) FinishAllRuns(ctx context.Context) {
@@ -222,7 +222,7 @@ func (m *RunManager) finishPayload(run *Run) (status string, steps []upstream.Ru
 	return status, steps, totalSteps
 }
 
-// logRunFinished emits a run's terminal lifecycle record (W3-A): every way
+// logRunFinished emits a run's terminal lifecycle record: every way
 // a run leaves the manager â€” FINISHed through the deferred queue or
 // force-dropped from the draining list without FINISH â€” logs the same
 // run-finished event with the run's lifetime (duration_ms, now-StartedAt),
@@ -263,7 +263,7 @@ func (m *RunManager) appendDrainingLocked(run *Run) {
 
 // runDrainingLocked reports whether run is on the draining list. Caller
 // holds m.mu. Release consults it to re-queue a deferred FINISH when the
-// last lease of a draining run releases (P1).
+// last lease of a draining run releases before the drain completes.
 func (m *RunManager) runDrainingLocked(run *Run) bool {
 	for _, d := range m.draining {
 		if d == run {
@@ -350,7 +350,7 @@ func (m *RunManager) finishIfReadyCtx(ctx context.Context, run *Run) {
 }
 
 // finishInline best-effort FINISHes a run that was never tracked by the
-// manager (P3): rotate discards a fresh run whose upstream START completed
+// manager: rotate discards a fresh run whose upstream START completed
 // after Shutdown began. The finish worker is stopped by then, so the
 // FINISH runs here, bounded by the shutdown deadline — never the caller's
 // request ctx, which may already be cancelled. The payload defaults mirror

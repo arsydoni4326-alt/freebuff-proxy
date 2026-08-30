@@ -3,7 +3,7 @@ package session
 import "time"
 
 // Grace-window handover helpers (issue #163): when a session is being
-// ridden through its 30-minute grace drain (gap #13) — a long stream that
+// ridden through its 30-minute grace drain — a long stream that
 // crossed the expiresAt boundary — the next request should hand over to a
 // fresh session without paying a synchronous admission (waiting room) at
 // grace end. These helpers decide WHEN that background re-admit fires;
@@ -12,7 +12,7 @@ import "time"
 
 // graceEndsAt returns the cached session's grace-window end: the upstream
 // gracePeriodEndsAt when the response carried it, else expiresAt +
-// graceWindow (the 30-minute drain fallback, gap #13). Zero when neither
+// graceWindow (the 30-minute drain fallback). Zero when neither
 // is known — the row has no computable grace window.
 func graceEndsAt(s *cachedState) time.Time {
 	if s == nil {

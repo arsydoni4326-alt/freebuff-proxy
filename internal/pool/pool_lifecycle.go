@@ -1,6 +1,6 @@
 // pool_lifecycle.go — background-job lifecycle: the maintain
 // rotation loop (rotate aged runs, advance queued sessions), and the
-// session-liveness poll schedule (gap #2).
+// session-liveness poll schedule.
 package pool
 
 import (
@@ -21,7 +21,7 @@ import (
 // this coarse grid.
 const maintainInterval = time.Minute
 
-// Session-liveness poll cadence (gap #2; reference/freebuff sdk
+// Session-liveness poll cadence (reference/freebuff sdk
 // polling-backoff.ts): while active the CLI polls the compact session every
 // 30s ±20% (24–36s), capped to remaining+1s near expiry so the poll lands
 // just after expires_at; on failure it backs off 20s → 300s (×2 per
@@ -188,7 +188,7 @@ func (p *Pool) maintainLoop(ctx context.Context) {
 	ticker := time.NewTicker(maintainInterval)
 	defer ticker.Stop()
 	// The poll grid is finer than maintainInterval so the per-token jittered
-	// ~30s liveness polls (gap #2) are not quantized onto the 60s rotation
+	// ~30s liveness polls are not quantized onto the 60s rotation
 	// grid — a due poll fires on the first grid point at/after nextPollAt.
 	pollTicker := time.NewTicker(sessionPollCheckInterval)
 	defer pollTicker.Stop()
@@ -263,7 +263,7 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		// waiting_room). Mirror the reference session manager's in-flight
 		// gate (reference/freebuff-proxy-hengxin session-manager.js:37-49,
 		// 259-260). Active-session liveness polls are NOT part of this pass
-		// — they run on the jittered sessionPollTick schedule (gap #2).
+		// — they run on the jittered sessionPollTick schedule.
 		if tok.runs.InflightCount() == 0 {
 			snap := tok.session.Snapshot()
 			if snap.Status == "queued" {
@@ -292,8 +292,8 @@ func (p *Pool) maintainTick(ctx context.Context) {
 // jittered schedule (see the sessionPoll* constants): an active (or
 // in-grace ended) session is compact-polled every ~30s ±20% — capped to
 // remaining+1s near expiry — with 20s→300s failure backoff honoring the
-// server's Retry-After, mirroring the CLI's liveness fingerprint (gap #2;
-// reference/freebuff sdk polling-backoff.ts). Rotation and queued-session
+// server's Retry-After, mirroring the CLI's liveness fingerprint
+// (reference/freebuff sdk polling-backoff.ts). Rotation and queued-session
 // advance stay on the coarse maintainInterval ticker (maintainTick). The
 // poll is skipped while a chat is in flight (the upstream allows one client
 // per account at a time; a poll landing mid-chat can kick the active
@@ -369,7 +369,7 @@ func sessionPollBackoffDelay(failures int, retryAfter time.Duration) time.Durati
 	d = d/2 + time.Duration(sessionRand()%uint64(d/2))
 	if retryAfter > 0 {
 		// Floor retryAfter to avoid uint64(0) modulo panic when the
-		// server's Retry-After is absurdly small (1ns). P2-5.
+		// server's Retry-After is absurdly small (1ns).
 		if retryAfter < 5*time.Nanosecond {
 			retryAfter = 5 * time.Nanosecond
 		}

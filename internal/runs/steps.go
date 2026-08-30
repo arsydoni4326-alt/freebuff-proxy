@@ -255,7 +255,7 @@ func (m *RunManager) ReleaseAbandoned(run *Run) {
 	m.mu.Unlock()
 	// Rotated already (or drained by FinishAllRuns): re-queue the FINISH
 	// the draining queue skipped while inflight > 0 — Maintain is the only
-	// other re-enqueuer, and after a drain there may be no next tick (P1).
+	// other re-enqueuer, and after a drain there may be no next tick.
 	// enqueueFinish dedupes against a job already in the queue.
 	m.enqueueFinish(run)
 }

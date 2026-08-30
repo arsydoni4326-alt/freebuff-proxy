@@ -172,7 +172,7 @@ func TestGraceWindowTriggersAsyncReAdmitAndHandsOver(t *testing.T) {
 	m.SetReAdmitLead(time.Minute)
 
 	// Seed an expired-but-in-grace cache: the shape left by a long stream
-	// that crossed expiresAt while chat was still being served (gap #13).
+	// that crossed expiresAt while chat was still being served.
 	m.mu.Lock()
 	m.commit(&cachedState{
 		status:            "active",

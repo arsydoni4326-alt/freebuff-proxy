@@ -65,7 +65,7 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body []byt
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// UA scoping (newest-CLI wire behavior, audit G5): the real CLI sends
+	// UA scoping (newest-CLI wire behavior): the real CLI sends
 	// the pinned llm-providers ai-sdk UA ONLY on chat; every other call
 	// goes through plain Bun fetch, whose default UA is Bun/<version>
 	// (.bun-version pins 1.3.14). newRequest therefore defaults to
@@ -150,7 +150,7 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 				return nil, nil, fmt.Errorf("upstream: %s %s: %w", req.Method, req.URL.Path, werr)
 			}
 			if resp.StatusCode >= 400 {
-				// T5 wire transparency: error responses are read (2KB cap),
+				// Wire transparency: error responses are read (2KB cap),
 				// logged as `upstream response` (redacted, ≤500 runes), and
 				// re-wrapped so the caller's classification parses the same
 				// body. Never logged as `upstream ok` — a transport-level
@@ -366,7 +366,7 @@ func wrapDecompress(resp *http.Response) error {
 		// send raw DEFLATE (RFC 1951). Sniff the zlib header (CMF/FLG:
 		// CM=8, CINFO<=7, 16-bit header a multiple of 31) WITHOUT
 		// consuming bytes — a consumed header would corrupt the raw
-		// fallback — and decode accordingly. (Audit B1: the raw-only
+		// fallback — and decode accordingly. (the raw-only
 		// reader broke mid-stream on conforming zlib responses.)
 		br := bufio.NewReader(underlying)
 		head, _ := br.Peek(2)
@@ -391,7 +391,7 @@ func wrapDecompress(resp *http.Response) error {
 		}
 		// zstd decoders are stateful (per-response buffers), unlike
 		// gzip/brotli: Close must release the decoder's resources, not just
-		// the underlying socket. (Audit B9.)
+		// the underlying socket.
 		resp.Body = &decompressCloser{Reader: zr, underlying: underlying, closeFn: func() error { zr.Close(); return nil }}
 	default:
 		return fmt.Errorf("unsupported Content-Encoding %q", enc)

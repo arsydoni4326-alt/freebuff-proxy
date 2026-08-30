@@ -316,7 +316,7 @@ func TestAcquireCancelledCtxMidRotation(t *testing.T) {
 	}
 }
 
-// TestCooldownClearsBanAndCountryWindows is the regression guard for the P2
+// TestCooldownClearsBanAndCountryWindows is the regression guard for the
 // Cooldown bug: Cooldown cleared the remembered ban/country errors but left
 // their Until deadlines set, so Snapshot().BannedUntil reported a stale
 // future deadline with no ban attached (healthz risk gating). Fails before

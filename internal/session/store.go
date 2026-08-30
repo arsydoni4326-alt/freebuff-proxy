@@ -89,7 +89,7 @@ type Store struct {
 	// readFailed is set when a read of the on-disk file failed with a
 	// non-NotExist error (chmod 000, transient EIO). While set, Save/Remove
 	// keep their in-memory update but must NOT flush the partial map over the
-	// file: that would destroy every other token's persisted entry (B1). The
+	// file: that would destroy every other token's persisted entry. The
 	// flag is cleared once a load succeeds (the on-disk content is then
 	// established and a flush is safe again).
 	readFailed bool
@@ -137,7 +137,7 @@ func (s *Store) loadLocked() {
 			// read instead of permanently freezing an empty view that a
 			// later Save would flush over the on-disk file, destroying
 			// other tokens' persisted sessions. Track readFailed so Save/
-			// Remove skip the flush while the file stays unreadable (B1).
+			// Remove skip the flush while the file stays unreadable.
 			s.readFailed = true
 			slog.Warn("session store: read failed, will retry on next access", "path", s.path, "err", err)
 		}
@@ -392,7 +392,7 @@ func (s *Store) RemoveRun(key, agentID string) {
 }
 
 // flushLockedUnlessReadFailed writes the current map atomically unless the
-// on-disk file could not be read (B1): flushing the partial in-memory view
+// on-disk file could not be read: flushing the partial in-memory view
 // over an unreadable file would destroy every other token's persisted entry.
 // The in-memory update is kept so the store stays consistent once the file
 // becomes readable again; a warn log is the only signal that persistence was

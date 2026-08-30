@@ -536,7 +536,7 @@ func TestInvalidateRun(t *testing.T) {
 	}
 }
 
-// TestShutdownSkipsMidFinishRun is the regression guard for the P2
+// TestShutdownSkipsMidFinishRun is the regression guard for the
 // double-FINISH race: rotate spawns an untracked finishIfReady goroutine
 // that may be mid-FINISH (finishing=true, run on the draining list) when
 // Shutdown gathers. Shutdown must skip those runs instead of calling
@@ -1005,7 +1005,7 @@ func captureSlogLocked() (restore func(), logged func() string) {
 	return func() { slog.SetDefault(prev) }, buf.String
 }
 
-// TestRunStartedFinishedLogTraceSessionID verifies T3: the run's
+// TestRunStartedFinishedLogTraceSessionID verifies the run's
 // trace_session_id (the value threaded into codebuff_metadata) appears on
 // BOTH "runs: run started" and "runs: run finished" with the same value.
 func TestRunStartedFinishedLogTraceSessionID(t *testing.T) {
@@ -1049,9 +1049,9 @@ func TestRunStartedFinishedLogTraceSessionID(t *testing.T) {
 	}
 }
 
-// ── Wave 3 W3-A (T14): runs lifecycle telemetry ──────────────────────────
+// ── Runs lifecycle telemetry ────────────────────────────────────────────
 
-// TestRunFinishedLogCarriesLifecycleAttrs verifies W3-A T14: the "runs: run
+// TestRunFinishedLogCarriesLifecycleAttrs verifies that the "runs: run
 // finished" record carries duration_ms (run lifetime), steps (the run's
 // in-memory recorded step count), and termination ("finish" via the FINISH
 // queue), alongside the existing run_id/requests/trace_session_id fields.
@@ -1101,7 +1101,7 @@ func TestRunFinishedLogCarriesLifecycleAttrs(t *testing.T) {
 	}
 }
 
-// TestRunFinishedDropLogsTermination verifies W3-A T14's drop arm: a
+// TestRunFinishedDropLogsTermination verifies the drop arm: a
 // draining run force-dropped without FINISH (DrainTTL, issue #55) emits the
 // same "runs: run finished" record with termination=drop, while the existing
 // TTL-expired warn keeps its run_id/agent_id/age fields unchanged.
@@ -1155,7 +1155,7 @@ func TestRunFinishedDropLogsTermination(t *testing.T) {
 	}
 }
 
-// TestShutdownAbandonWarnLogsFields verifies W3-A T14: the shutdown drain
+// TestShutdownAbandonWarnLogsFields verifies that the shutdown drain
 // abandoning WARN logs pending_jobs/runs/key instead of the whole manager
 // struct (a *RunManager dump would leak internal state to the log).
 func TestShutdownAbandonWarnLogsFields(t *testing.T) {

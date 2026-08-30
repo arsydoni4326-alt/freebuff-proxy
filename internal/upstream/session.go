@@ -170,13 +170,12 @@ func mockSessionState(token string, requestedModel string, consume bool) *Sessio
 			},
 			"z-ai/glm-5.3-flash": {
 				Model:       modelcat.Glm53ModelID,
-				Limit:       modelcat.PremiumSessionLimit,
+				Limit:       unlimited,
 				RecentCount: st.recentCounts["z-ai/glm-5.3-flash"],
 				ResetAt:     pacMidnight,
 				Period:      "pacific_day",
-				Pool:        "premium",
-				PoolLabel:   "Premium",
-				Entitlement: map[string]float64{"base": modelcat.PremiumSessionLimit},
+				Pool:        "unlimited",
+				PoolLabel:   "Unlimited",
 			},
 			"mimo/mimo-v2.5": {
 				Model:       modelcat.FallbackModelID,
@@ -259,7 +258,7 @@ func (c *Client) GetSession(ctx context.Context, instanceID string) (*SessionSta
 // response header. There is deliberately NO heartbeat option: the CLI never
 // sends x-freebuff-heartbeat (Desktop-only, reference/freebuff
 // freebuff-models.ts:1212-1215); liveness comes from the recurring compact
-// GET itself (gap #2).
+// GET itself.
 func (c *Client) GetSessionWithOpts(ctx context.Context, instanceID string, compact bool) (*SessionState, error) {
 	if isDummyToken(c.token) {
 		return mockSessionState(c.token, "", false), nil

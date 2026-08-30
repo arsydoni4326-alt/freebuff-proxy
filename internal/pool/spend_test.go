@@ -290,7 +290,7 @@ func TestSpendPct(t *testing.T) {
 	}
 }
 
-// TestSpendBucketUpdateLogs verifies T18: a spend record emits one Debug
+// TestSpendBucketUpdateLogs verifies the spend-bucket update log: a spend record emits one Debug
 // line per period bucket with bucket, spend_delta, and the wire-style
 // period name.
 func TestSpendBucketUpdateLogs(t *testing.T) {

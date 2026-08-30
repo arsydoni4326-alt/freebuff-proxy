@@ -26,7 +26,7 @@ func entryFields(entries []logring.Entry, msg string) []string {
 	return nil
 }
 
-// TestDoUpstreamResponseLogsAndPreservesBody pins T5: a >=400 upstream
+// TestDoUpstreamResponseLogsAndPreservesBody pins the upstream response log: a
 // response is logged as `upstream response` (redacted body, error class,
 // req_id when present) and the body is re-wrapped so the caller's
 // classification still parses it (retryAfterMs survives the round-trip).
@@ -98,7 +98,7 @@ func TestDoUpstreamResponseLogsAndPreservesBody(t *testing.T) {
 		t.Errorf("`upstream response` body not redacted: %s", joined)
 	}
 
-	// T7 classification line: FULL redacted body, correct code + window.
+	// Rate-limit classification line: FULL redacted body, correct code + window.
 	fields = entryFields(entries, "upstream rate limit classified")
 	if fields == nil {
 		t.Fatalf("no `upstream rate limit classified` line captured")
@@ -126,7 +126,7 @@ func TestDoUpstreamResponseLogsAndPreservesBody(t *testing.T) {
 	}
 }
 
-// TestDoKeepsUpstreamOkForSuccess pins T5's split: a <400 response still logs
+// TestDoKeepsUpstreamOkForSuccess pins the success split: a <400 response still logs
 // `upstream ok` and is returned untouched (no re-wrap, no class/body).
 func TestDoKeepsUpstreamOkForSuccess(t *testing.T) {
 	testutil.UnsetConfigEnv(t)
@@ -167,7 +167,7 @@ func TestDoKeepsUpstreamOkForSuccess(t *testing.T) {
 	}
 }
 
-// TestRateLimitClassificationLedger pins the T7 counters: distinct upstream
+// TestRateLimitClassificationLedger pins the ledger counters: distinct upstream
 // body codes are counted independently, and non-rate-limit classifications
 // (403 bans) never touch the ledger.
 func TestRateLimitClassificationLedger(t *testing.T) {

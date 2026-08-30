@@ -413,7 +413,7 @@ func TestEndSessionSurfacesServerError(t *testing.T) {
 	}
 }
 
-// TestTerminalEventReasons pins T9: every terminal session event carries a
+// TestTerminalEventReasons pins that every terminal session event carries a
 // reason from the vocabulary (ended|superseded|shutdown|model_lock|expired|
 // 409|poll|store), and session invalidated gains the triggering HTTP status
 // when known.
@@ -561,7 +561,7 @@ func TestTerminalEventReasons(t *testing.T) {
 	})
 }
 
-// TestReAdmitStormDetector pins T10: more than 3 invalidations within 60s
+// TestReAdmitStormDetector pins that more than 3 invalidations within 60s
 // emit exactly ONE "session re-admit storm" summary with the count,
 // duration_ms, superseded, and burned_slots fields; isolated invalidations
 // stay quiet; the detector re-arms only after a full quiet window.
@@ -778,7 +778,7 @@ func TestInvalidateInstanceGuarded(t *testing.T) {
 }
 
 // TestInvalidateInstanceWithReason pins the #159 superseded invalidation
-// path: the reason-aware instance-guarded drop records the T9 "superseded"
+// path: the reason-aware instance-guarded drop records the "superseded"
 // reason (feeding the re-admit storm detector's superseded count) with the
 // triggering status, and a stale instance id — a chat still riding the OLD,
 // superseded instance after a fresh re-admit — leaves the newer cache alone.
@@ -809,7 +809,7 @@ func TestInvalidateInstanceWithReason(t *testing.T) {
 	}
 
 	// The matching instance id clears it and records reason=superseded
-	// status=409 (T9/T10 vocabulary).
+	// status=409.
 	mgr.InvalidateInstanceWithReason(cur, ReasonSuperseded, http.StatusConflict)
 	mgr.mu.Lock()
 	alive = mgr.state != nil

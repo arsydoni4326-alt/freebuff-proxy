@@ -336,7 +336,7 @@ func TestRateLimitedError(t *testing.T) {
 	}
 }
 
-// TestEnsureSessionRidesGraceFastPath verifies gap #13 on the fast path: an
+// TestEnsureSessionRidesGraceFastPath verifies the grace drain on the fast path: an
 // active cache entry whose expiry margin has passed is still reusable while
 // its instance id survives the 30-minute grace drain, and once grace closes
 // the next EnsureSession re-admits.
@@ -581,7 +581,7 @@ func TestEnsureSessionOuterBudgetExhausted(t *testing.T) {
 	}
 }
 
-// TestQueuedZeroPollAtClamp covers the S2 dead path: a queued response with
+// TestQueuedZeroPollAtClamp covers the dead path: a queued response with
 // a zero pollAt is clamped to max(1s, min(5s, estimatedWaitMs)) instead of
 // parking the caller at "now" (the mock always sends pollAt, so the clamp is
 // exercised through a custom handler).
@@ -618,7 +618,7 @@ func TestQueuedZeroPollAtClamp(t *testing.T) {
 	}
 }
 
-// TestLiveModelSwitchDoesNotReleaseOldSlot pins the B2 doc-vs-code
+// TestLiveModelSwitchDoesNotReleaseOldSlot pins the doc-vs-code
 // divergence: EnsureSessionForModel's doc claims a live model switch
 // "releases the previous slot", but the live-refresh path only creates for
 // the new model — the old upstream slot is never DELETE'd (only the
@@ -668,7 +668,7 @@ func TestLiveModelSwitchDoesNotReleaseOldSlot(t *testing.T) {
 		t.Errorf("creates = %d, want 2", got)
 	}
 	if got := ends.Load(); got != 0 {
-		t.Errorf("ends = %d, want 0 (current code does NOT release the old slot on live model switch — B2 divergence pinned)", got)
+		t.Errorf("ends = %d, want 0 (current code does NOT release the old slot on live model switch)", got)
 	}
 }
 
@@ -713,7 +713,7 @@ func TestCacheRecordsUpstreamServedModel(t *testing.T) {
 	}
 }
 
-// TestActiveSessionWithoutModelServesAnyModel pins the S1 leniency: a
+// TestActiveSessionWithoutModelServesAnyModel pins the leniency: a
 // session created via the default-model path (cached model "") is reused for
 // ANY requested model — the cache-hit check treats "" as a wildcard. The
 // upstream may later reject with session_model_mismatch; the leniency is

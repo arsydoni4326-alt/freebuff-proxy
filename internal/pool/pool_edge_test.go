@@ -3,9 +3,9 @@ package pool
 // Edge-case and E2E tests for the pool: live failover matrix, bridge daily
 // cap, idle handling in bridge mode, RemoveLastToken drain + race, maintain
 // queued-advance/session-poll, runtime token actions, and exact daily-cap
-// accounting. Regression guards for the audit's pool bugs (AcquireBridge
-// idle tracking, RemoveLastToken drain/TOCTOU, Cooldown ban memory, idle
-// bridge sweep).
+// accounting. Regression guards for the pool bugs (AcquireBridge idle
+// tracking, RemoveLastToken drain/TOCTOU, cooldown ban memory, idle bridge
+// sweep).
 
 import (
 	"context"
@@ -284,9 +284,7 @@ func TestBridgeDailyUsageCounter(t *testing.T) {
 	}
 }
 
-// TestBridgeIdlePause is the regression guard for the P1 bridge idle bug:
-
-// TestBridgeIdlePause is the regression guard for the P1 bridge idle bug:
+// TestBridgeIdlePause is the regression guard for the bridge idle bug:
 // AcquireBridge never updated p.lastActive, so IDLE_ROTATION_TIMEOUT was
 // dead config in bridge mode — lastActive stayed zero, the pool never
 // idle-paused, and bridge entries were polled/queued-advanced every
@@ -341,7 +339,7 @@ func TestBridgeIdlePause(t *testing.T) {
 	}
 }
 
-// TestBridgeMaintainRunsOnIdlePass is the regression guard for the P2 idle
+// TestBridgeMaintainRunsOnIdlePass is the regression guard for the idle
 // sweep bug: maintainTick's idle branch returned before bridgeMaintain, so
 // in mixed mode bridge entries idle past defaultBridgeIdleEvict were never swept
 // while the pool stayed idle — their sessions stayed admitted upstream until
@@ -429,7 +427,7 @@ func TestBridgeIdleSweepSkipsBusy(t *testing.T) {
 }
 
 // TestBridgeDeadTokenEvictDefersWhenBusy is the regression guard for the
-// dead-token eviction race (B6): a token confirmed dead (ErrAuthRejected)
+// dead-token eviction race: a token confirmed dead (ErrAuthRejected)
 // by one request while ANOTHER request on the same token is mid-stream must
 // not be evicted — FinishAllRuns on the busy entry would kill the
 // concurrent chat, and dropping it from the cache would orphan the
@@ -590,7 +588,7 @@ func TestBridgeEvictionAllBusyKeepsCap(t *testing.T) {
 	p.LeaseRelease(lease33)
 }
 
-// TestRemoveLastTokenDrainsRun is the regression guard for the P1 removal
+// TestRemoveLastTokenDrainsRun is the regression guard for the removal
 // leak: RemoveLastToken removed the token without finishing its run or
 // ending its admitted session (contrast RemoveAllTokens), so the run and
 // session stayed alive upstream. Removal must drain the token.
@@ -791,7 +789,7 @@ func TestMaintainTickAdvancesQueuedAndPollsActive(t *testing.T) {
 	}
 
 	// Once active, a sessionPollTick pass with a due schedule polls again
-	// (the plain compact poll — no heartbeat header; gap #2).
+	// (the plain compact poll — no heartbeat header).
 	polls := mock.SessionPolls
 	p.sessionPollTick(context.Background())
 	if got := mock.SessionPolls; got <= polls {
@@ -870,7 +868,7 @@ func TestFinishTokenRuns(t *testing.T) {
 	}
 	finished := mock.FinishedRunsSnapshot()
 	// FinishTokenRuns is synchronous, so the parent run-0001 FINISH is
-	// already recorded when it returns (no async pruner children since G4).
+	// already recorded when it returns (no async pruner children in the newest CLI).
 	parentDone := false
 	for _, f := range finished {
 		if f.RunID == "run-0001" && f.Status == "completed" {
@@ -953,7 +951,7 @@ func TestDailyCapExactRetryAfter(t *testing.T) {
 	}
 }
 
-// TestCooldownAfterBanClearsBanMemory is the pool-level pin for the P2
+// TestCooldownAfterBanClearsBanMemory is the pool-level pin for the
 // Cooldown bug (see runs.TestCooldownClearsBanAndCountryWindows): after a
 // dashboard Cooldown, the run manager forgets its remembered ban window —
 // but the pool's terminal quarantine is a SEPARATE, permanent entry-level

@@ -337,7 +337,7 @@ func (p *Pool) recordSpend(token int, tokens int64) {
 }
 
 // logSpendBuckets emits one Debug line per period bucket a spend record
-// updated (T18): bucket names the ledger bucket, spend_delta the tokens
+// updated: bucket names the ledger bucket, spend_delta the tokens
 // added, period the wire-style period name. Debug level so the per-chat
 // ledger noise only appears when operators opt in.
 func (p *Pool) logSpendBuckets(tokens int64) {

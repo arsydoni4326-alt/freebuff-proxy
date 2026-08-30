@@ -15,7 +15,7 @@ import (
 // limitedBody is the upstream limited_ip refusal wire shape: a 409
 // session_model_mismatch response whose message carries the "limited"
 // marker. classifyError maps that pair to upstream.LimitedIpError (issue
-// #74 P2); SessionMode cannot express it, so tests script it through
+// #74); SessionMode cannot express it, so tests script it through
 // SessionHandler (see mockupstream.go).
 const limitedBody = `{"status":"session_model_mismatch","message":"model limited on this egress IP"}`
 
