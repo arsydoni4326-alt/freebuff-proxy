@@ -228,7 +228,7 @@ func main() {
 	// exhaustion / token bans — fire-and-forget, throttled, never blocking.
 	if cfg.WebhookURL != "" {
 		p.SetNotifier(notify.New(cfg.WebhookURL, nil))
-		logger.Info("webhook alerts enabled", "url", cfg.WebhookURL)
+		logger.Info("webhook alerts enabled", "url", notify.RedactURL(cfg.WebhookURL))
 	}
 
 	// Issue #97: ADOPT_CLI_SESSION — seed every session manager with the

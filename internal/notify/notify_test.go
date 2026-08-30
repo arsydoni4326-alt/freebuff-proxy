@@ -181,10 +181,88 @@ func TestSendFailureLogsWarn(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		logs := sink.String()
-		for _, want := range []string{"webhook send failed", "webhook unreachable", "target=https://webhook.invalid/hook"} {
+		for _, want := range []string{"webhook send failed", "webhook unreachable", "target=https://webhook.invalid"} {
 			if !strings.Contains(logs, want) {
 				t.Errorf("transport-failure WARN missing %q: %s", want, logs)
 			}
 		}
 	})
+}
+
+// TestRedactURL pins the log redaction contract: only scheme+host
+// survives; userinfo, path, query, and fragment are stripped, and unparseable
+// or hostless input yields "<redacted>".
+func TestRedactURL(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"https://example.com/hook", "https://example.com"},
+		{"http://user:pass@host:8080/path?q=1", "http://host:8080"},
+		{"https://[::1]:8443/x", "https://[::1]:8443"},
+		{"https://webhook.invalid", "https://webhook.invalid"},
+		{"", "<redacted>"},
+		{"not-a-url", "<redacted>"},
+		{"://oops", "<redacted>"},
+	}
+	for _, tt := range tests {
+		if got := RedactURL(tt.in); got != tt.want {
+			t.Errorf("RedactURL(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestSendRejectsRedirect verifies the default client does not follow a
+// cross-host (or any) redirect: the redirected endpoint is never hit, and
+// the 3xx response is treated as a failed delivery (a WARN).
+func TestSendRejectsRedirect(t *testing.T) {
+	var finalHits atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/redirect", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/final", http.StatusFound)
+	})
+	mux.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
+		finalHits.Add(1)
+		w.WriteHeader(200)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var sink lockedBuffer
+	s := New(srv.URL+"/redirect", nil)
+	s.SetLogger(slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	s.Send(Event{Event: "token_banned"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(sink.String(), "webhook send failed") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := finalHits.Load(); got != 0 {
+		t.Fatalf("/final hit %d times, want 0 (redirect must not be followed)", got)
+	}
+	if !strings.Contains(sink.String(), "webhook returned status 302") {
+		t.Errorf("redirect WARN missing status 302: %s", sink.String())
+	}
+}
+
+// TestSendFailureRedactsURL verifies a WEBHOOK_URL that embeds userinfo or a
+// path/query token is never written to the delivery-failure WARN verbatim:
+// only the redacted scheme+host appears.
+func TestSendFailureRedactsURL(t *testing.T) {
+	var sink lockedBuffer
+	secret := "https://user:sekret@webhook.invalid/hook?token=abc123"
+	s := New(secret, &http.Client{Transport: failRT{}})
+	s.SetLogger(slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	s.Send(Event{Event: "pool_exhausted"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for !strings.Contains(sink.String(), "webhook send failed") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	logs := sink.String()
+	if !strings.Contains(logs, "target=https://webhook.invalid") {
+		t.Errorf("WARN missing redacted target: %s", logs)
+	}
+	for _, leak := range []string{"user:sekret", "token=abc123", "/hook?token", "sekret"} {
+		if strings.Contains(logs, leak) {
+			t.Errorf("WARN leaked %q: %s", leak, logs)
+		}
+	}
 }

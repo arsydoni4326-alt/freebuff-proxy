@@ -740,3 +740,54 @@ func TestRequestJitterNegative(t *testing.T) {
 		t.Fatalf("Load (REQUEST_JITTER=-1s): err = %v, want validation error mentioning REQUEST_JITTER", err)
 	}
 }
+
+// TestValidateWebhookURL pins the WEBHOOK_URL host policy: loopback,
+// private (RFC1918 / IPv6 ULA), link-local (incl. the cloud-metadata
+// 169.254.169.254), multicast, unspecified, and the reserved "localhost"
+// name are rejected; public IP literals and (unresolved) hostnames pass.
+func TestValidateWebhookURL(t *testing.T) {
+	base := Config{
+		ListenAddr:         ":3457",
+		UpstreamBaseURL:    "https://www.codebuff.com",
+		AuthTokens:         []string{"tok"},
+		RotationInterval:   6 * time.Hour,
+		RequestTimeout:     15 * time.Minute,
+		SessionCallTimeout: 30 * time.Second,
+		RegistryRefresh:    6 * time.Hour,
+	}
+
+	rejected := []string{
+		"http://127.0.0.1/hook",       // loopback
+		"http://10.1.2.3/hook",        // RFC1918 10/8
+		"http://172.16.0.1/hook",      // RFC1918 172.16/12
+		"http://172.31.255.1/hook",    // RFC1918 172.16/12
+		"http://192.168.1.1/hook",     // RFC1918 192.168/16
+		"http://169.254.169.254/hook", // link-local cloud metadata
+		"http://169.254.0.1/hook",     // link-local
+		"http://[::1]/hook",           // IPv6 loopback
+		"http://[fc00::1]/hook",       // IPv6 ULA
+		"http://[fe80::1]/hook",       // IPv6 link-local
+		"http://localhost/hook",       // reserved loopback name
+	}
+	for _, u := range rejected {
+		c := base
+		c.WebhookURL = u
+		if err := c.Validate(); err == nil {
+			t.Errorf("Validate(WebhookURL=%q) succeeded, want rejection", u)
+		}
+	}
+
+	accepted := []string{
+		"http://93.184.216.34/hook",    // public IPv4 literal
+		"http://8.8.8.8/hook",          // public IPv4 literal
+		"https://example.com/hook",     // public hostname (not resolved here)
+		"https://www.codebuff.com/api", // public hostname
+	}
+	for _, u := range accepted {
+		c := base
+		c.WebhookURL = u
+		if err := c.Validate(); err != nil {
+			t.Errorf("Validate(WebhookURL=%q) = %v, want nil", u, err)
+		}
+	}
+}

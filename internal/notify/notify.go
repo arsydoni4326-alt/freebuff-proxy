@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -40,10 +41,20 @@ type Sender struct {
 }
 
 // New builds a sender for url ("" disables: Send becomes a no-op). client
-// is used for the POSTs; nil uses a client with defaultTimeout.
+// is used for the POSTs; nil uses a client with defaultTimeout and a
+// redirect policy that follows nothing.
 func New(url string, client *http.Client) *Sender {
 	if client == nil {
-		client = &http.Client{Timeout: defaultTimeout}
+		client = &http.Client{
+			Timeout: defaultTimeout,
+			// No redirects (the safe default): ErrUseLastResponse returns the
+			// 3xx response as-is, so a configured WEBHOOK_URL that pivots onto
+			// an internal host is treated as a failed delivery rather than
+			// followed. A redirect is never needed for a webhook POST.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 	return &Sender{url: url, client: client, logger: slog.Default(), lastSent: make(map[string]time.Time), startedAt: time.Now()}
 }
@@ -105,35 +116,60 @@ func (s *Sender) throttle(eventType string) bool {
 // post performs one webhook POST with the sender's client timeout. The
 // payload is the JSON event; the response is drained and closed, and a
 // non-2xx status is treated as a failed delivery. Delivery failures are
-// logged as a WARN with the err and the target URL (T18) — the alert
-// itself stays best-effort and never blocks the request path.
+// logged as a WARN with the err and the redacted target URL (scheme+host
+// only, T18) — the alert itself stays best-effort and never blocks the
+// request path.
 func (s *Sender) post(event Event) {
 	payload, err := json.Marshal(event)
 	if err != nil {
-		s.logger.Warn("webhook send failed", "err", err, "target", s.url)
+		s.logger.Warn("webhook send failed", "err", redactTransportErr(err), "target", RedactURL(s.url))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(payload))
 	if err != nil {
-		s.logger.Warn("webhook send failed", "err", err, "target", s.url)
+		s.logger.Warn("webhook send failed", "err", redactTransportErr(err), "target", RedactURL(s.url))
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "freebuff-proxy-webhook/1.0")
 	resp, err := s.client.Do(req)
 	if err != nil {
-		s.logger.Warn("webhook send failed", "err", err, "target", s.url)
+		s.logger.Warn("webhook send failed", "err", redactTransportErr(err), "target", RedactURL(s.url))
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		_, _ = drain(resp)
-		s.logger.Warn("webhook send failed", "err", fmt.Errorf("webhook returned status %d", resp.StatusCode), "target", s.url)
+		s.logger.Warn("webhook send failed", "err", fmt.Errorf("webhook returned status %d", resp.StatusCode), "target", RedactURL(s.url))
 		return
 	}
 	_, _ = drain(resp)
+}
+
+// RedactURL returns just the scheme and host of raw (no userinfo, path,
+// query, or fragment) so a WEBHOOK_URL that embeds credentials or a path
+// token is never written to logs verbatim. Unparseable or hostless input
+// yields "<redacted>".
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "<redacted>"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// redactTransportErr strips the URL from a transport-level error before it
+// reaches a log sink. http.Client.Do wraps failures in *url.Error whose
+// Error() text embeds the request URL ("Post <url>: <cause>"), which can
+// carry userinfo or a path/query token. The URL is logged separately as the
+// redacted target, so only the underlying cause is kept here.
+func redactTransportErr(err error) error {
+	if ue, ok := err.(*url.Error); ok {
+		return ue.Err
+	}
+	return err
 }
 
 // drain consumes and discards a bounded prefix of the response body so the
