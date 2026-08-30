@@ -1,9 +1,11 @@
 package modelcat
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -300,4 +302,72 @@ func catalogIDs() []string {
 		out[i] = Catalog[i].ID
 	}
 	return out
+}
+
+// TestCatalogFactsPinned asserts the documented catalog reality directly:
+// the served set, the shared premium pool (Luna + Solar Pro 4; GLM 5.3
+// Flash is unmetered), the paused map (all three withdrawn rows recommend
+// the default model), per-model caps (none at this pin), and per-model
+// effort ladders. This pins what the doc comments CLAIM so a stale claim
+// (e.g. "GLM 5.3 Flash is premium") fails here before an operator reads it.
+func TestCatalogFactsPinned(t *testing.T) {
+	// Served set, catalog order.
+	wantServed := []string{
+		"openai/gpt-5.6-luna",
+		"upstage/solar-pro4",
+		"z-ai/glm-5.2",
+		"z-ai/glm-5.3-flash",
+		"deepseek/deepseek-v4-flash",
+		"mimo/mimo-v2.5",
+	}
+	if got := ServedIDs(); !slices.Equal(got, wantServed) {
+		t.Errorf("ServedIDs() = %v, want %v", got, wantServed)
+	}
+
+	// Shared premium pool = Luna + Solar Pro 4; GLM 5.3 Flash is unmetered
+	// (left the pool 2026-08-28), so it must NOT be premium.
+	wantPremium := []string{"openai/gpt-5.6-luna", "upstage/solar-pro4"}
+	if got := SharedPremiumModels(); !slices.Equal(got, wantPremium) {
+		t.Errorf("SharedPremiumModels() = %v, want %v", got, wantPremium)
+	}
+	if IsPremium("z-ai/glm-5.3-flash") {
+		t.Error("glm-5.3-flash marked premium, want unmetered (not premium)")
+	}
+	for _, id := range wantPremium {
+		if !IsPremium(id) {
+			t.Errorf("IsPremium(%q) = false, want true (shared premium pool)", id)
+		}
+	}
+
+	// Paused map: each withdrawn row recommends the default model.
+	wantPaused := map[string]string{
+		"stealth/ox-alpha":         DefaultModelID,
+		"deepseek/deepseek-v4-pro": DefaultModelID,
+		"minimax/minimax-m3":       DefaultModelID,
+	}
+	if got := PausedMap(); !maps.Equal(got, wantPaused) {
+		t.Errorf("PausedMap() = %v, want %v", got, wantPaused)
+	}
+
+	// Per-model caps: none at the current pin.
+	for _, id := range ServedIDs() {
+		if limit, pool := PerModelCap(id); limit != 0 || pool != "" {
+			t.Errorf("PerModelCap(%q) = (%d, %q), want (0, \"\") — no capped rows at this pin", id, limit, pool)
+		}
+	}
+
+	// Effort ladders for served models (nil = the route ignores it).
+	wantEfforts := map[string][]string{
+		"openai/gpt-5.6-luna":        {"low", "medium", "high", "xhigh", "max"},
+		"deepseek/deepseek-v4-flash": {"low", "high", "max"},
+		"mimo/mimo-v2.5":             {"high"},
+		"upstage/solar-pro4":         nil,
+		"z-ai/glm-5.2":               nil,
+		"z-ai/glm-5.3-flash":         nil,
+	}
+	for id, want := range wantEfforts {
+		if got := Efforts(id); !slices.Equal(got, want) {
+			t.Errorf("Efforts(%q) = %v, want %v", id, got, want)
+		}
+	}
 }
