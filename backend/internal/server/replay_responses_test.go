@@ -172,7 +172,7 @@ func TestReplayCodexResponsesSse(t *testing.T) {
 	if created != 0 {
 		t.Errorf("response.created index = %d, want 0 (first event)", created)
 	}
-	if !(created < textDelta && textDelta < argsDelta && argsDelta < itemDone && itemDone < completed) {
+	if created >= textDelta || textDelta >= argsDelta || argsDelta >= itemDone || itemDone >= completed {
 		t.Errorf("event order = %v, want response.created < output_text.delta < function_call_arguments.delta < output_item.done < response.completed", types)
 	}
 
@@ -392,7 +392,7 @@ func TestReplayCodexResponsesReasoning(t *testing.T) {
 	}
 	firstReasoning := indexOfType(events, "response.reasoning_text.delta")
 	firstText := indexOfType(events, "response.output_text.delta")
-	if !(firstReasoning != -1 && firstText != -1 && firstReasoning < firstText) {
+	if firstReasoning == -1 || firstText == -1 || firstReasoning >= firstText {
 		t.Errorf("reasoning delta index = %d, output_text delta index = %d, want reasoning before answer",
 			firstReasoning, firstText)
 	}

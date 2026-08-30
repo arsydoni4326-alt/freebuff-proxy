@@ -133,7 +133,7 @@ func TestCatalogOrdered(t *testing.T) {
 		if groupIndex[def.Group] < groupIndex[prevGroup] && prevGroup != "" {
 			t.Errorf("group %q out of order: appears before group %q", def.Group, prevGroup)
 		}
-		if i > 0 && catalog[i-1].Group == def.Group && !(catalog[i-1].Key < def.Key) {
+		if i > 0 && catalog[i-1].Group == def.Group && catalog[i-1].Key >= def.Key {
 			t.Errorf("key %s out of order within group %s (after %s)", def.Key, def.Group, catalog[i-1].Key)
 		}
 		prevGroup = def.Group

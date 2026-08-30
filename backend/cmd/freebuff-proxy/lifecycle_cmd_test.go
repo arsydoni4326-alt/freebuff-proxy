@@ -58,10 +58,10 @@ func TestLifecycleSetupDoctorVersion(t *testing.T) {
 		// Isolate from the real user profile: point every home-resolution
 		// path at the temp dir, and hide any real aider on PATH so client
 		// detection is deterministic ("Configured 0 client tool(s)").
-		os.Setenv("HOME", home)
-		os.Setenv("USERPROFILE", home)
-		os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-		os.Setenv("PATH", home)
+		_ = os.Setenv("HOME", home)
+		_ = os.Setenv("USERPROFILE", home)
+		_ = os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		_ = os.Setenv("PATH", home)
 		runSetup(true)
 		return
 
@@ -73,7 +73,7 @@ func TestLifecycleSetupDoctorVersion(t *testing.T) {
 			_, _ = w.Write([]byte("ip=203.0.113.7\nloc=US\n"))
 		}))
 		egress.ProbeURL = probe.URL
-		os.Setenv("AUTO_DISCOVER_TOKEN", "false")
+		_ = os.Setenv("AUTO_DISCOVER_TOKEN", "false")
 		// LISTEN_ADDR needs a real (1-65535) port: grab a free one so the
 		// doctor's port-availability check passes, then release it.
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -82,10 +82,10 @@ func TestLifecycleSetupDoctorVersion(t *testing.T) {
 		}
 		freePort := ln.Addr().(*net.TCPAddr).Port
 		_ = ln.Close()
-		os.Setenv("LISTEN_ADDR", net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort)))
+		_ = os.Setenv("LISTEN_ADDR", net.JoinHostPort("127.0.0.1", strconv.Itoa(freePort)))
 		// UPSTREAM_BASE_URL on a closed loopback port: DNS resolves, TLS
 		// refused → deterministic offline reachability failure.
-		os.Setenv("UPSTREAM_BASE_URL", "https://127.0.0.1:1/v1")
+		_ = os.Setenv("UPSTREAM_BASE_URL", "https://127.0.0.1:1/v1")
 		flag.CommandLine = flag.NewFlagSet("freebuff-proxy", flag.ExitOnError)
 		os.Args = []string{"freebuff-proxy", "-doctor"}
 		main()
