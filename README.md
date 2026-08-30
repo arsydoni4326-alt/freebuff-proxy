@@ -460,6 +460,14 @@ production build (single binary), run `task frontend:build`.
 
 ---
 
+## Harness Compatibility
+
+| Compatibility | Details |
+|---|---|
+| **Coding-agent harnesses** | **11/12 first-party surfaces supported**: opencode, codex, cline, roo-code, goose, aider, continue, qwen-code, pi, oh-my-pi, kilocode. **gemini-cli is not supported** (native Gemini only — point it at Vertex AI / AI Studio, or use opencode-go). Full per-harness matrix, config snippets, and known limits: [docs/harness-compatibility.md](docs/harness-compatibility.md); ready-to-edit templates in [`examples/harnesses/`](examples/harnesses/). |
+
+---
+
 ## Contributing & Security
 
 - [Contributing](CONTRIBUTING.md): filing issues, opening PRs, what to expect

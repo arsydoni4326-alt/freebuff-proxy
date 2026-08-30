@@ -1,0 +1,18 @@
+{
+  // pi.models.json — place at ~/.pi/agent/models.json
+  // Wire surface: OpenAI Chat Completions (openai-completions). Alternatives:
+  //   "api": "openai-responses"  -> base URL still http://127.0.0.1:3457/v1
+  //   "api": "anthropic-messages" -> base URL http://127.0.0.1:3457 (NO /v1;
+  //                                  the Anthropic SDK appends /v1/messages)
+  // Re-read by /model each time; no restart needed.
+  "providers": {
+    "freebuff": {
+      "baseUrl": "http://127.0.0.1:3457/v1",
+      "api": "openai-completions",
+      "apiKey": "YOUR_KEY",
+      "models": [
+        { "id": "deepseek/deepseek-v4-flash", "name": "DeepSeek V4 Flash" }
+      ]
+    }
+  }
+}
