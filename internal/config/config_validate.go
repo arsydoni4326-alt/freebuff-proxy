@@ -98,6 +98,9 @@ func (c Config) Validate() error {
 		if u.Host == "" {
 			return fmt.Errorf("WEBHOOK_URL %q has no host", c.WebhookURL)
 		}
+		if err := validateWebhookHost(c.WebhookURL, u.Hostname()); err != nil {
+			return err
+		}
 	}
 
 	_, portStr, err := net.SplitHostPort(c.ListenAddr)
@@ -151,6 +154,39 @@ func (c Config) Validate() error {
 		return fmt.Errorf("UPSTREAM_BASE_URL %q has no host", c.UpstreamBaseURL)
 	}
 	return nil
+}
+
+// validateWebhookHost rejects webhook targets that resolve to a non-global
+// host. IP literals are checked directly against the loopback, private
+// (RFC1918/ULA), link-local (169.254.0.0/16 metadata, fe80::/10), multicast,
+// and unspecified ranges. Hostnames are NOT resolved here — a resolution-time
+// check would let a public hostname later rebind to a private address (DNS
+// rebinding is out of scope; the operator owns WEBHOOK_URL, and the notify
+// sender refuses to follow redirects), but the reserved loopback name
+// "localhost" and any non-global literal are rejected so a pasted
+// WEBHOOK_URL cannot silently target an internal service.
+func validateWebhookHost(raw, host string) error {
+	if host == "" {
+		return fmt.Errorf("WEBHOOK_URL %q has no host", raw)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("WEBHOOK_URL %q must not target loopback (localhost)", raw)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isNonGlobalIP(ip) {
+			return fmt.Errorf("WEBHOOK_URL %q must target a public host, got %q", raw, host)
+		}
+	}
+	return nil
+}
+
+// isNonGlobalIP reports whether ip is not a routable public address: loopback,
+// private (RFC1918 / IPv6 ULA), link-local unicast or multicast (the
+// cloud-metadata endpoint 169.254.169.254 sits in the 169.254.0.0/16
+// link-local range), unspecified, or multicast.
+func isNonGlobalIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()
 }
 
 // normalizeUpstreamBaseURL trims a trailing slash, requires an http(s) URL,
