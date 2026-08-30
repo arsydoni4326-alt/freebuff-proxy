@@ -1,6 +1,6 @@
 <script>
   import {
-    LayoutDashboard, Key, Cpu, Settings, FileText, FlaskConical, Menu, X,
+    LayoutDashboard, Key, Gauge, Cpu, Settings, FileText, FlaskConical, Menu, X,
   } from '@lucide/svelte';
 
   /**
@@ -24,6 +24,7 @@
   const tabs = $derived([
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'tokens',   label: 'Tokens',   icon: Key },
+    { id: 'quota',    label: 'Quota Tracker', icon: Gauge },
     { id: 'models',   label: 'Models',   icon: Cpu },
     { id: 'config',   label: 'Config',   icon: Settings },
     { id: 'logs',     label: 'Logs',     icon: FileText },

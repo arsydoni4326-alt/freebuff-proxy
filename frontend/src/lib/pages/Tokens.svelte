@@ -1,8 +1,7 @@
 <script>
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     LogIn,
-    Key,
     Plus,
     ExternalLink,
     RefreshCw,
@@ -19,7 +18,6 @@
   import { fetchAPI, postAPI, csrfHeader } from '../api/client.js';
   import { adminApi, adminActions, tokenActions } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
-  import { generateRandomApiKey } from '../utils/format.js';
   import { tr } from '../i18n.js';
 
   let data = $state(null);
@@ -31,13 +29,10 @@
   let adding = $state(false);
   let actionMessage = $state('');
   let actionOK = $state(true);
-
-  // Client API-key management (API_KEYS in .env)
-  let apiKeys = $state([]);
-  let clientKeyMessage = $state('');
-  let clientKeyOK = $state(true);
-  let generatingKey = $state(false);
-  let generatedKey = $state('');
+  // Dev Tools surfaces (per-token session spawn toolbar) are hidden unless
+  // the operator enables DEVTOOLS_ENABLED=true in .env (same gate as the
+  // sidebar's Dev Tools tab and the server-side DevTools route).
+  let devToolsEnabled = $state(false);
 
   // Device login flow
   let oauthStarting = $state(false);
@@ -66,15 +61,6 @@
         const idx = t.index ?? i;
         if (!(idx in spawnModels)) spawnModels[idx] = '';
       });
-      try {
-        const cfgRes = await fetchAPI(adminApi.config);
-        const envContent = cfgRes?.env_content || '';
-        const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
-        const val = m ? m[1].trim() : '';
-        apiKeys = val ? val.split(',').map((s) => s.trim()).filter(Boolean) : [];
-      } catch {
-        apiKeys = [];
-      }
       error = '';
     } catch (e) {
       error = e.message || $tr('Failed to fetch tokens');
@@ -146,41 +132,6 @@
     return triggerAction(tokenActions.finish(idx), {}, $tr('Finish active runs on token #{idx}?', { idx }));
   }
 
-  async function generateClientKey() {
-    if (generatingKey) return;
-    generatingKey = true;
-    generatedKey = '';
-    clientKeyMessage = '';
-    try {
-      const newKey = generateRandomApiKey();
-      const cfgRes = await fetchAPI(adminApi.config);
-      const envContent = cfgRes?.env_content || '';
-      const regex = /^\s*API_KEYS=(.*)$/m;
-      const match = envContent.match(regex);
-      const existing = match ? match[1].trim() : '';
-      const updated = existing ? `${existing},${newKey}` : newKey;
-      const save = await fetch(adminActions.configSave, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
-        body: new URLSearchParams({ content: envContent.replace(regex, `API_KEYS=${updated}`) }),
-      });
-      const result = await save.json();
-      clientKeyOK = save.ok && result.ok;
-      clientKeyMessage = clientKeyOK
-        ? $tr('Generated & saved client API key')
-        : (result.message || $tr('Failed to save client API key'));
-      if (clientKeyOK) {
-        generatedKey = newKey;
-        fetchData();
-      }
-    } catch (e) {
-      clientKeyOK = false;
-      clientKeyMessage = e.message || $tr('Network error generating client key');
-    } finally {
-      generatingKey = false;
-    }
-  }
-
   async function startOAuthLogin() {
     oauthStarting = true;
     oauthStatus = { message: $tr('Starting headless login flow…'), type: 'info' };
@@ -242,6 +193,17 @@
 
   usePolling(fetchData, 10000);
   const tick = setInterval(() => { now = Date.now(); }, 1000);
+  onMount(async () => {
+    try {
+      const cfgRes = await fetchAPI(adminApi.config);
+      const envContent = cfgRes?.env_content || '';
+      const m = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
+      const val = m ? m[1].trim().toLowerCase() : '';
+      devToolsEnabled = val === 'true' || val === '1';
+    } catch {
+      devToolsEnabled = false;
+    }
+  });
 
   onDestroy(() => {
     clearInterval(oauthTimer);
@@ -307,22 +269,8 @@
             <span>{$tr('Device Login')}</span>
           {/if}
         </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onclick={generateClientKey}
-          disabled={generatingKey}
-        >
-          {#if generatingKey}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Generating…')}</span>
-          {:else}
-            <Key size={14} />
-            <span>{$tr('Generate API Key')}</span>
-          {/if}
-        </Button>
       {/snippet}
-      <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-end gap-3">
+      <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
         <div class="flex-1 w-full">
           <Field
             label={$tr('Token')}
@@ -351,33 +299,6 @@
           <span>{$tr('Add Token')}</span>
         </Button>
       </form>
-    </Card>
-
-    <!-- Client API-key management -->
-    <Card
-      title={$tr('Client API Keys')}
-      description={$tr('sk-fb-… credentials for clients (omp, curl) to authenticate against this proxy. Stored in the API_KEYS line of .env.')}
-    >
-      {#if generatedKey}
-        <div class="fp-inset rounded p-3 mb-3 flex flex-wrap items-center gap-2">
-          <span class="text-xs text-[var(--fp-muted)]">{$tr('New key:')}</span>
-          <code class="fp-num text-xs text-[var(--fp-accent)] break-all">{generatedKey}</code>
-          <CopyButton text={generatedKey} label="Copy" />
-        </div>
-      {/if}
-      {#if apiKeys.length > 0}
-        <div class="flex flex-col gap-2 mb-3">
-          {#each apiKeys as key}
-            <div class="fp-inset rounded flex items-center justify-between gap-2 px-3 py-2">
-              <code class="fp-num text-xs truncate">{key}</code>
-              <CopyButton text={key} label="Copy" />
-            </div>
-          {/each}
-        </div>
-      {/if}
-      {#if clientKeyMessage}
-        <Alert tone={clientKeyOK ? 'success' : 'error'} title={clientKeyMessage} />
-      {/if}
     </Card>
 
     <!-- Token table -->
@@ -432,6 +353,7 @@
                 bind:spawnModel={spawnModels[idx]}
                 {actionPending}
                 {now}
+                {devToolsEnabled}
                 onToggle={() => toggleExpand(idx)}
                 onAction={(action) => handleTokenAction(token, idx, action)}
                 onSpawn={(model) => handleSpawn(idx, model)}
