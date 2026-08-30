@@ -1,6 +1,6 @@
 // about the FreeBuff free catalog. One row per model in upstream
 // SUPPORTED_FREEBUFF_MODELS (reference/freebuff/common/src/constants/
-// freebuff-models.ts, pinned snapshot 4a42903e5007, vendor 0.0.158).
+// freebuff-models.ts, pinned snapshot 298bbda09bb4, vendor 0.0.160).
 //
 // Every package that needs a per-model fact — registry (served/paused gate,
 // withdrawn-model copy), convert (effort ladders), pool (premium pool and
@@ -181,7 +181,7 @@ func IsPremium(id string) bool {
 }
 
 // SharedPremiumModels returns the ids metered by the shared daily premium
-// pool (FREEBUFF_PREMIUM_MODEL_IDS). Currently Luna, Solar Pro 4, and GLM 5.3 Flash.
+// pool (FREEBUFF_PREMIUM_MODEL_IDS). Luna and Solar Pro 4 (GLM 5.3 Flash is unmetered).
 func SharedPremiumModels() []string {
 	var out []string
 	for i := range Catalog {
@@ -211,8 +211,6 @@ func ContextWindow(id string) int {
 }
 
 // Efforts returns the model's reasoning-effort ladder; nil when the route
-
-// Efforts returns the model's reasoning-effort ladder; nil when the route
 // accepts and ignores reasoning_effort (callers use the default ladder).
 func Efforts(id string) []string {
 	if m := byID(id); m != nil {
@@ -220,8 +218,6 @@ func Efforts(id string) []string {
 	}
 	return nil
 }
-
-// PausedMap builds the paused-model map (id → replacement id) from the
 
 // PausedMap builds the paused-model map (id → replacement id) from the
 // catalog, mirroring upstream FREEBUFF_PAUSED_FREE_MODEL_IDS.
@@ -234,8 +230,6 @@ func PausedMap() map[string]string {
 	}
 	return out
 }
-
-// ServedMap builds the ServedModels gate map (id → true) from the catalog.
 
 // ServedMap builds the ServedModels gate map (id → true) from the catalog.
 func ServedMap() map[string]bool {
