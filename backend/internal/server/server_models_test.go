@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -132,6 +133,202 @@ func TestModelsEndpoint(t *testing.T) {
 	}
 	if out.Data[0].Created <= 0 || out.Data[0].Created > time.Now().Unix() {
 		t.Errorf("created = %d, not a plausible server-start timestamp", out.Data[0].Created)
+	}
+}
+
+// codexModelInfoStrict mirrors the serde-required ModelInfo rows codex-rs
+// demands (codex-rs/protocol/src/openai_models.rs:392-483; reference/
+// harnesses/codex/WIRE-NOTES.md §8). DisallowUnknownFields decoding proves
+// the wire rows are exactly this set — no legacy {id,object,…} fields leak in.
+type codexModelInfoStrict struct {
+	Slug                     string `json:"slug"`
+	DisplayName              string `json:"display_name"`
+	SupportedReasoningLevels []struct {
+		Effort      string `json:"effort"`
+		Description string `json:"description"`
+	} `json:"supported_reasoning_levels"`
+	ShellType        string `json:"shell_type"`
+	Visibility       string `json:"visibility"`
+	SupportedInAPI   bool   `json:"supported_in_api"`
+	Priority         int    `json:"priority"`
+	SupportVerbosity bool   `json:"support_verbosity"`
+	TruncationPolicy struct {
+		Mode  string `json:"mode"`
+		Limit int64  `json:"limit"`
+	} `json:"truncation_policy"`
+	ExperimentalSupportedTools []string `json:"experimental_supported_tools"`
+	InputModalities            []string `json:"input_modalities"`
+	BaseInstructions           string   `json:"base_instructions"`
+}
+
+// TestConformanceCodexModelsStrictModelInfo pins the Codex /v1/models wire
+// (reference/harnesses/codex/WIRE-NOTES.md §8): with a client_version query
+// param (codex always sends it — codex-rs codex-api/src/endpoint/models.rs:
+// 31-35) the endpoint must return strict ModelInfo rows under the
+// {"models": […]} envelope. A minimal {id,object,…} shape fails codex serde
+// and it silently falls back to its bundled catalog, hiding our model ids,
+// so every serde-required field is asserted present per row.
+func TestConformanceCodexModelsStrictModelInfo(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/v1/models?client_version=codex-cli-0.150", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Models []codexModelInfoStrict `json:"models"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&out); err != nil {
+		t.Fatalf("codex ModelInfo decode failed (serde parity): %v: %s", err, data)
+	}
+	if len(out.Models) == 0 {
+		t.Fatal("codex response carried no model rows")
+	}
+	// Presence check: every serde-required key must be in each raw row
+	// (missing keys decode to zero values silently in struct decoding).
+	var raw struct {
+		Models []map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("raw decode: %v: %s", err, data)
+	}
+	required := []string{
+		"slug", "display_name", "supported_reasoning_levels", "shell_type",
+		"visibility", "supported_in_api", "priority", "support_verbosity",
+		"truncation_policy", "experimental_supported_tools", "input_modalities",
+		"base_instructions",
+	}
+	for i, row := range raw.Models {
+		for _, k := range required {
+			if _, ok := row[k]; !ok {
+				t.Errorf("model %d missing serde-required %q", i, k)
+			}
+		}
+	}
+	// The codex slug set must be exactly the served ids of the legacy shape.
+	resp2, data2 := doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("legacy models status = %d: %s", resp2.StatusCode, data2)
+	}
+	var legacy struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data2, &legacy); err != nil {
+		t.Fatalf("legacy decode: %v: %s", err, data2)
+	}
+	legacyIDs := make(map[string]bool, len(legacy.Data))
+	for _, m := range legacy.Data {
+		legacyIDs[m.ID] = true
+	}
+	if len(out.Models) != len(legacy.Data) {
+		t.Fatalf("codex rows = %d, legacy rows = %d, want equal", len(out.Models), len(legacy.Data))
+	}
+	for i, m := range out.Models {
+		if m.Slug == "" {
+			t.Errorf("model %d: slug empty", i)
+			continue
+		}
+		if !legacyIDs[m.Slug] {
+			t.Errorf("model %d: slug %q not in the legacy served set", i, m.Slug)
+		}
+		if m.DisplayName == "" {
+			t.Errorf("model %s: display_name empty", m.Slug)
+		}
+		if len(m.SupportedReasoningLevels) == 0 {
+			t.Errorf("model %s: supported_reasoning_levels empty (serde-required Vec)", m.Slug)
+		}
+		for _, lvl := range m.SupportedReasoningLevels {
+			if lvl.Effort == "" || lvl.Description == "" {
+				t.Errorf("model %s: empty reasoning preset %+v", m.Slug, lvl)
+			}
+		}
+		if m.ShellType != "unified_exec" {
+			t.Errorf("model %s: shell_type = %q, want unified_exec", m.Slug, m.ShellType)
+		}
+		if m.Visibility != "list" {
+			t.Errorf("model %s: visibility = %q, want list", m.Slug, m.Visibility)
+		}
+		if !m.SupportedInAPI {
+			t.Errorf("model %s: supported_in_api = false, want true", m.Slug)
+		}
+		if m.Priority != 0 {
+			t.Errorf("model %s: priority = %d, want 0", m.Slug, m.Priority)
+		}
+		if !m.SupportVerbosity {
+			t.Errorf("model %s: support_verbosity = false, want true", m.Slug)
+		}
+		if m.TruncationPolicy.Mode != "tokens" || m.TruncationPolicy.Limit <= 0 {
+			t.Errorf("model %s: truncation_policy = %+v, want tokens with positive limit", m.Slug, m.TruncationPolicy)
+		}
+		if m.ExperimentalSupportedTools == nil {
+			t.Errorf("model %s: experimental_supported_tools missing (deserializes nil)", m.Slug)
+		}
+		if len(m.InputModalities) != 2 || m.InputModalities[0] != "text" || m.InputModalities[1] != "image" {
+			t.Errorf("model %s: input_modalities = %v, want [text image]", m.Slug, m.InputModalities)
+		}
+	}
+}
+
+// TestConformanceModelsWithoutClientVersionKeepsOpenAIShape pins zero
+// regression for every non-Codex client: no client_version query param (or an
+// empty one — only a real version string switches shapes) means the legacy
+// {"object":"list","data":[…]} rows, and never a leaked codex-only field.
+func TestConformanceModelsWithoutClientVersionKeepsOpenAIShape(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ts, _ := newTestServer(t, nil, mock)
+
+	for _, url := range []string{ts.URL + "/v1/models", ts.URL + "/v1/models?client_version="} {
+		resp, data := doJSON(t, http.MethodGet, url, nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200: %s", url, resp.StatusCode, data)
+		}
+		var out struct {
+			Object string `json:"object"`
+			Data   []struct {
+				ID        string `json:"id"`
+				Object    string `json:"object"`
+				Created   int64  `json:"created"`
+				OwnedBy   string `json:"owned_by"`
+				Available bool   `json:"available"`
+				Status    string `json:"status"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("%s not JSON: %v: %s", url, err, data)
+		}
+		if out.Object != "list" || len(out.Data) == 0 {
+			t.Fatalf("%s object = %q, models = %d, want list/non-empty", url, out.Object, len(out.Data))
+		}
+		for i, m := range out.Data {
+			if m.ID == "" || m.Object != "model" || m.OwnedBy == "" || !m.Available || m.Status == "" {
+				t.Errorf("%s model %d malformed legacy row: %+v", url, i, m)
+			}
+			if m.Created != out.Data[0].Created {
+				t.Errorf("%s model %d created = %d, want %d (pinned to server start)", url, i, m.Created, out.Data[0].Created)
+			}
+		}
+		var raw struct {
+			Object string                       `json:"object"`
+			Data   []map[string]json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("%s raw decode: %v", url, err)
+		}
+		for i, row := range raw.Data {
+			if _, ok := row["slug"]; ok {
+				t.Errorf("%s model %d leaked codex slug into the OpenAI shape", url, i)
+			}
+			if _, ok := row["shell_type"]; ok {
+				t.Errorf("%s model %d leaked codex shell_type into the OpenAI shape", url, i)
+			}
+		}
 	}
 }
 
