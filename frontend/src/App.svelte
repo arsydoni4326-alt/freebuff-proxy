@@ -9,9 +9,13 @@
   import Logs from './lib/pages/Logs.svelte';
   import DevTools from './lib/pages/DevTools.svelte';
   import Login from './lib/pages/Login.svelte';
+  import Setup from './lib/pages/Setup.svelte';
+  import Metrics from './lib/pages/Metrics.svelte';
+  import Traces from './lib/pages/Traces.svelte';
   import ChangePasswordModal from './lib/components/ChangePasswordModal.svelte';
   import Alert from './lib/components/Alert.svelte';
   import Button from './lib/components/Button.svelte';
+  import EmptyState from './lib/components/EmptyState.svelte';
   import { X } from '@lucide/svelte';
   import { fetchAPI } from './lib/api/client.js';
   import { sessionExpired, dismissSessionExpired } from './lib/stores/session.js';
@@ -143,8 +147,24 @@
             <Logs />
           {:else if activeTab === 'devtools'}
             <DevTools />
+          {:else if activeTab === 'playground'}
+            <DevTools />
+          {:else if activeTab === 'setup'}
+            <Setup />
+          {:else if activeTab === 'metrics'}
+            <Metrics />
+          {:else if activeTab === 'traces'}
+            <Traces />
           {:else if activeTab === 'login'}
             <Login />
+          {:else}
+            <EmptyState title={$tr('Page not found')} description={$tr('This tab does not exist. Pick a page from the sidebar.')}>
+              {#snippet action()}
+                <Button variant="secondary" onclick={() => (activeTab = 'overview')}>
+                  {$tr('Back to Overview')}
+                </Button>
+              {/snippet}
+            </EmptyState>
           {/if}
         </div>
       {/key}

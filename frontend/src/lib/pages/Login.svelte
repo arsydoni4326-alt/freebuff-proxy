@@ -6,6 +6,7 @@
   import Button from '../components/Button.svelte';
   import Card from '../components/Card.svelte';
   import Field from '../components/Field.svelte';
+  import { csrfHeader } from '../api/client.js';
 
   let token = $state('');
   let errorMsg = $state('');
@@ -43,7 +44,7 @@
     try {
       const res = await fetch('/admin/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ token: token.trim() }),
       });
 

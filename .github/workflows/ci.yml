@@ -69,5 +69,13 @@ jobs:
       - run: npm run build
         working-directory: frontend
 
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run SPA e2e suite
+        working-directory: frontend
+        run: npm run test:e2e
+
       - name: Verify committed dashboard bundle is fresh
         run: git diff --exit-code -- internal/dashboard/dist

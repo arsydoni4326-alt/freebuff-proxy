@@ -79,7 +79,7 @@ type tokenCard struct {
 	StandingScore       float64 `json:"standing_score"`
 	StandingNextLevel   string  `json:"standing_next_level"`
 	StandingNextLevelAt string  `json:"standing_next_level_at"`
-	// Standing cap + earn-back hints (issue #140 P3d, FreebuffStandingInfo):
+	// Standing cap + earn-back hints (issue #140, FreebuffStandingInfo):
 	// cappedBy/cappedReason name the trust cap holding the level, blurb is
 	// upstream's human explanation, nextSteps the suggested actions.
 	StandingCappedBy     string             `json:"standing_capped_by,omitempty"`

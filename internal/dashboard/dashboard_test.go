@@ -367,7 +367,38 @@ func TestTracesPageRenders(t *testing.T) {
 	}
 }
 
-// --- data-path coverage (AuditServer priority 10) ---
+// TestServeSPAFallsBackToIndex pins the SPA serving contract: a direct
+// /admin/index.html request resolves the real file (no /admin double-nesting
+// 404), and any other /admin/* path falls back to index.html.
+func TestServeSPAFallsBackToIndex(t *testing.T) {
+	if !dashboard.HasEmbeddedSPA {
+		t.Skip("SPA not compiled in — build with -tags dashboard")
+	}
+	d := &dashboard.Dashboard{}
+
+	// /admin/index.html must serve the SPA HTML, not a FileServer 404 caused
+	// by re-nesting the /admin prefix.
+	rec := httptest.NewRecorder()
+	d.ServeSPA(rec, httptest.NewRequest(http.MethodGet, "/admin/index.html", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/index.html status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<html") && !strings.Contains(rec.Body.String(), "<!doctype html") {
+		t.Errorf("GET /admin/index.html body is not SPA HTML: %.120q", rec.Body.String())
+	}
+
+	// /admin/overview has no dist file → index.html fallback.
+	rec = httptest.NewRecorder()
+	d.ServeSPA(rec, httptest.NewRequest(http.MethodGet, "/admin/overview", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /admin/overview status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<html") && !strings.Contains(rec.Body.String(), "<!doctype html") {
+		t.Errorf("GET /admin/overview body is not SPA HTML: %.120q", rec.Body.String())
+	}
+}
+
+// --- data-path coverage ---
 
 // pageServer builds a dashboard server mounting the named page over a pool
 // with the given token count; mut adjusts the config before the stack is
@@ -900,7 +931,7 @@ func TestTokensPageStanding(t *testing.T) {
 	page := string(mustReadAll(t, resp))
 	for _, want := range []string{
 		`"standing_label":"Verified"`, `"standing_score":30`, `"2026-08-20T12:00:00Z"`, `"established"`,
-		// Issue #140 P3d: cap + earn-back fields serialize onto the page.
+		// Issue #140: cap + earn-back fields serialize onto the page.
 		`"standing_capped_by":"anonymous_network"`,
 		`"standing_capped_reason":"Egress IP is a hosting ASN."`,
 		`"standing_blurb":"Trust capped by your network."`,

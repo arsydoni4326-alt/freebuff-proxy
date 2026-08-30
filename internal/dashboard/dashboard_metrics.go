@@ -48,7 +48,10 @@ func (d *Dashboard) metricsData() metricsData {
 		TransientRetries:     ps.TransientRetries,
 		FingerprintRotations: ps.FingerprintRotations,
 		RequestsTotal:        int64(ps.RequestsServed),
-		Models:               d.reg.ModelCount(),
+		// The served gate keeps /admin/metrics consistent with /v1/models,
+		// /healthz and /admin/overview (the raw registry carries god-only /
+		// eval rows such as luna-es that are not servable).
+		Models: len(servedModels(d.reg)),
 	}
 	d.metricsMu.Lock()
 	d.metricHist = append(d.metricHist, metricSample{Requests: md.RequestsTotal, Retries: ps.TransientRetries, Rotation: ps.FingerprintRotations})

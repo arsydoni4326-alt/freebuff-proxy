@@ -35,11 +35,20 @@ func (d *Dashboard) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	reqPath := strings.TrimPrefix(r.URL.Path, "/admin")
 	reqPath = strings.TrimPrefix(reqPath, "/")
 
+	// Serve a real top-level dist file when one exists (index.html at
+	// minimum). ServeContent avoids FileServer's "/index.html" → "./"
+	// redirect and its directory-listing behavior; the stripped path is
+	// passed as the file name so the /admin prefix is never double-nested.
 	if reqPath != "" && !strings.Contains(reqPath, "..") {
 		if f, err := dist.Open(reqPath); err == nil {
+			if stat, statErr := f.Stat(); statErr == nil && !stat.IsDir() {
+				if rs, ok := f.(io.ReadSeeker); ok {
+					http.ServeContent(w, r, reqPath, stat.ModTime(), rs)
+					_ = f.Close()
+					return
+				}
+			}
 			_ = f.Close()
-			http.FileServerFS(dist).ServeHTTP(w, r)
-			return
 		}
 	}
 
