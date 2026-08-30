@@ -205,6 +205,12 @@ fi
 if [[ -n "$NPM_VERSION" ]]; then
 	if [[ -n "$PINNED_VERSION" && "$NPM_VERSION" != "$PINNED_VERSION" ]]; then
 		echo "    npm freebuff@${NPM_VERSION} (pinned ${PINNED_VERSION}) — VERSION DRIFT"
+		# Count toward --check failure so a wrapper-version-only upstream
+		# move is loud, mirroring the pin-drift handling above. check-upstream
+		# reports the npm row informationally only and the drift workflow's
+		# has_drift jq inspects registry/wire groups, so a version-only drift
+		# is a manual --check/sync signal, not an automated PR trigger.
+		drift_count=$((drift_count + 1))
 		if ((!CHECK_ONLY)); then
 			printf '%s' "$NPM_VERSION" >"$VENDOR_VERSION_FILE"
 			echo "    Updated scripts/vendor-version.txt to ${NPM_VERSION}"
@@ -220,7 +226,7 @@ echo
 # 3. If in sync mode and files were updated, report status
 if ((CHECK_ONLY)); then
 	if ((drift_count > 0)); then
-		echo "sync-upstream: DRIFT detected in $drift_count file(s). Run without --check to synchronize."
+		echo "sync-upstream: DRIFT detected in $drift_count file(s)/pin(s). Run without --check to synchronize."
 		exit 1
 	else
 		echo "sync-upstream: All pinned files match upstream perfectly."
@@ -233,10 +239,19 @@ else
 	fi
 fi
 
-# 4. Verify parity via check-upstream.sh
+# 4. Verify parity via check-upstream.sh. After a sync, verify only the
+# registry group: the 13 wire files are deliberately not touched by this
+# sync, so wire drift arriving in the same upstream batch (tracked by the
+# drift workflow as a separate needs-port issue) must not fail the registry
+# sync. --check keeps the full check so drift reports still fail on wire
+# drift.
+CHECK_ARGS=()
+if ((!CHECK_ONLY)); then
+	CHECK_ARGS=(--group registry)
+fi
 echo
 echo "==> 4. Verifying pin parity..."
-if ! bash "$REPO_ROOT/scripts/check-upstream.sh" "$UPSTREAM_SHA" "$CLONE_DIR"; then
+if ! bash "$REPO_ROOT/scripts/check-upstream.sh" "${CHECK_ARGS[@]}" "$UPSTREAM_SHA" "$CLONE_DIR"; then
 	die "check-upstream.sh reported failure after sync"
 fi
 

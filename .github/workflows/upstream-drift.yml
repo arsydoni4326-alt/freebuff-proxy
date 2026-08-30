@@ -148,16 +148,24 @@ jobs:
         run: |
           git add internal/registry/testdata/upstream internal/registry/registry.go || true
           if git diff --cached --quiet; then
-            echo "No changes after sync-upstream; skipping PR."
-            exit 0
+            # No new changes this run. A branch that already carries the
+            # sync commit (pushed by an earlier run whose PR creation
+            # failed) must still reach the PR step; only a branch identical
+            # to main means there is genuinely nothing to publish.
+            if git diff --quiet origin/main HEAD; then
+              echo "No changes after sync-upstream and branch matches main; skipping PR."
+              exit 0
+            fi
+            echo "Branch already has sync commits ahead of main; reusing them."
+          else
+            sha="${{ needs.drift.outputs.upstream_sha }}"
+            short="${sha:0:7}"
+            git -c commit.gpgsign=false commit -m "chore(registry): sync pinned upstream models to vendor ${short}" \
+              -m "Automated sync triggered by .github/workflows/upstream-drift.yml." \
+              -m "Upstream SHA: ${sha}" \
+              -m "Drift summary:" \
+              -m "${{ needs.drift.outputs.drift_summary }}"
           fi
-          sha="${{ needs.drift.outputs.upstream_sha }}"
-          short="${sha:0:7}"
-          git -c commit.gpgsign=false commit -m "chore(registry): sync pinned upstream models to vendor ${short}" \
-            -m "Automated sync triggered by .github/workflows/upstream-drift.yml." \
-            -m "Upstream SHA: ${sha}" \
-            -m "Drift summary:" \
-            -m "${{ needs.drift.outputs.drift_summary }}"
           git push -u origin HEAD
 
       - name: Open or update PR
@@ -242,7 +250,9 @@ jobs:
         env:
           DRIFT_REPORT: internal/dashboard/data/upstream_drift.json
         run: |
-          bash scripts/check-upstream.sh main
+          # check-upstream writes the JSON report before exiting 1 on drift;
+          # a drift report is exactly what the embed must publish.
+          bash scripts/check-upstream.sh main || true
           head -20 internal/dashboard/data/upstream_drift.json
 
       - name: Verify the embed still parses
@@ -263,13 +273,19 @@ jobs:
           fi
           git add internal/dashboard/data/upstream_drift.json
           if git diff --cached --quiet; then
-            echo "No data change; skipping PR."
-            exit 0
+            # Same orphan-branch recovery as the registry sync job: a branch
+            # already carrying the refresh commit must still reach the PR step.
+            if git diff --quiet origin/main HEAD; then
+              echo "No data change and branch matches main; skipping PR."
+              exit 0
+            fi
+            echo "Branch already has refresh commits ahead of main; reusing them."
+          else
+            short="${UPSTREAM_SHA:0:7}"
+            git -c commit.gpgsign=false commit -m "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
+              -m "Automated refresh by .github/workflows/upstream-drift.yml." \
+              -m "Upstream SHA: ${UPSTREAM_SHA}"
           fi
-          short="${UPSTREAM_SHA:0:7}"
-          git -c commit.gpgsign=false commit -m "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
-            -m "Automated refresh by .github/workflows/upstream-drift.yml." \
-            -m "Upstream SHA: ${UPSTREAM_SHA}"
           git push -u origin HEAD
           existing=$(gh pr list --state open --json number,title \
             --jq ".[] | select(.title | startswith(\"chore(dashboard): refresh upstream-drift embed to vendor ${short}\")) | .number" | head -1 || true)
