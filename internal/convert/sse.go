@@ -79,7 +79,8 @@ var cleanMapPool = sync.Pool{
 //   - reasoning_content stays in delta as its own key and is never merged
 //     into content (unless REASONING_IN_CONTENT is enabled, issue #44);
 //     an explicit null content is removed
-//   - system_fingerprint/logprobs/usage/finish_reason pass through
+//   - system_fingerprint/logprobs/usage/finish_reason and the optional
+//     service_tier/obfuscation/moderation enrichment keys pass through
 //
 // Output is compact JSON. Malformed or non-JSON lines are dropped.
 //
@@ -192,6 +193,14 @@ func sanitizeChunk(chunk map[string]any, clean map[string]any) map[string]any {
 	if fp, ok := chunk["system_fingerprint"].(string); ok && fp != "" {
 		clean["system_fingerprint"] = fp
 	}
+	// Spec-valid optional enrichment keys pass through when present (null
+	// values are dropped like null usage/logprobs): service_tier,
+	// obfuscation (stream_options.include_obfuscation), moderation results.
+	for _, k := range []string{"service_tier", "obfuscation", "moderation"} {
+		if v, ok := chunk[k]; ok && v != nil {
+			clean[k] = v
+		}
+	}
 	if usage, ok := chunk["usage"]; ok && usage != nil {
 		clean["usage"] = usage
 	}
@@ -291,7 +300,8 @@ func needsSanitize(chunk map[string]any) bool {
 	}
 	for k := range chunk {
 		switch k {
-		case "id", "object", "created", "model", "choices", "system_fingerprint", "usage":
+		case "id", "object", "created", "model", "choices", "system_fingerprint", "usage",
+			"service_tier", "obfuscation", "moderation":
 		default:
 			return true // unknown top-level keys are dropped
 		}

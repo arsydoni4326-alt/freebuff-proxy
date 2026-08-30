@@ -23,7 +23,7 @@ import (
 // util/stream-xml-parser.ts extracts exactly this tag from model output).
 var (
 	xmlToolCallBlockRe = regexp.MustCompile(`(?s)<tool_call>(.*?)</tool_call>|<codebuff_tool_call>(.*?)</codebuff_tool_call>|<function_call>(.*?)</function_call>|<\|?tool[_\-]?call[_\-]?start\|?>(.*?)<\|?tool[_\-]?call[_\-]?end\|?>`)
-	fencedToolCallRe   = regexp.MustCompile("(?s)```(?:json|tool_?call)?\\s*\\n?(\\{\\s*\"(?:name|function)\"\\s*:\\s*.*?\\})\\s*\\n?```")
+	fencedToolCallRe   = regexp.MustCompile("(?s)```(?:json|tool_?call)?\\s*\\n?(\\{\\s*\"(?:name|function|cb_tool_name)\"\\s*:\\s*.*?\\})\\s*\\n?```")
 	xmlFunctionHeadRe  = regexp.MustCompile(`(?i)<function[=\s]+["']?([^>"\s]+)["']?>`)
 	xmlParamRe         = regexp.MustCompile(`(?s)<parameter[=\s]+["']?([^>"\s]+)["']?>(.*?)</parameter>|<param[=\s]+["']?([^>"\s]+)["']?>(.*?)</param>`)
 	danglingToolTagsRe = regexp.MustCompile(`(?i)</?(?:tool_call|codebuff_tool_call|function_call|function|parameter|param|\|?tool[_\-]?call[_\-]?(?:start|end)\|?)(?:[=\s][^>]*)?>`)
@@ -95,11 +95,17 @@ func extractXMLToolCallsBytes(content []byte) (string, []*toolCall) {
 
 // parseToolCallRaw parses a single raw tool call string in either JSON or XML format.
 func parseToolCallRaw(raw string) *toolCall {
-	// Try direct JSON: {"name":"...", "arguments":{...}} or {"function":{...}}
+	// Try direct JSON: {"name":"...", "arguments":{...}} / {"function":{...}} /
+	// or the vendor's canonical codebuff_tool_call JSON keyed by cb_tool_name
+	// (reference common/src/tools/constants.ts toolNameParam):
+	// {"cb_tool_name":"bash","command":"pwd","cb_easp":true}.
 	if strings.HasPrefix(raw, "{") && strings.HasSuffix(raw, "}") {
 		var jObj map[string]any
 		if err := json.Unmarshal([]byte(raw), &jObj); err == nil {
 			name, _ := jObj["name"].(string)
+			if name == "" {
+				name, _ = jObj["cb_tool_name"].(string)
+			}
 			if name == "" {
 				if fnObj, ok := jObj["function"].(map[string]any); ok {
 					name, _ = fnObj["name"].(string)
@@ -116,6 +122,22 @@ func parseToolCallRaw(raw string) *toolCall {
 				} else if aStr, ok := jObj["arguments"].(string); ok {
 					argsStr = aStr
 				} else {
+					// Vendor canonical shape: the remaining keys ARE the tool
+					// input (cb_tool_name and the cb_easp stop sentinel are
+					// envelope params, never arguments — mirror of the
+					// vendor's parseToolCallContent delete pair).
+					args := make(map[string]any, len(jObj))
+					for k, v := range jObj {
+						if k == "cb_tool_name" || k == "cb_easp" {
+							continue
+						}
+						args[k] = v
+					}
+					if b, err := json.Marshal(args); err == nil {
+						argsStr = string(b)
+					}
+				}
+				if argsStr == "" {
 					argsStr = "{}"
 				}
 				return &toolCall{
@@ -193,6 +215,9 @@ const (
 	xmlShapeFunctionCall
 	xmlShapePipe
 	xmlShapeFence
+	// xmlShapePending: buf holds a PARTIAL opener (a fragment ended
+	// mid-tag, e.g. "<tool_ca"); the next fragment completes or refutes it.
+	xmlShapePending
 )
 
 // xmlStreamClosers maps literal block shapes to their closing tag.
@@ -262,7 +287,41 @@ type XMLToolCallExtractor struct {
 // (possibly shorter than the input while a candidate block is open) and any
 // tool calls that completed within it.
 func (x *XMLToolCallExtractor) Feed(fragment string) (string, []*toolCall) {
+	if x.shape == xmlShapePending {
+		// A previous fragment ended with a partial opener (e.g. "<tool_ca" +
+		// "ll>..."). Give the merged text one full-opener chance before
+		// treating the withheld suffix as plain text.
+		x.buf = append(x.buf, fragment...)
+		s := string(x.buf)
+		x.releaseBuf()
+		x.shape = xmlShapeNone
+		if idx := x.findOpener(s); idx >= 0 {
+			fragment = s[idx:]
+		} else if n := partialOpenerLen(s); n > 0 {
+			// Still an opener prefix mid-tag: keep holding the (bounded)
+			// suffix and emit only what precedes it.
+			hold := s[len(s)-n:]
+			x.buf = acquireStreamBuf()
+			x.buf = append(x.buf, hold...)
+			x.shape = xmlShapePending
+			return s[:len(s)-n], nil
+		} else {
+			// Refuted: the withheld text was plain prose.
+			return s, nil
+		}
+	}
 	if len(x.buf) == 0 && x.findOpener(fragment) < 0 {
+		// Fragment ends mid-opener: withhold the partial suffix so an opener
+		// split across fragments still extracts (vendor findPartialTagMatch
+		// parity). The hold is bounded by the longest opener, and the next
+		// fragment emits or completes it — never silently drops it.
+		if n := partialOpenerLen(fragment); n > 0 {
+			hold := fragment[len(fragment)-n:]
+			x.buf = acquireStreamBuf()
+			x.buf = append(x.buf, hold...)
+			x.shape = xmlShapePending
+			return fragment[:len(fragment)-n], nil
+		}
 		return fragment, nil
 	}
 	var text strings.Builder
@@ -440,6 +499,38 @@ func xmlStreamFencePending(s string, from int) bool {
 		pos++
 	}
 	return pos == len(s)
+}
+
+// xmlStreamLiteralOpeners lists the literal opener tags that may split
+// across fragments (partial-opener withholding). The fence opener is
+// handled separately (xmlStreamFencePending / xmlStreamFenceBrace).
+var xmlStreamLiteralOpeners = []string{
+	"<tool_call>",
+	"<codebuff_tool_call>",
+	"<function_call>",
+	"<|tool_call_start|>",
+	"<tool_call_start>",
+}
+
+// partialOpenerLen returns the length of the longest suffix of s that is a
+// PROPER prefix of any literal opener (a complete opener never qualifies),
+// or 0. It drives partial-opener withholding: a fragment ending mid-tag
+// (e.g. "<tool_ca") is held so a later fragment can complete the opener.
+func partialOpenerLen(s string) int {
+	best := 0
+	for _, open := range xmlStreamLiteralOpeners {
+		maxL := len(s)
+		if maxL >= len(open) {
+			maxL = len(open) - 1
+		}
+		for l := maxL; l > best; l-- {
+			if s[len(s)-l:] == open[:l] {
+				best = l
+				break
+			}
+		}
+	}
+	return best
 }
 
 // isStreamFenceTag reports whether a fence language tag is a tool-call
