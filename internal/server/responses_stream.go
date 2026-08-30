@@ -20,10 +20,10 @@ import (
 )
 
 // responsesItem is one output item being assembled during stream relay:
-// either a message (text) or a function_call.
+// either a message (text), a reasoning item or a function_call.
 type responsesItem struct {
 	id          string
-	kind        string // "message" | "function_call"
+	kind        string // "message" | "reasoning" | "function_call"
 	outputIndex int
 	callID      string
 	name        string
@@ -68,7 +68,14 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	flusher.Flush()
 
 	createdAt := time.Now().Unix()
-	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: model, toolMap: stats.toolMap}
+	// Issue #164 parity: the response object names the proxy's served model
+	// (lease.Model, fallbacks included); only a lease-less direct relay
+	// falls back to the requested model / upstream echo.
+	servedModel := stats.servedModel
+	if servedModel == "" {
+		servedModel = model
+	}
+	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: servedModel, toolMap: stats.toolMap}
 	send := func(ev map[string]any) {
 		b, _ := json.Marshal(ev)
 		// SSE frames carry the documented event: field (like the Anthropic
@@ -352,8 +359,13 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			lastWrite = time.Now()
 			stats.chunks++
 			stats.bytes += len(clean)
-			if m, _ := chunk["model"].(string); m != "" {
-				st.model = m
+			if stats.servedModel == "" {
+				// Lease-less relay: trust the upstream echo (it is the only
+				// identity available). With a lease, the served model is
+				// authoritative — the upstream echo must not override it.
+				if m, _ := chunk["model"].(string); m != "" {
+					st.model = m
+				}
 			}
 			if id, _ := chunk["id"].(string); id != "" {
 				lastID = id
@@ -381,7 +393,8 @@ func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]
 			st.items = append(st.items, item)
 		}
 		for _, item := range st.items {
-			if item.kind == "message" {
+			switch item.kind {
+			case "message":
 				if !item.started {
 					sendResponsesItemAdded(send, item)
 				}
@@ -389,7 +402,17 @@ func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]
 				send(map[string]any{"type": "response.output_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
 				send(map[string]any{"type": "response.content_part.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": part})
 				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part}}})
-			} else {
+			case "reasoning":
+				send(map[string]any{"type": "response.reasoning_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
+				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "reasoning", "status": "completed", "summary": []any{}, "content": []any{map[string]any{"type": "reasoning_text", "text": item.text}}}})
+			case "function_call":
+				// The spec's Responses stream sequence for a function call
+				// item is: function_call_arguments.delta*,
+				// function_call_arguments.done, then output_item.done.
+				// The custom_tool_call_input.* pair carries the same
+				// fragments under the newer event name (codex consumes it).
+				send(map[string]any{"type": "response.function_call_arguments.done", "item_id": item.id, "output_index": item.outputIndex, "call_id": item.callID, "name": item.name, "arguments": item.args.String()})
+				send(map[string]any{"type": "response.custom_tool_call_input.done", "item_id": item.id, "output_index": item.outputIndex, "input": item.args.String()})
 				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "completed", "call_id": item.callID, "name": item.name, "arguments": item.args.String()}})
 			}
 		}
@@ -398,12 +421,19 @@ func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]
 	resp["model"] = st.model
 	out := make([]any, 0, len(st.items))
 	for _, item := range st.items {
-		if item.kind == "message" {
+		switch item.kind {
+		case "message":
 			out = append(out, map[string]any{
 				"id": item.id, "type": "message", "status": "completed", "role": "assistant",
 				"content": []any{map[string]any{"type": "output_text", "text": item.text, "annotations": []any{}}},
 			})
-		} else {
+		case "reasoning":
+			out = append(out, map[string]any{
+				"id": item.id, "type": "reasoning", "status": "completed",
+				"summary": []any{},
+				"content": []any{map[string]any{"type": "reasoning_text", "text": item.text}},
+			})
+		case "function_call":
 			out = append(out, map[string]any{
 				"id": item.id, "type": "function_call", "status": "completed",
 				"call_id": item.callID, "name": item.name, "arguments": item.args.String(),
@@ -440,7 +470,7 @@ func sendResponsesItemAdded(send func(map[string]any), item *responsesItem) {
 }
 
 // accumulateResponsesChunk translates one upstream chat chunk into
-// Responses events: text deltas and tool-call argument deltas, creating
+// Responses events: text, reasoning and tool-call argument deltas, creating
 // output items on first use.
 func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[string]any, send func(map[string]any)) {
 	choices, _ := chunk["choices"].([]any)
@@ -486,12 +516,41 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 				if args, ok := fn["arguments"].(string); ok && args != "" {
 					item.args.WriteString(args)
 					send(map[string]any{"type": "response.function_call_arguments.delta", "item_id": item.id, "output_index": item.outputIndex, "delta": args})
+					// The spec's newer event name for the same fragment: codex
+					// consumes custom_tool_call_input.*, legacy clients consume
+					// function_call_arguments.* — emit both.
+					send(map[string]any{"type": "response.custom_tool_call_input.delta", "item_id": item.id, "output_index": item.outputIndex, "delta": args})
 				}
 			}
 			if id, ok := tc["id"].(string); ok && id != "" && item.callID == "" {
 				item.callID = id
 			}
 		}
+	}
+	// Reasoning deltas -> response.reasoning_text events: upstream chat
+	// reasoning_content (and aliases) is relayed as a first-class reasoning
+	// output item (added -> deltas -> done) so clients that consume the
+	// reasoning_* event family receive it. The reasoning text NEVER becomes
+	// output text.
+	if reasoning, ok := firstStringOf(delta, "reasoning_content", "reasoning", "reasoning_text", "thinking"); ok && reasoning != "" {
+		var item *responsesItem
+		for _, it := range st.items {
+			if it.kind == "reasoning" {
+				item = it
+				break
+			}
+		}
+		if item == nil {
+			item = &responsesItem{id: "rs_" + randHexString(12), kind: "reasoning", outputIndex: st.nextIndex}
+			st.nextIndex++
+			st.items = append(st.items, item)
+		}
+		if !item.started {
+			item.started = true
+			send(map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "reasoning", "status": "in_progress", "summary": []any{}}})
+		}
+		item.text += reasoning
+		send(map[string]any{"type": "response.reasoning_text.delta", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "delta": reasoning})
 	}
 	// Text deltas.
 	if content, ok := delta["content"].(string); ok && content != "" {
@@ -557,7 +616,11 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 	// carry official signature names; the client dispatches on its own.
 	stats.toolMap.FromUpstreamChunk(completion)
 	resp := responsesBase(model, respID, time.Now().Unix(), "completed")
-	if m, _ := completion["model"].(string); m != "" {
+	if stats.servedModel != "" {
+		// Issue #164: the response names the model the lease actually
+		// served (fallbacks included), never the upstream echo.
+		resp["model"] = stats.servedModel
+	} else if m, _ := completion["model"].(string); m != "" {
 		resp["model"] = m
 	}
 	out := make([]any, 0, 2)
