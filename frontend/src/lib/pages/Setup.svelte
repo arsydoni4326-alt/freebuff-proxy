@@ -10,6 +10,7 @@
   import Button from '../components/Button.svelte';
   import Field from '../components/Field.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
   import { generateRandomApiKey } from '../utils/format.js';
   import { copyToClipboard } from '../utils/clipboard.js';
@@ -24,7 +25,7 @@
     loading = true;
     error = '';
     try {
-      data = await fetchAPI('/admin/api/setup');
+      data = await fetchAPI(adminApi.setup);
     } catch (e) {
       error = e.message || $tr('Failed to load setup data');
     } finally {
@@ -54,7 +55,7 @@
     apiKey = 'not-needed';
   }
 
-  // Mode facts straight from the /admin/api/setup payload.
+  // Mode facts straight from the setup payload.
   const isBridge = $derived(data?.bridge ?? false);
   const isHybrid = $derived(data?.mode === 'hybrid');
   const modeTone = $derived(isBridge ? 'info' : 'good');

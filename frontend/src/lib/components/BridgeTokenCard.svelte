@@ -7,7 +7,7 @@
   /**
    * BridgeTokenCard — display-only compact card for one live bridge client.
    *
-   * @prop {object} card — bridgeTokenCard from GET /admin/api/tokens|overview
+   * @prop {object} card — bridgeTokenCard from the tokens/overview endpoints
    * @prop {number} [now=Date.now()]
    */
   let { card, now = Date.now() } = $props();

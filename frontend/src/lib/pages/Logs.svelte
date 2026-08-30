@@ -8,6 +8,7 @@
   import EmptyState from '../components/EmptyState.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { adminApi, adminRoot } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
   import { formatTime, parseLogFields } from '../utils/format.js';
   import { tr } from '../i18n.js';
@@ -29,7 +30,7 @@
     if (!hideAdmin) return entries;
     return entries.filter((e) => {
       const fields = parseLogFields(e.fields);
-      return !fields.some((f) => f.key === 'path' && String(f.value).includes('/admin'));
+      return !fields.some((f) => f.key === 'path' && String(f.value).includes(adminRoot));
     });
   });
   let pagedEntries = $derived.by(() => {
@@ -47,7 +48,7 @@
       const query = new URLSearchParams();
       if (filterLevel) query.set('level', filterLevel);
       if (filterMsg.trim()) query.set('msg', filterMsg.trim());
-      const res = await fetchAPI(`/admin/api/logs?${query.toString()}`);
+      const res = await fetchAPI(`${adminApi.logs}?${query.toString()}`);
       data = res;
       error = '';
       const tp = Math.ceil((res?.entries?.length || 0) / PAGE_SIZE);

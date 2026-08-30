@@ -8,6 +8,7 @@
   import SessionSpawnPanel from '../components/SessionSpawnPanel.svelte';
   import BatchTestPanel from '../components/BatchTestPanel.svelte';
   import { fetchAPI, postAPI } from '../api/client.js';
+  import { adminApi, adminActions } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
   import { tr } from '../i18n.js';
   import { onMount } from 'svelte';
@@ -46,7 +47,7 @@
   ];
   onMount(async () => {
     try {
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const mm = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
       const val = mm ? mm[1].trim().toLowerCase() : '';
@@ -59,7 +60,7 @@
 
   async function fetchTokens() {
     try {
-      tokensData = await fetchAPI('/admin/api/tokens');
+      tokensData = await fetchAPI(adminApi.tokens);
     } catch (e) {
       console.warn('Failed to fetch tokens in DevTools', e);
     } finally {
@@ -244,7 +245,7 @@
         variant="ghost"
         size="sm"
         disabled={actionPending || !tokensData?.token_count}
-        onclick={() => triggerTokenAction('/admin/tokens/test-all', {}, $tr('Probe all pool tokens against upstream?'))}
+        onclick={() => triggerTokenAction(adminActions.tokenTestAll, {}, $tr('Probe all pool tokens against upstream?'))}
       >
         <Activity size={14} />
         <span>{$tr('Probe All Tokens')}</span>

@@ -7,6 +7,7 @@
   import Button from '../components/Button.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
   import { formatTime } from '../utils/format.js';
 
@@ -16,7 +17,7 @@
 
   async function fetchData() {
     try {
-      data = await fetchAPI('/admin/api/traces');
+      data = await fetchAPI(adminApi.traces);
       error = '';
     } catch (e) {
       error = e.message || $tr('Failed to load traces');

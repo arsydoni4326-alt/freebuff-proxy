@@ -8,6 +8,7 @@
   import Button from '../components/Button.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
 
   let data = $state(null);
@@ -16,7 +17,7 @@
 
   async function fetchData() {
     try {
-      data = await fetchAPI('/admin/api/metrics');
+      data = await fetchAPI(adminApi.metrics);
       error = '';
     } catch (e) {
       error = e.message || $tr('Failed to load metrics');

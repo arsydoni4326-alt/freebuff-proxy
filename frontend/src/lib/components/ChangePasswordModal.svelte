@@ -4,6 +4,7 @@
   import Alert from './Alert.svelte';
   import Field from './Field.svelte';
   import { postAPI } from '../api/client.js';
+  import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
 
   /**
@@ -60,7 +61,7 @@
 
     submitting = true;
     try {
-      const res = await postAPI('/admin/api/change-password', {
+      const res = await postAPI(adminApi.changePassword, {
         current_password: currentPassword.trim(),
         new_password: newPassword.trim(),
       });

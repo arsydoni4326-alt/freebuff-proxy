@@ -17,6 +17,7 @@
   import TokenCard from '../components/TokenCard.svelte';
   import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
   import { fetchAPI, postAPI, csrfHeader } from '../api/client.js';
+  import { adminApi, adminActions, tokenActions } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
   import { generateRandomApiKey } from '../utils/format.js';
   import { tr } from '../i18n.js';
@@ -57,7 +58,7 @@
 
   async function fetchData() {
     try {
-      data = await fetchAPI('/admin/api/tokens');
+      data = await fetchAPI(adminApi.tokens);
       // Seed the per-token spawn-model map so no TokenCard binding ever sees
       // undefined — Svelte 5 rejects bind:spawnModel={undefined} for a prop
       // with a fallback (props_invalid_value) and unmounts the table.
@@ -66,7 +67,7 @@
         if (!(idx in spawnModels)) spawnModels[idx] = '';
       });
       try {
-        const cfgRes = await fetchAPI('/admin/api/config');
+        const cfgRes = await fetchAPI(adminApi.config);
         const envContent = cfgRes?.env_content || '';
         const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
         const val = m ? m[1].trim() : '';
@@ -87,7 +88,7 @@
     if (!newToken.trim() || tokenValid === false || adding) return;
     adding = true;
     try {
-      const result = await postAPI('/admin/tokens/add', { token: newToken.trim() });
+      const result = await postAPI(adminActions.tokenAdd, { token: newToken.trim() });
       actionOK = result.ok !== false;
       actionMessage = result.message || (actionOK ? $tr('Token added successfully') : $tr('Failed to add token'));
       if (actionOK) {
@@ -121,13 +122,13 @@
   function handleTokenAction(token, idx, action) {
     switch (action) {
       case 'clear':
-        return triggerAction(`/admin/tokens/${idx}/unlock`, {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }));
+        return triggerAction(tokenActions.unlock(idx), {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }));
       case 'unlock':
-        return triggerAction(`/admin/tokens/${idx}/unlock-lock`, {}, $tr('Unlock token {idx}?', { idx }));
+        return triggerAction(tokenActions.unlockLock(idx), {}, $tr('Unlock token {idx}?', { idx }));
       case 'lock':
-        return triggerAction(`/admin/tokens/${idx}/lock`, {}, $tr('Lock token {idx}?', { idx }));
+        return triggerAction(tokenActions.lock(idx), {}, $tr('Lock token {idx}?', { idx }));
       case 'remove':
-        return triggerAction('/admin/tokens/remove', { token: idx }, $tr('Remove token {idx} from the pool and .env?', { idx }));
+        return triggerAction(adminActions.tokenRemove, { token: idx }, $tr('Remove token {idx} from the pool and .env?', { idx }));
       default:
         return;
     }
@@ -135,14 +136,14 @@
 
   function handleSpawn(idx, model) {
     const m = model || 'mimo/mimo-v2.5';
-    triggerAction(`/admin/tokens/${idx}/session`, { model: m }, $tr('Create upstream session for token #{idx} on {model}?', { idx, model: m }));
+    triggerAction(tokenActions.session(idx), { model: m }, $tr('Create upstream session for token #{idx} on {model}?', { idx, model: m }));
   }
 
   function handleRefresh(idx, action) {
     if (action === 'probe') {
-      return triggerAction(`/admin/tokens/${idx}/test`, {}, $tr('Probe token #{idx} against upstream?', { idx }));
+      return triggerAction(tokenActions.test(idx), {}, $tr('Probe token #{idx} against upstream?', { idx }));
     }
-    return triggerAction(`/admin/tokens/${idx}/finish`, {}, $tr('Finish active runs on token #{idx}?', { idx }));
+    return triggerAction(tokenActions.finish(idx), {}, $tr('Finish active runs on token #{idx}?', { idx }));
   }
 
   async function generateClientKey() {
@@ -152,13 +153,13 @@
     clientKeyMessage = '';
     try {
       const newKey = generateRandomApiKey();
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const regex = /^\s*API_KEYS=(.*)$/m;
       const match = envContent.match(regex);
       const existing = match ? match[1].trim() : '';
       const updated = existing ? `${existing},${newKey}` : newKey;
-      const save = await fetch('/admin/config', {
+      const save = await fetch(adminActions.configSave, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: envContent.replace(regex, `API_KEYS=${updated}`) }),
@@ -185,7 +186,7 @@
     oauthStatus = { message: $tr('Starting headless login flow…'), type: 'info' };
 
     try {
-      const res = await fetch('/admin/login/start', { method: 'POST', headers: csrfHeader('POST') });
+      const res = await fetch(adminActions.loginStart, { method: 'POST', headers: csrfHeader('POST') });
       const result = await res.json();
 
       if (result.fingerprint && result.login_url) {
@@ -199,7 +200,7 @@
         clearInterval(oauthTimer);
         oauthTimer = setInterval(async () => {
           try {
-            const pollRes = await fetch(`/admin/login/status?fingerprint=${encodeURIComponent(result.fingerprint)}`);
+            const pollRes = await fetch(`${adminApi.loginStatus}?fingerprint=${encodeURIComponent(result.fingerprint)}`);
             const pollData = await pollRes.json();
 
             if (pollData.status === 'completed') {

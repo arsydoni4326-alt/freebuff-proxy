@@ -18,13 +18,14 @@
   import EmptyState from './lib/components/EmptyState.svelte';
   import { X } from '@lucide/svelte';
   import { fetchAPI } from './lib/api/client.js';
+  import { adminApi, adminActions } from './lib/api/paths.js';
   import { sessionExpired, dismissSessionExpired } from './lib/stores/session.js';
   import { tr } from './lib/i18n.js';
   function getInitialTab() {
     if (typeof window === 'undefined') return 'overview';
     const path = window.location.pathname;
     const hash = window.location.hash.replace('#', '');
-    if (path === '/admin/login' || hash === 'login') return 'login';
+    if (path === adminActions.login || hash === 'login') return 'login';
     if (hash) return hash;
     const segments = path.split('/').filter(Boolean);
     if (segments.length >= 2 && segments[0] === 'admin' && segments[1]) {
@@ -51,8 +52,8 @@
   // Explicit user action only — never invoked from background polling.
   function goToLogin() {
 		// Hash-only navigation: the SPA owns the login view, so no
-		// network round-trip to /admin/login (which on the dev server is the
-		// gateway's own route). Login.svelte reads the carried hash after
+		// network round-trip to the gateway's login route (which on the dev
+		// server is the gateway's own route). Login.svelte reads the carried hash after
 		// signing in, if any was present.
 		window.location.hash = 'login';
 	}
@@ -62,7 +63,7 @@
     window.addEventListener('hashchange', syncTabFromURL);
 
     // Fetch version / update check
-    fetch('/admin/api/version')
+    fetch(adminApi.version)
       .then((res) => res.json())
       .then((data) => {
         versionInfo = {
@@ -75,7 +76,7 @@
       .catch((e) => console.warn('version check failed', e));
 
     // Check if using default admin token (for security banner)
-    fetchAPI('/admin/api/auth/status')
+    fetchAPI(adminApi.authStatus)
       .then((data) => {
         isDefaultAdminToken = data?.is_default_admin_token ?? false;
       })

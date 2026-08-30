@@ -9,6 +9,7 @@
   import StatusBadge from '../components/StatusBadge.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import { fetchAPI, postForm } from '../api/client.js';
+  import { adminApi, adminActions } from '../api/paths.js';
   import { tr } from '../i18n.js';
   import { formatTime } from '../utils/format.js';
 
@@ -74,7 +75,7 @@
 
   async function fetchData() {
     try {
-      data = await fetchAPI('/admin/api/config');
+      data = await fetchAPI(adminApi.config);
       envContent = data.env_content || '';
       originalContent = envContent;
       error = '';
@@ -110,7 +111,7 @@
     result = null;
 
     try {
-      const res = await postForm('/admin/config', { content: envContent });
+      const res = await postForm(adminActions.configSave, { content: envContent });
       const json = await res.json();
       result = {
         ok: res.ok && json.ok,
