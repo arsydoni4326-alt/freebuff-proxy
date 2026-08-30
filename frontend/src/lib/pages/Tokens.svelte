@@ -251,38 +251,7 @@
 
 <div class="page-enter">
   <div class="flex flex-col gap-6">
-    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, client API keys, and per-token session quotas')}>
-      {#snippet actions()}
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={startOAuthLogin}
-          disabled={oauthStarting}
-        >
-          {#if oauthStarting}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Authorizing…')}</span>
-          {:else}
-            <LogIn size={14} />
-            <span>{$tr('Device Login')}</span>
-          {/if}
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onclick={generateClientKey}
-          disabled={generatingKey}
-        >
-          {#if generatingKey}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Generating…')}</span>
-          {:else}
-            <Key size={14} />
-            <span>{$tr('Generate API Key')}</span>
-          {/if}
-        </Button>
-      {/snippet}
-    </PageHeader>
+    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, client API keys, and per-token session quotas')} />
 
     {#if actionMessage}
       <Alert tone={actionOK ? 'success' : 'error'} title={actionMessage} />
@@ -319,7 +288,40 @@
     {/if}
 
     <!-- Add token form -->
-    <Card title={$tr('Add Token to Pool')} description={$tr('Paste a FreeBuff auth token (cb_…) to add it to the shared pool and save it to .env. Adding burns no quota.')}>
+    <Card
+      title={$tr('Add Token to Pool')}
+      description={$tr('Paste a FreeBuff auth token (cb_…) to add it to the shared pool and save it to .env. Adding burns no quota.')}
+    >
+      {#snippet actions()}
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={startOAuthLogin}
+          disabled={oauthStarting}
+        >
+          {#if oauthStarting}
+            <RefreshCw size={14} class="animate-spin" />
+            <span>{$tr('Authorizing…')}</span>
+          {:else}
+            <LogIn size={14} />
+            <span>{$tr('Device Login')}</span>
+          {/if}
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onclick={generateClientKey}
+          disabled={generatingKey}
+        >
+          {#if generatingKey}
+            <RefreshCw size={14} class="animate-spin" />
+            <span>{$tr('Generating…')}</span>
+          {:else}
+            <Key size={14} />
+            <span>{$tr('Generate API Key')}</span>
+          {/if}
+        </Button>
+      {/snippet}
       <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-end gap-3">
         <div class="flex-1 w-full">
           <Field
