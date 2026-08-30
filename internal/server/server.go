@@ -15,8 +15,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -186,7 +190,7 @@ func (s *Server) Handler() http.Handler {
 		// still be logged out) and is NOT wrapped in adminSensitive — it exposes
 		// nothing and must work for anyone capable of reaching /admin/login.
 		mux.HandleFunc("GET /admin/logout", s.handleAdminLogout)
-		mux.HandleFunc("POST /admin/logout", s.handleAdminLogout)
+		mux.HandleFunc("POST /admin/logout", s.adminCSRF(http.HandlerFunc(s.handleAdminLogout)))
 		// Admin dashboard API routes (JSON)
 		mux.Handle("GET /admin/api/overview", s.dashboardAuth(s.dash.APIHandler("overview")))
 		mux.Handle("GET /admin/api/tokens", s.dashboardAuth(s.dash.APIHandler("tokens")))
@@ -249,6 +253,44 @@ func (s *Server) Handler() http.Handler {
 		// in tests) mint a fallback id in chatCore.
 		reqID := newReqID()
 		r = r.WithContext(context.WithValue(r.Context(), reqIDKey{}, reqID))
+		// Client-side per-IP rate limiting at the OUTERMOST wrapper (issue
+		// #137): when RATE_LIMIT_PER_IP is enabled every /v1/* route is
+		// covered — chat completions, Responses, Anthropic messages,
+		// count_tokens, /v1/models — not just the completion core, so a
+		// client cannot burn upstream work through an unthrottled surface.
+		// Exempt (documented): /admin/* (the dashboard owns its own
+		// throttles), /healthz and /metrics (liveness/monitoring must never
+		// be rate-limited away), CORS OPTIONS preflights (they must answer
+		// so browsers learn the policy), and non-/v1/ paths (404s are
+		// logged only, they cost no upstream work).
+		cfg := s.cfg.Load()
+		if cfg.RateLimitPerIP > 0 && strings.HasPrefix(r.URL.Path, "/v1/") && r.Method != http.MethodOptions {
+			if allowed, retryAfter := s.rateLimiter.Allow(r.RemoteAddr); !allowed {
+				retrySec := int(math.Ceil(retryAfter.Seconds()))
+				if retrySec < 1 {
+					retrySec = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(retrySec))
+				s.logger.Warn("rate limit exceeded",
+					"remote", remoteHost(r),
+					"req_id", reqID,
+					"retry_after_sec", retrySec,
+				)
+				s.rateLimitRejections.Add(1)
+				if isAnthropicRequest(r) {
+					// /v1/messages requests must never see an OpenAI-shaped
+					// error body.
+					s.writeAnthropicError(w, r, http.StatusTooManyRequests,
+						fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
+						"rate_limit_exceeded", 0)
+				} else {
+					s.writeJSONError(w, http.StatusTooManyRequests,
+						fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
+						"rate_limit_exceeded", "rate_limit_exceeded", 0)
+				}
+				return
+			}
+		}
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		cors.ServeHTTP(sw, r)
 		attrs := []any{
@@ -265,16 +307,20 @@ func (s *Server) Handler() http.Handler {
 			attrs = append(attrs, "client_request_id", crid)
 		}
 		// T17: LOG_ACCESS=false disables access lines entirely. Quiet
-		// endpoints (/healthz, /metrics, OPTIONS preflights) are
-		// rate-limited to one access line per path per accessQuietWindow so
-		// a poller or browser preflight does not flood the log; every other
-		// path keeps one line per request. req_id/client_request_id survive
+		// endpoints (/healthz, /metrics, OPTIONS preflights) and UNKNOWN
+		// paths (404s) are rate-limited to one access line per path per
+		// accessQuietWindow, and the quiet-class budget caps the total
+		// quiet lines per window — a client minting distinct paths cannot
+		// grow the access log without bound (per-path gating alone would
+		// pass one line per unique path). req_id/client_request_id survive
 		// in both cases.
-		if !s.cfg.Load().LogAccess {
+		if !cfg.LogAccess {
 			return
 		}
-		if quietAccessPath(r.Method, r.URL.Path) && !accessLogDue(r.URL.Path, start) {
-			return
+		if quiet := quietAccessPath(r.Method, r.URL.Path) || sw.status == http.StatusNotFound; quiet {
+			if !accessLogDue(r.URL.Path, start) || !accessQuietBudgetDue(start) {
+				return
+			}
 		}
 		s.logger.Info("access", attrs...)
 	})

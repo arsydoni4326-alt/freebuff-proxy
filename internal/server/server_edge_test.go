@@ -1,9 +1,9 @@
 package server_test
 
-// Server-level edge tests from the AuditServer P1/P2 gap list: malformed
-// chat inputs, relay failure paths, model availability annotations, healthz
-// field coverage, metrics escaping, auth scheme edges, and the chat-path
-// country-block cooldown. Split from server_test.go because that file is
+// Server-level edge tests for malformed chat inputs, relay failure paths,
+// model availability annotations, healthz field coverage, metrics escaping,
+// auth scheme edges, and the chat-path country-block cooldown. Split from
+// server_test.go because that file is
 // already 1700+ lines.
 
 import (

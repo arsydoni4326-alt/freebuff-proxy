@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"freebuff-proxy/internal/modelcat"
 	"freebuff-proxy/internal/pool"
 	"freebuff-proxy/internal/registry"
 	"freebuff-proxy/internal/session"
@@ -24,11 +25,6 @@ func ModelUnavailableMessage(rawModel string) string {
 	return fmt.Sprintf("Model '%s' is not available. Supported models: %s", rawModel, registry.SupportedModelsHelpText)
 }
 
-// probeModel returns the safest model to default a smoke test to: the
-// fallback default (deepseek-v4-flash — the model every account gets) when
-// it is in the catalog, else the first catalog model.
-// Alphabetical models[0] would otherwise pick anthropic/claude-fable-5, a
-// capacity-gated offer model that makes smoke tests fail on most accounts.
 // servedModels returns the registry catalog filtered to the ServedModels
 // gate: the ids this gateway actually serves (blocked -max variants and any
 // future non-gated registry row excluded). Used for the /v1/models
@@ -51,19 +47,35 @@ func (s *Server) servedModelCount() int {
 	return len(s.servedModels())
 }
 
-// probeModel returns a default model for smoke-test paths: the configured
-// fallback when listed, else the first served model.
+// probeModel returns a default model for smoke-test paths: the guaranteed
+// fallback (deepseek-v4-flash — the model every account gets) when registered
+// and served, else the catalog default (modelcat.DefaultModelID, the picker
+// lead the upstream CLI resolves a blank pick to), else the first SERVED
+// model. Never alphabetical models[0] alone: that would pick
+// anthropic/claude-fable-5, a capacity-gated offer model that makes smoke
+// tests fail on most accounts. The served gating means probes never target
+// an id the gateway itself would refuse.
 func probeModel(reg *registry.Registry) string {
 	models := reg.Models()
 	if len(models) == 0 {
 		return ""
 	}
 	for _, id := range models {
-		if id == session.DefaultFallbackModel {
+		if id == session.DefaultFallbackModel && registry.ServedModels[id] {
 			return id
 		}
 	}
-	return models[0]
+	for _, id := range models {
+		if id == modelcat.DefaultModelID && registry.ServedModels[id] {
+			return id
+		}
+	}
+	for _, id := range models {
+		if registry.ServedModels[id] {
+			return id
+		}
+	}
+	return ""
 }
 
 // modelAllowed reports whether a model may be served. Every model must first

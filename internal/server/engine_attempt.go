@@ -49,7 +49,7 @@ func (s *Server) chatAttempt(
 	// are bound to: after a #100 fallback the acquire returned a lease for
 	// the FALLBACK model while the caller still holds the requested model.
 	// opts.Model, the body model and x-freebuff-model must all agree with
-	// the lease (review P2 — previously the request went upstream labeled
+	// the lease (previously the request went upstream labeled
 	// with the requested model against the fallback session/run).
 	effectiveModel := lease.Model
 	if effectiveModel == "" {
