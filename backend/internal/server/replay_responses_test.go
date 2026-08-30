@@ -480,3 +480,119 @@ func TestReplayCodexResponses401(t *testing.T) {
 		t.Errorf("upstream requests = %d, want 0 (401 rejected before pool/bridge)", mock.RequestsSnapshot())
 	}
 }
+
+// TestResponsesIncludeIgnoredContract pins the include-key contract around
+// reasoning.encrypted_content: a /v1/responses request carrying
+// include:["reasoning.encrypted_content"] + store:false must be ACCEPTED
+// (no 400 — the include value is an ignored, documented no-op) and must
+// NEVER leak the encrypted_content wire concern downstream: the SSE stream
+// must not contain the substring "encrypted_content", response.completed
+// must terminate the stream, and the reasoning item's output_item.done must
+// be spec-shaped (id + summary + content[{type:reasoning_text,text}]) with
+// no encrypted_content field. Grounded in
+// reference/harnesses/codex/WIRE-NOTES.md:158 ("include:
+// ['reasoning.encrypted_content'] is always sent; the encrypted_content is
+// optional on the Reasoning item, so a proxy may omit it.") and the
+// reference reasoning output_item.done shape
+// (codex protocol/src/models.rs:1937-1945).
+func TestResponsesIncludeIgnoredContract(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, testutil.SSEEvent(chunk("chatcmpl-cx3", 200,
+			`"choices":[{"index":0,"delta":{"reasoning_content":"We reason here before answering"},"finish_reason":null}]`)))
+		_, _ = io.WriteString(w, testutil.SSEEvent(chunk("chatcmpl-cx3", 200,
+			`"choices":[{"index":0,"delta":{"content":"The answer is 42"},"finish_reason":null}]`)))
+		_, _ = io.WriteString(w, testutil.SSEEvent(chunk("chatcmpl-cx3", 200,
+			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150,"completion_tokens_details":{"reasoning_tokens":20}}`)))
+		// No upstream [DONE]: the relay terminates via upstream EOF.
+	}
+	ts, _ := newTestServer(t, nil, mock)
+
+	body := `{"model":"` + modelA + `","input":"What is 2+2?","include":["reasoning.encrypted_content"],"store":false,"stream":true}`
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/responses", []byte(body), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (include reasoning.encrypted_content must not 400): %s", resp.StatusCode, truncate(string(data), 300))
+	}
+	sse := string(data)
+
+	// (a) The encrypted_content concern never reaches the SSE wire.
+	if strings.Contains(sse, "encrypted_content") {
+		t.Error("downstream SSE leaked 'encrypted_content' — the include key must be an ignored no-op")
+	}
+	if strings.Contains(sse, "[DONE]") {
+		t.Error("stream must not relay [DONE] to a Responses client")
+	}
+
+	events := collectResponsesEvents(t, sse)
+	if len(events) == 0 {
+		t.Fatalf("no SSE events parsed from body: %q", truncate(sse, 400))
+	}
+
+	// (b) The request succeeds and terminates on response.completed with id.
+	if !strings.Contains(sse, `"type":"response.completed"`) {
+		t.Fatalf("stream missing terminal response.completed: %q", truncate(sse, 400))
+	}
+	if last := eventTypes(events)[len(events)-1]; last != "response.completed" {
+		t.Errorf("last event = %q, want response.completed", last)
+	}
+	var completedResp map[string]any
+	for _, ev := range events {
+		if t, _ := ev["type"].(string); t == "response.completed" {
+			completedResp, _ = ev["response"].(map[string]any)
+		}
+	}
+	if completedResp == nil {
+		t.Fatal("response.completed missing response object")
+	}
+	if id, _ := completedResp["id"].(string); !strings.HasPrefix(id, "resp_") || len(id) < 6 {
+		t.Errorf("completed response id = %q, want resp_<random>", id)
+	}
+
+	// (c) The reasoning item's output_item.done is spec-shaped (id +
+	// summary + content[{type:reasoning_text,text}]) with no
+	// encrypted_content field — a proxy may omit encrypted_content
+	// (reference/harnesses/codex/WIRE-NOTES.md:158).
+	var foundReasoning bool
+	for _, ev := range events {
+		if t, _ := ev["type"].(string); t != "response.output_item.done" {
+			continue
+		}
+		item, _ := ev["item"].(map[string]any)
+		if item == nil {
+			continue
+		}
+		if it, _ := item["type"].(string); it != "reasoning" {
+			continue
+		}
+		foundReasoning = true
+		if id, _ := item["id"].(string); id == "" {
+			t.Error("reasoning output_item.done missing id")
+		}
+		summary, ok := item["summary"].([]any)
+		if !ok || len(summary) != 0 {
+			t.Errorf("reasoning summary = %v, want an empty array", item["summary"])
+		}
+		content, ok := item["content"].([]any)
+		if !ok || len(content) != 1 {
+			t.Errorf("reasoning content = %v, want one reasoning_text part", item["content"])
+			continue
+		}
+		part, _ := content[0].(map[string]any)
+		if part == nil || part["type"] != "reasoning_text" {
+			t.Errorf("reasoning content part = %v, want type reasoning_text", part)
+			continue
+		}
+		if text, _ := part["text"].(string); text != "We reason here before answering" {
+			t.Errorf("reasoning text = %q, want the full reasoning content", text)
+		}
+		if _, has := item["encrypted_content"]; has {
+			t.Error("reasoning output_item.done must not carry encrypted_content")
+		}
+	}
+	if !foundReasoning {
+		t.Fatal("no reasoning output_item.done in stream")
+	}
+}

@@ -146,7 +146,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 //     background:true (async), moderation, built-in tools (web_search &
 //     co.) and built-in tool_choice targets: explicit 400 — the client
 //     asked for behavior the gateway does not implement.
-//   - include, truncation, service_tier, max_tool_calls, prompt,
+//   - include (incl. reasoning.encrypted_content), truncation, service_tier, max_tool_calls, prompt,
 //     safety_identifier, prompt_cache_key, stream_options,
 //     context_management: no chat-completion analogue — ignored
 //     (documented, not silent); the input item type function_call is
