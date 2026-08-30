@@ -94,8 +94,8 @@ type bridgeEntry struct {
 	// spend is the per-client-token spend ledger (issue #87); guarded by
 	// Pool.bridgeMu like usage.
 	spend *spendLedger
-	// nextPollAt / pollFailures carry the session-liveness poll schedule
-	// (gap #2), touched only by the maintain goroutine (bridgeSessionPollTick).
+	// nextPollAt / pollFailures carry the session-liveness poll schedule;
+	// touched only by the maintain goroutine (bridgeSessionPollTick).
 	nextPollAt   time.Time
 	pollFailures int
 	// locked is an administrative lock that prevents AcquireBridge from
@@ -181,7 +181,7 @@ type TokenSnapshot struct {
 	TransientRetries     int64
 	FingerprintRotations int64
 	// RateLimitEvents is this token's upstream rate-limit classification
-	// ledger (T7), keyed by upstream body code (rate_limited, ip_capped,
+	// ledger, keyed by upstream body code (rate_limited, ip_capped,
 	// spend_limited, insufficient_quota, limit_burst_rate,
 	// free_mode_rate_limited, ...). Surfaced per-token in /metrics.
 	RateLimitEvents map[string]int64
@@ -248,6 +248,11 @@ type Pool struct {
 	once   sync.Once
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// draining is set at the START of Shutdown: request-path admissions are
+	// refused from then on, so no session POST or run START can land after
+	// the shutdown drain has released the upstream sessions (post-drain
+	// re-admission gate). Never cleared — Shutdown is terminal.
+	draining atomic.Bool
 
 	// Usage tracking for MAX_MESSAGES_PER_DAY: one timestamp per successful
 	// upstream chat, per token. Guarded by usageMu.
@@ -283,18 +288,18 @@ type Pool struct {
 	bridge      map[string]*bridgeEntry
 	bridgeOrder []string
 
-	// bridgeCreateGate bounds concurrent bridge client creation (B1):
+	// bridgeCreateGate bounds concurrent bridge client creation:
 	// upstream.New involves network calls; limiting concurrency to 4
 	// prevents thundering-herd creation when many new client tokens
 	// arrive simultaneously.
 	bridgeCreateGate chan struct{}
 
 	// bridgeDailyUsage tracks the total number of successful chats across
-	// ALL bridge entries for the BRIDGE_DAILY_LIMIT global cap (B5).
+	// ALL bridge entries for the BRIDGE_DAILY_LIMIT global cap.
 	// Guarded by bridgeMu.
 	bridgeDailyUsage int
 
-	// unfit is the per-(egress, model) unfit registry (issue #74 P2): models
+	// unfit is the per-(egress, model) unfit registry (issue #74): models
 	// refused upstream with limited_ip on this egress are marked unfit for
 	// modelUnfitTTL so new requests are refused fast (409 model_ip_limited)
 	// and re-admission does not burn a daily session slot. The server guards
@@ -334,12 +339,12 @@ type Pool struct {
 	// notify fires best-effort webhook alerts (issue #48): pool_exhausted
 	// when every token is rate-limited, token_banned when a ban is
 	// classified, agent_model_mismatch_escalation when one token takes 3+
-	// free_mode_invalid_agent_model refusals in 60s (issue #140 P1). nil
+	// free_mode_invalid_agent_model refusals in 60s (issue #140). nil
 	// disables. Wired by main from WEBHOOK_URL.
 	notify   *notify.Sender
-	notifyMu sync.Mutex // guards notify reads/writes (P2-1 data race)
+	notifyMu sync.Mutex // guards notify reads/writes (data race)
 
-	// mismatch tracks the per-token rolling window behind the #140 P1
+	// mismatch tracks the per-token rolling window behind the #140
 	// escalation guard (see recordMismatchEscalation). Index 0 is shared by
 	// all bridge entries; pooled tokens offset by one.
 	mismatch   map[int]mismatchEscalation
@@ -371,13 +376,15 @@ type tokenEntry struct {
 	session *session.Manager
 	runs    *runs.RunManager
 	client  *upstream.Client
-	// token is the raw AUTH_TOKENS string this entry was built from. It
-	// anchors the quarantine reset: a config reload that replaces the
-	// account at this slot makes the old entry's terminal state stale, so
-	// quarantine is cleared (see Pool.SetConfig).
+	// token is the raw AUTH_TOKENS string this entry was built from. A
+	// config reload that replaces the account at this slot REBUILDS the
+	// entry (see Pool.SetConfig): the old entry is retired and drained
+	// (runs FINISHed, session ended) and a fresh one is constructed for
+	// the new token, so a quarantine never leaks onto a different account
+	// and the old (dead) account is never re-admitted.
 	token string
 
-	// Session-liveness poll schedule (gap #2): nextPollAt is when the next
+	// Session-liveness poll schedule: nextPollAt is when the next
 	// compact poll is due (zero = due on the next sessionPollTick pass);
 	// pollFailures counts consecutive poll failures for the 20s→300s backoff.
 	// Touched only by the maintain goroutine (sessionPollTick), so no lock is
@@ -402,9 +409,9 @@ type tokenEntry struct {
 	// no re-admission attempts, no automatic unban. Stored on the entry (not
 	// an index-keyed slice) so a concurrent RemoveLastToken index-reuse can
 	// never quarantine the wrong account. Set exactly once per terminal
-	// refusal (CompareAndSwap) and cleared only when the operator changes
-	// AUTH_TOKENS membership at this slot (SetConfig) or explicitly unlocks
-	// the token (UnlockToken).
+	// refusal (CompareAndSwap) and cleared either by UnlockToken or by the
+	// entry rebuild that an AUTH_TOKENS slot change triggers (SetConfig —
+	// the whole entry is replaced, so the marker dies with it).
 	quarantine atomic.Pointer[quarantineState]
 }
 
@@ -479,7 +486,7 @@ func runOptions(cfg *config.Config) runs.Options {
 
 // SetConfig swaps in a reloaded configuration. The pool reads config
 // through an atomic pointer, so a config change takes effect on the next
-// Acquire/maintain pass without rebuilding the pool.
+// Acquire/maintain pass without rebuilding the pool, except that an AUTH_TOKENS slot change rebuilds that entry (see below).
 func (p *Pool) SetConfig(cfg *config.Config) {
 	p.cfg.Store(cfg)
 
@@ -503,26 +510,109 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 		entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Unlock()
-	// Quarantine reset on AUTH_TOKENS membership/order change: a
-	// quarantine is bound to the exact account string an entry was built
-	// from. When a config reload replaces the account at a slot (the
-	// operator edited AUTH_TOKENS, reordered it, or swapped in a fresh
-	// token), the old entry's terminal state no longer describes the
-	// account now configured there, so clear it — an explicit operator
-	// action, never an automatic revival (the pool still refuses to re-admit
-	// a dead account until the operator makes this change or unlocks it).
-	for i, tok := range *toks {
-		if i >= len(cfg.AuthTokens) {
-			// Member removed from config; the caller's membership path
-			// (RemoveLastToken/RemoveAllTokens) drops the entry, so there is
-			// nothing to reset here.
-			break
+
+	// AUTH_TOKENS slot reconciliation. A quarantine is bound to the exact
+	// account string an entry was built from; when a reload replaces the
+	// account at a slot (operator edited AUTH_TOKENS in the Config editor
+	// or .env), the old entry's terminal state no longer describes the
+	// account now configured there — and keeping the entry would keep
+	// leasing the OLD account while the replacement token sat idle until a
+	// restart. The slot is therefore REBUILT end-to-end: the old entry is
+	// retired and drained (runs FINISHed, admitted session ended — exactly
+	// like RemoveLastToken) and a fresh entry is constructed for the new
+	// token through the same path AddToken uses. The dead account is never
+	// re-admitted, and the quarantine never leaks onto the replacement (a
+	// rebuilt entry carries none). Tokens appended to AUTH_TOKENS get an
+	// entry the same way. REMOVAL is not handled here: the membership path
+	// (RemoveLastToken/RemoveAllTokens) owns it, so a reload with fewer
+	// tokens leaves the surplus entries in place until that path or a
+	// restart drops them.
+	base := *p.toks.Load()
+	rebuilt := make([]*tokenEntry, 0, len(cfg.AuthTokens))
+	type slotChange struct {
+		idx int
+		old *tokenEntry
+	}
+	var changes []slotChange
+	changed := false
+	for i := range cfg.AuthTokens {
+		if i < len(base) && base[i].token == cfg.AuthTokens[i] {
+			rebuilt = append(rebuilt, base[i])
+			continue
 		}
-		if tok.token != "" && tok.token != cfg.AuthTokens[i] {
-			if prev := tok.quarantine.Swap(nil); prev != nil {
-				p.logger.Info("pool: token quarantine reset (AUTH_TOKENS membership/order changed)",
-					"token", i+1, "from_token", tok.token, "to_token", cfg.AuthTokens[i],
+		entry, err := p.buildTokenEntry(i, cfg.AuthTokens[i])
+		if err != nil {
+			// Keep serving the previous entry for this slot; log the
+			// failure so the operator sees the reload did not fully apply.
+			p.logger.Warn("pool: AUTH_TOKENS reload: slot kept on the previous entry (entry build failed)",
+				"token", i+1, "err", err)
+			if i < len(base) {
+				rebuilt = append(rebuilt, base[i])
+			}
+			continue
+		}
+		logged := false
+		if i < len(base) {
+			if prev := base[i].quarantine.Load(); prev != nil {
+				p.logger.Info("pool: AUTH_TOKENS slot rebuilt (quarantined account replaced)",
+					"token", i+1,
+					"from_token", tokenEntryLabel(base[i]),
+					"to_token", tokenEntryLabel(entry),
 					"state", prev.reason)
+				logged = true
+			}
+		}
+		if !logged && i < len(base) {
+			p.logger.Info("pool: AUTH_TOKENS slot rebuilt (config reload)",
+				"token", i+1,
+				"from_token", tokenEntryLabel(base[i]),
+				"to_token", tokenEntryLabel(entry))
+		}
+		rebuilt = append(rebuilt, entry)
+		changed = true
+		if i < len(base) {
+			changes = append(changes, slotChange{idx: i, old: base[i]})
+		}
+	}
+	if changed {
+		// Publish the usage/spend slices BEFORE the token snapshot (the
+		// AddToken publish rule): rebuilt slots reset their per-token
+		// history, appended slots extend the slices so index-aligned
+		// readers never go out of range.
+		p.usageMu.Lock()
+		if len(p.msgsPerToken) < len(rebuilt) {
+			p.msgsPerToken = append(p.msgsPerToken, make([][]time.Time, len(rebuilt)-len(p.msgsPerToken))...)
+		}
+		for _, c := range changes {
+			p.msgsPerToken[c.idx] = nil
+		}
+		p.usageMu.Unlock()
+		p.spendMu.Lock()
+		if len(p.spendPerToken) < len(rebuilt) {
+			p.spendPerToken = append(p.spendPerToken, make([]*spendLedger, len(rebuilt)-len(p.spendPerToken))...)
+		}
+		for _, c := range changes {
+			p.spendPerToken[c.idx] = newSpendLedger()
+		}
+		p.spendMu.Unlock()
+		p.toks.Store(&rebuilt)
+
+		// Retire and drain the replaced entries. A replaced entry with
+		// in-flight leases is parked like RemoveLastToken does: the swap
+		// happens now, the drain waits for the last lease so the in-flight
+		// chat is never killed (the entry's sync.Once guards the race with
+		// LeaseRelease's drain).
+		p.retiredMu.Lock()
+		if p.retired == nil {
+			p.retired = make(map[*tokenEntry]time.Time)
+		}
+		for _, c := range changes {
+			p.retired[c.old] = time.Now()
+		}
+		p.retiredMu.Unlock()
+		for _, c := range changes {
+			if c.old.runs.InflightCount() == 0 {
+				p.drainRemovedToken(c.old)
 			}
 		}
 	}
@@ -543,6 +633,53 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 	}
 }
 
+// tokenEntryLabel returns a short non-reversible label for a fixed pooled
+// token entry, safe for logs: the sha256 of the raw AUTH_TOKENS string, hex
+// truncated to 8 chars (mirrors bridgeTokenLabel; the raw token must never
+// reach logs — logring retains them for /admin/logs).
+func tokenEntryLabel(e *tokenEntry) string {
+	if e == nil || e.client == nil {
+		return "token"
+	}
+	return "token-" + e.client.TokenKey()[:8]
+}
+
+// buildTokenEntry constructs the client/session/run-manager triple for one
+// AUTH_TOKENS slot at runtime, wired like New (session knobs) and AddToken
+// (session store). Also used by SetConfig's slot rebuilds.
+func (p *Pool) buildTokenEntry(idx int, token string) (*tokenEntry, error) {
+	cfg := p.cfg.Load()
+	client, err := upstream.NewWithIndex(token, idx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	sess := session.NewManagerWithStore(client, p.store)
+	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
+	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
+	sess.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
+	sess.SetScarceModels(cfg.ScarceSessionModels)
+	return &tokenEntry{
+		session: sess,
+		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
+		client:  client,
+		token:   token,
+	}, nil
+}
+
+// isPooledToken reports whether raw matches one of the fixed AUTH_TOKENS
+// entries (exact string compare against the pool's own in-memory copies).
+func (p *Pool) isPooledToken(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for _, tok := range *p.toks.Load() {
+		if tok.token == raw {
+			return true
+		}
+	}
+	return false
+}
+
 // AddToken adds a token to the pool at runtime (dashboard action): builds
 // the client/session/run-manager triple and appends it, returning the new
 // token index. The config must be updated separately (AUTH_TOKENS + reload)
@@ -550,20 +687,9 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 func (p *Pool) AddToken(token string) (int, error) {
 	toks := p.toks.Load()
 	idx := len(*toks)
-	client, err := upstream.NewWithIndex(token, idx, p.cfg.Load())
+	entry, err := p.buildTokenEntry(idx, token)
 	if err != nil {
 		return 0, fmt.Errorf("pool: add token: %w", err)
-	}
-	sess := session.NewManagerWithStore(client, p.store)
-	cfg := p.cfg.Load()
-	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
-	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
-	sess.SetScarceModels(cfg.ScarceSessionModels)
-	entry := &tokenEntry{
-		session: sess,
-		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
-		client:  client,
-		token:   token,
 	}
 	next := make([]*tokenEntry, 0, len(*toks)+1)
 	next = append(next, *toks...)

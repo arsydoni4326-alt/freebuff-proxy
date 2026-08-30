@@ -126,10 +126,12 @@ func TestBridgeTokenBannedNoQuarantine(t *testing.T) {
 	}
 }
 
-// TestQuarantineResetsOnConfigMemberChange pins the reset semantics: a
-// quarantine survives across Acquire calls (the token stays skipped) but is
-// cleared when AUTH_TOKENS membership/order changes at that slot — the
-// operator replaced the account, so the old dead state is stale.
+// TestQuarantineResetsOnConfigMemberChange pins the rebuild semantics: a
+// quarantine survives across Acquire calls (the token stays skipped) and is
+// gone once AUTH_TOKENS changes at that slot, because the slot is REBUILT
+// for the new account — the old entry (with its terminal state) is retired
+// and a fresh entry constructed for the new token. The dead account is
+// never re-admitted, and the marker never leaks onto the replacement.
 func TestQuarantineResetsOnConfigMemberChange(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -143,16 +145,117 @@ func TestQuarantineResetsOnConfigMemberChange(t *testing.T) {
 	if !p.Snapshot()[0].Quarantined {
 		t.Fatal("token not quarantined after a ban")
 	}
+	old := (*p.toks.Load())[0]
 
 	// Operator edits AUTH_TOKENS: replace the account at slot 0. Copy the
-	// config slice so the live pool config is untouched.
+	// config slice so the live pool config is untouched; rebuild the entry
+	// client against the mock (the pool config keeps the production URL).
 	newCfg := *p.cfg.Load()
 	newCfg.AuthTokens = append([]string(nil), newCfg.AuthTokens...)
 	newCfg.AuthTokens[0] = "tok-replaced"
+	newCfg.UpstreamBaseURL = mock.URL()
 	p.SetConfig(&newCfg)
 
+	cur := (*p.toks.Load())[0]
+	if cur == old {
+		t.Fatal("slot not rebuilt: same entry object after AUTH_TOKENS change")
+	}
+	if cur.token != "tok-replaced" {
+		t.Errorf("rebuilt entry token = %q, want tok-replaced", cur.token)
+	}
+	if cur.quarantine.Load() != nil {
+		t.Error("rebuilt entry carries the old account's quarantine")
+	}
 	if q := p.Snapshot()[0]; q.Quarantined {
-		t.Error("quarantine not reset after AUTH_TOKENS membership/order change")
+		t.Error("quarantine still surfacing after the slot was rebuilt")
+	}
+	// Pool-wide counters agree.
+	if got := p.PoolSnapshot().Quarantined; got != 0 {
+		t.Errorf("PoolSnapshot().Quarantined = %d, want 0", got)
+	}
+}
+
+// TestSetConfigRebuildsDrainsReplacedEntry pins the end-to-end rebuild: a
+// slot whose token changed on reload gets a FRESH entry (built like
+// AddToken) while the old account's run is FINISHed and its admitted
+// session is ended — no upstream activity is left behind, and the replaced
+// token serves traffic immediately.
+func TestSetConfigRebuildsDrainsReplacedEntry(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+
+	lease, err := p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+	if got := mock.StartedRunsSnapshot(); len(got) != 1 {
+		t.Fatalf("started runs = %v, want 1", got)
+	}
+	if mock.SessionEnds != 0 {
+		t.Fatalf("session ends = %d before rebuild, want 0", mock.SessionEnds)
+	}
+	old := (*p.toks.Load())[0]
+
+	newCfg := *p.cfg.Load()
+	newCfg.AuthTokens = append([]string(nil), newCfg.AuthTokens...)
+	newCfg.AuthTokens[0] = "tok-replaced"
+	newCfg.UpstreamBaseURL = mock.URL()
+	p.SetConfig(&newCfg)
+
+	// The old account's run was FINISHed and its session ended
+	// (synchronous inside SetConfig when no lease is in flight).
+	if got := mock.FinishedRunsSnapshot(); len(got) != 1 || got[0].Status != "completed" {
+		t.Errorf("finished runs = %v, want 1 completed (old entry drained)", got)
+	}
+	if mock.SessionEnds != 1 {
+		t.Errorf("session ends = %d, want 1 (old entry's session ended)", mock.SessionEnds)
+	}
+	// The old entry is retired, not serving.
+	p.retiredMu.Lock()
+	_, parked := p.retired[old]
+	p.retiredMu.Unlock()
+	if parked {
+		t.Error("old entry still parked after synchronous drain")
+	}
+
+	// The replacement token serves traffic immediately through the new
+	// client (same mock upstream).
+	lease, err = p.Acquire(context.Background(), modelA)
+	if err != nil {
+		t.Fatalf("acquire after rebuild: %v", err)
+	}
+	p.LeaseRelease(lease)
+	if got := mock.StartedRunsSnapshot(); len(got) != 2 {
+		t.Errorf("started runs = %v, want 2 (one per token generation)", got)
+	}
+}
+
+// TestSetConfigKeepsQuarantineWhenTokenUnchanged pins the inverse of the
+// rebuild: a reload that does NOT change the slot's token must leave the
+// entry (and its terminal quarantine) untouched — no automatic revival.
+func TestSetConfigKeepsQuarantineWhenTokenUnchanged(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.Ban = true
+	p := newTestPool(t, mock)
+
+	_, err := p.Acquire(context.Background(), modelA)
+	if !errors.Is(err, upstream.ErrBanned) {
+		t.Fatalf("first acquire: want ErrBanned, got %v", err)
+	}
+	if !p.Snapshot()[0].Quarantined {
+		t.Fatal("token not quarantined after a ban")
+	}
+
+	newCfg := *p.cfg.Load()
+	p.SetConfig(&newCfg)
+	if !p.Snapshot()[0].Quarantined {
+		t.Error("quarantine cleared by an unchanged reload")
+	}
+	if cur := (*p.toks.Load())[0]; cur.token != "tok-0" {
+		t.Errorf("entry token = %q, want tok-0 (unchanged reload must not rebuild)", cur.token)
 	}
 }
 
