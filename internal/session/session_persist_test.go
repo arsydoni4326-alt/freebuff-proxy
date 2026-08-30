@@ -282,7 +282,7 @@ func TestPersistModelMatchAdopted(t *testing.T) {
 	})
 }
 
-// TestShutdownAlwaysDeletesEvenWhenPersisting verifies gap #13: shutdown
+// TestShutdownAlwaysDeletesEvenWhenPersisting verifies that shutdown
 // ALWAYS releases the upstream session slot (DELETE) whether or not
 // persistence is enabled — the CLI DELETEs on exit. The store entry is
 // still written (and survives the DELETE) so a restart can resume via
@@ -499,7 +499,7 @@ func TestConcurrentInvalidateEnsureSession(t *testing.T) {
 	}
 }
 
-// TestPersistAdoptThenModelUnavailableDropsSlot covers the S5 edge: a fresh
+// TestPersistAdoptThenModelUnavailableDropsSlot covers the adopt-then-unavailable edge: a fresh
 // manager ADOPTS a persisted compatible slot, then a live refresh for an
 // unavailable model drops the adopted slot (commit(nil)) and falls back to a
 // DefaultFallbackModel create — the persisted slot must not survive as a

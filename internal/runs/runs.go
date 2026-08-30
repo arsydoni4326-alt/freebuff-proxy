@@ -33,7 +33,7 @@ const shutdownTimeout = 10 * time.Second
 // ErrShuttingDown is returned by Acquire/Precreate/Prewarm (via rotate)
 // once Shutdown has begun: the manager has been (or is being) drained and
 // the deferred-finish worker is stopped, so a run STARTed now would never
-// be FINISHed (P3). rotate re-checks the flag after its upstream StartRun
+// be FINISHed. rotate re-checks the flag after its upstream StartRun
 // returns and discards/finishes the freshly started run inline instead of
 // tracking it.
 var ErrShuttingDown = errors.New("runs: manager shutting down; new run starts refused")
@@ -144,9 +144,11 @@ type RunManager struct {
 	// the queue and exits, tracked by finishWg. finishStartOnce starts the
 	// worker on first use. finishExited is closed by the worker on exit
 	// (test hook for goroutine-leak assertions).
-	finishQueue         chan asyncJob
-	finishStop          chan struct{}
-	finishDrainCtx      context.Context // bounded by Shutdown's deadline; the drain loop abandons queued jobs when it expires (review P2 â€” unbounded queue drain could stall shutdown for minutes)
+	finishQueue chan asyncJob
+	finishStop  chan struct{}
+	// finishDrainCtx is bounded by Shutdown's deadline; the drain loop
+	// abandons queued jobs when it expires.
+	finishDrainCtx      context.Context
 	finishOnce          sync.Once
 	finishStartOnce     sync.Once
 	finishWg            sync.WaitGroup
@@ -156,10 +158,10 @@ type RunManager struct {
 	// keptForPersistence is set by Shutdown when run persistence kept the
 	// active runs alive across restart (issue #40). Pool.Shutdown reads it
 	// to avoid a spurious "runs left after shutdown" warning on a clean
-	// shutdown of a persisted deployment (review P3).
+	// shutdown of a persisted deployment.
 	keptForPersistence bool
 	// shuttingDown is set at the START of Shutdown, before the drain: no
-	// new run may be STARTed from that point on (P3). An in-flight request
+	// new run may be STARTed from that point on. An in-flight request
 	// still in its acquire phase when the drain begins would otherwise
 	// rotate a fresh run into the cleared manager after the finish worker
 	// stopped — that run would never be FINISHed. rotate consults it both
@@ -307,7 +309,7 @@ func (m *RunManager) Acquire(ctx context.Context, agentID string) (*Run, error) 
 // when the LAST lease of a draining run releases (a FinishAllRuns
 // deferral, a rotation, or an abandonment), the FINISH is re-queued
 // immediately — otherwise a run drained with an outstanding lease would
-// never reach finishIfReadyCtx after its final release (P1).
+// never reach finishIfReadyCtx after its final release.
 func (m *RunManager) Release(run *Run) {
 	if run == nil {
 		return
@@ -411,7 +413,7 @@ func (m *RunManager) Shutdown(ctx context.Context) {
 		defer cancel()
 	}
 
-	// P3: refuse new run STARTs from this instant: an in-flight request
+	// Refuse new run STARTs from this instant: an in-flight request
 	// still in its acquire phase when the drain begins must not start a
 	// fresh run after the manager is cleared — the finish worker is
 	// stopped, so that run would never be FINISHed. rotate re-checks the
@@ -427,7 +429,7 @@ func (m *RunManager) Shutdown(ctx context.Context) {
 	// claims are respected by the claim loop (finishing runs are skipped).
 	// The drain is bounded by the same deadline as the rest of Shutdown: a
 	// saturated queue (up to FinishQueueSize jobs x session-call timeout)
-	// must not stall shutdown for minutes (review P2).
+	// must not stall shutdown for minutes.
 	m.finishDrainCtx = ctx
 	m.finishOnce.Do(func() { close(m.finishStop) })
 	// Ensure the worker exists BEFORE waiting: its finishWg.Add(1) must be
@@ -678,7 +680,7 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 			// Shutdown began while the upstream START was in flight: the
 			// manager was (or is being) drained and the finish worker is
 			// stopped, so tracking this fresh run would leave it never
-			// FINISHed (P3). Discard it — best-effort FINISH it inline
+			// FINISHed. Discard it — best-effort FINISH it inline
 			// (bounded by the shutdown deadline) so the upstream agent run
 			// does not leak until its own rotation expiry.
 			m.mu.Unlock()
@@ -686,7 +688,7 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 			return ErrShuttingDown
 		}
 		// Mint the trace session id before logging so the run-started line
-		// and every chat trace of this run share it (T3, D2).
+		// and every chat trace of this run share it.
 		traceSessionID := newTraceSessionID()
 		slog.Debug("runs: run started", "agent_id", agentID, "run_id", runID, "trace_session_id", traceSessionID)
 

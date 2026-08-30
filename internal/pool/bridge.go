@@ -31,6 +31,31 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	if clientToken == "" {
 		return nil, errors.New("bridge: empty client token")
 	}
+	// QUOTA_FALLBACK_MODELS recursion backstop (mirrors the pooled path in
+	// Acquire): the bridge fallback chain is bounded by a depth counter
+	// carried in ctx, so a fallback cycle degrades to an error instead of a
+	// stack overflow.
+	depth, _ := ctx.Value(fallbackDepthKey{}).(int)
+	if depth >= maxFallbackDepth {
+		return nil, errors.New("pool: QUOTA_FALLBACK_MODELS cycle detected (max fallback depth reached); check QUOTA_FALLBACK_MODELS for a loop")
+	}
+	ctx = context.WithValue(ctx, fallbackDepthKey{}, depth+1)
+
+	// Post-drain re-admission gate (mirrors Acquire): no session POST or
+	// run START once Shutdown is draining.
+	if p.draining.Load() {
+		return nil, errors.New("pool: shutting down")
+	}
+
+	// Hybrid mode: a credential that equals a pooled AUTH_TOKENS entry must
+	// not be relayed as a bridge token — it would create a second path to
+	// the same upstream account (a pooled lease AND a bridge entry), which
+	// can admit two concurrent sessions. The legit hybrid route for a
+	// pooled account is API_KEYS-authenticated pooled access.
+	if cfg.HybridBridgeMode() && p.isPooledToken(clientToken) {
+		return nil, fmt.Errorf("bridge: credential matches a pooled AUTH_TOKENS entry; use an API_KEYS key for pooled access or a different client token")
+	}
+
 	agentID, err := p.reg.AgentForModel(model)
 	if err != nil {
 		return nil, err
@@ -47,7 +72,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, fmt.Errorf("bridge token %s is locked by administrator", tokenKey(clientToken))
 	}
 
-	// B5: Global bridge daily limit check — before per-entry check, reject
+	// Global bridge daily limit check — before per-entry check, reject
 	// if the total across ALL bridge entries exceeds BRIDGE_DAILY_LIMIT.
 	if cfg.BridgeDailyLimit > 0 {
 		// TOCTOU: snapshot read, then compare after unlock. Worst case: one
@@ -216,7 +241,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 			entry.runs.CooldownIpCapped(ice)
 		}
 		if lie := asLimitedIp(err); lie != nil {
-			// Issue #74 P2: the shared egress cannot serve this model
+			// Issue #74: the shared egress cannot serve this model
 			// (limited_ip) — mark it unfit so pooled requests refuse fast
 			// instead of re-admitting and burning a daily session slot on
 			// every token. Bridge requests keep their own token, so the
@@ -235,60 +260,11 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, err
 	}
 	entry.mu.Unlock()
-	entry.runs.ClearCooldowns()
 
 sessionReady:
-	if err != nil {
-		if errors.Is(err, upstream.ErrAuthRejected) {
-			entry.runs.Cooldown(runs.DefaultCooldown)
-			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
-			// B6: immediate eviction — the token is dead; do not let it
-			// sit in the cache for 2h until the idle sweep catches it.
-			p.bridgeEvictToken(clientToken)
-		}
-		if rle := asRateLimit(err); rle != nil {
-			entry.runs.CooldownRateLimit(rle)
-			if rle.Status == "spend_limited" {
-				p.bridgeMu.Lock()
-				p.bridgeRecordSpendLimited(entry)
-				p.bridgeMu.Unlock()
-			}
-			// Issue #155: bridge quota exhaustion fallback
-			if isQuotaExhaustedError(rle) {
-				if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
-					p.logger.Info("pool: bridge token quota exhausted on admission, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
-					// Issue #164: report the switch (X-FreeBuff-Fallback:
-					// quota_exhausted) on the fallback lease.
-					fbLease, fbErr := p.AcquireBridge(ctx, clientToken, fb)
-					if fbLease != nil {
-						fbLease.FallbackReason = "quota_exhausted"
-					}
-					return fbLease, fbErr
-				}
-			}
-		}
-		if ice := asIpCapped(err); ice != nil {
-			entry.runs.CooldownIpCapped(ice)
-		}
-		if lie := asLimitedIp(err); lie != nil {
-			// Issue #74 P2: the shared egress cannot serve this model
-			// (limited_ip) — mark it unfit so pooled requests refuse fast
-			// instead of re-admitting and burning a daily session slot on
-			// every token. Bridge requests keep their own token, so the
-			// unfit gate stays skipped for them (by design), but the
-			// surfaced error is now self-describing.
-			lie.Model = model
-			p.MarkModelUnfit(model, lie)
-		}
-		if be := asBan(err); be != nil {
-			entry.runs.CooldownBan(be)
-			p.notifyBan(0, model) // issue #48: alert on admission-path bans
-		}
-		if cbe := asCountryBlocked(err); cbe != nil {
-			entry.runs.CooldownCountryBlocked(cbe)
-		}
-		return nil, err
-	}
+	// The error path was handled above (inside the leader-result check):
+	// every admission error returns there, so this label is only reached
+	// with a usable session and err == nil.
 	entry.runs.ClearCooldowns()
 	ss := entry.session.Snapshot()
 	effectiveModel := model
@@ -309,7 +285,7 @@ sessionReady:
 		if errors.Is(err, upstream.ErrAuthRejected) {
 			entry.runs.Cooldown(runs.DefaultCooldown)
 			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
-			// B6: immediate eviction — the token is dead.
+			// immediate eviction — the token is dead.
 			p.bridgeEvictToken(clientToken)
 		}
 		if rle := asRateLimit(err); rle != nil {
@@ -326,7 +302,7 @@ sessionReady:
 			entry.runs.CooldownIpCapped(ice)
 		}
 		if lie := asLimitedIp(err); lie != nil {
-			// Issue #74 P2: the shared egress cannot serve this model
+			// Issue #74: the shared egress cannot serve this model
 			// (limited_ip) — mark it unfit so pooled requests refuse fast
 			// instead of re-admitting and burning a daily session slot on
 			// every token. Bridge requests keep their own token, so the

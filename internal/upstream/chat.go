@@ -86,7 +86,7 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 	// invalidation (reference/freebuff-proxy-hengxin proxy.js:652-668).
 	// capacityDeferredAttempts is the per-request budget: a fresh call starts
 	// at zero, so every request gets its own TRANSIENT_RETRIES allowance
-	// (review P1 — the client-lifetime atomic only tracks the metric).
+	// (the client-lifetime atomic only tracks the metric).
 	capacityDeferredAttempts := 0
 	for {
 		req, err := c.newRequest(ctx, http.MethodPost, "/api/v1/chat/completions", enveloped)
@@ -103,7 +103,7 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 			req = req.WithContext(reqCtx)
 		}
 		req.Header.Set("Accept", "application/json, text/event-stream")
-		// Chat is the ONLY path carrying the ai-sdk UA (audit G5): the real
+		// Chat is the ONLY path carrying the ai-sdk UA: the real
 		// CLI pins it on model calls alone; newRequest defaulted this
 		// request to the plain Bun fetch UA every other call sends.
 		req.Header.Set("User-Agent", cliUserAgent)

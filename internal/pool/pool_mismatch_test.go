@@ -12,7 +12,7 @@ import (
 	"freebuff-proxy/internal/upstream"
 )
 
-// TestMismatchEscalationFiresOncePerWindow pins the issue #140 P1 guard:
+// TestMismatchEscalationFiresOncePerWindow pins the issue #140 guard:
 // 3+ free_mode_invalid_agent_model refusals on one token inside 60s fire ONE
 // agent_model_mismatch_escalation webhook (the operator alert the v0.11.3
 // 403-storm ban never had), and a second storm inside the window does not

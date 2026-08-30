@@ -83,7 +83,7 @@ func TestStoreDropsExpiredGrace(t *testing.T) {
 	}
 }
 
-// TestShutdownDeletesEvenWhenPersist verifies gap #13: shutdown DELETEs the
+// TestShutdownDeletesEvenWhenPersist verifies that shutdown DELETEs the
 // upstream slot even with persistence enabled, while the store entry
 // survives the DELETE for restart-resume (pollPersisted re-adopts when the
 // DELETE did not take effect, or drops the dead entry and re-POSTs fresh).
@@ -133,7 +133,7 @@ func TestResumePersistedOnRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 
 	// First process: create a session and shut down. Shutdown DELETEs the
-	// upstream slot (gap #13) but keeps the store entry, so a restart can
+	// upstream slot but keeps the store entry, so a restart can
 	// still probe it via pollPersisted.
 	mgr1 := newTestManagerWithStore(t, mock, NewStore(path))
 	if _, err := mgr1.EnsureSession(context.Background()); err != nil {
@@ -406,7 +406,7 @@ func TestStoreReadErrorDoesNotClobberFile(t *testing.T) {
 	}
 }
 
-// TestStoreReadErrorDoesNotClobberFileUnreadableFile is the B1 regression:
+// TestStoreReadErrorDoesNotClobberFileUnreadableFile is the read-failure regression:
 // the on-disk file itself is unreadable (chmod 000) while the DIRECTORY stays
 // writable, so a Save could silently replace the file with the in-memory
 // partial view — destroying every OTHER token's persisted entries. The store
@@ -484,7 +484,7 @@ func TestStoreReadErrorDoesNotClobberFileUnreadableFile(t *testing.T) {
 	}
 }
 
-// TestStorePendingMutationSurvivesReadFailure is the P3 regression: a
+// TestStorePendingMutationSurvivesReadFailure is the read-failure regression: a
 // Save/Remove made while the file was unreadable was kept in memory but
 // never flushed; when the file became readable again the reload rebuilt
 // s.data from disk, silently discarding the in-window update — the
@@ -545,7 +545,7 @@ func TestStorePendingMutationSurvivesReadFailure(t *testing.T) {
 	}
 }
 
-// TestStorePendingMutationSurvivesReadFailurePortable is the same P3
+// TestStorePendingMutationSurvivesReadFailurePortable is the same read-failure
 // regression as TestStorePendingMutationSurvivesReadFailure but forces the
 // read failure PORTABLY — the store file is replaced by a directory, so
 // os.ReadFile fails with a non-ErrNotExist error on every platform (chmod
@@ -599,7 +599,7 @@ func TestStorePendingMutationSurvivesReadFailurePortable(t *testing.T) {
 	}
 }
 
-// TestStoreVersionMismatchIgnoredThenReplaced is S14: a store file with a
+// TestStoreVersionMismatchIgnoredThenReplaced is the version-mismatch case: a store file with a
 // version other than storeVersion is ignored (empty view), and the next Save
 // replaces it wholesale with the current version.
 func TestStoreVersionMismatchIgnoredThenReplaced(t *testing.T) {
@@ -634,7 +634,7 @@ func TestStoreVersionMismatchIgnoredThenReplaced(t *testing.T) {
 }
 
 // TestStoreEmptyKeyNoop verifies Save/Remove with an empty key are no-ops
-// that do not even create the store file (S12-adjacent guard).
+// that do not even create the store file.
 func TestStoreEmptyKeyNoop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	store := NewStore(path)

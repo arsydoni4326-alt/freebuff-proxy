@@ -88,7 +88,7 @@ func TestIdleRotationFinishesRuns(t *testing.T) {
 	}
 
 	// Not idle yet: a maintain pass runs normally (no FINISH — no pruner
-	// children exist since G4, so any FINISH here would be a parent run).
+	// children exist in the newest CLI, so any FINISH here would be a parent run).
 	p.maintainTick(context.Background())
 	if got := mock.FinishedRunsSnapshot(); len(got) != 0 {
 		t.Fatalf("finished runs = %v before idle, want none", got)
@@ -128,7 +128,39 @@ func TestIdleRotationFinishesRuns(t *testing.T) {
 	}
 }
 
-// TestIdleRotationSkipsInflight is the regression guard for the P1 idle
+// TestCooldownTokenBanQuarantinesLiveBansOnly pins the quarantine gate: a
+// ban only marks the token terminal while it is still live after
+// runs.CooldownBan — a hard ban (no resumes_at) stays live forever and
+// quarantines, a future resumes_at quarantines for the window, but an
+// EXPIRED temporary ban (resumes_at in the past) is already lifted
+// upstream and must not quarantine a healthy token.
+func TestCooldownTokenBanQuarantinesLiveBansOnly(t *testing.T) {
+	mock0 := testutil.NewMock()
+	defer mock0.Close()
+	mock1 := testutil.NewMock()
+	defer mock1.Close()
+	p := newTestPool(t, mock0, mock1)
+
+	// Hard ban: permanent terminal state → quarantined.
+	p.CooldownTokenBan(0, &upstream.BanError{Body: "banned"})
+	if !p.Snapshot()[0].Quarantined {
+		t.Error("hard ban (no resumes_at) did not quarantine the token")
+	}
+
+	// Expired temporary ban: already lifted upstream → NOT quarantined.
+	p.CooldownTokenBan(1, &upstream.BanError{Body: "banned", ResumesAt: time.Now().Add(-time.Hour)})
+	if q := p.Snapshot()[1]; q.Quarantined || q.QuarantineReason != "" {
+		t.Errorf("expired temporary ban quarantined the token: %+v", q)
+	}
+
+	// The lifted token is immediately usable again.
+	_, err := p.Acquire(context.Background(), modelB)
+	if err != nil {
+		t.Fatalf("acquire on lifted token: %v (want success after expired temp ban)", err)
+	}
+}
+
+// TestIdleRotationSkipsInflight is the regression guard for the idle
 // rotation bug: the idle FINISH pass used to FinishAllRuns every token,
 // killing in-flight chats. Tokens holding a lease must be skipped — their
 // runs stay live until the lease drains (mirrors the bridge idle sweep's
@@ -181,7 +213,7 @@ func TestIdleRotationDisabled(t *testing.T) {
 
 	p.maintainTick(context.Background())
 	// With idle rotation off no PARENT run may be finished (and no pruner
-	// children exist since G4).
+	// children exist in the newest CLI).
 	if got := mock.FinishedRunsSnapshot(); len(got) != 0 {
 		t.Fatalf("finished runs = %v with idle rotation disabled, want none", got)
 	}
@@ -363,7 +395,7 @@ func TestAcquireAllCountryBlocked(t *testing.T) {
 	}
 }
 
-// TestSnapshotBanRiskLevel is the regression guard for the P2 ban
+// TestSnapshotBanRiskLevel is the regression guard for the ban
 // mislabeling: a banned token must show "critical" during the ban window
 // (not "high" from the cooldown case shadowing it), and the risk must drop
 // after the window expires instead of staying sticky "critical" forever.
@@ -390,7 +422,7 @@ func TestSnapshotBanRiskLevel(t *testing.T) {
 	}
 }
 
-// TestIdleFinishAllRunsHonorsMaintainCtx is the regression guard for the P2
+// TestIdleFinishAllRunsHonorsMaintainCtx is the regression guard for the
 // context.Background bug in the idle FINISH: Pool.Shutdown cancels the
 // maintain ctx first and waits on the maintain goroutine, so a mid-drain
 // FinishAllRuns must abort on cancel instead of blocking shutdown for the
@@ -554,8 +586,8 @@ func TestSessionPollSkipsWhileChatInFlight(t *testing.T) {
 	}
 }
 
-// TestSessionPollSchedule pins the liveness-poll cadence helpers (gap #2;
-// reference/freebuff sdk polling-backoff.ts): the success interval is ~30s
+// TestSessionPollSchedule pins the liveness-poll cadence helpers
+// (reference/freebuff sdk polling-backoff.ts): the success interval is ~30s
 // ±20% jitter capped to remaining+1s near expiry, and the failure backoff
 // grows 20s→300s while never scheduling a retry before the server's
 // Retry-After floor.

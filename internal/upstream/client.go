@@ -75,7 +75,7 @@ type Client struct {
 	transientRetries     atomic.Int64 // transient transport failures retried
 	fingerprintRotations atomic.Int64 // pinned fingerprint swaps ahead of a retry
 
-	// rateLimitEvents is the T7 rate-limit ledger: upstream rate-limit
+	// rateLimitEvents is the rate-limit ledger: upstream rate-limit
 	// classifications counted by body code (rate_limited, spend_limited,
 	// ip_capped, insufficient_quota, limit_burst_rate,
 	// free_mode_rate_limited, ...). rateLimitMu guards the map; values are

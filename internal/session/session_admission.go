@@ -271,7 +271,7 @@ func (m *Manager) asyncReAdmit(model string) {
 }
 
 // recordReAdmitTrigger remembers a pre-emptive re-admit trigger (issue #99)
-// for the re-admit storm summary's burned_slots count (T10): a trigger whose
+// for the re-admit storm summary's burned_slots count: a trigger whose
 // session is later invalidated burned a daily session slot. Caller must NOT
 // hold m.mu.
 func (m *Manager) recordReAdmitTrigger() {
@@ -290,7 +290,7 @@ func (m *Manager) recordReAdmitTrigger() {
 }
 
 // recordInvalidation appends a terminal session event to the rolling
-// re-admit storm window (T10) and, when more than stormThreshold
+// re-admit storm window and, when more than stormThreshold
 // invalidations land within stormWindow and the suppression window has
 // passed, emits ONE Info summary (count, duration_ms, superseded,
 // burned_slots). Caller must NOT hold m.mu; the summary is logged outside
@@ -389,7 +389,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			st, err = m.adoptOrCreate(ctx, targetModel)
 		}
 		if err != nil {
-			// #140 P2: a 428 waiting_room_required on the queued row's
+			// #140: a 428 waiting_room_required on the queued row's
 			// refresh GET is session-ENDING (endsTheSession:true — the seat
 			// is gone, same as Poll's #116 handling). Drop the dead queued
 			// row (instance-guarded) so the next EnsureSession re-admits
@@ -558,7 +558,7 @@ func (m *Manager) EndSession(ctx context.Context) error {
 }
 
 // Shutdown handles session teardown at process shutdown. Per the CLI
-// (gap #13), exit ALWAYS releases the upstream session slot (DELETE),
+// exit ALWAYS releases the upstream session slot (DELETE),
 // whether or not persistence is enabled — the CLI DELETEs on exit and a
 // later restart re-admits fresh. When persistence is enabled the cached
 // state is flushed to the store FIRST (so a crash mid-shutdown does not

@@ -59,9 +59,16 @@ func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
 	if token < 0 || token >= len(*toks) || be == nil {
 		return
 	}
-	(*toks)[token].runs.CooldownBan(be)
+	tok := (*toks)[token]
+	tok.runs.CooldownBan(be)
 	p.notifyBan(token+1, "")
-	p.quarantineToken(token, "banned", be)
+	// Quarantine only while the ban is still live after CooldownBan (hard,
+	// or a future resumes_at): an expired temporary ban — resumes_at in the
+	// past — is already lifted upstream, CooldownBan kept no ban memory,
+	// and marking the token terminal would kill a healthy account.
+	if tok.runs.BanError() != nil {
+		p.quarantineToken(tok, "banned", be)
+	}
 }
 
 // CooldownTokenCountryBlocked applies a country-block cooldown to token
@@ -72,8 +79,9 @@ func (p *Pool) CooldownTokenCountryBlocked(token int, cbe *upstream.CountryBlock
 	if token < 0 || token >= len(*toks) || cbe == nil {
 		return
 	}
-	(*toks)[token].runs.CooldownCountryBlocked(cbe)
-	p.quarantineToken(token, "country_blocked", cbe)
+	tok := (*toks)[token]
+	tok.runs.CooldownCountryBlocked(cbe)
+	p.quarantineToken(tok, "country_blocked", cbe)
 }
 
 // CooldownBridge puts the bridge entry's token in a cooldown window of
@@ -148,7 +156,7 @@ func (p *Pool) notifyBan(tokenIndex int, model string) {
 		Message: "a FreeBuff token was classified banned upstream (403)"})
 }
 
-// mismatchEscalation is the issue #140 P1 escalation guard's state for one
+// mismatchEscalation is the issue #140 escalation guard's state for one
 // token: free_mode_invalid_agent_model 403s inside stormWindow mean the
 // registry is serving an id upstream retired — exactly how the v0.11.3-era
 // PREFER_MAX_MODELS over-upgrade escalated accounts to `banned`. N hits in
@@ -220,31 +228,33 @@ func (p *Pool) UnlockToken(token int) error {
 	return nil
 }
 
-// quarantineToken marks the fixed pooled token at idx permanently
+// quarantineToken marks the fixed pooled token entry permanently
 // ineligible for leasing: its account reached a terminal state (banned,
 // country_blocked, or 401 invalid) that the pool must never revive. The
 // marker survives across Acquire calls (the failover loop skips it every
-// pass, so no re-admission attempts) and is cleared only when the operator
-// changes AUTH_TOKENS membership/order at this slot (SetConfig) or
-// explicitly unlocks the token (UnlockToken) after appealing upstream. It
-// is a no-op for out-of-range indices and for bridge entries (per-request
-// tokens are never quarantined — a bridge refusal surfaces to the client
-// as today). Logs exactly one slog.Warn per token: CompareAndSwap guards
-// the single fire, so a token that re-hits the same terminal refusal while
-// already quarantined does not re-log.
-func (p *Pool) quarantineToken(idx int, reason string, err error) {
-	toks := p.toks.Load()
-	if idx < 0 || idx >= len(*toks) {
+// pass, so no re-admission attempts) and is cleared only by UnlockToken or
+// by the entry rebuild an AUTH_TOKENS change triggers (SetConfig replaces
+// the whole entry). It is a no-op for bridge entries (per-request tokens
+// are never quarantined — a bridge refusal surfaces to the client as
+// today).
+//
+// The caller passes the ENTRY it holds, not an index: an index could be
+// reused by a concurrent RemoveLastToken+AddToken, and quarantining by
+// index would mark the fresh healthy token instead of the dead one. Logs
+// exactly one slog.Warn per token: CompareAndSwap guards the single fire,
+// so a token that re-hits the same terminal refusal while already
+// quarantined does not re-log.
+func (p *Pool) quarantineToken(tok *tokenEntry, reason string, err error) {
+	if tok == nil {
 		return
 	}
-	tok := (*toks)[idx]
 	rec := &quarantineState{reason: reason, err: err}
 	if err != nil {
 		rec.detail = err.Error()
 	}
 	if tok.quarantine.CompareAndSwap(nil, rec) {
 		p.logger.Warn("pool: token quarantined (terminal account state)",
-			"token", idx+1, "state", reason, "reason", rec.detail)
+			"token_label", tokenEntryLabel(tok), "state", reason, "reason", rec.detail)
 	}
 }
 

@@ -27,7 +27,7 @@ func (m *Manager) SetAdmissionProbeTTL(d time.Duration) {
 }
 
 // tableReason maps an upstream session status to the terminal-event reason
-// vocabulary (T9). Used by the poll/refresh drop paths so the logged reason
+// vocabulary. Used by the poll/refresh drop paths so the logged reason
 // is always one of the table values; the raw upstream status rides in the
 // log's status field.
 func tableReason(status string) string {
@@ -168,11 +168,11 @@ func (m *Manager) pollPersisted(ctx context.Context, requestedModel string) (*up
 // Poll runs the periodic session-liveness poll: a compact GET with NO
 // heartbeat header — the CLI never beats (x-freebuff-heartbeat is
 // Desktop-only, reference/freebuff freebuff-models.ts:1212-1215); liveness
-// comes from the recurring compact GET itself (gap #2). It refreshes the
+// comes from the recurring compact GET itself. It refreshes the
 // cached state the way the CLI's 30s compact poll does: statusError
 // mappings, drop-on-ban, invalidate on superseded/none, and — within the
 // 30-minute grace drain — an ended response that still carries the instance
-// id is kept as a usable "ended" row instead of being invalidated (gap #13).
+// id is kept as a usable "ended" row instead of being invalidated.
 func (m *Manager) Poll(ctx context.Context) error {
 	m.mu.Lock()
 	if m.state == nil || (m.state.status != "active" && m.state.status != "ended") || m.state.instanceID == "" {
@@ -254,7 +254,7 @@ func (m *Manager) Poll(ctx context.Context) error {
 	}
 	if st.Status == "ended" {
 		// Ended WITH the instance id still present: the row is in the 30-min
-		// grace drain and stays usable (gap #13). Refresh the cached state
+		// grace drain and stays usable. Refresh the cached state
 		// as ended-with-instance so the fast path keeps serving it until
 		// grace closes; the pool keeps polling. The grace end comes from the
 		// response when present, else expiresAt + graceWindow.
@@ -294,7 +294,7 @@ func (m *Manager) Poll(ctx context.Context) error {
 	}
 	// Heartbeat liveness confirmed: the compact poll returned a usable
 	// status (active). instance/ms/status standardize the heartbeat poll
-	// line (T11) so ops can see each liveness beat and its latency.
+	// line so ops can see each liveness beat and its latency.
 	slog.Debug("session: heartbeat poll", "instance_id", shortInstance(instanceID), "ms", ms, "status", st.Status)
 	return nil
 }

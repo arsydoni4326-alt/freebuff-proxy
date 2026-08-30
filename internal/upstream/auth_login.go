@@ -88,7 +88,7 @@ type CLILoginCode struct {
 	// freebuff2api-chenjh/src/login.ts:41 "epoch ms", validated in ms at
 	// :262), and the status backend compares it against Date.now() in ms.
 	// Converting to seconds and re-encoding would make every code look
-	// already-expired (review P2).
+	// already-expired.
 	ExpiresAtRaw int64
 }
 
@@ -146,8 +146,7 @@ func (c *Client) StartCLILogin(ctx context.Context) (*CLILoginCode, error) {
 	}
 	// A missing/zero expiresAt is tolerated with a 1h default, mirroring the
 	// reference (login.ts substitutes Date.now()+60min when absent) — the
-	// login wizard must not die because the server omitted an advisory field
-	// (review P3).
+	// login wizard must not die because the server omitted an advisory field.
 	if decoded.ExpiresAt <= 0 {
 		decoded.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
 	}
@@ -283,7 +282,7 @@ func (c *Client) ProtocolGitHubLogin(ctx context.Context, username, password, to
 		Jar:       jar,
 		// The protocol page walk (login-code -> authorize -> form -> TOTP ->
 		// callback) must not hang on a stalled GitHub page: bound every call
-		// (review P3 — the caller's ctx only covers the whole flow, not
+		// (the caller's ctx only covers the whole flow, not
 		// individual page loads).
 		Timeout: loginCallTimeout,
 		// GitHub's OAuth dance redirects many times; the reference allows 12.

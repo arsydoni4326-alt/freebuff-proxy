@@ -32,10 +32,10 @@ type BridgeTokenSnapshot struct {
 }
 
 // banView derives the snapshot ban view from a remembered runs ban
-// (issues #198/#199). The ban is active while its folded cooldown window
-// still applies; the type must be read off BanError.ResumesAt — NOT the
-// effective BannedUntil — because runs.CooldownBan folds a hard ban (zero
-// ResumesAt) into a 24h safety window. Returns ""/zero when no ban is
+// (issues #198/#199). A hard ban (zero ResumesAt) is PERMANENT —
+// runs.CooldownBan keeps no timed window for it, so BannedUntil stays zero
+// and the type is read off BanError.ResumesAt directly; a temporary ban
+// renders with its ResumesAt deadline. Returns ""/zero when no ban is
 // active.
 func banView(ban *upstream.BanError, until time.Time) (string, time.Time) {
 	if ban == nil || (!until.IsZero() && !time.Now().Before(until)) {

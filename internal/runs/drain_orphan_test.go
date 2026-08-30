@@ -1,6 +1,6 @@
 package runs
 
-// Regression guards for the P1/P3 concurrency fixes:
+// Regression guards for the shutdown concurrency fixes:
 //
 //   - FinishAllRuns must NOT drop runs with an outstanding lease: they are
 //     marked draining and kept alive so the LAST lease release re-queues
@@ -32,7 +32,7 @@ import (
 	"freebuff-proxy/internal/upstream"
 )
 
-// TestFinishAllRunsDefersInflightRuns is the regression guard for the P1
+// TestFinishAllRunsDefersInflightRuns is the regression guard for the
 // anti-ban contract: FinishAllRuns used to delete every run from m.runs and
 // clear m.draining BEFORE calling finishIfReadyCtx, which skips runs with
 // inflight > 0 — so a run with an outstanding lease was never FINISHed
@@ -77,7 +77,7 @@ func TestFinishAllRunsDefersInflightRuns(t *testing.T) {
 }
 
 // TestFinishAllRunsDeferredRunCancelledOnAbandon pins the ReleaseAbandoned
-// half of the P1 fix: a run deferred by FinishAllRuns whose last lease is
+// half of the fix: a run deferred by FinishAllRuns whose last lease is
 // abandoned must FINISH as "cancelled" (not leak, and not report
 // completed — issue #114), with the drained run dropped from the active
 // set before the re-queue so finishIfReadyCtx can run it.
@@ -103,7 +103,7 @@ func TestFinishAllRunsDeferredRunCancelledOnAbandon(t *testing.T) {
 	}
 }
 
-// TestAcquireAfterShutdownRefusesStart is the regression guard for the P3
+// TestAcquireAfterShutdownRefusesStart is the regression guard for the
 // acquire-after-shutdown gap: a request reaching the acquire phase after
 // Shutdown drained the manager must not START a fresh run — the finish
 // worker is stopped, so that run would never be FINISHed. rotate refuses
@@ -141,7 +141,7 @@ func TestAcquireAfterShutdownRefusesStart(t *testing.T) {
 
 // raceServer is a minimal upstream that blocks the agent-runs START until
 // released and records FINISHes — used to hold a rotate's upstream StartRun
-// in flight across Shutdown (P3's in-flight-acquire race).
+// in flight across Shutdown (the in-flight-acquire race).
 type raceServer struct {
 	srv           *httptest.Server
 	startReceived chan struct{} // closed when the START lands
@@ -206,7 +206,7 @@ func (s *raceServer) finishSnapshot() []raceFinish {
 	return append([]raceFinish(nil), s.finishes...)
 }
 
-// TestRotateDiscardsRunStartedDuringShutdown pins the hard half of P3: the
+// TestRotateDiscardsRunStartedDuringShutdown pins the hard half of the fix: the
 // upstream START is already in flight when Shutdown begins. rotate must
 // re-check the shutting-down flag after StartRun returns, discard the fresh
 // run (never track it), best-effort FINISH it inline so it does not leak
@@ -277,7 +277,7 @@ func TestRotateDiscardsRunStartedDuringShutdown(t *testing.T) {
 // failed attempt must re-list the run on the draining set
 // (appendDrainingLocked dedupes) instead of orphaning it outside both
 // sets — otherwise Maintain can never retry it and the run's terminal
-// status is lost upstream (P1, anti-ban contract).
+// status is lost upstream (anti-ban contract).
 func TestFinishAllRunsFailedFinishRelists(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()

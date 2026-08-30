@@ -117,7 +117,7 @@ func TestClassifyRateLimit(t *testing.T) {
 	}
 
 	// Generic 429 with no timestamp, no period, and no Retry-After header is
-	// an opaque refusal: bounded backoff (#140 P2), never a Pacific-midnight
+	// an opaque refusal: bounded backoff (#140), never a Pacific-midnight
 	// lock.
 	errGeneric := classifyError(429, `{"status":"rate_limited"}`, http.Header{})
 	var rleGeneric *RateLimitError
@@ -200,11 +200,12 @@ func TestClassifyBan(t *testing.T) {
 	}
 }
 
-// TestClassifyAccountSuspended verifies the G3 ban-class shape: the newest
+// TestClassifyAccountSuspended verifies the ban-class shape: the newest
 // CLI's hard ban is 403 {"error":"account_suspended","message":"...suspended
 // due to billing issues."} (reference/freebuff sdk run-cancellation.test.ts
 // :314-359). It must route into the same parseBan path as "status":"banned"
-// with NO resumes_at (24h default cooldown), while near-misses stay generic.
+// with NO resumes_at (the permanent hard-ban shape), while near-misses stay
+// generic.
 func TestClassifyAccountSuspended(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -724,8 +725,8 @@ func TestIsTransient(t *testing.T) {
 	}
 }
 
-// TestParseRetryAfterAndFlexTime guards the time parsers' edge branches
-// (G2): HTTP-date Retry-After, zero/negative/garbage values, and
+// TestParseRetryAfterAndFlexTime guards the time parsers' edge branches:
+// HTTP-date Retry-After, zero/negative/garbage values, and
 // numeric-string unix seconds for flex times.
 func TestParseRetryAfterAndFlexTime(t *testing.T) {
 	t.Run("http-date", func(t *testing.T) {
@@ -775,7 +776,7 @@ func TestParseRetryAfterAndFlexTime(t *testing.T) {
 	})
 }
 
-// TestDoBackoffCancelAndDeadline guards the do() retry-loop branches (G3):
+// TestDoBackoffCancelAndDeadline guards the do() retry-loop branches:
 // ctx cancellation during the backoff aborts without a second attempt; a
 // pre-existing deadline skips the internal timeout entirely; and after the
 // retry budget is exhausted the error surfaces as a non-transient wrap.
@@ -884,13 +885,13 @@ func TestDoBackoffCancelAndDeadline(t *testing.T) {
 	})
 }
 
-// TestClassifyErrorMatrix guards the 403 classification matrix (G4): the
+// TestClassifyErrorMatrix guards the 403 classification matrix: the
 // narrowed banned marker, deployment_outside_hours precedence across
 // statuses, chat-level session markers, 500+rate_limited bodies, and
 // ban-before-rate discrimination (E2E flow 3).
 func TestClassifyErrorMatrix(t *testing.T) {
 	t.Run("banned substring does not over-match", func(t *testing.T) {
-		// Regression for Audit B5: a 403 body merely mentioning "banned"
+		// Regression: a 403 body merely mentioning "banned"
 		// (not the {"status":"banned"} marker) must stay a generic 403.
 		err := classifyError(403, `{"error":"model temporarily banned from free tier"}`, http.Header{})
 		if errors.Is(err, ErrBanned) {
@@ -919,7 +920,7 @@ func TestClassifyErrorMatrix(t *testing.T) {
 	})
 
 	t.Run("deployment_outside_hours preempts status cases", func(t *testing.T) {
-		// Pin current behavior (Audit B6, NOT fixed): the marker wins over
+		// Pin current behavior (NOT fixed): the marker wins over
 		// 401/403/429 classification and yields a retryable UpstreamError.
 		cases := []struct {
 			name   string
@@ -1029,7 +1030,7 @@ func TestClassifyErrorMatrix(t *testing.T) {
 }
 
 // TestFailedReplayMetricsDisagreement pins the current metrics behavior on a
-// failed body replay (Audit B3, NOT fixed): the pinned fingerprint is rotated
+// failed body replay (NOT fixed): the pinned fingerprint is rotated
 // and counted BEFORE the replay, so a failed replay leaves FingerprintRotations
 // incremented with no TransientRetries and the profile permanently swapped.
 func TestFailedReplayMetricsDisagreement(t *testing.T) {
@@ -1336,7 +1337,7 @@ func TestChatCompletionsRetriesCapacityDeferredSameSession(t *testing.T) {
 	})
 
 	t.Run("budget resets per request", func(t *testing.T) {
-		// Regression (review P1): the capacity-deferred budget must be
+		// Regression: the capacity-deferred budget must be
 		// per-request, not client-lifetime. Two sequential requests on the
 		// SAME client must each get their own TRANSIENT_RETRIES budget.
 		mock4 := testutil.NewMock()
@@ -1430,7 +1431,7 @@ func TestClassifyLoadSheddingAndPeakHours(t *testing.T) {
 
 	// A truly opaque no-timestamp 429 (no resetAt, no period, no Retry-After
 	// header) gets the bounded backoff — never the Pacific-midnight lock
-	// (#140 P2) and never the load-shedding mislabel.
+	// (#140) and never the load-shedding mislabel.
 	err := classifyError(http.StatusTooManyRequests, `{"status":"rate_limited","message":"daily quota"}`, http.Header{})
 	var rle *RateLimitError
 	if !errors.As(err, &rle) {
@@ -1465,7 +1466,7 @@ func TestClassifyLoadSheddingAndPeakHours(t *testing.T) {
 	}
 }
 
-// TestClassifyOpaqueRateLimitedBoundedBackoff pins #140 P2: a fully opaque
+// TestClassifyOpaqueRateLimitedBoundedBackoff pins #140: a fully opaque
 // rate_limited 429 body with empty headers (no timestamp, no period, no
 // Retry-After) must yield a bounded RetryAfter — a minutes-scale transient
 // is never locked to Pacific midnight.
@@ -1529,7 +1530,7 @@ func TestClassifyRunFanout(t *testing.T) {
 }
 
 // TestClassifyInvalidAgentModel pins the free_mode_invalid_agent_model
-// classification (issue #140 P1): the allowlist-refusal 403 used to fall to
+// classification (issue #140): the allowlist-refusal 403 used to fall to
 // the default branch → dead 502 upstream_unavailable, and retries amplified
 // invisibly (the v0.11.3 escalation path). It must classify as a bounded-
 // cooldown RateLimitError with a DISTINCT Status on any status the marker

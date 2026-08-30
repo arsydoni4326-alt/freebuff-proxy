@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// countRateLimitEvent increments the per-code rate-limit ledger (T7). The
+// countRateLimitEvent increments the per-code rate-limit ledger. The
 // map entry is created lazily so clients built without the constructor
 // (tests, bridge entries) still record safely.
 func (c *Client) countRateLimitEvent(code string) {
@@ -56,7 +56,7 @@ func (c *Client) classify(status int, body string, hdr http.Header) error {
 	if errors.Is(err, ErrWaitingRoomRequired) {
 		c.waitingRoomRequired.Store(true)
 	}
-	// T7 ledger: count every rate-limit-family classification by its
+	// Rate-limit ledger: count every rate-limit-family classification by its
 	// upstream body code and surface one Debug line carrying the FULL
 	// (redacted) body, so the distinct refusal codes (free_mode_rate_limited,
 	// insufficient_quota, limit_burst_rate, ip_capped, spend_limited,
@@ -80,7 +80,7 @@ func classifyError(status int, body string, hdr http.Header) error {
 		// status wire shape, reference/freebuff freebuff-session.ts). Match
 		// the marker exactly: any 403 whose body merely mentions the word
 		// "banned" (e.g. {"error":"model temporarily banned..."}) must stay
-		// a generic 403, not trigger the long ban cooldown. (Audit B5.)
+		// a generic 403, not trigger the ban cooldown.
 		return parseBan(body)
 	case status == http.StatusForbidden && strings.Contains(lower, `"error":"account_suspended"`):
 		// Hard-ban shape: 403 {"error":"account_suspended","message":"...
@@ -88,9 +88,10 @@ func classifyError(status int, body string, hdr http.Header) error {
 		// sdk run-cancellation.test.ts:314-359, api/_post.ts:298-307).
 		// Same ban class as "status":"banned": the body carries no
 		// resumes_at, so BanError.ResumesAt stays zero and CooldownBan
-		// applies its 24h default (runs/cooldown.go) + webhook. Exact
-		// marker only (Audit B5 discipline): 'account-suspended' or a
-		// message merely containing the word must stay a generic 403.
+		// treats it as a PERMANENT hard ban (no timed retry — re-contacting
+		// a suspended account only generates more 403 signal). Exact marker
+		// only: 'account-suspended' or a message merely containing the word
+		// must stay a generic 403.
 		return parseBan(body)
 	case strings.Contains(lower, "deployment_outside_hours"):
 		// Free tier is outside its operating hours: temporarily unavailable
@@ -187,7 +188,7 @@ func classifyError(status int, body string, hdr http.Header) error {
 		// stale registry serving a retired id produces (#121; MiMo 2.5 Pro's
 		// second-stage retirement 403s exactly this). The default branch
 		// turned it into a dead 502 and retries amplified invisibly — issue
-		// #140 P1's escalation-guard target. It is a CONFIG/mismatch refusal,
+		// #140's escalation-guard target. It is a CONFIG/mismatch refusal,
 		// not quota: bounded cooldown (InvalidModelCooldown) so the pool
 		// rotates instead of hammering, no ResetAt/Period (no midnight lock),
 		// distinct Status so the server can surface it with an operator hint.
@@ -241,7 +242,7 @@ func classifyError(status int, body string, hdr http.Header) error {
 	}
 }
 
-// rateLimitInfo derives the T7 ledger code and window for a rate-limit
+// rateLimitInfo derives the ledger code and window for a rate-limit
 // classification. The classification must be in the rate-limit error family
 // (RateLimitError/IpCappedError/CapacityDeferredError) — 403 bans, 401 auth
 // refusals, waiting rooms and other gates never count; code is empty then
@@ -343,7 +344,7 @@ func rateLimitFields(err error) (time.Duration, time.Time) {
 	return 0, time.Time{}
 }
 
-// logRateLimitClassified emits the T7 ledger Debug line. The body is logged
+// logRateLimitClassified emits the rate-limit ledger Debug line. The body is logged
 // in FULL (the 200-rune truncation applies to the HTTP error response only)
 // and must already be redacted by the caller.
 func logRateLimitClassified(status int, body, code, window string, err error) {
@@ -363,7 +364,7 @@ func logRateLimitClassified(status int, body, code, window string, err error) {
 }
 
 // errClassName names the classified error type for the `upstream response`
-// debug line (T5). Wrapped sentinel errors (auth/session/run refusals built
+// debug line. Wrapped sentinel errors (auth/session/run refusals built
 // with fmt.Errorf) fall back to the generic upstream error class.
 func errClassName(err error) string {
 	switch err.(type) {
@@ -499,7 +500,7 @@ func isCapacityDeferred(err error) bool {
 const FanoutCooldown = 60 * time.Second
 
 // InvalidModelCooldown bounds a free_mode_invalid_agent_model refusal
-// (issue #140 P1): the pair is not in the allowlist until the registry
+// (issue #140): the pair is not in the allowlist until the registry
 // refreshes, so retrying sooner only amplifies the 403 storm that escalated
 // accounts to banned in the v0.11.3 incident. A minute per hit gives the
 // live registry refresh time to land while keeping the token available for
@@ -519,7 +520,7 @@ const LoadShedCooldown = 90 * time.Second
 const PeakHoursCooldown = 30 * time.Minute
 
 // opaqueRateLimitBackoff bounds a 429 with no timestamp, no daily-reset
-// signal, and no Retry-After header (issue #140 P2): a fully opaque body
+// signal, and no Retry-After header (issue #140): a fully opaque body
 // must never lock the token until Pacific midnight over a minutes-scale
 // transient, so it gets the same bounded cooldown the other no-timestamp
 // refusals get.
@@ -710,7 +711,7 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		// quota period whose counter is at/over the limit (the daily-cap
 		// bodies). Every other opaque 429 gets a bounded backoff so a
 		// minutes-scale transient is never treated as a full-day lock
-		// (issue #140 P2).
+		// (issue #140).
 		if isDailyCapReset(rle) {
 			nextReset := NextPacificMidnight()
 			rle.ResetAt = nextReset
@@ -724,7 +725,7 @@ func parseRateLimit(body string, headerRetryAfter time.Duration) error {
 		rle.RetryAfter = 60 * time.Second
 	}
 	rle.RetryAfter = clampCooldown(rle.RetryAfter)
-	// T7 ledger window, computed after ResetAt/RetryAfter are finalized
+	// Ledger window, computed after ResetAt/RetryAfter are finalized
 	// (the daily-cap fallback above sets ResetAt so the window is "reset"
 	// for daily-cap timestamp-less 429s; opaque ones carry just
 	// RetryAfter → "retry-after").

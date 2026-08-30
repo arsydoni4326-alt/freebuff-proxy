@@ -185,7 +185,7 @@ type RateLimitError struct {
 	// "pacific_week"), when present — a daily/weekly reset signal once the
 	// recent counter is at/over the limit.
 	Period string
-	// Window is the T7 ledger window for this refusal (body "1 minute"/
+	// Window is the ledger window for this refusal (body "1 minute"/
 	// "30 minutes" text, else "reset" when ResetAt is set, else
 	// "retry-after" when RetryAfter is set, else "none") — reused by the
 	// server's `request failed` WARN dedupe.
