@@ -118,7 +118,7 @@ func TestDoctorSummary(t *testing.T) {
 	}
 }
 
-// TestSharedSubnetworkAdvisory pins the issue #140 P2b print: every pooled
+// TestSharedSubnetworkAdvisory pins the issue #140 print: every pooled
 // token in one deployment shares one egress /24, so the doctor always
 // prints a shared-network advisory when 2+ tokens are configured. Single-
 // token deployments print nothing extra (the correlation is trivially below
