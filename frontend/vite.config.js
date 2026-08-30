@@ -52,7 +52,7 @@ export default defineConfig({
   ],
   base: '/admin/',
   build: {
-    outDir: resolve(__dirname, '../internal/dashboard/dist'),
+    outDir: resolve(__dirname, '../backend/internal/dashboard/dist'),
     emptyOutDir: true,
     assetsDir: 'assets',
   },

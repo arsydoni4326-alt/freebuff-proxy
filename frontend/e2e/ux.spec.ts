@@ -42,7 +42,7 @@ function loadFixtures(): Fixtures {
 // The SPA shell served for /admin/* routes (same file serve-static.mjs
 // serves); the login-page mock below fulfills with it so it can also issue
 // the fb_csrf double-submit cookie like the real gateway does.
-const indexPath = join(__dirname, '../../internal/dashboard/dist/index.html');
+const indexPath = join(__dirname, '../../backend/internal/dashboard/dist/index.html');
 function indexHtml(): string {
   return readFileSync(indexPath, 'utf-8');
 }
@@ -52,7 +52,7 @@ function indexHtml(): string {
  * login fixtures per test via overrides, never shared mutation). One
  * intentional difference: the mocked successful login also sets the
  * non-HttpOnly fb_csrf double-submit cookie, mirroring the real server
- * (internal/server/admin_auth.go: successful login sets fb_admin + fb_csrf).
+ * (backend/internal/server/admin_auth.go: successful login sets fb_admin + fb_csrf).
  */
 async function mockDashboard(
   page: Page,
@@ -188,7 +188,7 @@ async function mockDashboard(
   });
 
   // /admin/login — default success; individual tests may override for 401 case.
-  // Login models the real gateway (internal/server/admin_auth.go): the login
+  // Login models the real gateway (backend/internal/server/admin_auth.go): the login
   // PAGE response issues the non-HttpOnly fb_csrf double-submit cookie
   // (setCSRFCookieIfAbsent runs on HTML responses), the login POST grants the
   // fb_admin session cookie. Each response carries exactly ONE Set-Cookie:

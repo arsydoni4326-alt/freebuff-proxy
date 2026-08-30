@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sync-upstream.sh — fetch CodebuffAI/freebuff changes, update pinned registry
-# files (internal/registry/testdata/upstream/), verify hash parity, and run tests.
+# files (backend/internal/registry/testdata/upstream/), verify hash parity, and run tests.
 #
 # Usage:
 #   scripts/sync-upstream.sh [options] [ref] [clone-dir]
@@ -8,7 +8,7 @@
 # Options:
 #   -c, --check       Check drift only; do not modify any files
 #   --no-test         Skip running Go tests after syncing
-#   --test-all        Run full test suite (go test ./...) instead of registry only
+#   --test-all        Run full test suite (go test ./backend/...) instead of registry only
 #   -h, --help        Show this help message
 #
 # Arguments:
@@ -27,7 +27,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
 UPSTREAM_PREFIX="common/src/constants"
-PINNED_DIR="$REPO_ROOT/internal/registry/testdata/upstream"
+PINNED_DIR="$REPO_ROOT/backend/internal/registry/testdata/upstream"
 
 CHECK_ONLY=0
 RUN_TESTS=1
@@ -233,7 +233,7 @@ if ((CHECK_ONLY)); then
 	fi
 else
 	if ((updated_count > 0)); then
-		echo "==> 3. Updated $updated_count pinned file(s) in internal/registry/testdata/upstream/"
+		echo "==> 3. Updated $updated_count pinned file(s) in backend/internal/registry/testdata/upstream/"
 	else
 		echo "==> 3. All pinned files are already up-to-date (0 files updated)."
 	fi
@@ -263,20 +263,20 @@ if ((RUN_TESTS)); then
 		echo "    WARNING: 'go' binary not found on PATH. Skipping test execution."
 	else
 		if ((TEST_ALL)); then
-			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./..."
-			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...; then
+			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/..."
+			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/...; then
 				echo "    [PASS] Full test suite passed cleanly."
 			else
 				echo "    [FAIL] Full test suite failed. Review test output above." >&2
 				exit 1
 			fi
 		else
-			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./internal/registry/..."
-			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./internal/registry/...; then
+			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/internal/registry/..."
+			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/internal/registry/...; then
 				echo "    [PASS] Registry tests and fallback parity check passed."
 			else
 				echo "    [FAIL] Registry tests failed. If upstream added/removed models or agents," >&2
-				echo "           update fallbackAgents / fallbackRootByModel in internal/registry/registry.go" >&2
+				echo "           update fallbackAgents / fallbackRootByModel in backend/internal/registry/registry.go" >&2
 				echo "           until TestFallbackParityWithPinnedUpstream passes." >&2
 				exit 1
 			fi
@@ -287,13 +287,13 @@ fi
 # 6. Show git status summary of changes
 echo
 echo "==> Upstream Sync Complete!"
-if git -C "$REPO_ROOT" diff --quiet internal/registry/testdata/upstream; then
+if git -C "$REPO_ROOT" diff --quiet backend/internal/registry/testdata/upstream; then
 	echo "No working tree changes (pins were already identical to upstream)."
 else
-	echo "Working tree changes in internal/registry/testdata/upstream/:"
-	git -C "$REPO_ROOT" status --short internal/registry/testdata/upstream
+	echo "Working tree changes in backend/internal/registry/testdata/upstream/:"
+	git -C "$REPO_ROOT" status --short backend/internal/registry/testdata/upstream
 	echo
 	echo "Suggested commit command:"
-	echo "  git add internal/registry/testdata/upstream"
+	echo "  git add backend/internal/registry/testdata/upstream"
 	echo "  git commit -m \"chore(registry): sync pinned upstream models to vendor ${UPSTREAM_SHA:0:7}\""
 fi

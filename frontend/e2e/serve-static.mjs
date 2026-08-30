@@ -5,8 +5,8 @@ import { join, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-// dist is at ../internal/dashboard/dist relative to frontend/e2e
-const dist = resolve(__dirname, '../../internal/dashboard/dist');
+// dist is at ../backend/internal/dashboard/dist relative to frontend/e2e
+const dist = resolve(__dirname, '../../backend/internal/dashboard/dist');
 const port = 4173;
 const host = '127.0.0.1';
 
