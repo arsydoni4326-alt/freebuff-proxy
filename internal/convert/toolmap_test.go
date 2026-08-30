@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestToolMapperRequestRename pins the request-side rename (#140 P2a): mapped
+// TestToolMapperRequestRename pins the request-side rename (#140): mapped
 // client names become official signature names on the wire; schemas pass
 // through untouched; unmapped and already-official names are unchanged.
 func TestToolMapperRequestRename(t *testing.T) {

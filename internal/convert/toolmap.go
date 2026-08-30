@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// Tool-name tolerance mapping (issue #140 P2a).
+// Tool-name tolerance mapping (issue #140).
 //
 // Upstream's free-mode gate classifies a request offering tools with NO
 // signature tool as third-party (foreign_toolset → downgrade to

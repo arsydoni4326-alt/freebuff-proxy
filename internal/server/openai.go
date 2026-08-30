@@ -69,7 +69,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"request body must be a valid JSON object: "+err.Error(), "invalid_request_error", "invalid_json", 0)
 		return
 	}
-	r = r.WithContext(withOriginalBody(r.Context(), body)) // #140 P2a: response-side restore map
+	r = r.WithContext(withOriginalBody(r.Context(), body)) // #140: response-side restore map
 	var relay relayFunc
 	if stream {
 		relay = s.relayStream

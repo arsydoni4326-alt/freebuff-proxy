@@ -100,7 +100,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			"request body must be a valid JSON object: "+err.Error(), "invalid_json", 0)
 		return
 	}
-	r = r.WithContext(withOriginalBody(r.Context(), chatParams)) // #140 P2a: response-side restore map
+	r = r.WithContext(withOriginalBody(r.Context(), chatParams)) // #140: response-side restore map
 	inputTokens := 0
 	if s.tokenEstimator != nil {
 		if count, err := s.tokenEstimator.CountAnthropicRequest(raw); err == nil && count > 0 {
