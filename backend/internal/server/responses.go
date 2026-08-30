@@ -149,9 +149,11 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 //   - include, truncation, service_tier, max_tool_calls, prompt,
 //     safety_identifier, prompt_cache_key, stream_options,
 //     context_management: no chat-completion analogue — ignored
-//     (documented, not silent); input item types function_call /
-//     reasoning / item_reference are non-replayable without stored state
-//     and skipped (documented).
+//     (documented, not silent); the input item type function_call is
+//     replayed as assistant tool_calls so its matching
+//     function_call_output tool message is not orphaned, while
+//     reasoning / item_reference remain non-replayable without stored
+//     state and skipped (documented).
 func responsesToChatParams(raw map[string]any) ([]byte, error) {
 	// Hard-unsupported gate: server-side conversation state, background
 	// runs and moderation have no chat-completion mapping — fail loudly
@@ -278,11 +280,11 @@ func responsesToChatParams(raw map[string]any) ([]byte, error) {
 // responsesInputToMessages, extended with honest multimodal handling:
 // input_image parts map to chat image_url parts (the upstream chat endpoint
 // accepts them — the CLI converts image file parts to image_url itself),
-// input_audio errors (no chat-completion analogue). Input item types
-// function_call / reasoning / item_reference are non-replayable without
-// server-side state and are skipped (documented — the reference does the
-// same; their payloads are artifacts of a prior stored response, not
-// instructions the upstream can run).
+// input_audio errors (no chat-completion analogue). function_call items are
+// replayed as assistant tool_calls so their matching function_call_output
+// tool message is not orphaned; reasoning / item_reference carry no state
+// the upstream can use and are skipped (documented — the reference does the
+// same).
 func responsesInputToMessages(input any, instructions any) ([]any, error) {
 	messages := make([]any, 0, 8)
 	if instructions != nil {
@@ -329,10 +331,38 @@ func responsesInputToMessages(input any, instructions any) ([]any, error) {
 					"tool_call_id": callID,
 					"content":      content,
 				})
-			case "function_call", "reasoning", "item_reference":
-				// Locally unexecutable or non-replayable items are skipped
-				// (the reference does the same — the upstream cannot run
-				// them).
+			case "function_call":
+				// Replay the assistant turn that requested the tool. It must
+				// survive translation even though the upstream never runs it:
+				// the matching "function_call_output" above becomes a
+				// role:"tool" message, and a tool message whose tool_call_id
+				// has no preceding assistant tool_calls entry is an orphan.
+				// Chat backends drop orphaned tool replies, so the model never
+				// sees the result and re-issues the identical call forever.
+				callID, _ := entry["call_id"].(string)
+				name, _ := entry["name"].(string)
+				arguments, _ := entry["arguments"].(string)
+				if callID == "" || name == "" {
+					continue
+				}
+				if arguments == "" {
+					arguments = "{}"
+				}
+				messages = append(messages, map[string]any{
+					"role":    "assistant",
+					"content": nil,
+					"tool_calls": []any{map[string]any{
+						"id":   callID,
+						"type": "function",
+						"function": map[string]any{
+							"name":      name,
+							"arguments": arguments,
+						},
+					}},
+				})
+			case "reasoning", "item_reference":
+				// Non-replayable items are skipped: the upstream cannot use
+				// them and they carry no state the model needs.
 				continue
 			default:
 				role, _ := entry["role"].(string)
