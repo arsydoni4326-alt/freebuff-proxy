@@ -1,9 +1,7 @@
 # Documentation
 
 Public documentation for freebuff-proxy. This folder is committed to the
-repository; local-only development study (reverse-engineering notes, plans,
-research) lives in the ignored `devdocs/` directory and is not part of the
-public repo.
+repository.
 
 ## Guides
 
