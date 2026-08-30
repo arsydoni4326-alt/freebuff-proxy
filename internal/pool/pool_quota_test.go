@@ -257,7 +257,44 @@ func TestDailyMessageCapDisabled(t *testing.T) {
 	}
 }
 
-// TestSetConfigReloadsDailyLimit is the regression guard for the P1 stale
+// TestSetConfigAppendsNewTokens pins the reload growth path: a token
+// appended to AUTH_TOKENS gets an entry built exactly like AddToken (usage
+// and spend slices extended in lockstep), so the new slot serves traffic
+// without a restart.
+func TestSetConfigAppendsNewTokens(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	if p.TokenCount() != 1 {
+		t.Fatalf("TokenCount = %d, want 1", p.TokenCount())
+	}
+
+	newCfg := *p.cfg.Load()
+	newCfg.AuthTokens = append([]string(nil), newCfg.AuthTokens...)
+	newCfg.AuthTokens = append(newCfg.AuthTokens, "tok-1")
+	newCfg.UpstreamBaseURL = mock.URL()
+	p.SetConfig(&newCfg)
+
+	if got := p.TokenCount(); got != 2 {
+		t.Fatalf("TokenCount = %d, want 2 after appended AUTH_TOKENS", got)
+	}
+	cur := (*p.toks.Load())[1]
+	if cur == nil || cur.token != "tok-1" {
+		t.Fatalf("appended entry = %+v, want tok-1", cur)
+	}
+	// The usage/spend slices are index-aligned with the new snapshot.
+	p.usageMu.Lock()
+	msgs := len(p.msgsPerToken)
+	p.usageMu.Unlock()
+	if msgs != 2 {
+		t.Errorf("msgsPerToken len = %d, want 2", msgs)
+	}
+	if p.Snapshot()[1].Token != 1 {
+		t.Errorf("snapshot token index = %d, want 1", p.Snapshot()[1].Token)
+	}
+}
+
+// TestSetConfigReloadsDailyLimit is the regression guard for the stale
 // config bug: the pool kept the *config.Config it was built with, so a
 // reloaded config (dashboard save / admin reload) never took effect for
 // the daily message cap. SetConfig must swap the pointer the pool reads.
@@ -450,7 +487,7 @@ func TestPoolSnapshotZeroCountersWhenNoRetries(t *testing.T) {
 	}
 }
 
-// TestAcquireChatConcurrentTokenMutation is the P1 regression guard for the
+// TestAcquireChatConcurrentTokenMutation is the regression guard for the
 // snapshot double-load race: Acquire used to load p.toks once, then
 // acquireOrder loaded it AGAIN and built indices against the newer
 // (longer) snapshot — an AddToken between the two loads made the failover
@@ -577,7 +614,7 @@ func TestAcquireChatConcurrentTokenMutation(t *testing.T) {
 	}
 }
 
-// TestUsageAccountingConcurrentTokenMutation is the P2 regression guard for
+// TestUsageAccountingConcurrentTokenMutation is the regression guard for
 // the usage-slice indexing race: recordChat/usageCount/usageResetIn index
 // p.msgsPerToken, which RemoveAllTokens (nil) and RemoveLastToken (truncate)
 // mutate concurrently — usageResetIn previously had no bounds check at all
@@ -657,7 +694,7 @@ func TestUsageAccountingConcurrentTokenMutation(t *testing.T) {
 	}
 
 	// Seeder: record usage on arbitrary indices (valid and stale) so
-	// recordChat itself runs under the driver's mutations (P2 class).
+	// recordChat itself runs under the driver's mutations.
 	seedDone := make(chan struct{})
 	go func() {
 		defer close(seedDone)
