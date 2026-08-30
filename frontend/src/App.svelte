@@ -6,7 +6,7 @@
   import Tokens from './lib/pages/Tokens.svelte';
   import QuotaTracker from './lib/pages/QuotaTracker.svelte';
   import Models from './lib/pages/Models.svelte';
-  import Config from './lib/pages/Config.svelte';
+  import Settings from './lib/pages/Settings.svelte';
   import Logs from './lib/pages/Logs.svelte';
   import DevTools from './lib/pages/DevTools.svelte';
   import Login from './lib/pages/Login.svelte';
@@ -27,6 +27,8 @@
     const path = window.location.pathname;
     const hash = window.location.hash.replace('#', '');
     if (path === adminActions.login || hash === 'login') return 'login';
+    // Legacy alias: '#config' still routes to the Settings page.
+    if (hash === 'config') return 'settings';
     if (hash) return hash;
     const segments = path.split('/').filter(Boolean);
     if (segments.length >= 2 && segments[0] === 'admin' && segments[1]) {
@@ -146,8 +148,8 @@
             <QuotaTracker />
           {:else if activeTab === 'models'}
             <Models />
-          {:else if activeTab === 'config'}
-            <Config />
+          {:else if activeTab === 'settings'}
+            <Settings />
           {:else if activeTab === 'logs'}
             <Logs />
           {:else if activeTab === 'devtools'}

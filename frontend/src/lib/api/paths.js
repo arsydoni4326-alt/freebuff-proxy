@@ -17,6 +17,7 @@ export const adminApi = {
   tokens: '/admin/api/tokens',
   models: '/admin/api/models',
   config: '/admin/api/config',
+  configMeta: '/admin/api/config/meta',
   logs: '/admin/api/logs',
   metrics: '/admin/api/metrics',
   traces: '/admin/api/traces',

@@ -10,6 +10,7 @@ type Fixtures = {
   tokens: unknown;
   models: unknown;
   config: unknown;
+  configMeta: unknown;
   logs: { entries: Array<{ level: string; message: string; fields?: string }> } & Record<string, unknown>;
   metrics: unknown;
   setup: unknown;
@@ -25,6 +26,7 @@ function loadFixtures(): Fixtures {
     tokens: JSON.parse(readFileSync(join(dir, 'tokens.json'), 'utf-8')),
     models: JSON.parse(readFileSync(join(dir, 'models.json'), 'utf-8')),
     config: JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')),
+    configMeta: JSON.parse(readFileSync(join(dir, 'config-meta.json'), 'utf-8')),
     logs: JSON.parse(readFileSync(join(dir, 'logs.json'), 'utf-8')),
     metrics: JSON.parse(readFileSync(join(dir, 'metrics.json'), 'utf-8')),
     setup: JSON.parse(readFileSync(join(dir, 'setup.json'), 'utf-8')),
@@ -90,6 +92,15 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify(cfg),
+    });
+  });
+
+  // Config meta — the Settings page key catalog (JSON array from /admin/api/config/meta).
+  await page.route('**/admin/api/config/meta', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(pick('configMeta')),
     });
   });
 
@@ -192,6 +203,10 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
 }
 
 test.describe('dashboard hermetic mocks', () => {
+  // The Settings tests render the 58-key catalog; under parallel workers on
+  // slow runners the render can exceed the default 5s expect window, so give
+  // this group a wider one (CI: 1 worker + retries anyway).
+  test.use({ expect: { timeout: 10_000 } });
   test('Overview polls every 15s and shows token risk cards', async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
@@ -289,46 +304,143 @@ test.describe('dashboard hermetic mocks', () => {
     expect(tokensCount).toBeGreaterThanOrEqual(2);
   });
 
-  test('Config shows env_content in editor and effective table', async ({ page }) => {
+  test('Settings renders catalog groups and saves a toggled bool into the .env', async ({ page }) => {
     const f = loadFixtures();
     const configWithContent = {
       ...f.config,
-      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\n',
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n',
       has_env_file: true,
       effective: [
         { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'AUTH_TOKENS', value: '2 token(s)', secret: true },
         { key: 'API_KEYS', value: '1 key(s)', secret: true },
+        { key: 'ADMIN_TOKEN', value: 'set', secret: true },
+        { key: 'SAFE_MODE', value: 'true', secret: false },
+        { key: 'LOG_LEVEL', value: 'info', secret: false },
+        { key: 'COST_MODE', value: 'free', secret: false },
+        { key: 'MAX_MESSAGES_PER_DAY', value: '0', secret: false },
       ],
     };
     await mockDashboard(page, f, { configWithApiKeys: configWithContent });
 
-    await page.goto('http://127.0.0.1:4173/admin/#config');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/config') && r.status() === 200, { timeout: 5000 }).catch(() => {});
-    await expect(page.getByRole('heading', { name: 'Config', exact: true })).toBeVisible();
+    // The meta catalog is consumed: multiple groups render as Cards.
+    const metaResp = page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 });
+    await page.goto('http://127.0.0.1:4173/admin/#settings');
+    await metaResp;
+    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Pool' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
 
-    // Textarea with id config-env should contain env_content
-    const editor = page.locator('#config-env');
-    await expect(editor).toBeVisible();
-    await expect(editor).toHaveValue(/AUTH_TOKENS/);
-    await expect(editor).toHaveValue(/API_KEYS=sk-local-xyz/);
+    // A documented bool renders as a checkbox; effective value drives it.
+    const safeMode = page.getByRole('checkbox', { name: 'SAFE_MODE' });
+    await expect(safeMode).toBeVisible();
+    await expect(safeMode).toBeChecked();
 
-    // Effective table shows masked secret for API_KEYS
-    await expect(page.getByRole('table')).toContainText('API_KEYS');
+    // Toggling marks the form dirty and surfaces the unsaved-changes banner.
+    await safeMode.uncheck();
+    await expect(page.getByText('Unsaved changes')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save' })).toBeEnabled();
 
-    // Secret rows expose no copy button (values are redacted counts); the
-    // single non-secret row keeps one.
-    await expect(page.getByRole('button', { name: 'copy' })).toHaveCount(1);
+    // Save posts the built .env: the toggled line plus untouched lines.
+    let savedBody = '';
+    await page.unroute('**/admin/config');
+    await page.route('**/admin/config', async (route) => {
+      if (route.request().method() === 'POST') {
+        savedBody = decodeURIComponent(route.request().postData() || '');
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: true,
+            message: 'Saved and reloaded. These keys apply after restart only: LOG_LEVEL',
+            restart_only: ['LOG_LEVEL'],
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText(/apply after restart only/)).toBeVisible();
+    await expect(page.getByText('Applies after restart: LOG_LEVEL')).toBeVisible();
+    expect(savedBody).toContain('SAFE_MODE=false');
+    expect(savedBody).toContain('AUTH_TOKENS=tok0,tok1');
+    expect(savedBody).toContain('LOG_LEVEL=info');
   });
 
-  test('Config rejected save reverts the editor to the server state', async ({ page }) => {
+  test('Settings legacy #config alias, select save, secret masking and raw editor validation', async ({ page }) => {
     const f = loadFixtures();
     const configWithContent = {
       ...f.config,
-      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\n',
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n',
       has_env_file: true,
       effective: [
         { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'AUTH_TOKENS', value: '2 token(s)', secret: true },
         { key: 'API_KEYS', value: '1 key(s)', secret: true },
+        { key: 'ADMIN_TOKEN', value: 'set', secret: true },
+        { key: 'SAFE_MODE', value: 'true', secret: false },
+        { key: 'LOG_LEVEL', value: 'info', secret: false },
+        { key: 'COST_MODE', value: 'free', secret: false },
+        { key: 'MAX_MESSAGES_PER_DAY', value: '0', secret: false },
+      ],
+    };
+    await mockDashboard(page, f, { configWithApiKeys: configWithContent });
+
+    // Legacy '#config' hash still routes to the Settings page.
+    const metaRespLegacy = page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 });
+    await page.goto('http://127.0.0.1:4173/admin/#config');
+    await metaRespLegacy;
+    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+
+    // Select renders enum options from meta; changing it edits the document.
+    const logLevel = page.getByRole('combobox', { name: 'LOG_LEVEL' });
+    await expect(logLevel).toBeVisible();
+    await expect(logLevel).toContainText('debug');
+    await expect(logLevel).toContainText('trace');
+    await logLevel.selectOption('warn');
+
+    // Keys absent from the effective config render as disabled 'not set'.
+    await expect(page.getByText('not set', { exact: true }).first()).toBeVisible();
+
+    // Advanced raw editor mirrors the form edit and still validates.
+    await page.getByText('Advanced: raw .env editor').click();
+    const editor = page.locator('#config-env');
+    await expect(editor).toBeVisible();
+    await expect(editor).toHaveValue(/LOG_LEVEL=warn/);
+    await page.getByRole('button', { name: 'Validate' }).click();
+    await expect(page.getByText(/Configuration is valid/)).toBeVisible();
+
+    // Save posts the built .env line for the edited select.
+    const postReqPromise = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/config'));
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Save' }).click();
+    const postReq = await postReqPromise;
+    expect(decodeURIComponent(postReq.postData() ?? '')).toContain('LOG_LEVEL=warn');
+
+    // Current-values table masks secrets and exposes no copy buttons for them.
+    const valuesTable = page.locator('table');
+    await expect(valuesTable.getByText('redacted')).toHaveCount(3);
+    await expect(valuesTable.getByRole('button', { name: 'copy' })).toHaveCount(5);
+  });
+
+  test('Settings rejected save reverts the form to the server state', async ({ page }) => {
+    const f = loadFixtures();
+    const configWithContent = {
+      ...f.config,
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n',
+      has_env_file: true,
+      effective: [
+        { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'AUTH_TOKENS', value: '2 token(s)', secret: true },
+        { key: 'API_KEYS', value: '1 key(s)', secret: true },
+        { key: 'ADMIN_TOKEN', value: 'set', secret: true },
+        { key: 'SAFE_MODE', value: 'true', secret: false },
+        { key: 'LOG_LEVEL', value: 'info', secret: false },
+        { key: 'COST_MODE', value: 'free', secret: false },
+        { key: 'MAX_MESSAGES_PER_DAY', value: '0', secret: false },
       ],
     };
     await mockDashboard(page, f, { configWithApiKeys: configWithContent });
@@ -347,20 +459,20 @@ test.describe('dashboard hermetic mocks', () => {
       }
     });
 
-    await page.goto('http://127.0.0.1:4173/admin/#config');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/config') && r.status() === 200, { timeout: 5000 }).catch(() => {});
-    const editor = page.locator('#config-env');
-    await expect(editor).toHaveValue(/AUTH_TOKENS/);
+    await page.goto('http://127.0.0.1:4173/admin/#settings');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    const safeMode = page.getByRole('checkbox', { name: 'SAFE_MODE' });
+    await expect(safeMode).toBeChecked();
 
-    // Edit the content, accept the confirm dialog, and save.
-    await editor.fill('LISTEN_ADDR=127.0.0.1:9999\nAUTH_TOKENS=tok0,tok1\n');
+    // Toggle the bool, accept the confirm dialog, and save.
+    await safeMode.uncheck();
     page.once('dialog', (d) => d.accept());
     await page.getByRole('button', { name: 'Save' }).click();
 
-    // Failure alert shown and the editor restored to the original content.
+    // Failure alert shown and the control restored to the server state.
     await expect(page.getByText('Rejected: invalid value')).toBeVisible();
-    await expect(editor).toHaveValue('LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\n');
-    // hasUnsavedChanges reverted — Save button disabled again.
+    await expect(safeMode).toBeChecked();
+    // Dirty reverted — Save button disabled again.
     await expect(page.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
@@ -483,9 +595,11 @@ test.describe('dashboard hermetic mocks', () => {
     // Check that at least one element has aria-live or aria-describedby
     const liveCount = await page.locator('[aria-live]').count();
     expect(liveCount).toBeGreaterThanOrEqual(0);
-    // Field/Config should have label association
-    await page.goto('http://127.0.0.1:4173/admin/#config');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/config'), { timeout: 5000 });
+    // Settings keeps the raw editor's label association (behind the advanced details)
+    const configResp = page.waitForResponse((r) => r.url().includes('/admin/api/config'), { timeout: 5000 });
+    await page.goto('http://127.0.0.1:4173/admin/#settings');
+    await configResp;
+    await page.getByText('Advanced: raw .env editor').click();
     await expect(page.locator('#config-env')).toBeVisible();
     // Verify the textarea has accessible label (sr-only)
     await expect(page.locator('label[for="config-env"]')).toHaveCount(1);
