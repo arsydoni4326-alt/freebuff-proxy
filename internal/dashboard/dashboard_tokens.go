@@ -157,8 +157,9 @@ func (d *Dashboard) tokensData() tokensData {
 	td.HasTokens = len(td.Tokens) > 0
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
 	if td.ShowBridge {
+		spendLimit := cfg.MaxSpendPerDay
 		for _, snap := range d.pool.BridgeSnapshot() {
-			td.BridgeTokenCards = append(td.BridgeTokenCards, bridgeCardFromSnapshot(snap))
+			td.BridgeTokenCards = append(td.BridgeTokenCards, bridgeCardFromSnapshot(snap, spendLimit))
 		}
 	}
 	return td
