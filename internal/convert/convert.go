@@ -73,6 +73,18 @@ func randHex(n int) string {
 //     anyOf/oneOf simplification, type/enum/const cleanup, depth cap 12)
 //   - extracts and normalizes reasoning effort from alternate structures
 //
+// Whitelist policy (feature-translation parity): the whitelist is the
+// documented drop contract — chat-completions params NOT listed here are
+// intentionally not forwarded (e.g. prediction, verbosity, n, audio,
+// web_search_options, moderation) because the upstream chat endpoint has no
+// equivalent. Params whose absence would silently change observable client
+// behavior are rejected with a clear 400 by the handlers BEFORE
+// normalization (n != 1, audio, web_search_options, moderation on
+// /v1/chat/completions; previous_response_id, conversation, background,
+// built-in tools/tool_choice on /v1/responses — see openai.go and
+// responses.go), so a request that arrives at this function carries either
+// mapped-supported params or params the client can afford to lose.
+//
 // modelOverride, when non-empty, replaces the client's model in the
 // forwarded body (used for alias resolution). The returned bytes are compact
 // JSON. Errors only occur on invalid JSON or a non-object body.

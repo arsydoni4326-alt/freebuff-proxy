@@ -122,13 +122,55 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 }
 
 // responsesToChatParams translates a Responses API request body into chat
-// completions parameters (compact JSON). Tools are filtered to the
-// flat "function" type and wrapped in the chat function envelope; input
-// (string or item array) plus instructions become messages; tool_choice is
-// translated; max_output_tokens maps to max_completion_tokens and
-// reasoning.effort to reasoning_effort. Ported from the reference
-// responsesToChatParams / responsesInputToMessages.
+// completions parameters (compact JSON) and ERRORS on feature-flagged
+// params the stateless chat-completions gateway cannot honor (the upstream
+// has no stored conversation, no built-in tools, no background runs, no
+// moderation). Ported from the reference responsesToChatParams /
+// responsesInputToMessages, with silent-filter gaps replaced by honest
+// errors per the parity table.
+//
+// Mapping policy:
+//   - model, stream: passthrough (handler-level).
+//   - instructions → system message; input (string / message items /
+//     function_call_output → tool) → messages; input_image parts map to
+//     chat image_url parts (the upstream chat endpoint accepts them).
+//   - max_output_tokens → max_completion_tokens; reasoning.effort →
+//     reasoning_effort (only when enabled is not false); text.format →
+//     response_format (json_object/json_schema); tool_choice auto/required/
+//     none/function → chat tool_choice; flat function tools → chat function
+//     envelope; parallel_tool_calls, temperature, top_p, user, metadata,
+//     seed, stop: passthrough.
+//   - store: forwarded (chat wire accepts it) but the gateway performs no
+//     storage — documented no-op.
+//   - previous_response_id, conversation (server-side conversation state),
+//     background:true (async), moderation, built-in tools (web_search &
+//     co.) and built-in tool_choice targets: explicit 400 — the client
+//     asked for behavior the gateway does not implement.
+//   - include, truncation, service_tier, max_tool_calls, prompt,
+//     safety_identifier, prompt_cache_key, stream_options,
+//     context_management: no chat-completion analogue — ignored
+//     (documented, not silent); input item types function_call /
+//     reasoning / item_reference are non-replayable without stored state
+//     and skipped (documented).
 func responsesToChatParams(raw map[string]any) ([]byte, error) {
+	// Hard-unsupported gate: server-side conversation state, background
+	// runs and moderation have no chat-completion mapping — fail loudly
+	// rather than silently degrading the request.
+	if v, ok := raw["previous_response_id"]; ok && v != nil {
+		if s, _ := v.(string); s != "" {
+			return nil, fmt.Errorf("unsupported parameter \"previous_response_id\": the gateway is stateless and cannot resume a previous response; send the full input")
+		}
+	}
+	if v, ok := raw["conversation"]; ok && v != nil {
+		return nil, fmt.Errorf("unsupported parameter \"conversation\": server-side conversation state is not supported by this gateway; send the full input")
+	}
+	if bg, ok := raw["background"].(bool); ok && bg {
+		return nil, fmt.Errorf("unsupported parameter \"background\": background runs are not supported by this gateway")
+	}
+	if v, ok := raw["moderation"]; ok && v != nil {
+		return nil, fmt.Errorf("unsupported parameter \"moderation\": request moderation is not supported by this gateway")
+	}
+
 	chat := make(map[string]any)
 	for _, k := range []string{"temperature", "top_p", "parallel_tool_calls", "stop", "seed", "store", "metadata", "user"} {
 		if v, ok := raw[k]; ok && v != nil {
@@ -139,8 +181,14 @@ func responsesToChatParams(raw map[string]any) ([]byte, error) {
 		chat["max_completion_tokens"] = v
 	}
 	if re, ok := raw["reasoning"].(map[string]any); ok {
-		if eff, ok := re["effort"].(string); ok && eff != "" {
-			chat["reasoning_effort"] = strings.ToLower(strings.TrimSpace(eff))
+		enabled := true
+		if en, ok := re["enabled"].(bool); ok {
+			enabled = en
+		}
+		if enabled {
+			if eff, ok := re["effort"].(string); ok && eff != "" {
+				chat["reasoning_effort"] = strings.ToLower(strings.TrimSpace(eff))
+			}
 		}
 	}
 	if text, ok := raw["text"].(map[string]any); ok {
@@ -155,15 +203,21 @@ func responsesToChatParams(raw map[string]any) ([]byte, error) {
 			}
 		}
 	}
-	// Flat Responses function tools → chat function envelope; non-function
-	// tools (web_search, etc.) are filtered so the upstream never sees a
-	// tool type it rejects.
+	// Flat Responses function tools → chat function envelope. Built-in tool
+	// types (web_search, file_search, code_interpreter, computer_use) have
+	// no chat-completions mapping — an explicit 400 beats silently sending
+	// model output the client cannot consume; the gateway has no built-in
+	// tool runner either.
 	if tools, ok := raw["tools"].([]any); ok {
 		chatTools := make([]any, 0, len(tools))
 		for _, t := range tools {
 			tool, ok := t.(map[string]any)
-			if !ok || tool["type"] != "function" {
+			if !ok {
 				continue
+			}
+			typ, _ := tool["type"].(string)
+			if typ != "function" {
+				return nil, fmt.Errorf("unsupported parameter \"tools\": built-in tool type %q is not supported by this gateway (only function tools translate to the upstream chat endpoint)", typ)
 			}
 			name, _ := tool["name"].(string)
 			desc, _ := tool["description"].(string)
@@ -184,27 +238,52 @@ func responsesToChatParams(raw map[string]any) ([]byte, error) {
 			chat["tools"] = chatTools
 		}
 	}
-	// Responses tool_choice: only the function form translates; everything
-	// else falls back to auto.
-	if tc, ok := raw["tool_choice"].(map[string]any); ok {
-		if tc["type"] == "function" {
-			if name, _ := tc["name"].(string); name != "" {
-				chat["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": name}}
-			} else {
-				chat["tool_choice"] = "auto"
+	// Responses tool_choice: "auto" | "required" | "none" map directly;
+	// {type:"function"} maps to the chat function choice; a built-in tool
+	// target has no chat mapping (same honest-error rule as tools).
+	if tc, ok := raw["tool_choice"]; ok && tc != nil {
+		if s, ok := tc.(string); ok {
+			switch s {
+			case "auto", "required", "none":
+				chat["tool_choice"] = s
+			default:
+				return nil, fmt.Errorf("unsupported parameter \"tool_choice\": value %q is not supported by this gateway", s)
 			}
-		} else {
-			chat["tool_choice"] = "auto"
+		} else if tcm, ok := tc.(map[string]any); ok {
+			typ, _ := tcm["type"].(string)
+			switch typ {
+			case "function":
+				if name, _ := tcm["name"].(string); name != "" {
+					chat["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": name}}
+				} else {
+					chat["tool_choice"] = "auto"
+				}
+			case "":
+				return nil, fmt.Errorf("unsupported parameter \"tool_choice\": object without a \"type\"")
+			default:
+				return nil, fmt.Errorf("unsupported parameter \"tool_choice\": built-in tool type %q is not supported by this gateway (only function tools translate)", typ)
+			}
 		}
 	}
-	chat["messages"] = responsesInputToMessages(raw["input"], raw["instructions"])
+	messages, err := responsesInputToMessages(raw["input"], raw["instructions"])
+	if err != nil {
+		return nil, err
+	}
+	chat["messages"] = messages
 	return json.Marshal(chat)
 }
 
 // responsesInputToMessages converts the Responses input (string or item
 // array) plus instructions into chat messages. Ported from the reference
-// responsesInputToMessages.
-func responsesInputToMessages(input any, instructions any) []any {
+// responsesInputToMessages, extended with honest multimodal handling:
+// input_image parts map to chat image_url parts (the upstream chat endpoint
+// accepts them — the CLI converts image file parts to image_url itself),
+// input_audio errors (no chat-completion analogue). Input item types
+// function_call / reasoning / item_reference are non-replayable without
+// server-side state and are skipped (documented — the reference does the
+// same; their payloads are artifacts of a prior stored response, not
+// instructions the upstream can run).
+func responsesInputToMessages(input any, instructions any) ([]any, error) {
 	messages := make([]any, 0, 8)
 	if instructions != nil {
 		if s, ok := instructions.(string); ok && strings.TrimSpace(s) != "" {
@@ -282,6 +361,22 @@ func responsesInputToMessages(input any, instructions any) []any {
 							if text, ok := part["text"].(string); ok {
 								parts = append(parts, map[string]any{"type": "text", "text": text})
 							}
+						case "input_image":
+							imageURL, _ := part["image_url"].(string)
+							if imageURL == "" {
+								if urlObj, ok := part["image_url"].(map[string]any); ok {
+									imageURL, _ = urlObj["url"].(string)
+								}
+							}
+							if imageURL == "" {
+								continue
+							}
+							parts = append(parts, map[string]any{
+								"type":      "image_url",
+								"image_url": map[string]any{"url": imageURL},
+							})
+						case "input_audio":
+							return nil, fmt.Errorf("unsupported parameter \"input\": audio input parts are not supported by this gateway")
 						}
 					}
 					msg := map[string]any{"role": role}
@@ -297,7 +392,7 @@ func responsesInputToMessages(input any, instructions any) []any {
 			}
 		}
 	}
-	return messages
+	return messages, nil
 }
 
 // responsesBase builds the Responses object skeleton with the given status.
@@ -365,8 +460,13 @@ func responsesUsage(usage any) map[string]any {
 		}
 		return out
 	}
-	inputDetails := details("input_tokens_details")
-	outputDetails := details("output_tokens_details")
+	// Accept both the Responses-native and the chat-completion detail key
+	// names: a gateway upstream echoes prompt_tokens_details /
+	// completion_tokens_details, the Responses shape carries
+	// input_tokens_details / output_tokens_details. Later maps win, so the
+	// Responses-native names take precedence when both are present.
+	inputDetails := details("prompt_tokens_details", "input_tokens_details")
+	outputDetails := details("completion_tokens_details", "output_tokens_details")
 	cached, _ := inputDetails["cached_tokens"].(float64)
 	reasoning, _ := outputDetails["reasoning_tokens"].(float64)
 	return map[string]any{

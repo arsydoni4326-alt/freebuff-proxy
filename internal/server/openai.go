@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -59,6 +60,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			ModelUnavailableMessage(rawModel), "invalid_request_error", "model_unavailable", 0)
 		return
 	}
+	if msg := validateChatUnsupportedParams(raw); msg != "" {
+		s.writeJSONError(w, http.StatusBadRequest, msg, "invalid_request_error", "invalid_request_error", 0)
+		return
+	}
 	stream := false
 	if v, ok := raw["stream"].(bool); ok {
 		stream = v
@@ -77,6 +82,38 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		relay = s.relayJSON
 	}
 	s.chatCore(w, r, model, stream, normalized, convert.ExtractReasoningEffort(raw), "chat", relay)
+}
+
+// validateChatUnsupportedParams returns an error message (or "") for
+// chat-completions parameters the gateway cannot honor. Feature-flagged
+// parameters with no upstream mapping MUST fail loudly instead of being
+// dropped silently by the whitelist — the client asked for behavior the
+// gateway does not implement.
+//
+//   - n: the upstream generates exactly one choice; n>1 would need
+//     multi-choice fan-out the gateway cannot provide.
+//   - audio: audio output has no chat-completion analogue upstream.
+//   - web_search_options / moderation: built-in web search and moderation
+//     are not implemented by the upstream chat endpoint.
+//
+// Params that stay whitelisted passthrough (mapped, documented): logit_bias,
+// logprobs, top_logprobs, response_format, seed, store, stream_options,
+// service_tier, modalities, metadata, penalties — every one is an OpenAI
+// chat param the FreeBuff chat endpoint accepts.
+func validateChatUnsupportedParams(raw map[string]any) string {
+	if n, ok := raw["n"].(float64); ok && n != 1 {
+		return fmt.Sprintf("unsupported parameter \"n\": only n=1 is supported (got n=%v); the upstream generates exactly one choice", n)
+	}
+	if v, ok := raw["audio"]; ok && v != nil {
+		return "unsupported parameter \"audio\": audio output is not supported by this gateway"
+	}
+	if v, ok := raw["web_search_options"]; ok && v != nil {
+		return "unsupported parameter \"web_search_options\": built-in web search is not supported by this gateway"
+	}
+	if v, ok := raw["moderation"]; ok && v != nil {
+		return "unsupported parameter \"moderation\": request moderation is not supported by this gateway"
+	}
+	return ""
 }
 
 // handleEmbeddings answers POST /v1/embeddings with a structured
