@@ -38,7 +38,7 @@
       case 'upstage/solar-pro4':
         return '5/day shared premium';
       case 'z-ai/glm-5.3-flash':
-        return '5/day shared premium';
+        return 'unmetered';
       case 'deepseek/deepseek-v4-flash':
       case 'mimo/mimo-v2.5':
         return 'unmetered';

@@ -17,7 +17,7 @@
     { id: 'openai/gpt-5.6-luna', label: 'openai/gpt-5.6-luna (5/day shared)', tag: '5/d' },
     { id: 'upstage/solar-pro4', label: 'upstage/solar-pro4 (5/day shared · experimental)', tag: '5/d' },
     { id: 'mimo/mimo-v2.5', label: 'mimo/mimo-v2.5 (unmetered entry)', tag: 'unmetered' },
-    { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (5/day shared premium)', tag: '5/d' },
+    { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (unmetered)', tag: 'unmetered' },
     { id: 'deepseek/deepseek-v4-flash', label: 'deepseek/deepseek-v4-flash (unmetered)', tag: 'unmetered' },
     { id: 'z-ai/glm-5.2', label: 'z-ai/glm-5.2 (referral promo)', tag: 'referral' },
   ];

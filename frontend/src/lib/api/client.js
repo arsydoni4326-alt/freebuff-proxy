@@ -75,10 +75,12 @@ export async function fetchAPI(path, opts = {}) {
     },
   });
 
-  // dashboardAuth answers unauthenticated admin API requests with a 302 to
-  // /admin/login; fetch follows it and res.json() would then throw a
-  // 'Unexpected token <' HTML parse error. Detect the redirect explicitly.
-  if (res.redirected && new URL(res.url).pathname.endsWith('/admin/login')) {
+    // dashboardAuth answers unauthenticated admin API requests with a 302 to
+  // /admin/login; fetch follows it (on the dev server the final hop is the
+  // SPA's own /admin/#login route) and res.json() would then throw a
+  // 'Unexpected token <' HTML parse error. Detect ANY redirect that lands
+  // under /admin/ as an auth failure.
+  if (res.redirected && new URL(res.url).pathname.startsWith('/admin/')) {
     handleAuthFailure('Session expired');
   }
 
