@@ -993,11 +993,11 @@ func TestPausedModelPolicy(t *testing.T) {
 	}
 
 	got := WithdrawnModelMessage("minimax/minimax-m3")
-	want := "MiniMax M3 is no longer available in Freebuff. We recommend using GPT-5.6 Luna instead."
+	want := "MiniMax M3 is no longer available in Freebuff. We recommend using GLM 5.3 Flash instead."
 	if got != want {
 		t.Errorf("WithdrawnModelMessage = %q, want %q (mirror freebuffWithdrawnModelMessage)", got, want)
 	}
-	if got := WithdrawnModelMessage("stealth/ox-alpha"); !strings.Contains(got, "GPT-5.6 Luna") {
-		t.Errorf("WithdrawnModelMessage(ox-alpha) = %q, want GPT-5.6 Luna replacement", got)
+	if got := WithdrawnModelMessage("stealth/ox-alpha"); !strings.Contains(got, "GLM 5.3 Flash") {
+		t.Errorf("WithdrawnModelMessage(ox-alpha) = %q, want GLM 5.3 Flash replacement", got)
 	}
 }

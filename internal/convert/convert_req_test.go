@@ -551,7 +551,6 @@ func TestEffortsForModel(t *testing.T) {
 	// full ladder — nothing to clamp to.
 	for _, model := range []string{
 		"z-ai/glm-5.2",
-		"z-ai/glm-5.3-flash",
 		"crof/kimi-k3-eco",
 		"meta/muse-spark-1.2-contributor", // god-only, gate-blocked; ladder dropped with the 5951772 catalog sync
 		"google/gemini-2.5-flash-lite",
