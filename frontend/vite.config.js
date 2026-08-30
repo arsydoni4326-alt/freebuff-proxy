@@ -3,12 +3,16 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 
+// Gateway target for the dev proxy; override with VITE_PROXY_TARGET when the
+// gateway runs elsewhere (e.g. a remote host).
+const target = process.env.VITE_PROXY_TARGET || 'http://127.0.0.1:3457';
+
 const proxyTarget = {
-  target: 'http://127.0.0.1:3457',
+  target,
   changeOrigin: true,
   configure: (proxy) => {
     proxy.on('proxyReq', (proxyReq) => {
-      proxyReq.setHeader('Origin', 'http://127.0.0.1:3457');
+      proxyReq.setHeader('Origin', target);
     });
   },
 };
@@ -63,7 +67,7 @@ export default defineConfig({
     // peers / DNS-rebinding hosts read the full .env when ADMIN_TOKEN is unset.
     allowedHosts: ['127.0.0.1', 'localhost'],
     proxy: {
-            '/admin/api': proxyTarget,
+      '/admin/api': proxyTarget,
       // GET /admin/login is the SPA's own login ROUTE (App.svelte
       // goToLogin assigns it); proxying it would serve the gateway's
       // embedded build whose /admin/assets are not in the proxy list,

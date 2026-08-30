@@ -12,6 +12,7 @@
   import { tr } from './i18n.js';
   import { onMount } from 'svelte';
   import { fetchAPI } from './api/client.js';
+  import { adminApi, adminRoot } from './api/paths.js';
 
   let mobileOpen = $state(false);
   let drawerEl = $state(null);
@@ -20,17 +21,17 @@
   // hidden unless the operator explicitly enables DEVTOOLS_ENABLED=true.
   let devToolsEnabled = $state(false);
 
-  const tabs = [
+  const tabs = $derived([
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'tokens',   label: 'Tokens',   icon: Key },
     { id: 'models',   label: 'Models',   icon: Cpu },
     { id: 'config',   label: 'Config',   icon: Settings },
     { id: 'logs',     label: 'Logs',     icon: FileText },
     ...(devToolsEnabled ? [{ id: 'devtools', label: 'Dev Tools', icon: FlaskConical }] : []),
-  ];
+  ]);
   onMount(async () => {
     try {
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const m = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
       const val = m ? m[1].trim().toLowerCase() : '';
@@ -169,7 +170,7 @@
 >
   <nav class="flex-1 flex flex-col px-3 pt-5 pb-3" aria-label="Main navigation">
     <!-- Brand mark: amber bolt matching the favicon -->
-    <a href="/admin" class="flex items-center gap-3 px-2 group" aria-label="freebuff-proxy dashboard home">
+    <a href={adminRoot} class="flex items-center gap-3 px-2 group" aria-label="freebuff-proxy dashboard home">
       <svg viewBox="0 0 32 32" class="w-7 h-7 shrink-0" aria-hidden="true">
         <rect width="32" height="32" rx="7" fill="var(--fp-accent)" />
         <path d="M18 6 9 18h5l-1 8 9-12h-5z" fill="var(--fp-bg)" />
@@ -231,7 +232,7 @@
   class="md:hidden sticky top-0 z-50 border-b border-[var(--fp-border)] bg-[var(--fp-bg)]"
 >
   <div class="flex items-center justify-between h-14 px-4">
-    <a href="/admin" class="flex items-center gap-2.5 group" aria-label="freebuff-proxy dashboard home">
+    <a href={adminRoot} class="flex items-center gap-2.5 group" aria-label="freebuff-proxy dashboard home">
       <svg viewBox="0 0 32 32" class="w-7 h-7 shrink-0" aria-hidden="true">
         <rect width="32" height="32" rx="7" fill="var(--fp-accent)" />
         <path d="M18 6 9 18h5l-1 8 9-12h-5z" fill="var(--fp-bg)" />
@@ -276,7 +277,7 @@
       aria-label="Mobile navigation"
       class="absolute inset-y-0 left-0 w-64 flex flex-col border-r border-[var(--fp-border)] bg-[var(--fp-bg)] px-3 pt-5 pb-3 focus:outline-none"
     >
-      <a href="/admin" class="flex items-center gap-3 px-2 mb-8" aria-label="freebuff-proxy dashboard home">
+      <a href={adminRoot} class="flex items-center gap-3 px-2 mb-8" aria-label="freebuff-proxy dashboard home">
         <svg viewBox="0 0 32 32" class="w-7 h-7 shrink-0" aria-hidden="true">
           <rect width="32" height="32" rx="7" fill="var(--fp-accent)" />
           <path d="M18 6 9 18h5l-1 8 9-12h-5z" fill="var(--fp-bg)" />

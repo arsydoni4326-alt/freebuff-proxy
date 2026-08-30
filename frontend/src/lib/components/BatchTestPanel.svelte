@@ -3,6 +3,7 @@
   import Card from './Card.svelte';
   import Button from './Button.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
 
   let { onLog } = $props();
@@ -54,7 +55,7 @@
         await new Promise((r) => setTimeout(r, 200));
       }
       try {
-        await fetchAPI('/admin/api/tokens');
+        await fetchAPI(adminApi.tokens);
       } catch {}
     } finally {
       batchRunning = false;

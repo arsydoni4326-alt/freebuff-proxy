@@ -8,13 +8,14 @@
  * checks; the server sets the cookie on login and on any admin response
  * where it is still missing, so the wrapper re-reads it per request.
  *
- * Auth failures (401 / redirect to /admin/login) NEVER navigate: they raise
+ * Auth failures (401 / redirect to the login page) NEVER navigate: they raise
  * SessionExpiredError and set the global session-expired flag
  * (lib/stores/session.js) so App.svelte can show the re-login banner.
  * Background polling must never reload the page (issue #197).
  */
 
 import { markSessionExpired } from '../stores/session.js';
+import { adminRoot } from './paths.js';
 
 /** Thrown by fetchAPI/postAPI when the admin session is no longer valid. */
 export class SessionExpiredError extends Error {
@@ -58,7 +59,7 @@ export function csrfHeader(method = 'GET') {
 /**
  * Fetch JSON from an admin API endpoint. On auth failure, sets the global
  * session-expired flag and throws SessionExpiredError (no page navigation).
- * @param {string} path - API path (e.g. '/admin/api/overview')
+ * @param {string} path - API path from lib/api/paths.js
  * @param {RequestInit} [opts] - Additional fetch options
  * @returns {Promise<any>} Parsed JSON response
  * @throws {SessionExpiredError} When the session is no longer valid
@@ -76,11 +77,11 @@ export async function fetchAPI(path, opts = {}) {
   });
 
     // dashboardAuth answers unauthenticated admin API requests with a 302 to
-  // /admin/login; fetch follows it (on the dev server the final hop is the
-  // SPA's own /admin/#login route) and res.json() would then throw a
+  // the login route; fetch follows it (on the dev server the final hop is the
+  // SPA's own login route) and res.json() would then throw a
   // 'Unexpected token <' HTML parse error. Detect ANY redirect that lands
-  // under /admin/ as an auth failure.
-  if (res.redirected && new URL(res.url).pathname.startsWith('/admin/')) {
+  // under the admin prefix as an auth failure.
+  if (res.redirected && new URL(res.url).pathname.startsWith(`${adminRoot}/`)) {
     handleAuthFailure('Session expired');
   }
 

@@ -1,7 +1,7 @@
 <script>
   /**
    * Overview — live proxy status, KPI row, and at-risk token cards.
-   * Data: GET /admin/api/overview (pooled snapshot + token cards), polled every 15s.
+   * Data: the overview endpoint (pooled snapshot + token cards), polled every 15s.
    * All KPIs/cards map to real response fields only.
    */
   import { RefreshCw, ExternalLink, Key, Eye, EyeOff, Trash2 } from '@lucide/svelte';
@@ -16,6 +16,7 @@
   import EmptyState from '../components/EmptyState.svelte';
   import Button from '../components/Button.svelte';
   import { fetchAPI, csrfHeader } from '../api/client.js';
+  import { adminApi, adminActions } from '../api/paths.js';
   import { generateRandomApiKey } from '../utils/format.js';
   import { usePolling } from '../utils/polling.js';
   import { tr } from '../i18n.js';
@@ -64,14 +65,14 @@
     clientKeyMessage = '';
     try {
       const newKey = generateRandomApiKey();
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const regex = /^\s*API_KEYS=(.*)$/m;
       const match = envContent.match(regex);
       const existing = match ? match[1].trim() : '';
       const updated = existing ? `${existing},${newKey}` : newKey;
       const newContent = match ? envContent.replace(regex, `API_KEYS=${updated}`) : (envContent ? `${envContent}\nAPI_KEYS=${updated}` : `API_KEYS=${updated}`);
-      const save = await fetch('/admin/config', {
+      const save = await fetch(adminActions.configSave, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: newContent }),
@@ -103,7 +104,7 @@
     deletingKey = target;
     clientKeyMessage = '';
     try {
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const regex = /^\s*API_KEYS=(.*)$/m;
       const match = envContent.match(regex);
@@ -112,7 +113,7 @@
       const filtered = keys.filter((k) => k !== target);
       const updated = filtered.join(',');
       const newContent = match ? envContent.replace(regex, `API_KEYS=${updated}`) : (envContent ? `${envContent}\nAPI_KEYS=${updated}` : `API_KEYS=${updated}`);
-      const save = await fetch('/admin/config', {
+      const save = await fetch(adminActions.configSave, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: newContent }),
@@ -141,7 +142,7 @@
   // save, so they are fetched once on mount instead of on every 15s poll.
   async function fetchConfig() {
     try {
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
       const val = m ? m[1].trim() : '';
@@ -156,7 +157,7 @@
   }
   async function fetchData() {
     try {
-      data = await fetchAPI('/admin/api/overview');
+      data = await fetchAPI(adminApi.overview);
     } catch (e) {
       error = e.message || $tr('Could not reach the proxy API. Check that the server is running.');
     } finally {
@@ -167,14 +168,14 @@
     if (savingRotation || tokenRotation === newMode) return;
     savingRotation = true;
     try {
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const regex = /^\s*TOKEN_ROTATION=(.*)$/m;
       const match = envContent.match(regex);
       const newContent = match
         ? envContent.replace(regex, `TOKEN_ROTATION=${newMode}`)
         : (envContent ? `${envContent}\nTOKEN_ROTATION=${newMode}` : `TOKEN_ROTATION=${newMode}`);
-      const save = await fetch('/admin/config', {
+      const save = await fetch(adminActions.configSave, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: newContent }),
