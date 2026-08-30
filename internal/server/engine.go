@@ -3,11 +3,8 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"math"
 	"net/http"
-	"strconv"
 	"time"
 
 	"freebuff-proxy/internal/convert"
@@ -57,7 +54,7 @@ type relayFunc func(ctx context.Context, w http.ResponseWriter, up io.Reader, st
 // retry-once recovery, then relay the forced stream to the client through
 // relay. kind names the endpoint in request/done log lines.
 func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, stream bool, normalized []byte, reasoningEffort, kind string, relay relayFunc) {
-	// Issue #140 P2a: the tool-name tolerance map. The handlers normalize
+	// Issue #140: the tool-name tolerance map. The handlers normalize
 	// with NormalizeRequestMapped, which renames mapped client tools to
 	// official signature names IN the normalized body; the mapper that maps
 	// them BACK is rebuilt here from the client's ORIGINAL body so response
@@ -86,33 +83,10 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 		reqAttrs = append(reqAttrs, "reasoning_effort", reasoningEffort)
 	}
 	s.logger.Info(kind+" request", reqAttrs...)
-	// Client-side rate limiting per source IP (issue #137): reject rapid-fire
-	// bursts and spam locally before token lease acquisition or upstream calls.
-	if allowed, retryAfter := s.rateLimiter.Allow(r.RemoteAddr); !allowed {
-		phases.Since(phasetiming.TotalMS, start)
-		retrySec := int(math.Ceil(retryAfter.Seconds()))
-		if retrySec < 1 {
-			retrySec = 1
-		}
-		w.Header().Set("Retry-After", strconv.Itoa(retrySec))
-		s.logger.Warn(kind+" rate limit exceeded",
-			"remote", remoteHost(r),
-			"req_id", reqID,
-			"retry_after_sec", retrySec,
-		)
-		s.rateLimitRejections.Add(1)
-		if isAnthropicRequest(r) {
-			// /v1/messages requests must never see an OpenAI-shaped error body.
-			s.writeAnthropicError(w, r, http.StatusTooManyRequests,
-				fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
-				"rate_limit_exceeded", 0)
-		} else {
-			s.writeJSONError(w, http.StatusTooManyRequests,
-				fmt.Sprintf("client rate limit exceeded (Retry-After: %ds)", retrySec),
-				"rate_limit_exceeded", "rate_limit_exceeded", 0)
-		}
-		return
-	}
+	// Client-side per-IP rate limiting runs in the OUTERMOST request wrapper
+	// (Handler): it must cover every /v1/* surface with a single bucket, so
+	// this core deliberately does not re-limit — direct handler calls (unit
+	// tests) skip the limiter on purpose.
 	// Bridge routing: bridge mode relays the client's Authorization header
 	// as the upstream token.  No token in bridge → 401 before touching
 	// the pool.
@@ -151,7 +125,7 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 			tok = provided
 		}
 	}
-	// Issue #74 P2: refuse new requests fast when (egress, model) is marked
+	// Issue #74: refuse new requests fast when (egress, model) is marked
 	// unfit — the direct egress cannot serve this model for ~5 min. The
 	// pooled path only: bridge clients relay their own token (the client's
 	// own account may serve the model on this egress and their session

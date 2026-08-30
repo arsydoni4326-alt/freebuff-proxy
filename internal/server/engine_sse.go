@@ -27,8 +27,8 @@ type relayStats struct {
 	// field and message_start events (issue #164). Empty when a relay is
 	// driven directly by a test with no lease.
 	servedModel string
-	// toolMap restores client tool names on the response paths (issue #140
-	// P2a): chatCore renames mapped client tools to official signature names
+	// toolMap restores client tool names on the response paths (issue #140):
+	// chatCore renames mapped client tools to official signature names
 	// on the request, so every relay must rename them BACK before writing.
 	// Zero value = identity.
 	toolMap convert.ToolMapper

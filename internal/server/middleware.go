@@ -87,7 +87,12 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			if origin != "*" {
 				h.Add("Vary", "Origin")
 			}
-			h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-version")
+			// The allow-list must cover every credential/header the auth path
+			// accepts (x-api-key, anthropic-api-key) and the Anthropic beta
+			// header real clients carry — a browser preflight fails silently
+			// otherwise ("header not allowed") and the real request never
+			// fires.
+			h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, anthropic-api-key, anthropic-version, anthropic-beta")
 			h.Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
@@ -100,7 +105,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 // quietAccessPath reports whether path is a poll/fire-and-forget endpoint
 // whose access lines are rate-limited (T17): /healthz, /metrics, and CORS
-// OPTIONS preflights. Every other path logs one access line per request.
+// OPTIONS preflights. Unknown paths (which 404) are gated the same way by
+// the access wrapper — an arbitrary-path client must not flood the log.
 func quietAccessPath(method, path string) bool {
 	return path == "/healthz" || path == "/metrics" || method == http.MethodOptions
 }
@@ -110,33 +116,88 @@ func quietAccessPath(method, path string) bool {
 var accessQuietWindow = 60 * time.Second
 
 // accessLogGate is the per-process quiet-path access gate: map[path]lastLog
-// plus a mutex (T17). The path set is bounded by the route table, so no
-// cleanup is needed.
+// plus a mutex (T17). The map is CAPPED: OPTIONS preflights and unknown
+// paths arrive for arbitrary distinct paths, so unbounded membership would
+// leak memory; accessLogDue evicts the oldest entry past the cap.
 var accessLogGate = struct {
 	mu       sync.Mutex
 	lastSeen map[string]time.Time
 }{lastSeen: make(map[string]time.Time)}
 
+// maxAccessGateEntries bounds accessLogGate.lastSeen. The gate's quiet
+// candidates are paths, and a client can mint unlimited distinct paths
+// (OPTIONS preflights, unknown-path 404s), so the map must never grow past
+// this cap: when full the OLDEST entry is evicted before a new one is
+// recorded.
+const maxAccessGateEntries = 512
+
 // accessLogDue reports whether an access line may fire for path now,
 // recording the current attempt. The first request for a path and any
 // request at least accessQuietWindow after the last line fire; requests
-// inside the window are suppressed.
+// inside the window are suppressed. The map stays bounded: past
+// maxAccessGateEntries the oldest entry is evicted.
 func accessLogDue(path string, now time.Time) bool {
 	accessLogGate.mu.Lock()
 	defer accessLogGate.mu.Unlock()
 	last, ok := accessLogGate.lastSeen[path]
 	if !ok || now.Sub(last) >= accessQuietWindow {
 		accessLogGate.lastSeen[path] = now
+		// Bound the gate: arbitrary distinct paths must not grow the
+		// process-global map without limit.
+		if len(accessLogGate.lastSeen) > maxAccessGateEntries {
+			oldestPath, oldest := "", time.Time{}
+			for p, t := range accessLogGate.lastSeen {
+				if oldestPath == "" || t.Before(oldest) {
+					oldestPath, oldest = p, t
+				}
+			}
+			delete(accessLogGate.lastSeen, oldestPath)
+		}
 		return true
 	}
 	return false
 }
 
-// resetAccessLogGate clears the quiet-path access gate (test hook).
+// accessQuietBudget is the per-process cap on quiet-class access lines
+// (healthz/metrics/OPTIONS preflights/unknown-path 404s): per-path gating
+// alone lets a flood of DISTINCT paths emit one line each, so a global
+// budget bounds the total quiet lines per accessQuietWindow.
+var accessQuietBudget = struct {
+	mu          sync.Mutex
+	windowStart time.Time
+	lines       int
+}{}
+
+// maxQuietAccessLines is the budget of quiet-class access lines per
+// accessQuietWindow. Distinct quiet paths beyond it are silent; the window
+// rolls the budget over.
+const maxQuietAccessLines = 60
+
+// accessQuietBudgetDue reports whether the quiet-class line budget remains
+// and charges one line. The window rolls on first use after expiry.
+func accessQuietBudgetDue(now time.Time) bool {
+	accessQuietBudget.mu.Lock()
+	defer accessQuietBudget.mu.Unlock()
+	if accessQuietBudget.windowStart.IsZero() || now.Sub(accessQuietBudget.windowStart) >= accessQuietWindow {
+		accessQuietBudget.windowStart = now
+		accessQuietBudget.lines = 0
+	}
+	if accessQuietBudget.lines >= maxQuietAccessLines {
+		return false
+	}
+	accessQuietBudget.lines++
+	return true
+}
+
+// resetAccessLogGate clears the quiet-path access gate and budget (test hook).
 func resetAccessLogGate() {
 	accessLogGate.mu.Lock()
-	defer accessLogGate.mu.Unlock()
 	clear(accessLogGate.lastSeen)
+	accessLogGate.mu.Unlock()
+	accessQuietBudget.mu.Lock()
+	accessQuietBudget.windowStart = time.Time{}
+	accessQuietBudget.lines = 0
+	accessQuietBudget.mu.Unlock()
 }
 
 // mustSubFS returns the named subtree of an embed.FS. The directory is
@@ -301,7 +362,7 @@ func reqIDFrom(ctx context.Context) string {
 	return id
 }
 
-// originalBodyKey carries the client's raw request body (issue #140 P2a):
+// originalBodyKey carries the client's raw request body (issue #140):
 // handlers normalize+rename tools into a separate buffer, and chatCore needs
 // the ORIGINAL names to build the response-side restore map.
 type originalBodyKey struct{}
