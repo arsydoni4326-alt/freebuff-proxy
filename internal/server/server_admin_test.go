@@ -358,11 +358,15 @@ func loginCookie(t *testing.T, ts *httptest.Server, token string) string {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	cookies := resp.Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("login issued %d cookies, want 1", len(cookies))
+	// The login response also carries the fb_csrf double-submit cookie;
+	// match the session cookie by name.
+	for _, c := range resp.Cookies() {
+		if c.Name == "fb_admin" {
+			return c.Name + "=" + c.Value
+		}
 	}
-	return cookies[0].Name + "=" + cookies[0].Value
+	t.Fatal("login did not set the fb_admin session cookie")
+	return ""
 }
 
 // doDashboardPost issues a POST with the given cookie and returns status + body.

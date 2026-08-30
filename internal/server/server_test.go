@@ -47,7 +47,11 @@ func newTestServerCfg(t *testing.T, apiKeys []string, mut func(*config.Config), 
 		APIKeys:            apiKeys,
 		LogAccess:          true,
 		DashboardEnabled:   true,
-		AdminToken:         config.DefaultAdminToken,
+		// Dev tools default off in production (DEVTOOLS_ENABLED); the test
+		// stack exercises the smoke/playground surfaces, so keep them on
+		// unless a test explicitly flips it (S-05 gate tests set false).
+		DevToolsEnabled: true,
+		AdminToken:      config.DefaultAdminToken,
 		QuotaFallbackModels: map[string]string{
 			"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
 			"z-ai/glm-5.2":               "deepseek/deepseek-v4-flash",

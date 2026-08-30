@@ -1,9 +1,9 @@
 package server_test
 
-// Dashboard HTTP edge tests from the AuditServer P1/P2 gap list: token
-// test-all / add / remove / action-id edges, the mode-switch branch matrix,
-// config-save guards (incl. the empty-content regression), reload failure,
-// smoke/diag edges, CSRF combos, cookie edges, assets, and login-without-token.
+// Dashboard HTTP edge tests for token test-all / add / remove / action-id
+// edges, the mode-switch branch matrix, config-save guards (incl. the
+// empty-content regression), reload failure, smoke/diag edges, CSRF combos,
+// cookie edges, assets, and login-without-token.
 // Split from dashboard_test.go because that file is already ~1000 lines.
 
 import (
@@ -42,6 +42,7 @@ func bridgeDashboardServer(t *testing.T, adminToken string) *httptest.Server {
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         adminToken,
 		DashboardEnabled:   true,
+		DevToolsEnabled:    true,
 	}
 	reg := registry.New(cfg, nil)
 	reg.LoadFallback()
@@ -203,40 +204,42 @@ func TestDashboardTokenAddDuplicate(t *testing.T) {
 	}
 }
 
-// TestDashboardTokenAddAfterDivergence is the regression for the P2 bug:
-// after a config-editor AUTH_TOKENS edit diverges cfg from the pool, adding a
-// token must be rejected (like remove) instead of persisting the stale
-// cfg.AuthTokens+new list to .env.
-func TestDashboardTokenAddAfterDivergence(t *testing.T) {
+// TestDashboardTokenAddAfterConfigEdit pins the adoption contract after a
+// config-editor AUTH_TOKENS edit: the pool reconciles to the editor's list
+// (SetConfig slot reconciliation), so the divergence guard no longer fires
+// and a subsequent add succeeds — pool, .env, and cfg end up consistent.
+func TestDashboardTokenAddAfterConfigEdit(t *testing.T) {
 	t.Chdir(t.TempDir())
 	ts, p := newTestServerCfg(t, nil, func(c *config.Config) { c.AdminToken = "secret" }, testutil.NewMock())
 	cookie := authedCookie(t, ts)
 
-	// Config editor rewrites AUTH_TOKENS to a two-token list; the pool still
-	// holds its original single token.
+	// Config editor rewrites AUTH_TOKENS to a two-token list; the pool
+	// adopts it on reload.
 	resp := postConfig(t, ts.URL, cookie, "AUTH_TOKENS=tok-0,extra-token\nSAFE_MODE=true\n")
 	if body := bodyOf(t, resp); !strings.Contains(body, "Saved and reloaded") {
 		t.Fatalf("config save failed: %s", body)
 	}
-
-	resp = postJSON(t, ts.URL, cookie, "/admin/tokens/add", `{"token":"cb_after_divergence"}`)
-	body := bodyOf(t, resp)
-	if !strings.Contains(body, "differs from the live pool") {
-		t.Errorf("add response = %q, want divergence rejection", body)
+	if got := p.TokenCount(); got != 2 {
+		t.Fatalf("pool TokenCount after config edit = %d, want 2 (adopted)", got)
 	}
-	// The pool and .env must be untouched.
-	if got := p.TokenCount(); got != 1 {
-		t.Errorf("pool TokenCount = %d, want 1 (add rejected)", got)
+
+	resp = postJSON(t, ts.URL, cookie, "/admin/tokens/add", `{"token":"cb_after_config_edit"}`)
+	body := bodyOf(t, resp)
+	if !strings.Contains(body, "Token added at index 2") {
+		t.Fatalf("add response = %q, want success after reconciliation", body)
+	}
+	if got := p.TokenCount(); got != 3 {
+		t.Errorf("pool TokenCount = %d, want 3 (2 adopted + 1 added)", got)
 	}
 	env, err := os.ReadFile(".env")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(env), "cb_after_divergence") {
-		t.Error("rejected add leaked into .env")
+	if !strings.Contains(string(env), "cb_after_config_edit") {
+		t.Errorf("added token missing from .env: %s", env)
 	}
 	if !strings.Contains(string(env), "extra-token") {
-		t.Error("diverged .env must be left untouched")
+		t.Errorf("config-edited token missing from .env: %s", env)
 	}
 }
 
@@ -531,10 +534,10 @@ func TestDashboardModeSwitchVerifyFailureRollsBack(t *testing.T) {
 
 // --- config save guards ---
 
-// TestDashboardConfigSaveEmptyContentRejected is the regression for the P2
-// bug: an empty save (urlencoded POST without content=, an empty text/plain
-// body, or whitespace-only content) must be rejected with the file preserved
-// — never a silent empty .env.
+// TestDashboardConfigSaveEmptyContentRejected is the regression for the
+// empty-save bug: an empty save (urlencoded POST without content=, an empty
+// text/plain body, or whitespace-only content) must be rejected with the
+// file preserved — never a silent empty .env.
 func TestDashboardConfigSaveEmptyContentRejected(t *testing.T) {
 	t.Chdir(t.TempDir())
 	original := "SAFE_MODE=true\nMAX_MESSAGES_PER_DAY=7\n"
@@ -747,6 +750,7 @@ func TestDashboardSmokeEmptyRegistry(t *testing.T) {
 		UpstreamBaseURL:    mock.URL(),
 		AdminToken:         "secret",
 		DashboardEnabled:   true,
+		DevToolsEnabled:    true,
 	}
 	reg := registry.New(cfg, nil) // no fallback
 	p, err := pool.New(cfg, nil, nil, reg)
@@ -950,8 +954,24 @@ func TestDashboardCSRFLoginGate(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("header-less login POST status = %d, want 302", resp.StatusCode)
 	}
-	if cookies := resp.Cookies(); len(cookies) != 1 {
-		t.Errorf("header-less login cookies = %d, want 1", len(cookies))
+	// The login response carries the fb_admin session cookie AND the
+	// non-HttpOnly fb_csrf double-submit cookie (the SPA echoes it as
+	// X-CSRF-Token), so the assertion matches by name.
+	cookies := resp.Cookies()
+	if len(cookies) != 2 {
+		t.Errorf("header-less login cookies = %d, want 2 (fb_admin + fb_csrf)", len(cookies))
+	}
+	foundAdmin, foundCSRF := false, false
+	for _, c := range cookies {
+		switch c.Name {
+		case "fb_admin":
+			foundAdmin = true
+		case "fb_csrf":
+			foundCSRF = true
+		}
+	}
+	if !foundAdmin || !foundCSRF {
+		t.Errorf("login cookies = %v, want fb_admin and fb_csrf", cookies)
 	}
 }
 

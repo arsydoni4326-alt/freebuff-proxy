@@ -57,6 +57,11 @@ func updateEnvKeys(updates []envUpdate) ([]byte, error) {
 		}
 	}
 	for _, u := range updates {
+		// A raw newline would inject a second .env line and a CR would
+		// shred the file's line endings; reject before writing.
+		if strings.ContainsAny(u.Value, "\r\n") {
+			return nil, fmt.Errorf("%s value must not contain newlines (a .env value is one line)", u.Key)
+		}
 		line := u.Key + "=" + u.Value
 		replaced := false
 		for i, l := range lines {
@@ -90,6 +95,15 @@ func updateEnvKeys(updates []envUpdate) ([]byte, error) {
 }
 
 func updateAuthTokensEnv(tokens []string) ([]byte, error) {
+	// AUTH_TOKENS is comma-joined in .env: a token carrying an
+	// interior comma would split into two on the next reload, corrupting
+	// the file the pool was built from. Reject the whole update — the
+	// caller rolls its pool mutation back.
+	for i, tok := range tokens {
+		if strings.Contains(tok, ",") {
+			return nil, fmt.Errorf("AUTH_TOKENS entry %d contains a comma (AUTH_TOKENS is comma-separated in .env)", i+1)
+		}
+	}
 	return updateEnvKeys([]envUpdate{{Key: "AUTH_TOKENS", Value: strings.Join(tokens, ",")}})
 }
 
@@ -266,7 +280,56 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "message": message})
 		return
 	}
+	// Restart-only knobs: the save succeeded and the reload re-applied
+	// everything the pool can move, but the listed keys need a restart to
+	// take effect on the live clients (they are snapshotted when the
+	// upstream clients, session managers, run managers, and notifier are
+	// constructed at boot). Report them explicitly so the save response
+	// cannot read as a full live update.
+	if restartOnly := changedRestartOnlyKeys(oldCfg, &newCfg); len(restartOnly) > 0 {
+		message := fmt.Sprintf("Saved and reloaded. These keys apply after restart only: %s",
+			strings.Join(restartOnly, ", "))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "message": message, "restart_only": restartOnly})
+		return
+	}
 	s.dash.RenderConfigResult(w, r, true, "Saved and reloaded — effective configuration updated.")
+}
+
+// restartOnlyConfigKeys lists knobs that are snapshotted when the upstream
+// clients, session managers, run managers, and notifier are constructed at
+// boot: a config save reloads the in-memory config, but the live objects
+// keep the values they were built with until the process restarts.
+var restartOnlyConfigKeys = []string{
+	"UPSTREAM_BASE_URL",
+	"REQUEST_TIMEOUT",
+	"SESSION_CALL_TIMEOUT",
+	"REQUEST_JITTER",
+	"COST_MODE",
+	"TLS_FINGERPRINT",
+	"TRANSIENT_RETRIES",
+	"HTTP2_UPSTREAM",
+	"DEBUG_DUMP",
+	"ACTING_USER_ID",
+	"SESSION_PERSIST",
+	"SESSION_STATE_FILE",
+	"ADOPT_CLI_SESSION",
+	"WEBHOOK_URL",
+}
+
+// changedRestartOnlyKeys returns the subset of restartOnlyConfigKeys whose
+// effective value changed between oldCfg and newCfg.
+func changedRestartOnlyKeys(oldCfg, newCfg *config.Config) []string {
+	oldKV := effectiveConfigKV(oldCfg)
+	newKV := effectiveConfigKV(newCfg)
+	var changed []string
+	for _, k := range restartOnlyConfigKeys {
+		if oldKV[k] != newKV[k] {
+			changed = append(changed, k)
+		}
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 // parseEnvContent is a lenient dotenv parser: the dashboard's textarea posts
@@ -355,6 +418,7 @@ func effectiveConfigKV(cfg *config.Config) map[string]string {
 		"TLS_FINGERPRINT":                       cfg.TLSFingerprint,
 		"REGISTRY_REFRESH":                      cfg.RegistryRefresh.String(),
 		"DEBUG_DUMP":                            strconv.FormatBool(cfg.DebugDump),
+		"ACTING_USER_ID":                        boolWord(cfg.ActingUserID != ""),
 		"LOG_FILE":                              cfg.LogFile,
 		"LOG_LEVEL":                             cfg.LogLevel,
 		"LOG_FORMAT":                            cfg.LogFormat,
@@ -416,6 +480,11 @@ func changedConfigKeys(oldCfg, newCfg *config.Config) []string {
 	return changed
 }
 
+// osRename is the rename seam used by writeFileAtomic so tests can inject
+// rename failures (Windows rename-over-existing fails transiently on
+// virus-scanned files; the seam reproduces it deterministically).
+var osRename = os.Rename
+
 func writeFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
 	if err != nil {
@@ -431,32 +500,53 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
+	// A directory at the target can never be replaced by a rename (every
+	// platform rejects it) and must not be moved aside: the .bak dance
+	// below would then "succeed" by renaming the directory away.
+	if st, err := os.Stat(path); err == nil && st.IsDir() {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("cannot replace %s: target is a directory", path)
+	}
 	// Rename-over-existing fails transiently on Windows when the target
 	// has a briefly-open handle (antivirus scanning the file we just
 	// wrote). Without retries, a transient lock turns into a rejected
 	// dashboard save or a lost token add (rollback after a failed .env
-	// write). The remove-then-rename fallback stays, but as a last
-	// resort after the plain rename has had a chance to clear the lock.
+	// write). The fallback renames the EXISTING target to path+".bak"
+	// first — never removes it — so a failure between the two renames
+	// cannot lose the old content: worst case the data sits in .bak and is
+	// restored on the next attempt (or recovered by hand).
 	const renameAttempts = 5
 	var lastErr error
 	for i := range renameAttempts {
-		// NOTE: capture the rename error inside the if — the statement-scoped
-		// err shadows the function-level err (from CreateTemp), so assigning
-		// it outside the if would store nil.
-		if err := os.Rename(tmpName, path); err != nil {
+		if err := osRename(tmpName, path); err != nil {
 			lastErr = err
 		} else {
+			// Success; drop a stale .bak left by an interrupted run.
+			_ = os.Remove(path + ".bak")
 			return nil
 		}
 		if _, statErr := os.Stat(path); statErr == nil {
-			// The target exists but rename-over-existing failed: remove it
-			// first, then rename. The next loop iteration re-tries the
-			// plain rename if the fallback itself was transiently locked.
-			if os.Remove(path) == nil {
-				if err := os.Rename(tmpName, path); err != nil {
+			// The target exists but the rename-over failed: move it aside
+			// first (the target itself may be locked, so this too can
+			// fail — retried next round), then retry the temp rename.
+			if err := osRename(path, path+".bak"); err != nil {
+				lastErr = err
+			} else {
+				if err := osRename(tmpName, path); err != nil {
 					lastErr = err
 				} else {
+					_ = os.Remove(path + ".bak")
 					return nil
+				}
+			}
+		}
+		// After any failure the original content may now sit in .bak while
+		// the target is absent; restore it before the next attempt so the
+		// target never stays missing on a retryable error.
+		if _, statErr := os.Stat(path); statErr != nil {
+			if _, bakErr := os.Stat(path + ".bak"); bakErr == nil {
+				if err := osRename(path+".bak", path); err != nil {
+					lastErr = errors.Join(lastErr, fmt.Errorf("restore %s from %s: %w", path, path+".bak", err))
 				}
 			}
 		}

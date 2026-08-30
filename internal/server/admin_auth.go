@@ -32,16 +32,55 @@ type loginFlow struct {
 }
 
 const loginFlowTTL = 10 * time.Minute
-
 const (
 	adminCookieName = "fb_admin"
 	adminCookieTTL  = 24 * time.Hour
+
+	// csrfCookieName is the double-submit CSRF cookie: the SPA reads
+	// it out of document.cookie and echoes the value as the X-CSRF-Token
+	// header on every state-changing request, so it MUST NOT be HttpOnly.
+	csrfCookieName = "fb_csrf"
+
+	// maxAdminTokenLen caps the admin credential accepted at login and as a
+	// new password: longer values only burn compare time and .env
+	// write space, and a whitespace-padded login token must never fail a
+	// locked-out account when the change form trims the same input.
+	maxAdminTokenLen = 256
+
+	// loginGlobalFailMax is the process-wide failed-login budget per
+	// loginGlobalWindow: a distributed brute force spread across
+	// source IPs never trips the per-IP counter but still exhausts the
+	// budget here.
+	loginGlobalFailMax = 20
+	loginGlobalWindow  = time.Minute
+	// loginGlobalLockout is the first process-wide lockout duration; each
+	// budget breach doubles it (exponential backoff) up to
+	// loginGlobalLockoutMax.
+	loginGlobalLockout    = 30 * time.Second
+	loginGlobalLockoutMax = 5 * time.Minute
+	// loginConcurrencyMax bounds concurrent login requests: the handler
+	// reads an attacker-supplied body and contends on the auth mutex, so a
+	// flood must not stack unbounded goroutines in the login path.
+	loginConcurrencyMax = 8
 )
 
 type adminAuth struct {
 	key   [32]byte
 	mu    sync.Mutex
 	fails map[string]failEntry
+
+	// loginSlots is a counting semaphore bounding concurrent login
+	// attempts; tryLogin acquires non-blocking and releaseLogin must be
+	// called when the attempt completes.
+	loginSlots chan struct{}
+
+	// Process-wide failed-login budget: globalFails counts failures inside
+	// the current globalWindow; crossing loginGlobalFailMax flips
+	// globalUntil (per breach doubling, capped at loginGlobalLockoutMax).
+	globalFails  int
+	globalWindow time.Time
+	globalUntil  time.Time
+	globalLevel  int
 }
 
 type failEntry struct {
@@ -50,8 +89,16 @@ type failEntry struct {
 }
 
 func newAdminAuth() *adminAuth {
-	a := &adminAuth{fails: make(map[string]failEntry)}
-	_, _ = rand.Read(a.key[:])
+	a := &adminAuth{
+		fails:      make(map[string]failEntry),
+		loginSlots: make(chan struct{}, loginConcurrencyMax),
+	}
+	if _, err := rand.Read(a.key[:]); err != nil {
+		// The session-cookie HMAC key must be uniformly random: with a
+		// zero or partially filled key any expiry can be signed and admin
+		// cookies forged. A RNG failure at boot is unrecoverable.
+		panic("admin auth: crypto/rand failed to generate the session cookie key: " + err.Error())
+	}
 	return a
 }
 
@@ -100,6 +147,11 @@ func (a *adminAuth) setCookie(w http.ResponseWriter, secure bool) {
 func (a *adminAuth) allow(ip string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Process-wide budget first: while the global lockout is active
+	// every source IP is denied, including fresh ones.
+	if !a.globalUntil.IsZero() && time.Now().Before(a.globalUntil) {
+		return false
+	}
 	e, ok := a.fails[ip]
 	if !ok {
 		return true
@@ -139,6 +191,26 @@ func (a *adminAuth) recordFail(ip string) {
 		}
 	}
 	a.fails[ip] = e
+
+	// Process-wide budget: a distributed brute force spread across
+	// source IPs never trips the per-IP counter, so the global window
+	// counts every failure. Crossing the budget locks the whole login
+	// surface for a duration that doubles with each breach (exponential
+	// backoff, capped at loginGlobalLockoutMax).
+	now := time.Now()
+	if a.globalWindow.IsZero() || now.Sub(a.globalWindow) >= loginGlobalWindow {
+		a.globalWindow = now
+		a.globalFails = 0
+	}
+	a.globalFails++
+	if a.globalFails >= loginGlobalFailMax && (a.globalUntil.IsZero() || !now.Before(a.globalUntil)) {
+		a.globalLevel++
+		dur := loginGlobalLockout << (a.globalLevel - 1)
+		if dur > loginGlobalLockoutMax || dur <= 0 {
+			dur = loginGlobalLockoutMax
+		}
+		a.globalUntil = now.Add(dur)
+	}
 }
 
 func (a *adminAuth) clearFails(ip string) {
@@ -157,8 +229,28 @@ func (a *adminAuth) loginFailState(ip string) (attempts int, locked bool) {
 	return e.count, !e.until.IsZero() && time.Now().Before(e.until)
 }
 
+// tryLogin acquires one of the bounded concurrent-login slots.
+// Returns false when the login surface is saturated; call releaseLogin
+// exactly once when the attempt completes.
+func (a *adminAuth) tryLogin() bool {
+	select {
+	case a.loginSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *adminAuth) releaseLogin() {
+	<-a.loginSlots
+}
+
 func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The SPA reads fb_csrf (double-submit token) out of
+		// document.cookie on page load; issue it on the page response when
+		// missing so the first state-changing POST already carries the pair.
+		s.setCSRFCookieIfAbsent(w, r)
 		cfg := s.cfg.Load()
 		if cfg.AdminToken == "" {
 			next.ServeHTTP(w, r)
@@ -229,6 +321,70 @@ func isLoopbackHost(host string) bool {
 	return host == "localhost"
 }
 
+// isTrustedProxyAddr reports whether the request's peer address is
+// loopback, RFC1918-private, or link-local — the peers allowed to vouch
+// for X-Forwarded-Proto. A TLS-terminating reverse proxy on the same
+// machine or LAN owns the client-facing TLS; a header from any public
+// address is a client-asserted spoof and must not lift the cookie Secure
+// flag.
+func isTrustedProxyAddr(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+}
+
+// secureCookie reports whether admin cookies should carry the Secure flag:
+// a direct TLS connection, or a TLS-terminating reverse proxy on a
+// loopback/private network advertising X-Forwarded-Proto: https. Header
+// values from any other peer are untrusted.
+func secureCookie(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") && isTrustedProxyAddr(r.RemoteAddr)
+}
+
+// newCSRFToken mints the double-submit CSRF value: 32 bytes of
+// crypto/rand, hex-encoded.
+func newCSRFToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// csrfCookie builds the double-submit CSRF cookie. It is deliberately NOT
+// HttpOnly: the SPA reads it from document.cookie and echoes the value as
+// the X-CSRF-Token header on state-changing requests.
+func csrfCookie(r *http.Request, value string) *http.Cookie {
+	return &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   secureCookie(r),
+	}
+}
+
+// setCSRFCookieIfAbsent issues the double-submit CSRF cookie when the
+// request carries none, so the SPA can pick it up and start sending the
+// matching X-CSRF-Token header on its next state-changing request.
+func (s *Server) setCSRFCookieIfAbsent(w http.ResponseWriter, r *http.Request) {
+	if _, err := r.Cookie(csrfCookieName); err != nil {
+		if value, err := newCSRFToken(); err == nil {
+			http.SetCookie(w, csrfCookie(r, value))
+		}
+	}
+}
+
 func (s *Server) adminCSRF(next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -261,6 +417,25 @@ func (s *Server) adminCSRF(next http.Handler) http.HandlerFunc {
 					return
 				}
 			}
+			// Double-submit token: when the fb_csrf cookie is
+			// present, the X-CSRF-Token header must match it exactly.
+			// /admin/login stays origin-checked only — the very first login
+			// attempt may not hold a token yet. Requests without a cookie
+			// keep the checks above as the fallback (a token cannot be
+			// required before it has ever been issued); for those, issue
+			// one on the response so the SPA picks it up for later calls.
+			if r.URL.Path != "/admin/login" {
+				if c, err := r.Cookie(csrfCookieName); err == nil && c.Value != "" {
+					if subtle.ConstantTimeCompare([]byte(c.Value), []byte(r.Header.Get("X-CSRF-Token"))) != 1 {
+						w.Header().Set("Content-Type", "text/html; charset=utf-8")
+						w.WriteHeader(http.StatusForbidden)
+						s.dash.RenderConfigResult(w, r, false, "Invalid CSRF token.")
+						return
+					}
+				} else {
+					s.setCSRFCookieIfAbsent(w, r)
+				}
+			}
 		}
 		next.ServeHTTP(w, r)
 	}
@@ -275,6 +450,10 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin", http.StatusFound)
 			return
 		}
+		// The SPA reads fb_csrf (double-submit token) from
+		// document.cookie; issue it on the login page response so the first
+		// POST already carries the cookie.
+		s.setCSRFCookieIfAbsent(w, r)
 		s.dash.ServeSPA(w, r)
 		return
 	}
@@ -282,6 +461,20 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusFound)
 		return
 	}
+	// Bound the login body: the credential fits in a few hundred bytes and
+	// an attacker-controlled form must not cost a full body read per
+	// attempt.
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	if !s.adminAuth.tryLogin() {
+		// The login surface is saturated: answer busy without consuming a
+		// per-IP or global budget slot.
+		s.logger.Warn("admin login rejected", "remote", remoteHost(r), "reason", "busy")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "Login service is busy — try again shortly."})
+		return
+	}
+	defer s.adminAuth.releaseLogin()
 	ip := remoteHost(r)
 	// The top-of-function method guard already returned for every non-POST
 	// request, so no inner method check is needed here (issue #222).
@@ -293,14 +486,32 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		s.dash.RenderLogin(w, r, "Too many failed attempts — try again in a minute.")
 		return
 	}
-	token := r.FormValue("token")
+	token := strings.TrimSpace(r.FormValue("token"))
+	// Trim exactly like the change-password form: surrounding
+	// whitespace must not silently burn a login attempt whose value the
+	// password form would accept.
+	if len(token) > maxAdminTokenLen {
+		// Over-long credentials are invalid by construction; count them so
+		// the budget cannot be probed for free, but never compare them.
+		s.adminAuth.recordFail(ip)
+		attempts, locked := s.adminAuth.loginFailState(ip)
+		if locked {
+			attempts = maxLoginFails
+		}
+		s.logger.Warn("admin login failed", "remote", ip, "attempts", attempts, "reason", "invalid_token")
+		s.dash.RenderLogin(w, r, "Invalid admin token.")
+		return
+	}
 	if subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AdminToken)) == 1 {
 		s.adminAuth.clearFails(ip)
-		// Secure only when the login arrived over an actual TLS
-		// connection (direct HTTPS or a TLS-terminating reverse proxy
-		// setting X-Forwarded-Proto). A Secure cookie over plain HTTP is
-		// rejected by browsers, silently breaking remote login.
-		s.adminAuth.setCookie(w, r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+		// secureCookie trusts X-Forwarded-Proto only from a loopback or
+		// private peer; a spoofed header from a public address must
+		// never turn the session cookie Secure over plain HTTP.
+		s.adminAuth.setCookie(w, secureCookie(r))
+		// Double-submit CSRF cookie: the SPA re-reads it from
+		// document.cookie after the login response and echoes it on every
+		// later state-changing request.
+		s.setCSRFCookieIfAbsent(w, r)
 		http.Redirect(w, r, "/admin", http.StatusFound)
 		return
 	}
@@ -324,14 +535,13 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	// Match the Secure flag with the current transport, same as login.
 	// A clearing cookie without Secure cannot overwrite a Secure cookie
 	// set during an HTTPS login, leaving the session alive.
-	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    "",
 		Path:     "/admin",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   secure,
+		Secure:   secureCookie(r),
 		MaxAge:   -1,
 	})
 	if r.Method == http.MethodPost {
@@ -393,6 +603,10 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 		s.writeJSONError(w, http.StatusBadRequest, "New password must be at least 6 characters.", "invalid_request_error", "password_too_short", 0)
 		return
 	}
+	if len(req.NewPassword) > maxAdminTokenLen {
+		s.writeJSONError(w, http.StatusBadRequest, "New password is too long (max "+strconv.Itoa(maxAdminTokenLen)+" characters).", "invalid_request_error", "password_too_long", 0)
+		return
+	}
 
 	if req.NewPassword == config.DefaultAdminToken {
 		s.writeJSONError(w, http.StatusBadRequest, "New password cannot be the factory default password ('123456').", "invalid_request_error", "password_insecure", 0)
@@ -405,9 +619,9 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 	// tripping the divergence guard below with a misleading "overridden by
 	// the environment" error on every future attempt. Reject it before any
 	// filesystem mutation instead.
-	if strings.ContainsAny(req.NewPassword, "#\r\n") || req.NewPassword[0] == '"' || req.NewPassword[0] == '\'' {
+	if strings.ContainsAny(req.NewPassword, "#\r\n,") || req.NewPassword[0] == '"' || req.NewPassword[0] == '\'' {
 		s.writeJSONError(w, http.StatusBadRequest,
-			"New password must not contain '#', newline, or start with a quote character: it could not be stored losslessly in .env.",
+			"New password must not contain '#', ',', a newline, or start with a quote character: it could not be stored losslessly in .env.",
 			"invalid_request_error", "password_unsafe_for_env", 0)
 		return
 	}
@@ -448,8 +662,9 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 	s.reg.SetConfig(&newCfg)
 	s.pool.SetConfig(&newCfg)
 
-	// Set updated session cookie
-	s.adminAuth.setCookie(w, r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"))
+	// Set updated session cookie (Secure follows the trusted transport;
+	// X-Forwarded-Proto is honored only from a loopback/private peer).
+	s.adminAuth.setCookie(w, secureCookie(r))
 
 	s.logger.Info("admin password changed successfully", "remote", remoteHost(r))
 

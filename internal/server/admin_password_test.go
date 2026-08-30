@@ -377,7 +377,7 @@ func TestAdminChangePasswordUnsafeCharset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, pw := range []string{"hash#inside", "#leader", `"quoted"`, "'seven1'"} {
+	for _, pw := range []string{"hash#inside", "#leader", `"quoted"`, "'seven1'", "comma,inside"} {
 		payload := `{"current_password":` + strconvQuote(config.DefaultAdminToken) + `,"new_password":` + strconvQuote(pw) + `}`
 		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/change-password", strings.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
@@ -391,6 +391,22 @@ func TestAdminChangePasswordUnsafeCharset(t *testing.T) {
 		if r.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "password_unsafe_for_env") {
 			t.Errorf("password %q status = %d, want 400 password_unsafe_for_env: %s", pw, r.StatusCode, data)
 		}
+	}
+
+	// S-14 over-long passwords are rejected before any .env write.
+	long := strings.Repeat("x", 300)
+	payload := `{"current_password":` + strconvQuote(config.DefaultAdminToken) + `,"new_password":` + strconvQuote(long) + `}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/admin/api/change-password", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	r, err := httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "password_too_long") {
+		t.Errorf("overlong password status = %d, want 400 password_too_long: %s", r.StatusCode, data)
 	}
 
 	envAfter, err := os.ReadFile(".env")

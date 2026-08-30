@@ -301,7 +301,7 @@ func TestWriteErrorExistingMappingsUnchanged(t *testing.T) {
 // TestRestoreEnvFileUnreadable pins the mode-switch rollback guard: when the
 // previous .env existed but was unreadable (oldErr not os.ErrNotExist), the
 // rollback must NOT delete the file — removing it would destroy an operator's
-// present-but-unreadable .env (regression for the P3 finding). POSIX-only:
+// present-but-unreadable .env (regression). POSIX-only:
 // chmod 000 does not block reads on Windows.
 func TestRestoreEnvFileUnreadable(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -474,7 +474,7 @@ func TestQuotaSummaryGlmPromo(t *testing.T) {
 	}
 }
 
-// TestWriteErrorModelIPLimited pins the Issue #74 P2 writeError mapping:
+// TestWriteErrorModelIPLimited pins the Issue #74 writeError mapping:
 // *upstream.LimitedIpError → 409, code model_ip_limited, Retry-After = ceil
 // seconds of lie.RetryAfter (only when > 0 — the body window is surfaced but
 // never sets the unfit registry TTL).
@@ -512,7 +512,7 @@ func TestWriteErrorModelIPLimited(t *testing.T) {
 	}
 }
 
-// TestWriteErrorBareModelIPLimitedSentinel pins the #74 P2 contract for the
+// TestWriteErrorBareModelIPLimitedSentinel pins the #74 contract for the
 // bare sentinel (a registry entry stored without refusal detail): 409 +
 // code model_ip_limited, no Retry-After header.
 func TestWriteErrorBareModelIPLimitedSentinel(t *testing.T) {
