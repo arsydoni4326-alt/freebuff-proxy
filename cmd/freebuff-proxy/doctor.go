@@ -282,7 +282,7 @@ func runDoctor(configPath string) {
 			ok(fmt.Sprintf("Token #%d validity probe succeeded", i+1))
 		}
 
-		// Shared-network advisory (issue #140 P2b): every pooled token in
+		// Shared-network advisory (issue #140): every pooled token in
 		// this deployment shares ONE egress path (the proxy's own), so all
 		// its accounts are on one /24 by construction. Upstream's
 		// shared_signup_network cap permanently limits accounts once ~8 share

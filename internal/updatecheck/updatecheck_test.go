@@ -108,7 +108,7 @@ func TestLatestFetchFailureReturnsprev(t *testing.T) {
 
 // TestLatestFirstFetchFailureBacksOffForTTL verifies that a failed first
 // fetch still starts the CacheTTL backoff window: the attempt is stamped
-// fetched (see the review-P2 comment in Latest), so a second call well
+// fetched (see the comment in Latest), so a second call well
 // inside CacheTTL must reuse the recorded failure window instead of
 // hitting the network again.
 func TestLatestFirstFetchFailureBacksOffForTTL(t *testing.T) {

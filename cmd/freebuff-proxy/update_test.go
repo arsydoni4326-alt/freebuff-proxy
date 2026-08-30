@@ -155,6 +155,10 @@ func TestWindowsUpdateScriptRunsAndSwaps(t *testing.T) {
 // contract: the helper launched detached via `cmd /c start /b` must outlive
 // the launcher, wait for the updating process (pid) to exit, and only then
 // swap the binary and write the OK marker.
+// Known Windows-local flake: can fail once under Temp/AV timing (a slow
+// Defender scan of the temp binary can push the swap past the 15s deadline).
+// It is green on re-run and unrelated to the code — CI gates on the ubuntu
+// run, so treat a lone Windows hiccup here as a re-run, not a defect.
 func TestWindowsUpdateScriptDefersSwapUntilParentExits(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows-only deferred swap")
