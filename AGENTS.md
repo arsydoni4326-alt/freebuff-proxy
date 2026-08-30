@@ -8,7 +8,7 @@ It enables any AI agent harness (Claude Code CLI, Cline, Roo Code, Cursor, Aider
 OpenCode, OMP, Vercel AI SDK, LiteLLM, LangChain) to interface seamlessly with FreeBuff upstream
 models in either Pooled or Bridge mode.
 
-A Svelte 5 SPA dashboard is embedded via `go:embed` in `internal/dashboard` and served under `/admin`.
+A Svelte 5 SPA dashboard lives in `frontend/`, builds into `internal/dashboard/dist`, and is embedded into the single binary via `go:embed`; it is served under `/admin`. Unmatched `/admin/*` deep links fall back to the SPA index (`index.html`). In dev, run `task frontend:dev` (Vite on `127.0.0.1:5173`, base `/admin/`, proxying `/admin/*` to a local gateway on `127.0.0.1:3457` — override the target via `VITE_PROXY_TARGET`) alongside `task dev`; in prod the built SPA is embedded.
 Official reference specifications and SDKs reside in `reference/` (gitignored).
 
 ---
@@ -136,6 +136,7 @@ Single unified trunk on `main`. All features, CLI utilities, and embedded dashbo
 - Pull requests target `main`.
 - Never `git push --force` on `main`.
 - The proxy can be compiled with or without the embedded dashboard via Go build tags (`-tags dashboard`) and configured at runtime via `DASHBOARD_ENABLED`.
+- Rebuild the embedded SPA first with `task frontend:build` before compiling the binary.
 
 ### Reference repo policy (MANDATORY)
 

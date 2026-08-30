@@ -7,16 +7,25 @@ tasks:
       - task --list
 
   build:
-    desc: Build frontend assets and compile the Go binary
-    deps: [build:ui]
+    desc: Build frontend assets then compile the Go binary (frontend first so the embedded dist is fresh)
+    deps: [frontend:build]
     cmds:
       - task: build:proxy
 
-  build:ui:
+  frontend:build:
     desc: Build Svelte 5 frontend into internal/dashboard/dist
-    dir: frontend
     cmds:
-      - npm run build
+      - npm --prefix frontend run build
+
+  frontend:dev:
+    desc: Run frontend Vite dev server on port 5173 (proxies /admin/* to the local gateway; env passes through)
+    cmds:
+      - npm --prefix frontend run dev
+
+  frontend:check:
+    desc: Run frontend e2e tests (Playwright)
+    cmds:
+      - npm --prefix frontend run test:e2e
 
   build:proxy:
     desc: Compile the Go proxy binary
@@ -43,9 +52,3 @@ tasks:
     desc: Run proxy server
     cmds:
       - go run -tags dashboard ./cmd/freebuff-proxy
-
-  dev:ui:
-    desc: Run frontend Vite dev server on port 5173
-    dir: frontend
-    cmds:
-      - npm run dev
