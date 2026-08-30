@@ -133,8 +133,8 @@ const (
 )
 
 func (a *adminAuth) setCookie(w http.ResponseWriter, secure bool) {
-	// codeql[go/cookie-secure-not-set]
 	// fb_admin is intentionally non-Secure over plain-HTTP loopback for local dev; secureCookie() (TLS or X-Forwarded-Proto:https from trusted proxy) ensures Secure for every remote path
+	// codeql[go/cookie-secure-not-set]
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    a.cookieValue(time.Now().Add(adminCookieTTL)),
@@ -366,8 +366,8 @@ func newCSRFToken() (string, error) {
 // HttpOnly: the SPA reads it from document.cookie and echoes the value as
 // the X-CSRF-Token header on state-changing requests.
 func csrfCookie(r *http.Request, value string) *http.Cookie {
-	// codeql[go/cookie-secure-not-set]
 	// double-submit CSRF cookie is readable JS by design; Secure follows the same trusted-proxy rule as the session cookie (plain-HTTP loopback only)
+	// codeql[go/cookie-secure-not-set]
 	return &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    value,
@@ -384,8 +384,8 @@ func csrfCookie(r *http.Request, value string) *http.Cookie {
 func (s *Server) setCSRFCookieIfAbsent(w http.ResponseWriter, r *http.Request) {
 	if _, err := r.Cookie(csrfCookieName); err != nil {
 		if value, err := newCSRFToken(); err == nil {
-			// codeql[go/cookie-secure-not-set]
 			// CSRF cookie is non-Secure only over plain-HTTP loopback for local dev; secureCookie() ensures Secure for every remote path (TLS or trusted-proxy X-Forwarded-Proto:https)
+			// codeql[go/cookie-secure-not-set]
 			http.SetCookie(w, csrfCookie(r, value))
 		}
 	}
@@ -541,8 +541,8 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	// Match the Secure flag with the current transport, same as login.
 	// A clearing cookie without Secure cannot overwrite a Secure cookie
 	// set during an HTTPS login, leaving the session alive.
-	// codeql[go/cookie-secure-not-set]
 	// clearing cookie must mirror login's Secure flag (plain-HTTP loopback => non-Secure; otherwise Secure)
+	// codeql[go/cookie-secure-not-set]
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    "",
