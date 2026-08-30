@@ -72,9 +72,6 @@ func scarceModelSet(models []string) map[string]bool {
 	return out
 }
 
-// bridgeQuotaRemaining reports the bridge entry's session-quota state for model
-// from its last admission (mirrors quotaRemaining in quota.go).
-
 // isQuotaExhaustedError reports whether rle represents a session quota exhaustion
 // (recentCount >= limit or local session quota error) as opposed to a transient rate limit.
 // Issue #178: a refusal carrying a reset timestamp or a pacific_day/pacific_week
@@ -108,35 +105,16 @@ func isDailyCapReset(rle *upstream.RateLimitError) bool {
 	}
 	return rle.Limit > 0 && rle.RecentCount >= rle.Limit
 }
+
+// bridgeQuotaRemaining reports the bridge entry's session-quota state for
+// model from its last admission — the bridge mirror of quotaRemaining, both
+// delegating to quotaStateForSnapshot (quota.go).
 func bridgeQuotaRemaining(entry *bridgeEntry, model string) (known bool, remaining float64, capped bool) {
-	snap := entry.session.Snapshot()
-	if isReferralGatedModel(model) {
-		if !snap.HasGlmEntitlement() {
-			return false, 0, true
-		}
-		if q, ok := snap.QuotaByModel[model]; ok && q.Limit > 0 {
-			resetFuture := !q.ResetAt.IsZero() && q.ResetAt.After(time.Now())
-			if resetFuture && q.RecentCount >= q.Limit {
-				return false, 0, true
-			}
-			if q.RecentCount < q.Limit {
-				return true, q.Limit - q.RecentCount, false
-			}
-		}
-		return true, 1, false
-	}
-	q, ok := snap.QuotaByModel[model]
-	if !ok || q.Limit <= 0 {
-		return false, 0, false
-	}
-	resetFuture := !q.ResetAt.IsZero() && q.ResetAt.After(time.Now())
-	if resetFuture && q.RecentCount >= q.Limit {
-		return false, 0, true
-	}
-	if q.RecentCount < q.Limit {
-		return true, q.Limit - q.RecentCount, false
-	}
-	return false, 0, false
+	// Single window implementation shared with the pooled path
+	// (quotaStateForSnapshot in quota.go) — the two modes must agree on
+	// Pacific reset/fresh/capped semantics, and a duplicated body would
+	// drift.
+	return quotaStateForSnapshot(entry.session.Snapshot(), model)
 }
 
 // bridgeQuotaCapped reports whether the bridge entry's session quota is capped.
@@ -147,23 +125,6 @@ func bridgeQuotaCapped(entry *bridgeEntry, model string) bool {
 
 // bridgeQuotaLimitError builds the 429 RateLimitError for a quota-capped bridge entry.
 func bridgeQuotaLimitError(entry *bridgeEntry, model string) *upstream.RateLimitError {
-	snap := entry.session.Snapshot()
-	q := snap.QuotaByModel[model]
-	retryAfter := time.Duration(0)
-	if !q.ResetAt.IsZero() && q.ResetAt.After(time.Now()) {
-		retryAfter = time.Until(q.ResetAt)
-	}
-	body := "session quota exhausted for model"
-	if isReferralGatedModel(model) && !snap.HasGlmEntitlement() {
-		body = "referral entitlement required for " + model
-	}
-	return &upstream.RateLimitError{
-		Status:      "rate_limited",
-		Model:       model,
-		RetryAfter:  retryAfter,
-		Limit:       q.Limit,
-		RecentCount: q.RecentCount,
-		ResetAt:     q.ResetAt,
-		Body:        body,
-	}
+	// Same 429 body both modes surface (quotaLimitErrorForSnapshot).
+	return quotaLimitErrorForSnapshot(entry.session.Snapshot(), model)
 }

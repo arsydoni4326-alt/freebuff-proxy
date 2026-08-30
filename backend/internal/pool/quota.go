@@ -3,6 +3,7 @@ package pool
 import (
 	"time"
 
+	"freebuff-proxy/backend/internal/session"
 	"freebuff-proxy/backend/internal/upstream"
 )
 
@@ -16,15 +17,18 @@ func isReferralGatedModel(model string) bool {
 	return model == ReferralGatedModel
 }
 
-// quotaRemaining reports the token's session-quota state for model from the
-// last admission (issue #85, #183): known reports whether the quota is known with
+// quotaStateForSnapshot reports one current snapshot's session-quota state
+// for model (issue #85, #183): known reports whether the quota is known with
 // a positive remaining allowance; remaining is the positive delta; capped
 // reports RecentCount >= Limit with a future ResetAt, or absence of referral
 // entitlement for referral-gated models (the token must be skipped this pass —
 // it cannot serve the model right now). Quotas with a past/absent ResetAt are
-// treated as fresh (the window rolled) and never capped.
-func quotaRemaining(tok *tokenEntry, model string) (known bool, remaining float64, capped bool) {
-	snap := tok.session.Snapshot()
+// treated as fresh (the window rolled) and never capped. It is the single
+// implementation behind BOTH quotaRemaining (pooled token) and
+// bridgeQuotaRemaining (bridge entry), so the window semantics — Pacific
+// resets, capped vs fresh windows, referral entitlement — cannot drift
+// between the two modes.
+func quotaStateForSnapshot(snap session.SessionSnapshot, model string) (known bool, remaining float64, capped bool) {
 	if isReferralGatedModel(model) {
 		if !snap.HasGlmEntitlement() {
 			// Token has no referral entitlement for GLM 5.2. Treat as capped
@@ -58,11 +62,18 @@ func quotaRemaining(tok *tokenEntry, model string) (known bool, remaining float6
 	return false, 0, false
 }
 
-// quotaLimitError builds the 429 surfaced when token is excluded for the
-// model's exhausted session quota (issue #85, #183): RetryAfter is the time until
-// the window reset, mirroring the upstream RateLimitError contract.
-func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
-	snap := tok.session.Snapshot()
+// quotaRemaining reports the pooled token's session-quota state for model
+// (quotaStateForSnapshot on the token's current snapshot; see there for the
+// window semantics).
+func quotaRemaining(tok *tokenEntry, model string) (known bool, remaining float64, capped bool) {
+	return quotaStateForSnapshot(tok.session.Snapshot(), model)
+}
+
+// quotaLimitErrorForSnapshot builds the 429 surfaced when a snapshot's quota
+// is exhausted for model (issue #85, #183): RetryAfter is the time until the
+// window reset, mirroring the upstream RateLimitError contract. Shared by
+// quotaLimitError (pooled) and bridgeQuotaLimitError (bridge).
+func quotaLimitErrorForSnapshot(snap session.SessionSnapshot, model string) *upstream.RateLimitError {
 	q := snap.QuotaByModel[model]
 	retryAfter := time.Duration(0)
 	if !q.ResetAt.IsZero() && q.ResetAt.After(time.Now()) {
@@ -81,6 +92,12 @@ func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
 		ResetAt:     q.ResetAt,
 		Body:        body,
 	}
+}
+
+// quotaLimitError builds the 429 surfaced when a pooled token is excluded
+// for the model's exhausted session quota (see quotaLimitErrorForSnapshot).
+func quotaLimitError(tok *tokenEntry, model string) *upstream.RateLimitError {
+	return quotaLimitErrorForSnapshot(tok.session.Snapshot(), model)
 }
 
 // --- pool quota/snapshot ---

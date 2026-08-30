@@ -248,6 +248,11 @@ func (p *Pool) maintainTick(ctx context.Context) {
 		return
 	}
 	for i, tok := range *toks {
+		// Lift-aware quarantine: a temporary ban's marker may have timed
+		// out since the last pass — clear it so the token rejoins the
+		// rotation/poll pool instead of staying excluded until an operator
+		// unlocks it.
+		p.clearLiftedQuarantine(tok)
 		// Cooldown: skip all per-token maintain work (rotate, draining
 		// FINISH, queued-session advance). Upstream calls during a cooldown
 		// look like abuse; the skip is silent — the cooldown itself is

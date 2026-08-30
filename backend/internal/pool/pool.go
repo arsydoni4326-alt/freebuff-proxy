@@ -424,6 +424,12 @@ type quarantineState struct {
 	reason string
 	err    error
 	detail string
+	// liftAt is when a time-limited terminal state (a temporary upstream
+	// ban with a future resumes_at) auto-lifts; zero means the state is
+	// permanent (hard ban, country block, 401 invalid) and only an
+	// operator action (UnlockToken) or an AUTH_TOKENS slot replacement
+	// clears it.
+	liftAt time.Time
 }
 
 // New builds the pool over the configured tokens. len(clients) and

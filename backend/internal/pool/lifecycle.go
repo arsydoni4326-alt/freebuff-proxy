@@ -236,6 +236,12 @@ func (p *Pool) RemoveLastToken() error {
 	defer p.spendMu.Unlock()
 	p.spendPerToken = p.spendPerToken[:len(p.spendPerToken)-1]
 
+	// The removed slot's 1-based mismatch key is dropped: a later AddToken
+	// at the same slot must not inherit a stale escalation window.
+	p.mismatchMu.Lock()
+	delete(p.mismatch, len(next)+1)
+	p.mismatchMu.Unlock()
+
 	// The busy check above and the swap are TOCTOU: an Acquire that loaded
 	// the pre-removal snapshot can lease the removed token in between. Park
 	// the entry so that lease is still released (LeaseRelease bounds-checks
@@ -346,6 +352,11 @@ func (p *Pool) RemoveAllTokens(ctx context.Context) {
 	p.spendMu.Lock()
 	defer p.spendMu.Unlock()
 	p.spendPerToken = nil
+	// Drop every pooled mismatch window: the pool is empty, so stale keys
+	// would only survive as debris (bridge entries use the shared key 0).
+	p.mismatchMu.Lock()
+	p.mismatch = make(map[int]mismatchEscalation)
+	p.mismatchMu.Unlock()
 }
 
 // FinishTokenRuns finishes all active runs of token (dashboard action).
