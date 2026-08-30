@@ -1,6 +1,9 @@
 # ── third-party reference clones (CodebuffAI/freebuff, 9router, etc.) ──
 reference/
 
+# ── stray vendor clone guard (an old arg-parser bug cloned upstream into ./main) ──
+/main/
+
 # ── local secrets / credentials ──
 .env
 .env.local
@@ -28,8 +31,7 @@ tmp/
 
 # ── build outputs (Go binaries) ──
 /freebuff-proxy
-/freebuff-proxy.exe
-/freebuff-proxy-dash.exe
+*.exe
 *.test
 *.out
 coverage.out
@@ -55,6 +57,8 @@ Desktop.ini
 uicheck/
 scripts/token_ref/
 frontend/verify-ui.mjs
+frontend/test-results/
+frontend/playwright-report/
 .worktrees/
 
 # ── misc ──
