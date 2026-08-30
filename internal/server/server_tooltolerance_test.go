@@ -9,7 +9,7 @@ import (
 	"freebuff-proxy/internal/testutil"
 )
 
-// TestChatToolNameToleranceE2E pins the issue #140 P2a layer end-to-end: a
+// TestChatToolNameToleranceE2E pins the issue #140 layer end-to-end: a
 // client dispatching on THIRD-PARTY tool names (Cline's read_file /
 // write_to_file / execute_command) has them renamed to official signature
 // names on the upstream wire (so foreign_toolset / third_party_client never

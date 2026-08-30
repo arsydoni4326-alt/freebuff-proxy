@@ -150,7 +150,7 @@ func NormalizeRequest(body []byte, modelOverride string) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// NormalizeRequestMapped is NormalizeRequest plus the issue #140 P2a
+// NormalizeRequestMapped is NormalizeRequest plus the issue #140
 // tool-name tolerance layer: client tool names with official equivalents are
 // renamed to the signature names on the wire (so upstream's foreign_toolset
 // check and the third_party_client trust cap never see them) and the

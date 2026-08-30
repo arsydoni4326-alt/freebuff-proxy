@@ -105,7 +105,7 @@ func (s *Server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			"request body must be a valid JSON object: "+err.Error(), "invalid_request_error", "invalid_json", 0)
 		return
 	}
-	r = r.WithContext(withOriginalBody(r.Context(), chatParams)) // #140 P2a: response-side restore map
+	r = r.WithContext(withOriginalBody(r.Context(), chatParams)) // #140: response-side restore map
 	respID := "resp_" + randHexString(12)
 	reasoningEffort := convert.ExtractReasoningEffort(raw)
 	var relay relayFunc

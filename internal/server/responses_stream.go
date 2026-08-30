@@ -44,6 +44,10 @@ type responsesStreamState struct {
 	// accumulateResponsesChunk); the terminal response status keys on it
 	// ("length" → incomplete/max_output_tokens, everything else completed).
 	finishReason string
+	// toolMap restores client tool names (issue #140): the request renamed
+	// mapped tools to official signature names upstream, so function_call
+	// items must carry the CLIENT's dispatch name.
+	toolMap convert.ToolMapper
 }
 
 // relayResponsesStream translates upstream chat SSE chunks into Responses
@@ -64,7 +68,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	flusher.Flush()
 
 	createdAt := time.Now().Unix()
-	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: model}
+	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: model, toolMap: stats.toolMap}
 	send := func(ev map[string]any) {
 		b, _ := json.Marshal(ev)
 		// SSE frames carry the documented event: field (like the Anthropic
@@ -477,7 +481,7 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 			}
 			if fn, ok := tc["function"].(map[string]any); ok {
 				if name, ok := fn["name"].(string); ok && name != "" && item.name == "" {
-					item.name = name
+					item.name = st.toolMap.RestoreName(name)
 				}
 				if args, ok := fn["arguments"].(string); ok && args != "" {
 					item.args.WriteString(args)
@@ -549,6 +553,9 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 		return
 	}
 	convert.StripEndTurnToolCalls(completion)
+	// Restore client tool names (issue #140): the completion's tool_calls
+	// carry official signature names; the client dispatches on its own.
+	stats.toolMap.FromUpstreamChunk(completion)
 	resp := responsesBase(model, respID, time.Now().Unix(), "completed")
 	if m, _ := completion["model"].(string); m != "" {
 		resp["model"] = m

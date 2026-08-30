@@ -1,6 +1,6 @@
 package server
 
-// Regression tests for the P2 relay protocol fixes (review 2026-08-21):
+// Regression tests for relay protocol fixes:
 //   1. OpenAI end_turn continuation-fragment drop must run on EVERY
 //      tool-bearing chunk, not only chunks containing the "end_turn" string.
 //   2. Anthropic streaming finalize must preserve max_tokens (and other)
@@ -19,10 +19,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"freebuff-proxy/internal/config"
+	"freebuff-proxy/internal/convert"
+	"freebuff-proxy/internal/registry"
+	"freebuff-proxy/internal/session"
+	"freebuff-proxy/internal/testutil"
 )
 
 // sseFrame is one parsed SSE event (event: field + data JSON).
@@ -236,15 +243,19 @@ func TestAnthropicStreamToolTextToolInterleave(t *testing.T) {
 	if reopened <= first {
 		t.Errorf("reopened tool block index %d must be a fresh index above the first %d", reopened, first)
 	}
-	if len(jsonDeltas) != 2 {
-		t.Fatalf("input_json_delta count = %d, want 2; %+v", len(jsonDeltas), jsonDeltas)
+	if len(jsonDeltas) != 3 {
+		t.Fatalf("input_json_delta count = %d, want 3; %+v", len(jsonDeltas), jsonDeltas)
 	}
 	if jsonDeltas[0].idx != first || jsonDeltas[0].partial != `{"cmd":"` {
 		t.Errorf("first input_json_delta = %+v, want index %d with the opening args", jsonDeltas[0], first)
 	}
-	// The trailing args must land in the REOPENED block, preserving them.
-	if jsonDeltas[1].idx != reopened || jsonDeltas[1].partial != `ls"}` {
-		t.Errorf("trailing args delta = %+v, want index %d with the closing args", jsonDeltas[1], reopened)
+	// The reopened block must replay the accumulated prefix (the client
+	// assembles input per block index), then take the trailing args.
+	if jsonDeltas[1].idx != reopened || jsonDeltas[1].partial != `{"cmd":"` {
+		t.Errorf("reopened block missing accumulated-prefix replay: %+v, want index %d with the full prefix", jsonDeltas[1], reopened)
+	}
+	if jsonDeltas[2].idx != reopened || jsonDeltas[2].partial != `ls"}` {
+		t.Errorf("trailing args delta = %+v, want index %d with the closing args", jsonDeltas[2], reopened)
 	}
 	// The reopened block carries the accumulated id/name.
 	if name, _ := toolStartData[1]["name"].(string); name != "Bash" {
@@ -343,8 +354,11 @@ func TestAnthropicStreamThinkingAfterToolClosesToolBlock(t *testing.T) {
 	if toolStarts[1] <= toolStarts[0] {
 		t.Errorf("reopened tool block index %d must exceed the first %d", toolStarts[1], toolStarts[0])
 	}
-	if len(jsonDeltas) != 2 || jsonDeltas[1].idx != toolStarts[1] || jsonDeltas[1].partial != `ls"}` {
+	if len(jsonDeltas) != 3 || jsonDeltas[2].idx != toolStarts[1] || jsonDeltas[2].partial != `ls"}` {
 		t.Errorf("trailing args delta = %+v, want index %d with the closing args", jsonDeltas, toolStarts[1])
+	}
+	if jsonDeltas[1].idx != toolStarts[1] || jsonDeltas[1].partial != `{"cmd":"` {
+		t.Errorf("reopened block missing accumulated-prefix replay: %+v, want index %d with the full prefix", jsonDeltas, toolStarts[1])
 	}
 }
 
@@ -477,5 +491,214 @@ func TestResponsesStreamTransportErrorFailed(t *testing.T) {
 	}
 	if strings.Contains(body, "response.output_item.done") {
 		t.Errorf("done events emitted on the failure path: %q", truncateStr(body, 400))
+	}
+}
+
+// TestResponsesStreamRestoresClientToolNames pins client tool-name restore
+// on the /v1/responses STREAM path: an upstream tool_call carrying the
+// official signature name (the request renamed the client's mapped tool)
+// must surface as the client's dispatch name in the emitted function_call
+// item — otherwise the client's dispatcher never routes the call.
+func TestResponsesStreamRestoresClientToolNames(t *testing.T) {
+	s := testRelayServer()
+	tm := convert.NewToolMapper([]byte(`{"tools":[{"type":"function","function":{"name":"bash"}}]}`))
+	rec := httptest.NewRecorder()
+	ss := strings.Join([]string{
+		testutilSSE(`{"id":"chatcmpl-tn","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_r1","type":"function","function":{"name":"run_terminal_command","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":null}]}`),
+		testutilSSE(`{"id":"chatcmpl-tn","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
+	}, "")
+	s.relayResponsesStream(context.Background(), rec, strings.NewReader(ss), &relayStats{toolMap: tm}, time.Now(), "m", "resp_tn")
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"bash"`) {
+		t.Errorf("responses stream did not restore client tool name: %q", truncateStr(body, 400))
+	}
+	if strings.Contains(body, `"name":"run_terminal_command"`) {
+		t.Errorf("responses stream leaked the official tool name: %q", truncateStr(body, 400))
+	}
+}
+
+// TestResponsesJSONRestoresClientToolNames pins the same restore on the
+// non-streaming /v1/responses JSON path: the completed response's
+// function_call output item must carry the client's dispatch name.
+func TestResponsesJSONRestoresClientToolNames(t *testing.T) {
+	s := testRelayServer()
+	tm := convert.NewToolMapper([]byte(`{"tools":[{"type":"function","function":{"name":"bash"}}]}`))
+	rec := httptest.NewRecorder()
+	ss := strings.Join([]string{
+		testutilSSE(`{"id":"chatcmpl-tj","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_j1","type":"function","function":{"name":"run_terminal_command","arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}`),
+		testutilSSE(`{"id":"chatcmpl-tj","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`),
+	}, "")
+	s.relayResponsesJSON(context.Background(), rec, strings.NewReader(ss), &relayStats{toolMap: tm}, time.Now(), "m", "resp_tj")
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"bash"`) {
+		t.Errorf("responses JSON did not restore client tool name: %q", truncateStr(body, 400))
+	}
+	if strings.Contains(body, `"name":"run_terminal_command"`) {
+		t.Errorf("responses JSON leaked the official tool name: %q", truncateStr(body, 400))
+	}
+}
+
+// TestOpenAIStreamXMLFlushRestoresClientToolNames pins the flush-only path:
+// a tool call extracted from an UNCLOSED XML block at stream end is relayed
+// as a synthetic native chunk that must run the same client tool-name
+// restore as the normal chunk path.
+func TestOpenAIStreamXMLFlushRestoresClientToolNames(t *testing.T) {
+	s := testRelayServer()
+	tm := convert.NewToolMapper([]byte(`{"tools":[{"type":"function","function":{"name":"bash"}}]}`))
+	rec := httptest.NewRecorder()
+	// The <tool_call> block is never closed: the extractor's end-of-stream
+	// Flush releases the completed call as one synthetic native chunk.
+	ss := strings.Join([]string{
+		testutilSSE(`{"id":"chatcmpl-xf","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"<tool_call>"},"finish_reason":null}]}`),
+		// The OUTER <tool_call> never closes; the inner <function_call>
+		// block is complete, so the end-of-stream Flush releases the call.
+		testutilSSE(`{"id":"chatcmpl-xf","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"<function_call><function=run_terminal_command><parameter=command>pwd</parameter></function></function_call>"},"finish_reason":null}]}`),
+	}, "")
+	s.relayStream(context.Background(), rec, strings.NewReader(ss), &relayStats{toolMap: tm}, time.Now())
+	body := rec.Body.String()
+	if !strings.Contains(body, `"name":"bash"`) {
+		t.Errorf("XML flush chunk did not restore client tool name: %q", truncateStr(body, 400))
+	}
+	if strings.Contains(body, "run_terminal_command") {
+		t.Errorf("XML flush chunk leaked the official tool name: %q", truncateStr(body, 400))
+	}
+}
+
+// TestAnthropicStreamCloseOpenToolCallsIndexOrder pins the stop order when
+// several tool_use blocks are open and an interleaved text delta closes
+// them: stops must fire in upstream tool-call index order (mirror of the
+// finalize path), not Go map iteration order.
+func TestAnthropicStreamCloseOpenToolCallsIndexOrder(t *testing.T) {
+	s := testRelayServer()
+	rec := httptest.NewRecorder()
+	ss := strings.Join([]string{
+		testutilSSE(`{"id":"cmpl-co","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_c0","type":"function","function":{"name":"Bash","arguments":"{\"a\":1}"}},{"index":1,"id":"call_c1","type":"function","function":{"name":"Bash","arguments":"{\"b\":2}"}},{"index":2,"id":"call_c2","type":"function","function":{"name":"Bash","arguments":"{\"c\":3}"}}]},"finish_reason":null}]}`),
+		testutilSSE(`{"id":"cmpl-co","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`),
+		testutilSSE(`{"id":"cmpl-co","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+	}, "")
+	s.relayAnthropicStream(context.Background(), rec, strings.NewReader(ss), &relayStats{}, time.Now(), "m", 0)
+
+	// Collect the tool_use block indexes from their starts; the text block
+	// that follows produces its own stop, which must not count here.
+	toolIdx := map[int]bool{}
+	var stops []int
+	for _, ev := range collectSSEFrames(t, rec.Body.String()) {
+		switch ev.data["type"] {
+		case "content_block_start":
+			if cb, _ := ev.data["content_block"].(map[string]any); cb["type"] == "tool_use" {
+				if idx, ok := ev.data["index"].(float64); ok {
+					toolIdx[int(idx)] = true
+				}
+			}
+		case "content_block_stop":
+			if idx, ok := ev.data["index"].(float64); ok && toolIdx[int(idx)] {
+				stops = append(stops, int(idx))
+			}
+		}
+	}
+	want := []int{0, 1, 2}
+	if len(stops) != len(want) {
+		t.Fatalf("tool content_block_stop count = %d, want %d (stops %v)", len(stops), len(want), stops)
+	}
+	for i := range want {
+		if stops[i] != want[i] {
+			t.Fatalf("tool content_block_stop order = %v, want %v (tool-call index order)", stops, want)
+		}
+	}
+}
+
+// TestAccessLogGateBounded pins the quiet-path gate cap: arbitrary distinct
+// paths (OPTIONS preflights, unknown-path 404s) must never grow the
+// process-global lastSeen map past maxAccessGateEntries.
+func TestAccessLogGateBounded(t *testing.T) {
+	resetAccessLogGate()
+	t.Cleanup(resetAccessLogGate)
+	for i := range maxAccessGateEntries + 100 {
+		accessLogDue(fmt.Sprintf("/v1/opt-%d", i), time.Now())
+	}
+	accessLogGate.mu.Lock()
+	n := len(accessLogGate.lastSeen)
+	accessLogGate.mu.Unlock()
+	if n > maxAccessGateEntries {
+		t.Fatalf("access gate map grew to %d entries, cap %d", n, maxAccessGateEntries)
+	}
+}
+
+// TestAccessNotFoundLogFloodSuppressed pins the unique-404 access-log flood
+// gate: a client minting distinct unknown paths must not emit one access
+// line per path — the quiet-class budget caps the total per window.
+func TestAccessNotFoundLogFloodSuppressed(t *testing.T) {
+	testutil.UnsetConfigEnv(t)
+	resetAccessLogGate()
+	t.Cleanup(resetAccessLogGate)
+	mock := testutil.NewMock()
+	defer mock.Close()
+	srv, sink := newLoggingServer(t, mock, nil)
+	h := srv.Handler()
+	for i := range maxQuietAccessLines + 140 {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/notfound-%d", i), nil))
+	}
+	if got := strings.Count(sink.String(), "msg=access"); got != maxQuietAccessLines {
+		t.Fatalf("access lines for %d distinct 404 paths = %d, want %d (budget)",
+			maxQuietAccessLines+140, got, maxQuietAccessLines)
+	}
+}
+
+// TestRateLimiterCoversAllV1Surface pins the outermost per-IP limiter: with
+// RATE_LIMIT_PER_IP enabled, every /v1/* route (known like /v1/models and
+// unknown 404 paths) shares the bucket, while /healthz, /metrics and CORS
+// OPTIONS preflights stay exempt.
+func TestRateLimiterCoversAllV1Surface(t *testing.T) {
+	testutil.UnsetConfigEnv(t)
+	mock := testutil.NewMock()
+	defer mock.Close()
+	srv, _ := newLoggingServer(t, mock, func(c *config.Config) {
+		c.RateLimitPerIP = 1.0
+		c.RateLimitBurst = 2
+	})
+	h := srv.Handler()
+	do := func(method, path string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+		return rec.Code
+	}
+	for i := range 2 {
+		if got := do(http.MethodGet, "/v1/models"); got != http.StatusOK {
+			t.Fatalf("request %d to /v1/models status = %d, want 200 (burst budget)", i+1, got)
+		}
+	}
+	if got := do(http.MethodGet, "/v1/models"); got != http.StatusTooManyRequests {
+		t.Errorf("3rd /v1/models status = %d, want 429 (limiter must cover /v1/models)", got)
+	}
+	if got := do(http.MethodPost, "/v1/unknown-route"); got != http.StatusTooManyRequests {
+		t.Errorf("unknown /v1 path status = %d, want 429 (share the bucket, covers the 404 flood vector)", got)
+	}
+	for range 5 {
+		if got := do(http.MethodGet, "/healthz"); got != http.StatusOK {
+			t.Fatalf("/healthz status = %d, want 200 (exempt from the limiter)", got)
+		}
+	}
+	if got := do(http.MethodOptions, "/v1/whatever"); got != http.StatusNoContent {
+		t.Errorf("OPTIONS preflight status = %d, want 204 (exempt, and CORS answers first)", got)
+	}
+}
+
+// TestProbeModelNeverGated pins the smoke-probe default: with the fallback
+// registry the guaranteed model wins; a regression to alphabetical
+// models[0] would return the capacity-gated anthropic/claude-fable-5.
+func TestProbeModelNeverGated(t *testing.T) {
+	testutil.UnsetConfigEnv(t)
+	reg := registry.New(&config.Config{}, nil)
+	reg.LoadFallback()
+	got := probeModel(reg)
+	if got == "" {
+		t.Fatal("probeModel returned empty for the fallback registry")
+	}
+	if !registry.ServedModels[got] {
+		t.Errorf("probeModel = %q, want a served model (never an alphabetically-first gated id)", got)
+	}
+	if got != session.DefaultFallbackModel {
+		t.Errorf("probeModel = %q, want the guaranteed model %q", got, session.DefaultFallbackModel)
 	}
 }

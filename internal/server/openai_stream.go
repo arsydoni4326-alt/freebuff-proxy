@@ -120,6 +120,13 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			"model":   streamModel,
 			"choices": []any{map[string]any{"index": 0, "delta": delta}},
 		}
+		// Restore client tool names (#140): the synthetic flush chunk carries
+		// official signature names extracted from XML; the client dispatches
+		// on its own declared names, so the flush path must run the same
+		// restore the normal chunk path does.
+		if stats.toolMap.Len() > 0 {
+			stats.toolMap.FromUpstreamChunk(chunk)
+		}
 		if b, err := json.Marshal(chunk); err == nil {
 			frame := convert.EncodeSSE(b)
 			if _, err := w.Write(frame); err != nil {
@@ -206,7 +213,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			// re-marshal when the chunk actually changed so untouched
 			// frames keep their exact bytes.
 			clean = streamChatContentToToolCalls(clean, xmlExtractor, &xmlCallIndex, &xmlCallsSeen)
-			// Restore client tool names (#140 P2a): the request renamed
+			// Restore client tool names (#140): the request renamed
 			// mapped client tools to official signature names, so fragments
 			// carrying those names must read the CLIENT's name on the wire.
 			if stats.toolMap.Len() > 0 && bytes.Contains(clean, []byte(`"tool_calls"`)) {
@@ -421,7 +428,7 @@ func (s *Server) relayJSON(ctx context.Context, w http.ResponseWriter, r io.Read
 				convert.StripEndTurnToolCalls(comp)
 				changed = true
 			}
-			// Restore client tool names (#140 P2a) before the finish_reason
+			// Restore client tool names (#140) before the finish_reason
 			// alignment below reads the delivered tool_calls.
 			if stats.toolMap.FromUpstreamChunk(comp) {
 				changed = true

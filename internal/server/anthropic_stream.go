@@ -29,6 +29,11 @@ type anthropicToolState struct {
 	name        string
 	started     bool
 	blockClosed bool
+	// args accumulates every arguments fragment delivered for this upstream
+	// index. A block reopened after an early close must replay the prefix to
+	// the client (the client assembles input per block INDEX, so the new
+	// incarnation is missing the fragments delivered to the first one).
+	args strings.Builder
 }
 
 type anthropicStreamState struct {
@@ -47,7 +52,7 @@ type anthropicStreamState struct {
 	finishReason       string
 	sawToolCall        bool
 	usage              map[string]any
-	// toolMap restores client tool names (#140 P2a): the request renamed
+	// toolMap restores client tool names (#140): the request renamed
 	// mapped tools to official signature names upstream, so tool_use blocks
 	// must open with the CLIENT's dispatch name.
 	toolMap convert.ToolMapper
@@ -203,7 +208,16 @@ func sendAnthropicMessageStart(send func(map[string]any), st *anthropicStreamSta
 }
 
 func (st *anthropicStreamState) closeOpenToolCalls(send func(map[string]any)) {
-	for _, ts := range st.toolCalls {
+	// Emit stop frames in upstream tool-call INDEX order, not Go map order:
+	// interleaved text/thinking deltaing while several tool blocks are open
+	// must close them sequentially (mirror of finalizeAnthropicStream).
+	indexes := make([]int, 0, len(st.toolCalls))
+	for i := range st.toolCalls {
+		indexes = append(indexes, i)
+	}
+	sort.Ints(indexes)
+	for _, i := range indexes {
+		ts := st.toolCalls[i]
 		if ts.started && !ts.blockClosed {
 			send(map[string]any{"type": "content_block_stop", "index": ts.index})
 			ts.blockClosed = true
@@ -270,7 +284,7 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 			if fn != nil {
 				name, _ = fn["name"].(string)
 			}
-			// Restore client tool names (#140 P2a): the request renamed
+			// Restore client tool names (#140): the request renamed
 			// mapped client tools to official signature names upstream; a
 			// tool_use block must open with the CLIENT's dispatch name.
 			if name != "" {
@@ -305,12 +319,19 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 			}
 			if args, ok := fn["arguments"].(string); ok && args != "" {
 				if ts.name != "" {
+					// ensureStarted replays the accumulated prefix when the
+					// block (re)opens; the new fragment is emitted after it.
 					st.ensureStarted(ts, send)
+					ts.args.WriteString(args)
 					send(map[string]any{
 						"type":  "content_block_delta",
 						"index": ts.index,
 						"delta": map[string]any{"type": "input_json_delta", "partial_json": args},
 					})
+				} else {
+					// Name arrives in a later fragment: accumulate now so the
+					// start replays everything delivered so far.
+					ts.args.WriteString(args)
 				}
 			}
 		}
@@ -452,7 +473,7 @@ func (st *anthropicStreamState) ensureText(send func(map[string]any)) {
 
 // closeText closes the text block before tool blocks open. The textStarted
 // flag is cleared so a LATER text delta reopens the block at a fresh index
-// (review P2 â€” some GLM/DeepSeek outputs interleave trailing text after
+// (issue #171 — some GLM/DeepSeek outputs interleave trailing text after
 // tool-call fragments; keeping textStarted set would silently drop it).
 func (st *anthropicStreamState) closeText(send func(map[string]any)) {
 	if !st.textStarted || st.textClosed {
@@ -502,6 +523,18 @@ func (st *anthropicStreamState) ensureStarted(ts *anthropicToolState, send func(
 			"input": map[string]any{},
 		},
 	})
+	// The client assembles a tool_use block's input ONLY from the deltas
+	// delivered against that block's index. A reopened block would be missing
+	// the argument fragments delivered to the first incarnation — replay the
+	// accumulated arguments as the first input_json_delta of the new block
+	// (issue #171).
+	if ts.args.Len() > 0 {
+		send(map[string]any{
+			"type":  "content_block_delta",
+			"index": ts.index,
+			"delta": map[string]any{"type": "input_json_delta", "partial_json": ts.args.String()},
+		})
+	}
 }
 
 // setStopReason maps an OpenAI finish reason onto the Anthropic vocabulary.
