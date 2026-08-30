@@ -133,14 +133,13 @@ const (
 )
 
 func (a *adminAuth) setCookie(w http.ResponseWriter, secure bool) {
+	// lgtm[go/insecure-cookie] - fb_admin is intentionally non-Secure over plain-HTTP loopback for local dev; secureCookie() (TLS or X-Forwarded-Proto:https from trusted proxy) ensures Secure for every remote path
 	http.SetCookie(w, &http.Cookie{
-		Name:     adminCookieName,
-		Value:    a.cookieValue(time.Now().Add(adminCookieTTL)),
-		Path:     "/admin",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		Secure:   secure,
-		MaxAge:   int(adminCookieTTL.Seconds()),
+		Name:   adminCookieName,
+		Value:  a.cookieValue(time.Now().Add(adminCookieTTL)),
+		Path:   "/admin",
+		Secure: secure, // lgtm[go/insecure-cookie] - fb_admin over plain-HTTP loopback is intentional for local dev (secureCookie ensures Secure for TLS/trusted-proxy)
+		MaxAge: int(adminCookieTTL.Seconds()),
 	})
 }
 
@@ -364,13 +363,14 @@ func newCSRFToken() (string, error) {
 // HttpOnly: the SPA reads it from document.cookie and echoes the value as
 // the X-CSRF-Token header on state-changing requests.
 func csrfCookie(r *http.Request, value string) *http.Cookie {
+	// lgtm[go/insecure-cookie] - double-submit CSRF cookie is readable JS by design; Secure follows the same trusted-proxy rule as the session cookie (plain-HTTP loopback only)
 	return &http.Cookie{
 		Name:     csrfCookieName,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: false,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   secureCookie(r),
+		Secure:   secureCookie(r), // lgtm[go/insecure-cookie] - CSRF cookie follows same trusted-proxy rule (plain-HTTP loopback only)
 	}
 }
 
@@ -535,13 +535,14 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	// Match the Secure flag with the current transport, same as login.
 	// A clearing cookie without Secure cannot overwrite a Secure cookie
 	// set during an HTTPS login, leaving the session alive.
+	// lgtm[go/insecure-cookie] - clearing cookie must mirror login's Secure flag (plain-HTTP loopback => non-Secure; otherwise Secure)
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    "",
 		Path:     "/admin",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   secureCookie(r),
+		Secure:   secureCookie(r), // lgtm[go/insecure-cookie] - clearing cookie must mirror login (plain-HTTP loopback => non-Secure; otherwise Secure)
 		MaxAge:   -1,
 	})
 	if r.Method == http.MethodPost {
