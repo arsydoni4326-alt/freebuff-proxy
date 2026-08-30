@@ -354,18 +354,17 @@ does not reject it.
 
 **Known limits.** Model IDs come from the models.dev catalog (or `KILO_MODELS_URL`), **not** from `GET /v1/models` — so make sure the id you use is a models.dev entry (it is, for the ids above); otherwise add it as a custom model. Kilo has a default `chunkTimeout` of ~30s and aborts a stream that goes silent longer than that — the proxy emits a keepalive frame after at most 15s of relay silence, so sparse reasoning pauses stay inside the window. Kilo ends streams on body close rather than on a `[DONE]` line; the proxy closes streams cleanly.
 
-## gemini-cli (unsupported)
+## gemini-cli (unsupported, discontinued)
 
 Gemini CLI speaks the **native Gemini wire** (`v1beta/models/{m}:generateContent`
 and `:streamGenerateContent?alt=sse`, auth `x-goog-api-key`) — none of the three
-surfaces this proxy exposes. It is therefore **not supported**; there is no
-workaround short of a fourth, Gemini-native surface.
+surfaces this proxy exposes, and the CLI itself is **discontinued** (superseded
+by Antigravity / Code Assist tooling). It is therefore **not supported**; there
+is no workaround short of a fourth, Gemini-native surface, and none is planned.
 
-Options if you need Gemini CLI:
-
-- Point it at a real Gemini endpoint (Vertex AI or AI Studio), or
-- Run it against a Gemini->OpenAI bridge (e.g. opencode-go), or
-- Use any of the 11 supported harnesses above against this proxy.
+If you need Gemini-family models: use `google-gemini`-capable harnesses from the
+supported list (opencode, roo-code, goose, pi) pointing at a Gemini endpoint, or
+run them against this proxy with the served catalog.
 
 ---
 
