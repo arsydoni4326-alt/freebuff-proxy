@@ -243,6 +243,10 @@ func anthropicStopReason(reason string, hasToolCall bool) string {
 		return "tool_use"
 	case "length":
 		return "max_tokens"
+	case "content_filter":
+		// OpenAI "content_filter" maps to the Anthropic refusal stop reason
+		// (mirror of the client-side refusal → content-filter mapping).
+		return "refusal"
 	default:
 		if hasToolCall {
 			return "tool_use"

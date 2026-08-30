@@ -166,6 +166,38 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 			if err := json.Unmarshal(clean, &chunk); err != nil {
 				continue
 			}
+			// In-band upstream error chunk: the Anthropic surface must
+			// surface it as an error event, never silently complete the
+			// message as if the stream ended cleanly (mirror of the
+			// Responses relay's error handling; the OpenAI chat relay
+			// passes the error frame through for its own clients).
+			if errVal, hasErr := chunk["error"]; hasErr && errVal != nil {
+				if ctx.Err() == nil {
+					var msg, typ string
+					if em, ok := errVal.(map[string]any); ok {
+						msg, _ = em["message"].(string)
+						typ, _ = em["type"].(string)
+					} else if es, ok := errVal.(string); ok {
+						msg = es
+					}
+					if msg == "" {
+						msg = "upstream error"
+					}
+					if typ == "" {
+						typ = "upstream_error"
+					}
+					s.logger.Warn("anthropic upstream error chunk", "err", msg)
+					s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
+					send(map[string]any{
+						"type": "error",
+						"error": map[string]any{
+							"type":    typ,
+							"message": "upstream stream error: " + msg,
+						},
+					})
+				}
+				return
+			}
 			if first {
 				first = false
 				phasetiming.FromContext(ctx).Since(phasetiming.UpstreamTTFBMS, chatStart)
@@ -550,6 +582,11 @@ func (st *anthropicStreamState) setStopReason(reason string) {
 		st.finishReason = "end_turn"
 	case "length":
 		st.finishReason = "max_tokens"
+	case "content_filter":
+		// OpenAI "content_filter" has no Anthropic StopReason of its own;
+		// the client-side inverse mapping (refusal → content-filter,
+		// e.g. opencode protocols/anthropic-messages.ts) pins the pairing.
+		st.finishReason = "refusal"
 	default:
 		st.finishReason = reason
 	}
@@ -606,6 +643,11 @@ func intOf(v any) (int64, bool) {
 		return i, err == nil
 	case int:
 		return int64(n), true
+	case int64:
+		// openAIUsageToAnthropic stores int64 values (never json-decoded
+		// float64); without this case the Anthropic usage translation
+		// silently dropped output_tokens/cache fields downstream.
+		return n, true
 	}
 	return 0, false
 }

@@ -139,6 +139,43 @@ func dropEndTurnContinuations(clean []byte, endTurnCallIndexes map[int]bool) []b
 	return clean
 }
 
+// ensureChatChunkRole injects "role":"assistant" into the FIRST relayed
+// chunk's delta (choice 0) when the upstream omitted it — the OpenAI spec
+// carries the role in the first chunk of a chat completion stream and some
+// clients assemble message.role from it. Idempotent per stream via
+// roleSent; chunks that already carry role (or any later chunk) pass
+// through untouched.
+func ensureChatChunkRole(clean []byte, roleSent *bool) []byte {
+	if *roleSent || !bytes.Contains(clean, []byte(`"delta"`)) {
+		return clean
+	}
+	var chunk map[string]any
+	if json.Unmarshal(clean, &chunk) != nil {
+		return clean
+	}
+	choices, _ := chunk["choices"].([]any)
+	if len(choices) == 0 {
+		return clean
+	}
+	choice, _ := choices[0].(map[string]any)
+	if choice == nil {
+		return clean
+	}
+	delta, _ := choice["delta"].(map[string]any)
+	if delta == nil {
+		return clean
+	}
+	*roleSent = true
+	if _, has := delta["role"]; has {
+		return clean
+	}
+	delta["role"] = "assistant"
+	if b, err := json.Marshal(chunk); err == nil {
+		return b
+	}
+	return clean
+}
+
 // bumpXMLCallIndex raises the per-stream synthetic tool-call index floor
 // past the largest native tool-call index in tcs (the chunk's existing
 // delta.tool_calls entries) so extracted XML fragments can never collide

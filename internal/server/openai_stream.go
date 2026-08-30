@@ -80,6 +80,10 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	xmlCallIndex := 0
 	xmlCallsSeen := false
 	xmlStreamID := ""
+	// roleSent tracks whether the first relayed chunk carried (or was given)
+	// delta.role — the OpenAI spec stamps the role on the first chunk, and
+	// some clients build message.role from it (ensureChatChunkRole).
+	roleSent := false
 
 	// emitXMLFlush releases anything the XML extractor still holds at
 	// stream end (Flush) as one synthetic chunk through the normal frame
@@ -91,6 +95,12 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			return
 		}
 		delta := make(map[string]any, 2)
+		if !roleSent {
+			// A flush chunk may be the stream's first frame (upstream sent
+			// no relayable chunk before EOF): it must open with the role.
+			delta["role"] = "assistant"
+			roleSent = true
+		}
 		if len(ft) > 0 {
 			delta["content"] = ft
 			contentParts = append(contentParts, ft)
@@ -337,6 +347,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 			// served it (fallbacks included). No-op when the chunk already
 			// carries the served model or no lease drove the relay.
 			clean = rewriteChatChunkModel(clean, stats.servedModel)
+			clean = ensureChatChunkRole(clean, &roleSent)
 			if first {
 				first = false
 				phasetiming.FromContext(ctx).Since(phasetiming.UpstreamTTFBMS, chatStart)
