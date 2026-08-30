@@ -175,7 +175,7 @@ func TestBridgeAdmissionBanNotifies(t *testing.T) {
 	}
 }
 
-// TestBridgeAdmissionLimitedIpMarksModel verifies #74 P2 on the bridge
+// TestBridgeAdmissionLimitedIpMarksModel verifies #74 on the bridge
 // path: a session POST refused with the limited_ip shape surfaces
 // *upstream.LimitedIpError from AcquireBridge AND marks the (egress, model)
 // pair unfit so pooled requests refuse fast (the bridge gate itself stays

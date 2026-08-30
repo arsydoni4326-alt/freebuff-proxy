@@ -31,7 +31,7 @@ const defaultBridgeIdleEvict = 72 * time.Hour
 
 // tokenKey returns a 32-char hex string derived from the SHA-256 hash of the
 // raw client token. Bridge map keys use this non-reversible form so raw tokens
-// are never stored as map keys in memory (B3). The raw token is still held in
+// are never stored as map keys in memory. The raw token is still held in
 // bridgeEntry.token for upstream client creation.
 func tokenKey(raw string) string {
 	h := sha256.Sum256([]byte(raw))
@@ -50,14 +50,14 @@ func (p *Pool) BridgeCount() int {
 // recording the use for LRU order. A token that cannot build an upstream
 // client yields an error and is never cached.
 //
-// B1+B2: The upstream client is created OUTSIDE bridgeMu to avoid blocking
+// The upstream client is created OUTSIDE bridgeMu to avoid blocking
 // other bridge operations during the network-heavy New call. A buffered
 // creation-rate gate (bridgeCreateGate, capacity 4) limits concurrent
 // client creations to prevent thundering-herd creation. A double-check
 // after acquiring the gate ensures a concurrent creator did not already
 // populate the cache.
 //
-// B3: Map keys use tokenKey (SHA-256 truncated to 32 hex chars) so raw
+// Map keys use tokenKey (SHA-256 truncated to 32 hex chars) so raw
 // client tokens are never stored as map keys in memory.
 func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	key := tokenKey(clientToken)
@@ -72,11 +72,11 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	}
 	p.bridgeMu.Unlock()
 
-	// Slow path: create client OUTSIDE bridgeMu (B2). upstream.New may
+	// Slow path: create client OUTSIDE bridgeMu. upstream.New may
 	// involve DNS + TLS handshake; holding bridgeMu here would block every
 	// other bridge operation for the full creation duration.
 	//
-	// B1: Acquire a creation-rate gate slot to cap concurrent New calls.
+	// Creation-rate gate slot: cap concurrent New calls.
 
 	// Use a stoppable timer: time.After would leave a 5s timer pending on
 	// the acquired path (per creation under gate pressure).
@@ -104,31 +104,36 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	}
 	p.bridgeMu.Unlock()
 
-	// Create the client outside bridgeMu (B2).
+	// Create the client outside bridgeMu: upstream.New may involve DNS + TLS
+	// handshakes; holding bridgeMu would block every other bridge operation
+	// for the full creation duration.
+	//
+	// The token probe (zero-cost GET, no session claimed — catches invalid
+	// or revoked tokens before an entry is cached) also runs OUTSIDE
+	// bridgeMu: it is an upstream call bounded by SessionCallTimeout, and
+	// one slow or hung probe must never stall every other bridge operation.
+	// The cache is re-checked after the probe so a concurrent creator that
+	// won the race is reused instead of producing two entries for the same
+	// token.
 	client, err := upstream.New(clientToken, p.cfg.Load())
 	if err != nil {
 		return nil, fmt.Errorf("bridge: %w", err)
 	}
 
-	// Re-acquire lock and insert; another creator may have raced us.
-	p.bridgeMu.Lock()
-	if entry, ok := p.bridge[key]; ok {
-		p.bridgeMu.Unlock()
-		return entry, nil
-	}
-
-	// Upfront token validation: probe the token with a zero-cost GET
-	// (no session claimed) to catch invalid/revoked tokens early.
-	// Only runs when we are actually creating a new entry (not on cache hit).
-	// Bounded by SessionCallTimeout so a hung upstream does not hold
-	// bridgeMu indefinitely.
 	probeCfg := p.cfg.Load()
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), probeCfg.SessionCallTimeout)
 	_, probeErr := client.ProbeAccount(probeCtx)
 	probeCancel()
 	if probeErr != nil {
-		p.bridgeMu.Unlock()
 		return nil, fmt.Errorf("bridge: token validation failed: %w", probeErr)
+	}
+
+	// Re-check after the probe (a concurrent creator may have populated
+	// the cache while this probe was in flight), then insert.
+	p.bridgeMu.Lock()
+	if entry, ok := p.bridge[key]; ok {
+		p.bridgeMu.Unlock()
+		return entry, nil
 	}
 
 	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger(), admissionGate: make(chan struct{})}
@@ -143,11 +148,12 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 
 	p.bridge[key] = entry
 	p.bridgeOrder = append(p.bridgeOrder, key)
-	// Drop the LRU victims under the lock, then FINISH their runs after
-	// releasing it: FinishAllRuns is a sequential upstream call bounded by
-	// the session-call timeout, so running it under bridgeMu would stall
-	// every other bridge operation (AcquireBridge, bridgeRecordChat,
-	// BridgeCount, bridgeMaintain) for the full eviction duration.
+	// Drop the LRU victims under the lock, then FINISH their runs and end
+	// their sessions after releasing it: the calls are sequential upstream
+	// calls bounded by the session-call timeout, so running them under
+	// bridgeMu would stall every other bridge operation (AcquireBridge,
+	// bridgeRecordChat, BridgeCount, bridgeMaintain) for the full eviction
+	// duration.
 	victims := p.bridgeEvictLocked(entry)
 	p.bridgeMu.Unlock()
 
@@ -155,6 +161,14 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	defer cancel()
 	for _, victim := range victims {
 		victim.runs.FinishAllRuns(ctx)
+		// Mirror the idle-eviction and dead-token paths: the victim may
+		// hold an admitted upstream session — end it so its row does not
+		// linger while nothing owns the entry (a later request from the
+		// same client would otherwise admit a second concurrent session).
+		if endErr := victim.session.EndSession(ctx); endErr != nil {
+			p.logger.Warn("pool: bridge EndSession failed during cache-full eviction",
+				"err", endErr, "token_label", bridgeTokenLabel(victim))
+		}
 	}
 	return entry, nil
 }
@@ -253,7 +267,7 @@ func (p *Pool) bridgeLen() int {
 }
 
 // bridgeToken returns the cached entry for clientToken (test accessor).
-// Accepts the raw client token and hashes it (B3) for map lookup.
+// Accepts the raw client token and hashes it for map lookup.
 func (p *Pool) bridgeToken(clientToken string) *bridgeEntry {
 	p.bridgeMu.Lock()
 	defer p.bridgeMu.Unlock()
@@ -278,12 +292,16 @@ func bridgeTokenLabel(entry *bridgeEntry) string {
 func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 	p.bridgeMu.Lock()
 	type keyEntry struct {
-		key   string
-		entry *bridgeEntry
+		key      string
+		entry    *bridgeEntry
+		lastUsed time.Time
 	}
 	entries := make([]keyEntry, 0, len(p.bridge))
 	for k, e := range p.bridge {
-		entries = append(entries, keyEntry{key: k, entry: e})
+		// Copy lastUsed while the lock is held: bridgeEntryFor mutates it
+		// under bridgeMu, so an unlocked read here would race (torn value
+		// under -race).
+		entries = append(entries, keyEntry{key: k, entry: e, lastUsed: e.lastUsed})
 	}
 	p.bridgeMu.Unlock()
 
@@ -330,7 +348,7 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		premium := premiumSnapshotFromQuotaMap(quotaByModel)
 		snaps = append(snaps, BridgeTokenSnapshot{
 			Key:           ke.key,
-			LastUsed:      e.lastUsed,
+			LastUsed:      ke.lastUsed,
 			ActiveRuns:    eRuns.ActiveRuns,
 			Requests:      eRuns.Requests,
 			Locked:        e.locked.Load(),
@@ -349,7 +367,7 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 }
 
 // bridgeSessionPollTick polls the bridge cache's active sessions on the same
-// jittered schedule as the fixed tokens (gap #2). The sweep/eviction half
+// jittered schedule as the fixed tokens. The sweep/eviction half
 // stays in bridgeMaintain; only the per-entry session poll runs here so its
 // timing is not quantized onto the 60s rotation grid.
 func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
@@ -361,7 +379,10 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 	p.bridgeMu.Unlock()
 
 	for _, entry := range entries {
-		if time.Now().Before(entry.runs.CooldownUntil()) {
+		if time.Now().Before(entry.runs.CooldownUntil()) || entry.runs.BanError() != nil {
+			// Cooldown or live ban: no session poll (same rule as the
+			// fixed-token loop) — a ban must not keep re-contacting
+			// upstream at the poll cadence.
 			continue
 		}
 		if entry.runs.InflightCount() > 0 {
@@ -400,7 +421,7 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 // idle-sweep keeps bridge entries from staying admitted upstream past
 // the idle-eviction TTL while the pool stays idle. Active-session liveness polls
 // are NOT part of this pass — they run on the jittered
-// bridgeSessionPollTick schedule (gap #2).
+// bridgeSessionPollTick schedule.
 func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 	cfg := p.cfg.Load()
 	var toEvict []*bridgeEntry
@@ -464,7 +485,7 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 		eCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 		entry.runs.FinishAllRuns(eCtx)
 		if endErr := entry.session.EndSession(eCtx); endErr != nil {
-			// B4: log EndSession errors at WARN so failed session teardowns
+			// Log EndSession errors at WARN so failed session teardowns
 			// are visible in diagnostics instead of silently swallowed.
 			p.logger.Warn("pool: bridge EndSession failed during idle eviction",
 				"err", endErr, "token_label", bridgeTokenLabel(entry))
@@ -478,8 +499,10 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			continue
 		}
 		// Same cooldown skip as the fixed-token loop: no queued-session
-		// EnsureSession, no rotation while cooling down.
-		if time.Now().Before(entry.runs.CooldownUntil()) {
+		// EnsureSession, no rotation while cooling down — and the same
+		// live-ban skip so a hard-banned entry stops Maintain/rotate traffic
+		// (its cooldown deadline is zero until an operator acts).
+		if time.Now().Before(entry.runs.CooldownUntil()) || entry.runs.BanError() != nil {
 			continue
 		}
 		mCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
@@ -509,7 +532,7 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 	}
 }
 
-// bridgeEvictToken immediately removes a token from the bridge cache (B6):
+// bridgeEvictToken immediately removes a token from the bridge cache:
 // used when a token is confirmed dead (ErrAuthRejected) so it does not sit
 // in the cache for the full idle-eviction TTL window. The removed entry's
 // runs are FINISHed best-effort after releasing the lock. Entries with an
@@ -525,7 +548,7 @@ func (p *Pool) bridgeEvictToken(rawToken string) {
 		p.bridgeMu.Unlock()
 		return
 	}
-	// B6: gate the eviction on zero in-flight leases. A token confirmed
+	// Gate the eviction on zero in-flight leases. A token confirmed
 	// dead can still serve a live stream (the 401 may have raced another
 	// request on the same token); FinishAllRuns on the busy entry would
 	// kill the concurrent chat, and removing it would leave the stream's

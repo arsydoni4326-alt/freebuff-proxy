@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,7 +186,7 @@ func TestBridgeEviction(t *testing.T) {
 	}
 }
 
-// TestBridgeEvictionFinishOutsideLock is the regression guard for the P1
+// TestBridgeEvictionFinishOutsideLock is the regression guard for the
 // "FINISH under bridgeMu" bug: eviction used to run FinishAllRuns (a
 // sequential upstream call bounded by the session-call timeout) while
 // holding bridgeMu, stalling every other bridge operation for the whole
@@ -273,7 +274,7 @@ func TestBridgeAcquireEmptyToken(t *testing.T) {
 	}
 }
 
-// TestBridgeMaintainEvictHonorsCtx is the bridge-mode half of the same P2
+// TestBridgeMaintainEvictHonorsCtx is the bridge-mode half of the same
 // fix: the idle-eviction FinishAllRuns in bridgeMaintain must honor the
 // maintain ctx so shutdown is not blocked by an in-flight FINISH.
 func TestBridgeMaintainEvictHonorsCtx(t *testing.T) {
@@ -315,7 +316,7 @@ func TestBridgeMaintainEvictHonorsCtx(t *testing.T) {
 	}
 }
 
-// TestBridgeEvictionSkipsBusyEntry is the regression guard for the P2
+// TestBridgeEvictionSkipsBusyEntry is the regression guard for the
 // eviction bug: LRU eviction used to FINISH the runs of any victim, even
 // one with an outstanding lease, killing the in-flight request. Eviction
 // must skip busy entries (the idle sweep handles them once leases drain).
@@ -370,7 +371,7 @@ func TestBridgeEvictionSkipsBusyEntry(t *testing.T) {
 	p.LeaseRelease(busy)
 }
 
-// TestShutdownDrainsBridgeEntries is the regression guard for the P3 gap:
+// TestShutdownDrainsBridgeEntries is the regression guard for the shutdown gap:
 // Pool.Shutdown only drained the fixed tokens, leaving cached bridge
 // entries' runs and sessions alive upstream. Shutdown must drain them
 // best-effort after the fixed-token pass.
@@ -624,5 +625,246 @@ func TestBridgeSnapshot(t *testing.T) {
 	}
 	if !snaps[0].Locked {
 		t.Error("BridgeSnapshot Locked = false after LockBridgeEntry, want true")
+	}
+}
+
+// TestBridgeCacheFullEvictionEndsSession pins the cache-full eviction
+// drain: a victim evicted because the LRU cache is full must have its runs
+// FINISHed AND its admitted upstream session ended (unlike the old code,
+// which only FINISHed the runs — the session row lingered upstream while
+// nothing owned the entry, so the same client's next request admitted a
+// second concurrent session).
+func TestBridgeCacheFullEvictionEndsSession(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	ids := make([]string, 40)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("run-%04d", i)
+	}
+	mock.RunIDs = ids
+	p := newBridgePool(t, mock)
+
+	for i := range maxBridgeEntries {
+		lease, err := p.AcquireBridge(context.Background(), fmt.Sprintf("client-tok-%02d", i), modelA)
+		if err != nil {
+			t.Fatalf("AcquireBridge token %d failed: %v", i, err)
+		}
+		p.LeaseRelease(lease)
+	}
+	if mock.SessionEnds != 0 {
+		t.Fatalf("session ends = %d before eviction, want 0", mock.SessionEnds)
+	}
+
+	// The 33rd distinct token overflows the cache: the oldest idle entry is
+	// evicted (runs FINISHed, upstream session ended) to make room.
+	lease, err := p.AcquireBridge(context.Background(), "client-tok-32", modelA)
+	if err != nil {
+		t.Fatalf("AcquireBridge overflow token failed: %v", err)
+	}
+	p.LeaseRelease(lease)
+
+	if got := p.bridgeLen(); got != maxBridgeEntries {
+		t.Errorf("bridgeLen = %d, want %d (LRU evicted down to cap)", got, maxBridgeEntries)
+	}
+	if entry := p.bridgeToken("client-tok-00"); entry != nil {
+		t.Error("oldest bridge entry not evicted")
+	}
+	if mock.SessionEnds != 1 {
+		t.Errorf("session ends = %d, want 1 (evicted victim's session ended)", mock.SessionEnds)
+	}
+}
+
+// TestHardBannedBridgeEntrySkipsMaintainAndPoll pins the hard-ban skip: a
+// bridge entry whose account is hard-banned (no resumes_at -> cooldownUntil
+// zero) must not keep re-contacting upstream through the poll schedule or
+// the maintain pass — only the live BanError distinguishes it from a plain
+// cooldown (the fixed-token loop already checks it).
+func TestHardBannedBridgeEntrySkipsMaintainAndPoll(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	lease, err := p.AcquireBridge(context.Background(), "client-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+
+	// Hard ban: CooldownBan keeps no timed window (cooldownUntil zero), so
+	// only the BanError guard stops the loops.
+	entry := p.bridgeToken("client-tok")
+	if entry == nil {
+		t.Fatal("bridge entry missing")
+	}
+	entry.runs.CooldownBan(&upstream.BanError{Body: "banned"})
+	if entry.runs.BanError() == nil {
+		t.Fatal("BanError() = nil after hard ban, want live ban")
+	}
+
+	before := mock.RequestCount()
+	p.bridgeMaintain(context.Background(), false)
+	p.bridgeSessionPollTick(context.Background(), p.cfg.Load())
+	if after := mock.RequestCount(); after != before {
+		t.Errorf("upstream requests during hard ban = %d, want %d (poll/maintain must skip)", after, before)
+	}
+}
+
+// TestAcquireBridgeFallbackDepthGuard pins the QUOTA_FALLBACK_MODELS
+// recursion backstop in bridge mode: a fallback cycle (each admission
+// refused quota-exhausted with a different model name than requested)
+// degrades to the bounded error instead of an unbounded recursion.
+func TestAcquireBridgeFallbackDepthGuard(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+	cfg := p.cfg.Load()
+	cfg.QuotaFallbackModels = map[string]string{
+		"openai/gpt-5.6-luna":      "anthropic/claude-fable-5",
+		"anthropic/claude-fable-5": "openai/gpt-5.6-luna",
+	}
+	p.cfg.Store(cfg)
+	const quotaBody = `{"model":"mimo/mimo-v2.5","limit":3,"period":"pacific_day","resetAt":"2026-08-12T07:00:00.000Z","recentCount":3.6,"status":"rate_limited","retryAfterMs":48549499}`
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, quotaBody)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-depth"}`)
+	}
+
+	_, err := p.AcquireBridge(context.Background(), "depth-tok", "openai/gpt-5.6-luna")
+	if err == nil {
+		t.Fatal("want fallback-cycle error, got a lease")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("err = %v, want QUOTA_FALLBACK_MODELS cycle detection", err)
+	}
+}
+
+// TestHybridPooledCredentialRefusedOnBridge pins the hybrid guard: in
+// hybrid mode a client credential that equals a pooled AUTH_TOKENS entry
+// must not be relayed as a bridge token — the same upstream account would
+// otherwise run a pooled lease AND a bridge entry (two paths, two
+// concurrent sessions). Non-pooled bridge credentials keep working.
+func TestHybridPooledCredentialRefusedOnBridge(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	cfg := p.cfg.Load()
+	cfg.BridgeEnabled = true
+	cfg.UpstreamBaseURL = mock.URL()
+	p.cfg.Store(cfg)
+
+	_, err := p.AcquireBridge(context.Background(), "tok-0", modelA)
+	if err == nil {
+		t.Fatal("pooled credential bridged, want refusal")
+	}
+	if !strings.Contains(err.Error(), "pooled") {
+		t.Fatalf("err = %v, want pooled-token refusal", err)
+	}
+	if got := p.BridgeCount(); got != 0 {
+		t.Errorf("bridge count = %d, want 0 (no entry for a pooled credential)", got)
+	}
+
+	// A genuinely different client token still bridges.
+	lease, err := p.AcquireBridge(context.Background(), "client-own-token", modelA)
+	if err != nil {
+		t.Fatalf("non-pooled bridge credential rejected: %v", err)
+	}
+	p.LeaseRelease(lease)
+	if got := p.BridgeCount(); got != 1 {
+		t.Errorf("bridge count = %d, want 1", got)
+	}
+}
+
+// TestCooldownBridgeIpCappedSurfacesRemembered pins the bridge entry's
+// ip_capped cooldown: after CooldownBridgeIpCapped the next AcquireBridge
+// surfaces the remembered error instead of re-hitting upstream.
+func TestCooldownBridgeIpCappedSurfacesRemembered(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	lease, err := p.AcquireBridge(context.Background(), "client-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CooldownBridgeIpCapped(lease, &upstream.IpCappedError{RetryAfter: 5 * time.Minute, Body: "ip_capped"})
+	p.LeaseRelease(lease)
+
+	before := mock.RequestCount()
+	_, err = p.AcquireBridge(context.Background(), "client-tok", modelA)
+	var ice *upstream.IpCappedError
+	if !errors.As(err, &ice) {
+		t.Fatalf("second acquire = %v, want *upstream.IpCappedError", err)
+	}
+	if !errors.Is(err, upstream.ErrIpCapped) {
+		t.Error("errors.Is(ErrIpCapped) = false")
+	}
+	if after := mock.RequestCount(); after != before {
+		t.Errorf("upstream requests while ip-capped = %d, want %d (skip)", after, before)
+	}
+}
+
+// TestCooldownBridgeCountryBlockedSurfacesRemembered pins the bridge
+// entry's country-block cooldown: after CooldownBridgeCountryBlocked the
+// next AcquireBridge surfaces the remembered block instead of re-hitting
+// upstream (mirrors the admission-path test above).
+func TestCooldownBridgeCountryBlockedSurfacesRemembered(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	lease, err := p.AcquireBridge(context.Background(), "client-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CooldownBridgeCountryBlocked(lease, &upstream.CountryBlockedError{CountryCode: "XX", CountryBlockReason: "blocked"})
+	p.LeaseRelease(lease)
+
+	before := mock.RequestCount()
+	_, err = p.AcquireBridge(context.Background(), "client-tok", modelA)
+	var cbe *upstream.CountryBlockedError
+	if !errors.As(err, &cbe) {
+		t.Fatalf("second acquire = %v, want *upstream.CountryBlockedError", err)
+	}
+	if !errors.Is(err, upstream.ErrCountryBlocked) {
+		t.Error("errors.Is(ErrCountryBlocked) = false")
+	}
+	if after := mock.RequestCount(); after != before {
+		t.Errorf("upstream requests while country-blocked = %d, want %d (skip)", after, before)
+	}
+}
+
+// TestAcquireRejectedWhileDraining pins the post-drain re-admission gate:
+// once Shutdown begins draining, neither the pooled nor the bridge acquire
+// path may admit (a session POST or run START landing after the drain
+// would leak an owned session row upstream).
+func TestAcquireRejectedWhileDraining(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	lease, err := p.AcquireBridge(context.Background(), "drain-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LeaseRelease(lease)
+
+	p.Shutdown(context.Background())
+	before := mock.SessionCreates
+	_, err = p.AcquireBridge(context.Background(), "drain-tok", modelA)
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("bridge acquire after drain = %v, want shutting-down error", err)
+	}
+	_, err = p.Acquire(context.Background(), modelA)
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("pooled acquire after drain = %v, want shutting-down error", err)
+	}
+	if after := mock.SessionCreates; after != before {
+		t.Errorf("session creates after drain = %d, want %d (no post-drain admission)", after, before)
 	}
 }

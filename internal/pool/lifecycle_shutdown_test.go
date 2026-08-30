@@ -1,6 +1,6 @@
 package pool
 
-// Regression guards for the P1/P2 shutdown fixes:
+// Regression guards for the shutdown fixes:
 //
 //   - Pool.Shutdown must not hold bridgeMu across the per-entry upstream
 //     drain (FinishAllRuns + session shutdown for every cached bridge
@@ -10,7 +10,7 @@ package pool
 //     bridgeEvictLocked / bridgeMaintain already follow).
 //   - A bridge entry with an outstanding lease at shutdown must not lose
 //     its FINISH: FinishAllRuns defers in-flight runs, and the last lease
-//     release re-queues the FINISH (P1).
+//     release re-queues the FINISH before the drain completes.
 
 import (
 	"context"
@@ -22,7 +22,7 @@ import (
 )
 
 // TestShutdownBridgeDrainOutsideBridgeMu is the regression guard for the
-// P2 bridgeMu stall: Pool.Shutdown used to hold bridgeMu across the whole
+// bridgeMu stall: Pool.Shutdown used to hold bridgeMu across the whole
 // per-entry drain. Here a slow FINISH (mock FinishDelay) holds the drain in
 // flight while a concurrent bridgeMu acquisition must still complete — with
 // the bug it would block for the rest of the drain.
@@ -85,7 +85,7 @@ func TestShutdownBridgeDrainOutsideBridgeMu(t *testing.T) {
 }
 
 // TestShutdownBridgeInflightRunFinishedOnRelease is the pool-level half of
-// the P1 fix: a bridge entry with an outstanding lease at shutdown must not
+// the fix: a bridge entry with an outstanding lease at shutdown must not
 // lose its FINISH. FinishAllRuns defers the in-flight run (it stays
 // tracked); the last lease release re-queues the FINISH, so the upstream
 // agent run is not orphaned. Previously FinishAllRuns deleted the run from
