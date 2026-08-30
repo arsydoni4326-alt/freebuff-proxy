@@ -455,6 +455,7 @@ production build (single binary), run `task frontend:build`.
 - [9router Integration](docs/9router-integration.md): router dashboard setup in bridge mode
 - [Dashboard Guide](docs/dashboard.md): the admin web UI: access, pages, Docker caveats, hardening
 - [Manual Testing](docs/testing.md): verify the proxy on Linux or Windows by hand, step by step
+- [User Lifecycle](docs/user-lifecycle.md): install → first run → tokens → use → monitor → edit → rotate → quota → update
 - [Version Stability & Ban Findings](docs/getting-started.md#access-tiers--workarounds): **read before upgrading** — why v0.11.2 bridge is the proven-stable deployment
 
 ---

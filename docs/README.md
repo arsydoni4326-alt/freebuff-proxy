@@ -12,6 +12,7 @@ repository.
 | [9router Integration](9router-integration.md) | Wire the proxy into 9router as a custom OpenAI-compatible provider |
 | [Dashboard Guide](dashboard.md) | The embedded admin web UI: access, pages, Docker caveats, hardening |
 | [Manual Testing](testing.md) | Step-by-step verification runbook (Linux and Windows), mirroring the CI checks |
+| [User Lifecycle](user-lifecycle.md) | Full operator lifecycle: install per OS → first run → add tokens → use clients → monitor → edit config → rotate/remove → quota review → update |
 
 ## Related
 
