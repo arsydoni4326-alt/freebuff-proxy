@@ -1,6 +1,6 @@
 // about the FreeBuff free catalog. One row per model in upstream
 // SUPPORTED_FREEBUFF_MODELS (reference/freebuff/common/src/constants/
-// freebuff-models.ts, pinned snapshot 298bbda09bb4, vendor 0.0.160).
+// freebuff-models.ts, pinned snapshot 89ce3f5, vendor 0.0.160).
 //
 // Every package that needs a per-model fact — registry (served/paused gate,
 // withdrawn-model copy), convert (effort ladders), pool (premium pool and
@@ -51,13 +51,13 @@ type ModelInfo struct {
 // test enforces it.
 var Catalog = []ModelInfo{
 	{ID: "stealth/ox-alpha", DisplayName: "Ox Alpha",
-		PausedReplacement: "openai/gpt-5.6-luna", ContextWindow: 1_000_000,
+		PausedReplacement: "z-ai/glm-5.3-flash", ContextWindow: 1_000_000,
 		Efforts: []string{"low", "high", "max"}},
 	{ID: "deepseek/deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro",
-		PausedReplacement: "openai/gpt-5.6-luna", ContextWindow: 1_048_576,
+		PausedReplacement: "z-ai/glm-5.3-flash", ContextWindow: 1_048_576,
 		Efforts: []string{"low", "high", "max"}},
 	{ID: "minimax/minimax-m3", DisplayName: "MiniMax M3",
-		PausedReplacement: "openai/gpt-5.6-luna", ContextWindow: 524_288,
+		PausedReplacement: "z-ai/glm-5.3-flash", ContextWindow: 524_288,
 		Efforts: []string{"high"}},
 	{ID: "openai/gpt-5.6-luna", DisplayName: "GPT-5.6 Luna",
 		Served: true, Premium: true, ContextWindow: 1_000_000,
@@ -66,7 +66,8 @@ var Catalog = []ModelInfo{
 		Served: true, Premium: true, ContextWindow: 500_000},
 	{ID: "z-ai/glm-5.2", DisplayName: "GLM 5.2", Served: true},
 	{ID: "z-ai/glm-5.3-flash", DisplayName: "GLM 5.3 Flash",
-		Served: true, ContextWindow: 1_000_000},
+		Served: true, ContextWindow: 1_000_000,
+		Efforts: []string{"low", "high", "max"}},
 	{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash",
 		Served: true, ContextWindow: 1_048_576,
 		Efforts: []string{"low", "high", "max"}},
@@ -81,9 +82,11 @@ var Catalog = []ModelInfo{
 }
 
 // DefaultModelID mirrors upstream DEFAULT_FREEBUFF_MODEL_ID, pinned to
-// FREEBUFF_MODELS[0] (gpt-5.6-luna leads the picker since 2026-08-24). It is
-// what the upstream CLI resolves a blank model pick to.
-const DefaultModelID = "openai/gpt-5.6-luna"
+// FREEBUFF_MODELS[0] (GLM 5.3 Flash leads the picker since 2026-08-30). It is
+// what the upstream CLI resolves a blank model pick to. The move is explicit
+// vendor policy: the default must be open at every hour and joinable with an
+// empty wallet, and this row is unmetered and always available.
+const DefaultModelID = "z-ai/glm-5.3-flash"
 
 // FallbackModelID mirrors upstream FALLBACK_FREEBUFF_MODEL_ID: the model
 // guaranteed available on EVERY tier that unavailable picks are coerced to.
@@ -99,7 +102,10 @@ const Glm52ModelID = "z-ai/glm-5.2"
 // Glm53ModelID is an UNMETERED standard row since 2026-08-28 (left the shared
 // daily premium pool: it bills $0.000249/msg via the Merge lane, cheaper than
 // any other served row, so it joins MiMo and DeepSeek V4 Flash with no
-// ceiling). The premium flag must always agree with the upstream
+// ceiling) AND the proxy default since 2026-08-30 (vendor moved the model to
+// the picker lead — always available, unmetered, cheapest row). Laddered
+// 2026-08-30 as ['low','high','max'] (mediumless; upstream defaultEffort
+// 'max'). The premium flag must always agree with the upstream
 // FREEBUFF_PREMIUM_MODEL_IDS list (isFreebuffPremiumModelId and the
 // FREEBUFF_STANDARD_MODEL_IDS derivation disagree if not).
 const Glm53ModelID = "z-ai/glm-5.3-flash"

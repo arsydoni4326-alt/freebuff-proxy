@@ -81,12 +81,13 @@ var reasoningLadder = [...]string{"minimal", "low", "medium", "high", "xhigh", "
 const defaultReasoningEffort = "high"
 
 // Per-model effort ladders live in modelcat.Catalog (single source of truth,
-// mirroring the upstream freebuff-models.ts rows): deepseek-v4-flash/pro and
-// stealth/ox-alpha run ['low','high','max'] (medium is not a distinct level
-// and rewrites to high — see normalizeReasoning); gpt-5.6-luna and
+// mirroring the upstream freebuff-models.ts rows): deepseek-v4-flash/pro,
+// stealth/ox-alpha and z-ai/glm-5.3-flash run ['low','high','max'] (medium is
+// not a distinct level and rewrites to high — see normalizeReasoning; the GLM
+// row laddered 2026-08-30 with upstream defaultEffort 'max'); gpt-5.6-luna and
 // claude-fable-5 run EFFORTS_THROUGH_MAX low..max; mimo-v2.5 and minimax-m3
-// expose only {'high'} (no depth ladder upstream); z-ai/glm-5.2, glm-5.3-flash
-// and kimi-k3-eco accept but ignore reasoning_effort, so no clamp.
+// expose only {'high'} (no depth ladder upstream); z-ai/glm-5.2 and
+// kimi-k3-eco accept but ignore reasoning_effort, so no clamp.
 //
 // Clamping mirrors upstream's resolveFreebuffReasoningEffort
 // (reference/freebuff/common/src/constants/freebuff-models.ts): clamp-DOWN,
@@ -183,11 +184,12 @@ func isDeepSeekModel(model string) bool {
 }
 
 // isMediumlessLadderModel reports whether the model's upstream effort ladder
-// omits "medium" (DeepSeek V4, Ox Alpha): both rewrite a requested "medium"
-// to "high" (#112) instead of the generic down-clamp, which would pick "low".
+// omits "medium" (DeepSeek V4, Ox Alpha, GLM 5.3 Flash): all rewrite a
+// requested "medium" to "high" (#112) instead of the generic down-clamp,
+// which would pick "low".
 func isMediumlessLadderModel(model string) bool {
 	m := strings.ToLower(model)
-	return isDeepSeekModel(m) || strings.HasSuffix(m, "ox-alpha")
+	return isDeepSeekModel(m) || strings.HasSuffix(m, "ox-alpha") || strings.HasSuffix(m, "glm-5.3-flash")
 }
 
 // isStrictReasoningModel reports whether the model requires an explicit reasoning_content

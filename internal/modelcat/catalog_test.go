@@ -363,7 +363,7 @@ func TestCatalogFactsPinned(t *testing.T) {
 		"mimo/mimo-v2.5":             {"high"},
 		"upstage/solar-pro4":         nil,
 		"z-ai/glm-5.2":               nil,
-		"z-ai/glm-5.3-flash":         nil,
+		"z-ai/glm-5.3-flash":         {"low", "high", "max"},
 	}
 	for id, want := range wantEfforts {
 		if got := Efforts(id); !slices.Equal(got, want) {

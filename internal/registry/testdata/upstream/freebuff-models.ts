@@ -87,8 +87,13 @@ export interface FreebuffModelOption {
   /** Reasoning effort sent for this model, on the PROVIDER's own scale.
    *  Deliberately wider than the shared agent-definition enum: Meta's ladder is
    *  minimal/low/medium/high/xhigh (its own 400 names the set). Not every
-   *  provider accepts every rung, so each model still declares its own ladder. */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+   *  provider accepts every rung, so each model still declares its own ladder.
+   *
+   *  `max` joined this union for GLM 5.3 Flash, whose declared ladder tops out
+   *  there and whose previous behaviour (unset) was DEEPER than max — so any
+   *  narrower wire default would have been a silent downgrade rather than the
+   *  small, deliberate one that row documents. */
+  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /**
    * The ladder a USER may pick from for this model, ascending. Absent means the
    * model offers no choice and shows no control — the default for every row.
@@ -529,6 +534,49 @@ const DEEPSEEK_V4_REASONING_EFFORTS = ['low', 'high', 'max'] as const
  *  it is a separate constant rather than a shared one only because the two
  *  providers are free to diverge. */
 const OX_ALPHA_REASONING_EFFORTS = ['low', 'high', 'max'] as const
+/**
+ * GLM 5.3 Flash's native ladder — the three values the Merge Gateway DECLARES
+ * for this model (`effort_values: ["low","high","max"]`), which is also a
+ * subset of OpenRouter's enum and passes through CrofAI verbatim. All three
+ * rungs of the cascade therefore mean the same thing, which is the property
+ * that makes a user's pick safe here: a diverted session must not silently
+ * change depth (see MERGE_VENDOR_ORDER for how often diverts happen).
+ *
+ * MEASURED, not assumed, in thinking characters on a prompt that needs
+ * reasoning (2026-08-27, recorded in merge-gateway.ts):
+ *
+ *   low 107  <  high 175  <  max 590  <  unset 708
+ *
+ * Monotonic, which is what distinguishes a real ladder from three strings the
+ * endpoint accepts and ignores — the trap DEEPSEEK_V4_REASONING_EFFORTS warns
+ * about. Note the fourth column: UNSET IS DEEPER THAN `max`, and unset is
+ * where this row ran from launch until the ladder landed, so shipping
+ * `defaultEffort: 'max'` is a small step DOWN in depth rather than a step up.
+ * That is deliberate — see GLM_V53_FLASH_MODEL — and it is the only rung close
+ * enough to unset to be an honest default for a row taglined "Deep reasoning".
+ *
+ * THE UNSET > MAX ORDERING IS PROMPT-DEPENDENT — re-measured 2026-08-29, three
+ * samples each on an agent-shaped refactor prompt, thinking chars:
+ *
+ *   unset  8118 / 9942 / 9871      max  7271 / 8011 / 5781
+ *
+ * which reproduces it comfortably on the traffic this row actually serves. On a
+ * short logic puzzle the same probe REVERSED it (unset 649, max 1356). So do
+ * not treat any single sample as the ordering, and do not re-tune the default
+ * off one: the claim that survives repetition is that unset and max are close,
+ * with unset ahead on real agent turns, which is all the default needs.
+ *
+ * `low` EMITS NO THINKING TRACE AT ALL — 0 chars on both vendors, measured
+ * 2026-08-29, while still answering normally. That is the rung behaving as
+ * named, not a fault, but it means a user who picks `low` sees the thinking
+ * blocks disappear entirely rather than merely shorten. Expect it to be
+ * reported as a bug at least once.
+ *
+ * `none` is deliberately absent and must never be added: the model declares
+ * `disable_supported: false`, and the undeclared `'none'` measures at 732 —
+ * MORE thinking than unset, the exact opposite of what it names.
+ */
+const GLM_V53_FLASH_REASONING_EFFORTS = ['low', 'high', 'max'] as const
 /**
  * The marker that turns a Muse Spark rate limit into a queued turn rather than
  * a failed one.
@@ -1322,11 +1370,47 @@ const GLM_V53_FLASH_MODEL = {
   premium: false,
   // OpenRouter reports text + image + video in, text out.
   multimodal: true,
-  // NO effort ladder and no `reasoningEffort`. OpenRouter lists no reasoning
-  // levels for this model, so a control here would be a compatibility alias
-  // rather than a native setting — the same reason MiniMax M3 and both GLM 5.2
-  // routes show none. Add one only when the concrete endpoint reports distinct
-  // supported levels.
+  // LADDERED as of 2026-08-29, reversing the note that stood here. That note
+  // said "OpenRouter lists no reasoning levels for this model" and it was
+  // simply wrong on the facts: `z-ai/glm-5.3-flash` carries `reasoning_effort`
+  // in its `supported_parameters`, and the Merge Gateway — the lane that
+  // actually serves nearly all of this row's traffic — DECLARES
+  // `effort_values: ["low","high","max"]` and was already measured behaving
+  // monotonically across them. So the bar this catalog sets (a native provider
+  // setting, never a compatibility alias) was met the whole time and the
+  // control was withheld on a mistaken reading. MiniMax M3, Solar Pro 4 and
+  // MiMo stay bare — those were re-checked at the same time and genuinely
+  // expose no effort parameter.
+  //
+  // NO `reasoningEffort`, DELIBERATELY — an untouched turn sends no
+  // `reasoning_effort` at all and runs at the provider's own setting. This is
+  // the same shape FABLE_5_MODEL already has (a ladder with no pinned wire
+  // default) rather than a new one.
+  //
+  // UNSET IS THE DEEPEST SETTING, NOT A NEUTRAL ONE, and that is the whole
+  // thing to understand before changing it. It is not a mid-ladder value and it
+  // is not "off": measured on an agent-shaped prompt, three samples each, in
+  // thinking characters —
+  //
+  //   unset  8118 / 9942 / 9871      max  7271 / 8011 / 5781
+  //
+  // so leaving it unset asks for MORE reasoning than `max` does, not less. A
+  // shorter probe reverses the ordering, so the honest claim is that the two
+  // are close with unset ahead on real turns; what is NOT true under any
+  // sample is that unset is a lighter setting. If this row is ever made faster,
+  // the change is to ADD `reasoningEffort: 'low'` or `'high'`, not to remove
+  // something.
+  //
+  // `defaultEffort` STAYS `'max'` even though nothing is sent, and the two are
+  // deliberately unequal here — the field's docblock allows exactly this. It is
+  // where the PICKER's cursor starts, and `max` is the nearest declared rung to
+  // a wire default that sits just past the top of the ladder. Naming the
+  // closest rung is the most accurate thing a three-rung control can say about
+  // an off-ladder setting; the alternative is a fourth pseudo-rung that no
+  // provider accepts. Note the CLI picker reads `reasoningEffort`, not this, so
+  // it correctly shows NO reasoning suffix on this row until a user picks.
+  efforts: GLM_V53_FLASH_REASONING_EFFORTS,
+  defaultEffort: 'max',
   //
   // No `supersededBy` and no RECOMMENDED badge: nothing in this catalog nudges
   // anyone anywhere, and a notice here would rewrite saved picks on every load
@@ -1548,25 +1632,44 @@ export const SUPPORTED_FREEBUFF_MODELS = [
 // change: the catalog keeps a deep option, and the line that could not be
 // afforded goes.
 export const FREEBUFF_MODELS = [
-  // LUNA LEADS as of 2026-08-24, and the position is not a preference — a test
-  // pins FREEBUFF_MODELS[0] to DEFAULT_FREEBUFF_MODEL_ID, so this moved because
-  // the DEFAULT had to move.
+  // GLM 5.3 FLASH LEADS as of 2026-08-30, and the position is not a preference —
+  // a test pins FREEBUFF_MODELS[0] to DEFAULT_FREEBUFF_MODEL_ID, so this moved
+  // because the DEFAULT moved. It is an explicit product decision, taken
+  // against the note that used to sit on this row telling you not to.
   //
-  // Flash closes for the ten-hour peak window again (see its `availability`),
-  // and the default must be open at every hour: it is what a new user lands on
-  // before they know the catalog exists, so a default dark for ten hours a day
-  // fails admission for exactly the people least able to diagnose it. That
-  // invariant is asserted, not assumed.
+  // It clears the two invariants a default has to clear, and clears them more
+  // comfortably than the Luna it replaces:
   //
-  // Luna rather than Pro, on measured cost inside the window (2026-08-24 09:00Z):
-  //   Luna @ Cheaper Inference  $0.002659/msg   93.8% cache
-  //   Pro  @ Cheaper Inference  $0.005731/msg   87.4% cache
-  // Luna is less than half of Pro and less than half of Flash-at-peak, which is
-  // the reverse of the ordering rationale that stood on 2026-08-22, when Luna's
-  // cost was being read off a card that priced its cache reads 25x too high.
+  //  - OPEN AT EVERY HOUR (`availability: 'always'`). Nothing about the Merge
+  //    lane is time-of-day priced. A default dark for part of the day fails
+  //    admission for exactly the people least able to diagnose it.
+  //  - JOINABLE WITH AN EMPTY WALLET. This row is UNMETERED — `premium: false`,
+  //    no FREEBUFF_PER_MODEL_SESSION_CAPS entry — so unlike every default since
+  //    2026-08-18 it cannot be exhausted. The `premiumExhausted` step-down in
+  //    getRecommendedFreebuffModelId still exists for the limited tier and for
+  //    callers that pass it, but it is no longer load-bearing FOR THE DEFAULT:
+  //    a new user's first send cannot fail because a pool ran dry.
+  //
+  // And it is the cheapest row we serve, by a wide margin — measured production
+  // spend, per message:
+  //   glm-5.3-flash      $0.000249     (this row)
+  //   mimo-v2.5          $0.001151     4.6x
+  //   deepseek-v4-flash  $0.002223     8.9x
+  //
+  // WHAT THIS GIVES UP, stated plainly because the previous ordering note was
+  // written to prevent exactly this move: this row is the DEEP one, and depth
+  // costs latency. It runs `defaultEffort: 'max'`, measured at ~7-9k thinking
+  // characters on an agent-shaped prompt against `high`'s ~175. A new user's
+  // first turn is therefore slower than it was on Luna. That trade was made
+  // deliberately — see GLM_V53_FLASH_MODEL — and it is the thing to revisit
+  // FIRST if first-run metrics move the wrong way: dropping this row's default
+  // rung to `high` is one line and keeps the cost and availability wins.
   //
   // Ordering is still the ONLY steer here — no supersedes notices, nothing
-  // badged RECOMMENDED — so changing this order is a product decision.
+  // badged RECOMMENDED, because a `supersededBy` would rewrite saved picks on
+  // every load (see migrateSupersededFreebuffModelPreference). Leading the list
+  // IS the recommendation; a returning user who chose another row keeps it.
+  GLM_V53_FLASH_MODEL,
   GPT_5_6_LUNA_MODEL,
   DEEPSEEK_V4_FLASH_MODEL,
   ...(FREEBUFF_ENABLE_MIMO_MODELS_IN_UI ? [MIMO_V25_MODEL] : []),
@@ -1579,12 +1682,6 @@ export const FREEBUFF_MODELS = [
   // stays in SUPPORTED_FREEBUFF_MODELS so the id remains recognisable and
   // coercible for the installed binaries that still hold it.
   SOLAR_PRO_4_MODEL,
-  // LAST, in the slot V4 Pro held and for the same reason: capped at two
-  // sessions a day, so it is somewhere a user reaches deliberately rather than
-  // by scanning from the top. Ordering is still the only steer in this list —
-  // nothing here is badged RECOMMENDED and nothing supersedes anything — so
-  // moving this row up is a product decision, not housekeeping.
-  GLM_V53_FLASH_MODEL,
 ] as const satisfies readonly FreebuffModelOption[]
 
 // Flash joined this list on 2026-08-18 and LEFT it on 2026-08-24, once the
@@ -2174,18 +2271,23 @@ export type FreebuffWebPremiumModelId =
   (typeof FREEBUFF_WEB_PREMIUM_MODEL_IDS)[number]
 
 /** What new freebuff users see selected in the CLI and Desktop pickers, and the
- *  model their "RECOMMENDED" hero opens on. DeepSeek V4 Flash 07/31 as of
- *  2026-08-18, taking back the lead it held until 2026-08-12, because V4 Pro —
- *  which took it on the strength of the 08/13 GA build — is paused for free mode
- *  (FREEBUFF_PAUSED_FREE_MODEL_IDS). Flash is the strongest row free mode still
- *  runs, so it leads again by default rather than by re-argued merit.
+ *  model their "RECOMMENDED" hero opens on. GLM 5.3 Flash as of 2026-08-30.
  *
- *  It is PREMIUM as of the same day, which it was NOT the last time it held this
- *  slot, so the machinery below is now load-bearing for it too: the shared daily
- *  pool CAN run dry, and surfaces that know the live quota must step down to
- *  FALLBACK_FREEBUFF_MODEL_ID once it is spent — getRecommendedFreebuffModelId
- *  for the picker hero, Desktop's availableFreebuffDefault for an unpicked tab —
- *  or the default becomes a model whose next send fails admission.
+ *  THE FIRST DEFAULT SINCE 2026-08-18 THAT IS NOT PREMIUM, and that is the
+ *  substantive change rather than a detail. Every default in between drew on the
+ *  shared daily pool, which made a step-down mandatory for anything holding a
+ *  live quota — getRecommendedFreebuffModelId's `premiumExhausted`, Desktop's
+ *  availableFreebuffDefault — because otherwise the recommended pick became a
+ *  model whose next send fails admission. That machinery all still exists and
+ *  still serves the limited tier, but it is no longer load-bearing here: this
+ *  row is unmetered and uncapped, so a new user's first send cannot fail for
+ *  want of quota.
+ *
+ *  It is also `availability: 'always'` and the cheapest row we serve
+ *  ($0.000249/msg measured, 4.6x under MiMo and 8.9x under V4 Flash). The cost
+ *  and availability arguments are therefore both strictly better than the Luna
+ *  it replaces; the argument it LOSES is latency, since this is the deep row
+ *  running `defaultEffort: 'max'`. See FREEBUFF_MODELS for that trade in full.
  *
  *  Still three separate constants: this one, DEFAULT_FREEBUFF_WEB_MODEL_ID and
  *  FALLBACK_FREEBUFF_MODEL_ID (what callers needing a guaranteed-available id
@@ -2193,47 +2295,42 @@ export type FreebuffWebPremiumModelId =
  *  model today and have diverged before; the third is genuinely a different
  *  model rather than the same one under two names.
  *
- *  It carries the AI-training notice, so pickers using it must render the
- *  model's `warning`. */
+ *  Unlike the Luna and Flash defaults before it, this row carries NO
+ *  AI-training notice (`dataUse: 'service'`), so the disclosure a first-time
+ *  user sees changes — pickers still render `warning`, there is simply no
+ *  longer one to render on the default row. */
 export const DEFAULT_FREEBUFF_MODEL_ID: FreebuffModelId =
-  FREEBUFF_GPT_5_6_LUNA_MODEL_ID
+  FREEBUFF_GLM_V53_FLASH_MODEL_ID
 
 /** What new Freebuff Web/Cloud users see selected in the browser pickers, and
- *  the model a new Cloud thread starts on. DeepSeek V4 Pro as of 2026-08-21.
+ *  the model a new Cloud thread starts on. GLM 5.3 Flash as of 2026-08-30,
+ *  moving with DEFAULT_FREEBUFF_MODEL_ID rather than independently.
  *
- *  A STARTING POSITION, not an endorsement — nothing in the catalog is badged
- *  RECOMMENDED any more. It is Pro because a default has to be joinable and Pro
- *  is the only premium row open at every hour: V4 Flash now closes for the
- *  ten-hour peak window, and a default that is unavailable for part of every
- *  day is a default that fails admission for the users least able to diagnose
- *  it.
+ *  The browser surfaces are where this default matters most and where the trade
+ *  cuts both ways hardest. A browser build is one long agentic run against a
+ *  live sandbox, where a wrong turn early costs the whole first project — and
+ *  51% of Web users never come back from a failed one. That argument has always
+ *  favoured the deepest row available, and this IS the deep row, which is the
+ *  case for it here.
  *
- *  A browser build is the workload where model quality shows up most: one long
- *  agentic run against a live sandbox, where a wrong turn early costs the whole
- *  first project, which 51% of Web users never come back from. That argument
- *  picked Pro and it has not changed — Pro is simply not available to spend on
- *  right now, so this falls to the strongest row free mode still runs.
+ *  Against that: browser turns re-send their whole prefix every step, so these
+ *  surfaces are the most latency-sensitive we have, and preparation already
+ *  costs ~6.3s at p50 before a token (docs/freebuff-ttft-deferred-vm.md). A
+ *  `max` reasoning default adds to that on every step. If first-run completion
+ *  moves the wrong way after this lands, drop the row's `defaultEffort` to
+ *  `high` before reaching for a different model — that keeps the cost and
+ *  availability wins and is the change this comment expects to be made.
  *
- *  The cost half had ALREADY collapsed before the pause, which is why this is a
- *  smaller loss than it looks. Browser turns re-send their whole prefix every
- *  step, so cache reads are ~98% of tokens; Pro read cache at $0.003625/M
- *  against Luna's $0.010/M until DeepSeek's 16:00 UTC 2026-08-16 repricing put
- *  it at $0.022/M off-peak and $0.044/M at peak — 2.2x to 4.4x DEARER than Luna
- *  on the dominant term, on top of fresh input and output. See
- *  FREEBUFF_WEB_DEEMPHASIZED_MODEL_IDS for the table.
- *
- *  Flash keeps the AI-training notice Pro carried, so the disclosure a
- *  first-time user sees is unchanged. It is premium as of 2026-08-18, so it
- *  still draws on the shared daily pool and the step-down to
- *  FALLBACK_FREEBUFF_MODEL_ID stays load-bearing (getRecommendedFreebuffWebModelId
- *  for the hero picker; the model selector coerces a spent default) — otherwise
- *  the default becomes a model whose next send fails admission.
+ *  The cost half is not close. Cache reads are ~98% of browser tokens, and this
+ *  row reads cache at $0.015/M against Luna's $0.008/M list — but it bills
+ *  $0.000249/msg measured against Luna's $0.002659, an order of magnitude
+ *  apart on the traffic that actually runs.
  *
  *  Kept as its own constant from DEFAULT_FREEBUFF_MODEL_ID (CLI/Desktop) so the
  *  browser surfaces can steer independently. They name the same model today and
- *  diverged as recently as 2026-08-04 → 2026-08-12. */
+ *  diverged as recently as 2026-08-04 -> 2026-08-12. */
 export const DEFAULT_FREEBUFF_WEB_MODEL_ID: FreebuffWebModelId =
-  FREEBUFF_GPT_5_6_LUNA_MODEL_ID
+  FREEBUFF_GLM_V53_FLASH_MODEL_ID
 
 /** Premium models the Web/Cloud picker renders small and muted: they are
  *  materially more expensive per token than the recommended default without
@@ -2537,7 +2634,15 @@ export function getRecommendedFreebuffModelId(
   options: { premiumExhausted?: boolean } = {},
 ): SupportedFreebuffModelId {
   if (accessTier === 'limited') return LIMITED_FREEBUFF_MODEL_ID
-  if (options.premiumExhausted) return FALLBACK_FREEBUFF_MODEL_ID
+  // The step-down fires only if the default actually DRAWS on the pool that ran
+  // dry. It used to fire unconditionally, which was correct for as long as
+  // every default was premium (2026-08-18 onwards) and became wrong the moment
+  // one was not: an unmetered default is unaffected by a spent premium pool, so
+  // stepping off it would move a user from the row they were offered to a
+  // different unmetered row for no reason, and tell them their quota caused it.
+  if (options.premiumExhausted && isFreebuffPremiumModelId(DEFAULT_FREEBUFF_MODEL_ID)) {
+    return FALLBACK_FREEBUFF_MODEL_ID
+  }
   return DEFAULT_FREEBUFF_MODEL_ID
 }
 
@@ -2550,7 +2655,15 @@ export function getRecommendedFreebuffWebModelId(
   options: { premiumExhausted?: boolean } = {},
 ): FreebuffWebModelId {
   if (accessTier === 'limited') return LIMITED_FREEBUFF_MODEL_ID
-  if (options.premiumExhausted) return FALLBACK_FREEBUFF_MODEL_ID
+  // Same condition as getRecommendedFreebuffModelId, and for the same reason —
+  // see the comment there. Keyed off the WEB default, since the two constants
+  // are allowed to name different models and have done.
+  if (
+    options.premiumExhausted &&
+    isFreebuffPremiumModelId(DEFAULT_FREEBUFF_WEB_MODEL_ID)
+  ) {
+    return FALLBACK_FREEBUFF_MODEL_ID
+  }
   return DEFAULT_FREEBUFF_WEB_MODEL_ID
 }
 
