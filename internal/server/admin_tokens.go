@@ -352,16 +352,40 @@ func (s *Server) handleTokenRemove(w http.ResponseWriter, r *http.Request) {
 		s.dash.RenderConfigResult(w, r, false, "AUTH_TOKENS in .env differs from the live pool — reconcile in the Config editor or restart.")
 		return
 	}
+	// The SPA sends the token INDEX it wants removed (values stay masked
+	// client-side). Parse it; the old last-token-removed behavior is kept
+	// when the parameter is absent (compat for callers that do not send
+	// one). A middle removal is refused by the pool while any request is
+	// in flight — surfaced as a plain error message.
+	idx := -1
+	if raw := r.FormValue("token"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n >= len(cfg.AuthTokens) {
+			s.dash.RenderConfigResult(w, r, false, "Invalid token index.")
+			return
+		}
+		idx = n
+	}
 	removed := ""
-	if len(cfg.AuthTokens) > 0 {
+	if idx >= 0 {
+		removed = cfg.AuthTokens[idx]
+	} else if len(cfg.AuthTokens) > 0 {
 		removed = cfg.AuthTokens[len(cfg.AuthTokens)-1]
 	}
-	if err := s.pool.RemoveLastToken(); err != nil {
+	var err error
+	if idx >= 0 {
+		err = s.pool.RemoveTokenAt(idx)
+	} else {
+		err = s.pool.RemoveLastToken()
+	}
+	if err != nil {
 		s.dash.RenderConfigResult(w, r, false, err.Error())
 		return
 	}
 	tokens := cfg.AuthTokens
-	if len(tokens) > 0 {
+	if idx >= 0 {
+		tokens = append(tokens[:idx], tokens[idx+1:]...)
+	} else if len(tokens) > 0 {
 		tokens = tokens[:len(tokens)-1]
 	}
 	if err := s.syncTokensAfterMutation(tokens); err != nil {
@@ -378,7 +402,11 @@ func (s *Server) handleTokenRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("dashboard token removed", "remote", remoteHost(r))
-	s.dash.RenderConfigResult(w, r, true, "Last token removed and persisted to .env.")
+	msg := "Last token removed and persisted to .env."
+	if idx >= 0 {
+		msg = "Token removed and persisted to .env."
+	}
+	s.dash.RenderConfigResult(w, r, true, msg)
 }
 
 func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {

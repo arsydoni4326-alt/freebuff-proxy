@@ -257,7 +257,55 @@ func (p *Pool) RemoveLastToken() error {
 	return nil
 }
 
-// drainRemovedToken finishes the removed token's runs and ends its admitted
+// RemoveTokenAt removes the fixed token at idx (dashboard action on a
+// specific row). A middle removal shifts every higher index, so unlike
+// RemoveLastToken it refuses while ANY token has in-flight requests: a
+// lease that slipped the check would otherwise re-index against a
+// different entry on the chat path (documented hazard in RemoveLastToken).
+// The removed entry is parked + drained exactly like RemoveLastToken; the
+// usage/spend/mismatch tracks are rebuilt index-aligned.
+func (p *Pool) RemoveTokenAt(idx int) error {
+	toks := p.toks.Load()
+	if idx < 0 || idx >= len(*toks) {
+		return errors.New("pool: token index out of range")
+	}
+	for _, t := range *toks {
+		if t.runs.InflightCount() > 0 {
+			return errors.New("pool: active requests in flight; retry once they finish")
+		}
+	}
+	target := (*toks)[idx]
+	next := make([]*tokenEntry, 0, len(*toks)-1)
+	next = append(next, (*toks)[:idx]...)
+	next = append(next, (*toks)[idx+1:]...)
+	p.toks.Store(&next)
+	p.usageMu.Lock()
+	p.msgsPerToken = append(p.msgsPerToken[:idx], p.msgsPerToken[idx+1:]...)
+	p.usageMu.Unlock()
+	p.spendMu.Lock()
+	p.spendPerToken = append(p.spendPerToken[:idx], p.spendPerToken[idx+1:]...)
+	p.spendMu.Unlock()
+	p.mismatchMu.Lock()
+	for key, v := range p.mismatch {
+		switch {
+		case key == idx+1:
+			delete(p.mismatch, key)
+		case key > idx+1:
+			p.mismatch[key-1] = v
+			delete(p.mismatch, key)
+		}
+	}
+	p.mismatchMu.Unlock()
+	p.retiredMu.Lock()
+	if p.retired == nil {
+		p.retired = make(map[*tokenEntry]time.Time)
+	}
+	p.retired[target] = time.Now()
+	p.retiredMu.Unlock()
+	p.drainRemovedToken(target)
+	return nil
+}
+
 // session (mirrors RemoveAllTokens' run finish plus the session end that
 // removal previously skipped), bounded by the per-token shutdown timeout so
 // a hung upstream cannot block the dashboard action. guarded by
