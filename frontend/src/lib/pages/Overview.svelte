@@ -312,10 +312,10 @@
     {:else if !data.has_tokens}
       <EmptyState
         title={$tr('No upstream tokens configured')}
-        description={$tr('Add tokens to AUTH_TOKENS in Config to start the pooled relay.')}
+        description={$tr('Add tokens to AUTH_TOKENS in Settings to start the pooled relay.')}
       >
         {#snippet action()}
-          <a href="#config" class="fp-btn fp-btn-secondary">{$tr('Go to Config')}</a>
+          <a href="#settings" class="fp-btn fp-btn-secondary">{$tr('Go to Settings')}</a>
         {/snippet}
       </EmptyState>
     {:else}

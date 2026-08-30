@@ -26,7 +26,7 @@
     { id: 'tokens',   label: 'Tokens',   icon: Key },
     { id: 'quota',    label: 'Quota Tracker', icon: Gauge },
     { id: 'models',   label: 'Models',   icon: Cpu },
-    { id: 'config',   label: 'Config',   icon: Settings },
+    { id: 'settings', label: 'Settings', icon: Settings },
     { id: 'logs',     label: 'Logs',     icon: FileText },
     ...(devToolsEnabled ? [{ id: 'devtools', label: 'Dev Tools', icon: FlaskConical }] : []),
   ]);

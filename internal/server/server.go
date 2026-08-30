@@ -213,6 +213,8 @@ func (s *Server) adminHandler(r dashboard.AdminRoute) http.Handler {
 		return s.dash.APIHandler("setup")
 	case "GET /admin/api/config":
 		return s.dash.APIHandler("config")
+	case "GET /admin/api/config/meta":
+		return http.HandlerFunc(s.dash.APIConfigMeta)
 	case "GET /admin/api/logs":
 		return s.dash.APIHandler("logs")
 	case "GET /admin/api/metrics":

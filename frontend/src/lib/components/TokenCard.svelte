@@ -78,7 +78,6 @@
 
 <tr>
   <td class="w-8">
-    {#if devToolsEnabled}
     <button
       type="button"
       onclick={onToggle}
@@ -92,7 +91,6 @@
         <ChevronRight size={16} />
       {/if}
     </button>
-    {/if}
   </td>
   <td>
     <span class="fp-num text-xs text-[var(--fp-text)]">#{idx}</span>
@@ -165,7 +163,7 @@
     </div>
   </td>
 </tr>
-{#if expanded && devToolsEnabled}
+{#if expanded}
   <tr>
     <td colspan="6" class="!p-0">
       <div class="fp-inset m-2 rounded p-3">

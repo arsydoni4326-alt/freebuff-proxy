@@ -102,6 +102,16 @@ func (d *Dashboard) APIHandler(name string) http.HandlerFunc {
 	}
 }
 
+// APIConfigMeta returns the configuration catalog as a JSON array: the
+// ordered list of operator-facing keys (key, group, kind, enum, default,
+// restart_only, secret, description). The settings UI builds its form
+// deterministically from it, so the array is the single description of the
+// env surface. Auth wrapping (dashboardAuth) is applied by the route table.
+func (d *Dashboard) APIConfigMeta(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(config.Catalog())
+}
+
 // APIVersion returns the running version and update check result as JSON.
 func (d *Dashboard) APIVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
