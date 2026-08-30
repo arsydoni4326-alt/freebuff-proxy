@@ -194,7 +194,11 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		// remembered terminal error still feeds the failover buckets so a
 		// fully-quarantined pool surfaces the right 403/401 instead of a
 		// generic 502.
-		if q := tok.quarantine.Load(); q != nil {
+		// Lift-aware quarantine: a temporary ban's marker expires at its
+		// resumes_at (the ban auto-lifts upstream), so a lifted token falls
+		// through to the normal eligibility checks instead of staying
+		// excluded forever.
+		if q := tok.quarantine.Load(); q != nil && !p.clearLiftedQuarantine(tok) {
 			errs = append(errs, fmt.Sprintf("%s: quarantined (%s: %s)", name, q.reason, q.detail))
 			p.logger.Debug("pool: token skipped (quarantined)", "token", idx+1, "state", q.reason, "reason", q.detail)
 			switch terr := q.err.(type) {

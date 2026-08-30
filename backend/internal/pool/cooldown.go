@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -34,7 +35,7 @@ func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
 		defer p.spendMu.Unlock()
 		p.recordSpendLimited(token)
 	}
-	p.recordMismatchEscalation(token, rle)
+	p.recordMismatchEscalation(token+1, rle) // 1-based key: 0 is the bridge-shared window
 }
 
 // CooldownTokenIpCapped applies an ip_capped cooldown to token via
@@ -176,6 +177,10 @@ const (
 // token and fires agent_model_mismatch_escalation once per window when the
 // count crosses the threshold. Bridge entries share the pooled path through
 // CooldownTokenRateLimit/CooldownBridgeRateLimit, so both surfaces alert.
+// tokenIndex is the 1-based pooled token index (0 = bridge, the shared
+// window) — the same convention as notifyBan and the
+// RemoveTokenAt/RemoveLastToken reindex — so a pooled token never shares
+// its window with the bridge entries.
 func (p *Pool) recordMismatchEscalation(tokenIndex int, rle *upstream.RateLimitError) {
 	if rle == nil || rle.Status != "free_mode_invalid_agent_model" {
 		return
@@ -202,14 +207,21 @@ func (p *Pool) recordMismatchEscalation(tokenIndex int, rle *upstream.RateLimitE
 	if !fire {
 		return
 	}
-	model := rle.Status // Status names the code; Model comes from the caller below
+	model := rle.Model // the refused model when the body carried one (fallback below)
 	p.notifyMu.Lock()
 	n := p.notify
 	p.notifyMu.Unlock()
 	if n == nil {
 		return
 	}
-	n.Send(notify.Event{Event: "agent_model_mismatch_escalation", TokenIndex: tokenIndex + 1,
+	// The event's Model names the refused MODEL (rle.Model) when the
+	// upstream body carried one, falling back to the refusal code — the
+	// alert must never put "free_mode_invalid_agent_model" in the model
+	// slot.
+	if model == "" {
+		model = rle.Status
+	}
+	n.Send(notify.Event{Event: "agent_model_mismatch_escalation", TokenIndex: tokenIndex,
 		Model:   model,
 		Message: "3+ free_mode_invalid_agent_model refusals in 60s on one token — the registry is likely serving a model upstream retired; refresh/restart or check MODELS_ALLOW before upstream escalates to ban"})
 }
@@ -251,11 +263,47 @@ func (p *Pool) quarantineToken(tok *tokenEntry, reason string, err error) {
 	rec := &quarantineState{reason: reason, err: err}
 	if err != nil {
 		rec.detail = err.Error()
+		// Lift-aware quarantine: a ban carrying a FUTURE resumes_at is a
+		// time-limited upstream state — the account auto-lifts at that
+		// instant (CooldownBan keeps the ban memory only until then, and
+		// banView renders it as "temporary"). Record the lift on the marker
+		// so it expires with the window and the pool re-admits after the
+		// unban, exactly as the "quarantine only while the ban is still
+		// live" caller comments state. Hard bans (no resumes_at), country
+		// blocks, and 401 invalids stay permanent (liftAt zero).
+		var be *upstream.BanError
+		if reason == "banned" && errors.As(err, &be) && !be.ResumesAt.IsZero() && be.ResumesAt.After(time.Now()) {
+			rec.liftAt = be.ResumesAt
+		}
 	}
 	if tok.quarantine.CompareAndSwap(nil, rec) {
 		p.logger.Warn("pool: token quarantined (terminal account state)",
 			"token_label", tokenEntryLabel(tok), "state", reason, "reason", rec.detail)
 	}
+}
+
+// clearLiftedQuarantine clears the quarantine marker of a token whose
+// time-limited terminal state (temporary ban) has lifted: the upstream
+// unban is automatic at resumes_at, so the account is serviceable again and
+// the pool must not keep treating it as terminal. Permanent states (hard
+// ban, country block, 401 invalid) keep their marker — only an operator
+// action (UnlockToken) or an AUTH_TOKENS slot replacement clears those.
+// Returns true when a marker was cleared. CompareAndSwap-guarded:
+// concurrent callers race harmlessly and exactly one logs the lift.
+func (p *Pool) clearLiftedQuarantine(tok *tokenEntry) bool {
+	if tok == nil {
+		return false
+	}
+	q := tok.quarantine.Load()
+	if q == nil || q.liftAt.IsZero() || time.Now().Before(q.liftAt) {
+		return false
+	}
+	if tok.quarantine.CompareAndSwap(q, nil) {
+		p.logger.Info("pool: quarantine lifted (temporary ban expired)",
+			"token_label", tokenEntryLabel(tok), "state", q.reason)
+		return true
+	}
+	return false
 }
 
 // LockToken administratively excludes token from Acquire without clearing

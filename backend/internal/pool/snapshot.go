@@ -87,7 +87,10 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		// banned token as "high". The ban risk is gated on the ban window
 		// still being active (BannedUntil) so an expired ban does not stay
 		// sticky "critical" forever.
-		case rs.BanError != nil && time.Now().Before(rs.BannedUntil):
+		// A HARD ban has BannedUntil zero (no timed window) and stays live
+		// for good — it must still rank critical instead of falling through
+		// to the usage cases.
+		case rs.BanError != nil && (rs.BannedUntil.IsZero() || time.Now().Before(rs.BannedUntil)):
 			riskLevel = "critical"
 		case !rs.CooldownUntil.IsZero() && time.Now().Before(rs.CooldownUntil):
 			riskLevel = "high"
@@ -130,7 +133,15 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		q := tok.quarantine.Load()
 		quarantineReason := ""
 		if q != nil {
-			quarantineReason = q.reason
+			// Lift-aware quarantine: a temporary ban's marker may have
+			// timed out; clear it before rendering so the dashboard never
+			// reports a lifted account as terminal.
+			if p.clearLiftedQuarantine(tok) {
+				q = nil
+			}
+			if q != nil {
+				quarantineReason = q.reason
+			}
 		}
 
 		out = append(out, TokenSnapshot{
