@@ -120,6 +120,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	s.chatCore(w, r, model, stream, normalized, convert.ExtractReasoningEffort(raw), "messages", relay)
 }
 
+// anthropicDefaultMaxTokens is the server-side rule for a /v1/messages
+// request that omits max_tokens (REQUIRED by the Anthropic spec, but some
+// clients omit it): 8192, a conservative ceiling every served model honors.
+// The upstream chat endpoint treats an absent max_tokens as provider-default,
+// so pinning it keeps the Anthropic "absolute maximum" semantic
+// deterministic instead of silently passing the raw body through.
+const anthropicDefaultMaxTokens = 8192
+
 // --- request conversion ---
 
 // anthropicToChatParams converts an Anthropic messages request body into
@@ -127,6 +135,24 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 // client's raw model; chatCore's NormalizeRequest modelOverride replaces it
 // with the resolved upstream id. Reasoning effort is derived from the
 // thinking block and fed through the wave-2 clamp by NormalizeRequest.
+//
+// Param mapping policy (parity table):
+//
+//   - system, messages (text/thinking/tool_use/tool_result/image parts),
+//     max_tokens (defaulted to anthropicDefaultMaxTokens when absent),
+//     temperature, top_p, stop_sequences, tools (+ input_schema),
+//     tool_choice (+ disable_parallel_tool_use → parallel_tool_calls),
+//     metadata.user_id → user, thinking → reasoning_effort, stream: mapped.
+//   - top_k: NO chat-completions analogue (the upstream CLI itself warns
+//     "unsupported-setting topK"); the served models do not expose a
+//     top-k knob, so an omitted top_k is behaviorally equivalent. It is
+//     deliberately ignored (documented, not silent) — erroring would break
+//     liberal Anthropic clients that send it as a kit default.
+//   - cache_control (top-level and on tool definitions), container,
+//     inference_geo, output_config, service_tier and the user_profile_id
+//     header: no chat-completion analogue (no prompt-cache marker, no
+//     container/geo affinity, no per-user attribution upstream) — ignored
+//     (documented, not silent).
 func anthropicToChatParams(raw map[string]any) ([]byte, error) {
 	chat := make(map[string]any)
 	if v, ok := raw["model"]; ok {
@@ -135,6 +161,8 @@ func anthropicToChatParams(raw map[string]any) ([]byte, error) {
 	chat["messages"] = anthropicMessagesToOpenAI(raw)
 	if v, ok := raw["max_tokens"]; ok && v != nil {
 		chat["max_tokens"] = v
+	} else {
+		chat["max_tokens"] = anthropicDefaultMaxTokens
 	}
 	if v, ok := raw["temperature"]; ok && v != nil {
 		chat["temperature"] = v
