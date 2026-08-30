@@ -15,7 +15,7 @@
   import Alert from '../components/Alert.svelte';
   import EmptyState from '../components/EmptyState.svelte';
   import Button from '../components/Button.svelte';
-  import { fetchAPI } from '../api/client.js';
+  import { fetchAPI, csrfHeader } from '../api/client.js';
   import { generateRandomApiKey } from '../utils/format.js';
   import { usePolling } from '../utils/polling.js';
   import { tr } from '../i18n.js';
@@ -73,7 +73,7 @@
       const newContent = match ? envContent.replace(regex, `API_KEYS=${updated}`) : (envContent ? `${envContent}\nAPI_KEYS=${updated}` : `API_KEYS=${updated}`);
       const save = await fetch('/admin/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: newContent }),
       });
       const result = await save.json();
@@ -114,7 +114,7 @@
       const newContent = match ? envContent.replace(regex, `API_KEYS=${updated}`) : (envContent ? `${envContent}\nAPI_KEYS=${updated}` : `API_KEYS=${updated}`);
       const save = await fetch('/admin/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: newContent }),
       });
       const result = await save.json();
@@ -176,7 +176,7 @@
         : (envContent ? `${envContent}\nTOKEN_ROTATION=${newMode}` : `TOKEN_ROTATION=${newMode}`);
       const save = await fetch('/admin/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: newContent }),
       });
       if (save.ok) {

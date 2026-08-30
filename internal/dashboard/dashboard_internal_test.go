@@ -168,6 +168,20 @@ func TestMetricsDataRepeatedSampling(t *testing.T) {
 	}
 }
 
+// TestMetricsModelCountServedGate pins /admin/metrics to the served set:
+// the raw fallback registry carries god-only/eval ids, so the page must
+// report the same count as /v1/models and /admin/overview.
+func TestMetricsModelCountServedGate(t *testing.T) {
+	d := testDashboard(t)
+	if d.reg.ModelCount() <= len(registry.SupportedModelIDs) {
+		t.Fatalf("precondition: fallback registry should exceed the served set (got %d)", d.reg.ModelCount())
+	}
+	md := d.metricsData()
+	if md.Models != len(registry.SupportedModelIDs) {
+		t.Errorf("metrics Models = %d, want %d (served set)", md.Models, len(registry.SupportedModelIDs))
+	}
+}
+
 // TestCardFromSnapshotStanding pins the #96 standing mapping: the upstream
 // standing block (level/label/score/nextLevelAt/nextLevel) lands on the
 // token card fields, and a nil standing block leaves HasStanding false.
@@ -208,7 +222,7 @@ func TestCardFromSnapshotStanding(t *testing.T) {
 		t.Errorf("standing fields populated without a block: %q/%v", card.StandingLevel, card.StandingScore)
 	}
 
-	// Issue #140 P3d: cap + earn-back fields land on the card too.
+	// Issue #140: cap + earn-back fields land on the card too.
 	card = cardFromSnapshot(pool.TokenSnapshot{
 		Token:     2,
 		RiskLevel: "low",

@@ -16,7 +16,7 @@
   import PageHeader from '../components/PageHeader.svelte';
   import TokenCard from '../components/TokenCard.svelte';
   import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
-  import { fetchAPI, postAPI } from '../api/client.js';
+  import { fetchAPI, postAPI, csrfHeader } from '../api/client.js';
   import { usePolling } from '../utils/polling.js';
   import { generateRandomApiKey } from '../utils/format.js';
   import { tr } from '../i18n.js';
@@ -58,6 +58,13 @@
   async function fetchData() {
     try {
       data = await fetchAPI('/admin/api/tokens');
+      // Seed the per-token spawn-model map so no TokenCard binding ever sees
+      // undefined — Svelte 5 rejects bind:spawnModel={undefined} for a prop
+      // with a fallback (props_invalid_value) and unmounts the table.
+      (data?.tokens ?? []).forEach((t, i) => {
+        const idx = t.index ?? i;
+        if (!(idx in spawnModels)) spawnModels[idx] = '';
+      });
       try {
         const cfgRes = await fetchAPI('/admin/api/config');
         const envContent = cfgRes?.env_content || '';
@@ -153,7 +160,7 @@
       const updated = existing ? `${existing},${newKey}` : newKey;
       const save = await fetch('/admin/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ content: envContent.replace(regex, `API_KEYS=${updated}`) }),
       });
       const result = await save.json();
@@ -178,7 +185,7 @@
     oauthStatus = { message: $tr('Starting headless login flow…'), type: 'info' };
 
     try {
-      const res = await fetch('/admin/login/start', { method: 'POST' });
+      const res = await fetch('/admin/login/start', { method: 'POST', headers: csrfHeader('POST') });
       const result = await res.json();
 
       if (result.fingerprint && result.login_url) {

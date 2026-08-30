@@ -232,7 +232,8 @@
           </div>
         {/if}
         {#if token.has_standing}
-          <!-- Standing / trust block (issue #140 P3d): level,
+→
+          <!-- Standing / trust block (issue #140): level,
                score progress toward the next level, the cap
                holding the account (capped_by), and upstream's
                suggested earn-back actions. -->

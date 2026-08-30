@@ -255,6 +255,54 @@ test.describe('dashboard hermetic mocks', () => {
 
     // Effective table shows masked secret for API_KEYS
     await expect(page.getByRole('table')).toContainText('API_KEYS');
+
+    // Secret rows expose no copy button (values are redacted counts); the
+    // single non-secret row keeps one.
+    await expect(page.getByRole('button', { name: 'copy' })).toHaveCount(1);
+  });
+
+  test('Config rejected save reverts the editor to the server state', async ({ page }) => {
+    const f = loadFixtures();
+    const configWithContent = {
+      ...f.config,
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\n',
+      has_env_file: true,
+      effective: [
+        { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'API_KEYS', value: '1 key(s)', secret: true },
+      ],
+    };
+    await mockDashboard(page, f, { configWithApiKeys: configWithContent });
+
+    // The server rejects this write (validation failure) and rolls the file back.
+    await page.unroute('**/admin/config');
+    await page.route('**/admin/config', async (route) => {
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: false, message: 'Rejected: invalid value' }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.goto('http://127.0.0.1:4173/admin/#config');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/config') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    const editor = page.locator('#config-env');
+    await expect(editor).toHaveValue(/AUTH_TOKENS/);
+
+    // Edit the content, accept the confirm dialog, and save.
+    await editor.fill('LISTEN_ADDR=127.0.0.1:9999\nAUTH_TOKENS=tok0,tok1\n');
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Save' }).click();
+
+    // Failure alert shown and the editor restored to the original content.
+    await expect(page.getByText('Rejected: invalid value')).toBeVisible();
+    await expect(editor).toHaveValue('LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\n');
+    // hasUnsavedChanges reverted — Save button disabled again.
+    await expect(page.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   test('Logs filters by ?msg= and paginates with Next/Prev', async ({ page }) => {
@@ -357,8 +405,11 @@ test.describe('dashboard hermetic mocks', () => {
     const f = loadFixtures();
     await mockDashboard(page, f);
 
+    // Register the response wait before navigating; the mocked overview
+    // response can resolve during goto and the late wait would miss it.
+    const overviewResp = page.waitForResponse((r) => r.url().includes('/admin/api/overview'), { timeout: 5000 });
     await page.goto('http://127.0.0.1:4173/admin/#overview');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/overview'), { timeout: 5000 });
+    await overviewResp;
     // Overview loading skeleton used aria-live="polite" and aria-busy="true"
     // After load, risk section should have aria-label
     await expect(page.locator('section[aria-label="At-risk tokens"]')).toBeVisible();
@@ -379,5 +430,59 @@ test.describe('dashboard hermetic mocks', () => {
     await expect(page.locator('#config-env')).toBeVisible();
     // Verify the textarea has accessible label (sr-only)
     await expect(page.locator('label[for="config-env"]')).toHaveCount(1);
+  });
+
+  test('Metrics tab renders KPIs, sparklines and per-token rows', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    await page.goto('http://127.0.0.1:4173/admin/#metrics');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/metrics') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Metrics', exact: true })).toBeVisible();
+
+    // KPI stats from fixtures/metrics.json
+    await expect(page.getByText('Requests served')).toBeVisible();
+    await expect(page.getByText('Models served')).toBeVisible();
+    // Sparkline SVG embedded from the API payload
+    await expect(page.locator('svg[role="img"]').first()).toBeVisible();
+    // Per-token table rows (risk column renders the fixture risk levels)
+    await expect(page.getByRole('heading', { name: 'Per-token metrics' })).toBeVisible();
+    const metricRows = page.locator('table tbody tr');
+    await expect(metricRows.nth(0)).toContainText('low');
+    await expect(metricRows.nth(1)).toContainText('high');
+    await expect(metricRows).toHaveCount(2);
+  });
+
+  test('Traces tab renders the trace table from /admin/api/traces', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    await page.goto('http://127.0.0.1:4173/admin/#traces');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/traces') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Traces', exact: true })).toBeVisible();
+    await expect(page.locator('table tbody tr')).toHaveCount(2);
+    await expect(page.getByText('deepseek/deepseek-v4-flash')).toBeVisible();
+    // Phase chips render the per-phase latency names from the payload
+    await expect(page.getByText('acquire_ms')).toBeVisible();
+    // The error row surfaces the error text
+    await expect(page.getByText('upstream timeout')).toBeVisible();
+  });
+
+  test('Direct /admin/setup and /admin/playground URLs render; unknown tab shows NotFound', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    // /admin/setup — previously a blank shell rendered from dead code
+    await page.goto('http://127.0.0.1:4173/admin/setup');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/setup') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Setup', exact: true })).toBeVisible();
+
+    // /admin/playground maps to Dev Tools (self-gated; shows the disabled notice here)
+    await page.goto('http://127.0.0.1:4173/admin/playground');
+    await expect(page.getByRole('heading', { name: 'Dev Tools', exact: true })).toBeVisible();
+
+    // Unknown tab renders the NotFound fallback, not a blank shell
+    await page.goto('http://127.0.0.1:4173/admin/#does-not-exist');
+    await expect(page.getByText('Page not found')).toBeVisible();
   });
 });

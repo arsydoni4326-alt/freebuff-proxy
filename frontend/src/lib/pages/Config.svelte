@@ -119,6 +119,10 @@
       if (result.ok) {
         lastSavedTime = new Date();
         await fetchData();
+      } else {
+        // The server rejected the write and rolled the .env file back;
+        // mirror that in the editor so the textarea matches the file.
+        envContent = originalContent;
       }
     } catch (e) {
       result = { ok: false, message: e.message || $tr('Network error saving configuration') };
@@ -312,7 +316,9 @@
                           <span class="fp-num text-[11px] text-[var(--fp-muted)] truncate max-w-[180px]">
                             {kv.secret ? '••••••••' : (kv.value || '—')}
                           </span>
-                          {#if kv.value}
+                          {#if kv.secret}
+                            <span class="text-[10px] text-[var(--fp-dim)] uppercase tracking-wider">{$tr('redacted')}</span>
+                          {:else if kv.value}
                             <span class="shrink-0">
                               <CopyButton text={kv.value} label={$tr('copy')} />
                             </span>

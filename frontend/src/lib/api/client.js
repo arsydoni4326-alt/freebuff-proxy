@@ -2,6 +2,12 @@
  * Core API fetch client for freebuff-proxy dashboard.
  * Handles HTTP requests, headers, and error unwrapping.
  *
+ * CSRF: state-changing requests echo the server's double-submit nonce
+ * (`fb_csrf` cookie) as the X-CSRF-Token header. When the cookie is absent
+ * the header is omitted and the server keeps its Origin/Sec-Fetch-Site
+ * checks; the server sets the cookie on login and on any admin response
+ * where it is still missing, so the wrapper re-reads it per request.
+ *
  * Auth failures (401 / redirect to /admin/login) NEVER navigate: they raise
  * SessionExpiredError and set the global session-expired flag
  * (lib/stores/session.js) so App.svelte can show the re-login banner.
@@ -24,6 +30,32 @@ function handleAuthFailure(message) {
 }
 
 /**
+ * Read the double-submit CSRF nonce (`fb_csrf`) from the cookie jar. The
+ * server sets it on successful login and on any admin response where it is
+ * still absent; state-changing requests echo it back as X-CSRF-Token.
+ * @returns {string} Nonce value, or '' when the cookie is absent.
+ */
+export function csrfToken() {
+  if (typeof document === 'undefined') return '';
+  const m = document.cookie.match(/(?:^|;\s*)fb_csrf=([^;]*)/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+/**
+ * Build the CSRF header map for the given method. GET/HEAD never carry it;
+ * when the nonce cookie is absent the header is omitted entirely and the
+ * server keeps its Origin/Sec-Fetch-Site checks.
+ * @param {string} [method]
+ * @returns {Record<string, string>}
+ */
+export function csrfHeader(method = 'GET') {
+  const m = String(method).toUpperCase();
+  if (m === 'GET' || m === 'HEAD') return {};
+  const token = csrfToken();
+  return token ? { 'X-CSRF-Token': token } : {};
+}
+
+/**
  * Fetch JSON from an admin API endpoint. On auth failure, sets the global
  * session-expired flag and throws SessionExpiredError (no page navigation).
  * @param {string} path - API path (e.g. '/admin/api/overview')
@@ -38,6 +70,7 @@ export async function fetchAPI(path, opts = {}) {
     headers: {
       'Accept': 'application/json',
       'X-Requested-With': 'fetch',
+      ...csrfHeader(opts.method),
       ...opts.headers,
     },
   });
@@ -94,7 +127,7 @@ export async function postAPI(path, body) {
 export async function postForm(path, fields) {
   return fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
     body: new URLSearchParams(fields),
   });
 }
