@@ -431,6 +431,13 @@ The proxy ships with a built-in modern SPA web dashboard: single binary, no exte
 
 See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardening.
 
+#### Dashboard development
+
+Develop the SPA with the Vite dev server: run `task frontend:dev` (Vite on `http://127.0.0.1:5173/admin/`)
+alongside a local gateway (`task dev`, `127.0.0.1:3457`). The dev server proxies `/admin/*` to that
+gateway and redirects a `GET /admin/login` to the SPA hash route `/admin/#login`. For the embedded
+production build (single binary), run `task frontend:build`.
+
 ---
 
 ## Deployment
