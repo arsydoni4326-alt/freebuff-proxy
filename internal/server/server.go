@@ -157,6 +157,121 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 	return s
 }
 
+// registerAdminRoutes mounts every dashboard.AdminRoutes row on the mux.
+// Each row's Auth level selects the wrapping middleware stack it has always
+// carried (see dashboard.AdminRoute for the level semantics); POST rows are
+// additionally wired through the CSRF gate. A row whose Path has no handler
+// mapping panics — the table and the mapper ship as one commit.
+func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
+	for _, r := range dashboard.AdminRoutes {
+		h := s.adminHandler(r)
+		if r.Method == http.MethodPost {
+			h = s.adminCSRF(h)
+		}
+		switch r.Auth {
+		case dashboard.AuthNone:
+			// No auth wrapper: login page, logout, static assets.
+		case dashboard.AuthDashboard:
+			h = s.dashboardAuth(h)
+		case dashboard.AuthSensitive:
+			h = s.adminSensitive(h)
+			h = s.dashboardAuth(h)
+		case dashboard.AuthAdminToken:
+			h = s.adminSensitive(h)
+			h = s.requireAdminToken(h)
+		default:
+			panic("server: unknown admin auth level " + r.Auth)
+		}
+		mux.Handle(r.Method+" "+r.Path, h)
+	}
+}
+
+// adminHandler resolves one AdminRoutes row to its handler implementation,
+// before auth wrapping. Unmapped paths panic: a table row without an
+// implementation is a build invariant violation.
+func (s *Server) adminHandler(r dashboard.AdminRoute) http.Handler {
+	switch r.Method + " " + r.Path {
+	case "POST /admin/reload":
+		return http.HandlerFunc(s.handleReload)
+	case "GET /admin/login":
+		return http.HandlerFunc(s.handleAdminLogin)
+	case "POST /admin/login":
+		return http.HandlerFunc(s.handleAdminLogin)
+	case "GET /admin/logout":
+		return http.HandlerFunc(s.handleAdminLogout)
+	case "POST /admin/logout":
+		return http.HandlerFunc(s.handleAdminLogout)
+	case "GET /admin/api/overview":
+		return s.dash.APIHandler("overview")
+	case "GET /admin/api/tokens":
+		return s.dash.APIHandler("tokens")
+	case "GET /admin/api/models":
+		return s.dash.APIHandler("models")
+	case "GET /admin/api/traces":
+		return s.dash.APIHandler("traces")
+	case "GET /admin/api/setup":
+		return s.dash.APIHandler("setup")
+	case "GET /admin/api/config":
+		return s.dash.APIHandler("config")
+	case "GET /admin/api/logs":
+		return s.dash.APIHandler("logs")
+	case "GET /admin/api/metrics":
+		return s.dash.APIHandler("metrics")
+	case "GET /admin/api/version":
+		return http.HandlerFunc(s.dash.APIVersion)
+	case "GET /admin/api/upstream-drift":
+		return s.dash.APIHandler("upstream")
+	case "GET /admin/api/auth/status":
+		return http.HandlerFunc(s.handleAdminAuthStatus)
+	case "GET /admin", "GET /admin/", "GET /admin/tokens", "GET /admin/models", "GET /admin/traces",
+		"GET /admin/setup", "GET /admin/playground", "GET /admin/config", "GET /admin/logs", "GET /admin/metrics":
+		// SPA shell routes: the gateway serves the Svelte app directly.
+		return http.HandlerFunc(s.dash.ServeSPA)
+	case "POST /admin/playground/chat":
+		return http.HandlerFunc(s.handlePlaygroundChat)
+	case "POST /admin/login/start":
+		return http.HandlerFunc(s.handleLoginStart)
+	case "GET /admin/login/status":
+		return http.HandlerFunc(s.handleLoginStatus)
+	case "POST /admin/config":
+		return http.HandlerFunc(s.handleConfigSave)
+	case "POST /admin/tokens/{id}/unlock":
+		return http.HandlerFunc(s.handleTokenUnlock)
+	case "POST /admin/tokens/{id}/lock":
+		return http.HandlerFunc(s.handleTokenLock)
+	case "POST /admin/tokens/{id}/unlock-lock":
+		return http.HandlerFunc(s.handleTokenUnlockLock)
+	case "POST /admin/bridge-tokens/{key}/lock":
+		return http.HandlerFunc(s.handleBridgeTokenLock)
+	case "POST /admin/bridge-tokens/{key}/unlock":
+		return http.HandlerFunc(s.handleBridgeTokenUnlock)
+	case "POST /admin/tokens/{id}/finish":
+		return http.HandlerFunc(s.handleTokenFinish)
+	case "POST /admin/tokens/{id}/test":
+		return http.HandlerFunc(s.handleTokenTest)
+	case "POST /admin/tokens/{id}/session":
+		return http.HandlerFunc(s.handleTokenSpawnSession)
+	case "POST /admin/tokens/test-all":
+		return http.HandlerFunc(s.handleTokenTestAll)
+	case "POST /admin/tokens/add":
+		return http.HandlerFunc(s.handleTokenAdd)
+	case "POST /admin/tokens/remove":
+		return http.HandlerFunc(s.handleTokenRemove)
+	case "POST /admin/mode":
+		return http.HandlerFunc(s.handleModeSwitch)
+	case "POST /admin/diag":
+		return http.HandlerFunc(s.handleDiag)
+	case "POST /admin/api/change-password":
+		return http.HandlerFunc(s.handleAdminChangePassword)
+	case "POST /admin/smoke":
+		return http.HandlerFunc(s.handleSmoke)
+	case "GET /admin/assets/":
+		return noDirListing(http.StripPrefix("/admin/assets/", http.FileServerFS(mustSubFS(dashboard.DistFS(), "assets"))))
+	default:
+		panic("server: no admin handler for " + r.Method + " " + r.Path)
+	}
+}
+
 // Handler returns the route table wrapped in an access-log middleware. Method
 // mismatches and unknown paths get the ServeMux's automatic 405/404.
 func (s *Server) Handler() http.Handler {
@@ -166,77 +281,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	if s.cfg.Load().DashboardEnabled {
-		mux.HandleFunc("POST /admin/reload", s.requireAdminToken(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleReload)))))
-		// Admin dashboard: cookie-authenticated browser UI. Assets are static
-		// and public — the login page (served without a cookie) references them,
-		// so they must NOT sit behind dashboardAuth. Overview/tokens/metrics are
-		// read-only status and stay open when ADMIN_TOKEN is unset (legacy).
-		// Config (read + write) and logs expose secrets and are gated further:
-		// with ADMIN_TOKEN unset they require a loopback client.
-		// GET /admin/login serves the SPA login page (client-side form, posts to
-		// the JSON API below); with ADMIN_TOKEN unset it redirects straight to
-		// the dashboard (handleAdminLogin's first branch). POST /admin/login is
-		// the JSON token-check API.
-		mux.HandleFunc("GET /admin/login", s.handleAdminLogin)
-		// POST /admin/login consumes the per-IP login-attempt budget, so it must
-		// carry the same CSRF gate as the other mutating admin routes: without it
-		// a malicious page could fire cross-origin POSTs with wrong tokens and
-		// lock the victim out of the dashboard (5 fails → 1-minute lockout,
-		// repeatable).
-		mux.HandleFunc("POST /admin/login", s.adminCSRF(http.HandlerFunc(s.handleAdminLogin)))
-		// GET /admin/logout clears the session cookie and returns to the login
-		// page; POST /admin/logout does the same but answers JSON {"ok":true}.
-		// Logout deliberately runs WITHOUT a valid cookie (expired sessions must
-		// still be logged out) and is NOT wrapped in adminSensitive — it exposes
-		// nothing and must work for anyone capable of reaching /admin/login.
-		mux.HandleFunc("GET /admin/logout", s.handleAdminLogout)
-		mux.HandleFunc("POST /admin/logout", s.adminCSRF(http.HandlerFunc(s.handleAdminLogout)))
-		// Admin dashboard API routes (JSON)
-		mux.Handle("GET /admin/api/overview", s.dashboardAuth(s.dash.APIHandler("overview")))
-		mux.Handle("GET /admin/api/tokens", s.dashboardAuth(s.dash.APIHandler("tokens")))
-		mux.Handle("GET /admin/api/models", s.dashboardAuth(s.dash.APIHandler("models")))
-		mux.Handle("GET /admin/api/traces", s.dashboardAuth(s.dash.APIHandler("traces")))
-		mux.Handle("GET /admin/api/setup", s.dashboardAuth(s.dash.APIHandler("setup")))
-		mux.Handle("GET /admin/api/config", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("config"))))
-		mux.Handle("GET /admin/api/logs", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("logs"))))
-		mux.Handle("GET /admin/api/metrics", s.dashboardAuth(s.dash.APIHandler("metrics")))
-		mux.Handle("GET /admin/api/version", s.dashboardAuth(http.HandlerFunc(s.dash.APIVersion)))
-		mux.Handle("GET /admin/api/upstream-drift", s.dashboardAuth(s.dash.APIHandler("upstream")))
-
-		mux.Handle("GET /admin/api/auth/status", s.dashboardAuth(http.HandlerFunc(s.handleAdminAuthStatus)))
-		// SPA: all admin/* GET routes serve the embedded Svelte SPA
-		mux.Handle("GET /admin", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/tokens", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/models", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/traces", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/setup", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/playground", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("GET /admin/config", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.dash.ServeSPA))))
-		mux.Handle("GET /admin/logs", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.dash.ServeSPA))))
-		mux.Handle("GET /admin/metrics", s.dashboardAuth(http.HandlerFunc(s.dash.ServeSPA)))
-		mux.Handle("POST /admin/playground/chat", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handlePlaygroundChat)))))
-		mux.Handle("POST /admin/login/start", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleLoginStart)))))
-		mux.Handle("GET /admin/login/status", s.dashboardAuth(s.adminSensitive(http.HandlerFunc(s.handleLoginStatus))))
-		mux.Handle("POST /admin/config", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleConfigSave)))))
-		mux.Handle("POST /admin/tokens/{id}/unlock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenUnlock)))))
-		mux.Handle("POST /admin/tokens/{id}/lock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenLock)))))
-		mux.Handle("POST /admin/tokens/{id}/unlock-lock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenUnlockLock)))))
-		// Bridge token management (#187)
-		mux.Handle("POST /admin/bridge-tokens/{key}/lock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleBridgeTokenLock)))))
-		mux.Handle("POST /admin/bridge-tokens/{key}/unlock", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleBridgeTokenUnlock)))))
-		mux.Handle("POST /admin/tokens/{id}/finish", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenFinish)))))
-		mux.Handle("POST /admin/tokens/{id}/test", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTest)))))
-		mux.Handle("POST /admin/tokens/{id}/session", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenSpawnSession)))))
-		mux.Handle("POST /admin/tokens/test-all", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenTestAll)))))
-		mux.Handle("POST /admin/tokens/add", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenAdd)))))
-		mux.Handle("POST /admin/tokens/remove", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleTokenRemove)))))
-		mux.Handle("POST /admin/mode", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleModeSwitch)))))
-		mux.Handle("POST /admin/diag", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleDiag)))))
-		mux.Handle("POST /admin/api/change-password", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleAdminChangePassword)))))
-		mux.Handle("POST /admin/smoke", s.dashboardAuth(s.adminSensitive(s.adminCSRF(http.HandlerFunc(s.handleSmoke)))))
-		// Static assets: serve from embedded dist/assets
-		mux.Handle("GET /admin/assets/", noDirListing(http.StripPrefix("/admin/assets/", http.FileServerFS(mustSubFS(dashboard.DistFS(), "assets")))))
+		s.registerAdminRoutes(mux)
 	}
 	// CORS middleware wraps the whole route table: it answers OPTIONS
 	// preflights on the /v1/* API surface with 204 and stamps the allow

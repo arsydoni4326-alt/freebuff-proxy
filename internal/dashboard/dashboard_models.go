@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"freebuff-proxy/internal/modelcat"
 	"freebuff-proxy/internal/registry"
 	"sort"
 )
@@ -18,6 +19,7 @@ type modelsData struct {
 type modelRow struct {
 	ID    string `json:"id"`
 	Agent string `json:"agent"`
+	Quota string `json:"quota"`
 }
 
 // servedModels returns the registry ids that pass the strict ServedModels
@@ -38,6 +40,21 @@ type aliasRow struct {
 	Real  string `json:"real"`
 }
 
+// quotaFor returns the daily session-quota label for a model row: the
+// shared premium pool (luna, solar-pro4) shows the 5/day premium
+// entitlement, GLM 5.2 is the referral reward (+1/day), and every other
+// served row is unmetered. These strings are the displayed copy and stay
+// in sync with the upstream catalog facts (modelcat).
+func quotaFor(id string) string {
+	if modelcat.IsPremium(id) {
+		return "5/day shared premium"
+	}
+	if id == modelcat.Glm52ModelID {
+		return "referral +1/day"
+	}
+	return "unmetered"
+}
+
 func (d *Dashboard) modelsData() modelsData {
 	md := modelsData{Count: d.reg.ModelCount(), Agents: len(d.reg.AgentIDs())}
 	// Served gate: the dashboard shows the models this proxy actually
@@ -52,6 +69,7 @@ func (d *Dashboard) modelsData() modelsData {
 		if agent, err := d.reg.AgentForModel(id); err == nil {
 			row.Agent = agent
 		}
+		row.Quota = quotaFor(id)
 		md.Models = append(md.Models, row)
 	}
 	md.Count = len(md.Models)
