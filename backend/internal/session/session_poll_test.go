@@ -540,3 +540,57 @@ func TestHeartbeatPollFields(t *testing.T) {
 		t.Errorf("heartbeat poll log missing instance/ms/status:\n%s", got)
 	}
 }
+
+// TestPollPersistedDropsRowOnWaitingRoomRequired verifies the persisted-
+// resume half of the 428 waiting_room_required drop (#140 parity with the
+// live Poll/refresh drop paths): an ENDED seat must not stay in the store,
+// or every EnsureSession re-polls the dead row instead of re-admitting
+// fresh.
+func TestPollPersistedDropsRowOnWaitingRoomRequired(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	store := NewStore(t.TempDir() + "/state.json")
+	mgr, key := newPersistTestManager(t, mock, store)
+	store.Save(key, activeSlot("inst-persist", ""))
+
+	var polls, creates atomic.Int32
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			polls.Add(1)
+			w.WriteHeader(http.StatusTooEarly) // 428
+			_, _ = io.WriteString(w, `{"error":"waiting_room_required"}`)
+		case http.MethodPost:
+			creates.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-abc-123","expiresAt":"2030-01-01T00:00:00Z"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}
+
+	_, err := mgr.EnsureSession(context.Background())
+	if !errors.Is(err, upstream.ErrWaitingRoomRequired) {
+		t.Fatalf("EnsureSession error = %v, want ErrWaitingRoomRequired", err)
+	}
+	if got := polls.Load(); got != 1 {
+		t.Errorf("resume polls = %d, want 1 (dead slot polled once)", got)
+	}
+	if got := creates.Load(); got != 0 {
+		t.Errorf("creates = %d, want 0 on the 428 call (no slot burned yet)", got)
+	}
+	// The dead row must be gone: the next EnsureSession re-admits fresh
+	// instead of re-polling.
+	if _, err := mgr.EnsureSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := creates.Load(); got != 1 {
+		t.Errorf("creates = %d, want 1 (fresh create after the 428 drop)", got)
+	}
+	if got := polls.Load(); got != 1 {
+		t.Errorf("resume polls = %d, want 1 (no re-poll of the dropped row)", got)
+	}
+	if got := store.Load(key); got == nil || got.instanceID != "inst-abc-123" {
+		t.Errorf("store after re-admit = %+v, want the fresh inst-abc-123 (dead inst-persist dropped)", got)
+	}
+}

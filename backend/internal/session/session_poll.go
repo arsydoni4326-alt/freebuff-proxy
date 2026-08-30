@@ -133,6 +133,13 @@ func (m *Manager) pollPersisted(ctx context.Context, requestedModel string) (*up
 
 	st, err := m.client.GetSession(ctx, cs.instanceID)
 	if err != nil {
+		// 428 waiting_room_required is session-ENDING (endsTheSession:true
+		// — the seat is gone, same as the live Poll/refresh drop paths
+		// #116/#140): drop the dead persisted row so the next iteration
+		// re-admits fresh instead of re-polling it forever.
+		if errors.Is(err, upstream.ErrWaitingRoomRequired) {
+			m.store.Remove(m.key, cs.instanceID)
+		}
 		// Transport error: surface it instead of swallowing and falling
 		// through to a fresh create. The caller retries (single-flight /
 		// TRANSIENT_RETRIES); a create here would burn a session slot.

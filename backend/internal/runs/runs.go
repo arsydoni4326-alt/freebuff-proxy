@@ -176,6 +176,11 @@ type RunManager struct {
 	// (upstream.Client.TokenKey) mirroring the session store's key space.
 	store *session.Store
 	key   string
+	// testBeforeStoreResume, when set (tests only), runs right after the
+	// rotate leader registered its single-flight and before the persisted-
+	// run resume lookup — lets tests deterministically flip shuttingDown in
+	// the window between rotate's shutdown check and the resume branch.
+	testBeforeStoreResume func()
 }
 
 // NewRunManager builds the manager for one token. rotationInterval is how
@@ -625,6 +630,9 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 		}
 		m.starting[agentID] = flight
 		m.mu.Unlock()
+		if m.testBeforeStoreResume != nil {
+			m.testBeforeStoreResume()
+		}
 
 		// Issue #40: resume a persisted run instead of STARTing a fresh one
 		// when a restart left an active run behind. Only runs started within
@@ -636,6 +644,15 @@ func (m *RunManager) rotate(ctx context.Context, agentID string) error {
 				if pr.RunID != "" && time.Since(pr.StartedAt) < m.rotationInterval {
 					m.mu.Lock()
 					if m.shuttingDown {
+						// Shutdown won between the flight registration and
+						// the resume check: wake every waiter parked on our
+						// single-flight with the shutdown error instead of
+						// leaving the channel unclosed (a parked waiter would
+						// block until its own ctx dies and stall graceful
+						// shutdown).
+						flight.err = ErrShuttingDown
+						close(flight.done)
+						delete(m.starting, agentID)
 						m.mu.Unlock()
 						return ErrShuttingDown
 					}
