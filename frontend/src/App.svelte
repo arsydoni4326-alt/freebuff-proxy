@@ -50,11 +50,12 @@
 
   // Explicit user action only — never invoked from background polling.
   function goToLogin() {
-    const hash = window.location.hash.replace('#', '');
-    // Carry the current tab through the login page so Login.svelte can send
-    // the user back where they were after signing in.
-    window.location.assign(hash && hash !== 'login' ? `/admin/login#${hash}` : '/admin/login');
-  }
+		// Hash-only navigation: the SPA owns the login view, so no
+		// network round-trip to /admin/login (which on the dev server is the
+		// gateway's own route). Login.svelte reads the carried hash after
+		// signing in, if any was present.
+		window.location.hash = 'login';
+	}
 
   onMount(() => {
     syncTabFromURL();

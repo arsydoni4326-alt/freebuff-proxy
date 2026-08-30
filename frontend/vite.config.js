@@ -63,8 +63,22 @@ export default defineConfig({
     // peers / DNS-rebinding hosts read the full .env when ADMIN_TOKEN is unset.
     allowedHosts: ['127.0.0.1', 'localhost'],
     proxy: {
-      '/admin/api': proxyTarget,
-      '/admin/login': proxyTarget,
+            '/admin/api': proxyTarget,
+      // GET /admin/login is the SPA's own login ROUTE (App.svelte
+      // goToLogin assigns it); proxying it would serve the gateway's
+      // embedded build whose /admin/assets are not in the proxy list,
+      // 404ing every asset — blank page. Only the POST (Login.svelte's
+      // form submission) proxies.
+      '/admin/login': {
+        ...proxyTarget,
+        bypass: (req, res) => {
+          if (req.method !== 'GET') return undefined;
+          // No dev index is reachable through the proxy bypass path; send
+          // the SPA to its own hash route instead.
+          res.writeHead(302, { Location: '/admin/#login' });
+          res.end();
+        },
+      },
       '/admin/smoke': proxyTarget,
       '/admin/diag': proxyTarget,
       '/admin/tokens': proxyTarget,
