@@ -1,0 +1,24 @@
+# codex.config.toml — place at ~/.codex/config.toml
+# Wire surface: OpenAI Responses ONLY. There is no wire_api knob anymore;
+# "wire_api" defaults to Responses and "wire_api = chat" is a config error.
+
+model_provider = "freebuff"
+model          = "deepseek/deepseek-v4-flash"
+
+[model_providers.freebuff]
+name     = "freebuff-proxy"
+base_url = "http://127.0.0.1:3457/v1"
+env_key  = "FREEBUFF_API_KEY"
+
+# --- Flag/env alternative -----------------------------------------------------
+# codex reads the token from the env var named by env_key:
+#
+#   export FREEBUFF_API_KEY=YOUR_KEY
+#   codex --model deepseek/deepseek-v4-flash
+#
+# -----------------------------------------------------------------------------
+# Notes:
+# - Codex validates GET /v1/models strictly (ModelInfo shape); on a parse miss it
+#   falls back to its bundled catalog non-fatally. Setting `model` explicitly
+#   (as above) is what matters.
+# - base_url is used verbatim: keep the /v1 suffix.
