@@ -40,30 +40,9 @@
   let viewMode = $state('essential'); // 'essential' | 'all'
   let expandedGroups = $state.raw(new Set());
 
-  const ESSENTIAL_KEYS = new Set([
-    'LISTEN_ADDR',
-    'LOG_LEVEL',
-    'LOG_FILE',
-    'SAFE_MODE',
-    'AUTO_DISCOVER_TOKEN',
-    'DASHBOARD_ENABLED',
-    'BRIDGE_ENABLED',
-    'TOKEN_ROTATION',
-    'RATE_LIMIT_PER_IP',
-    'MAX_MESSAGES_PER_DAY',
-    'FALLBACK_AFTER_MS',
-    'COST_MODE',
-    'MODELS_ALLOW',
-    'TLS_FINGERPRINT',
-    'ADMIN_TOKEN',
-    'CORS_ALLOWED_ORIGIN',
-    'WEBHOOK_URL',
-  ]);
-
-  function isKeyEssential(key) {
-    return ESSENTIAL_KEYS.has(key);
+  function isKeyEssential(entry) {
+    return Boolean(entry?.essential);
   }
-
   function toggleGroup(g) {
     const next = new Set(expandedGroups);
     if (next.has(g)) next.delete(g);
@@ -202,8 +181,8 @@
       }
       if (!entries.length) return null;
 
-      const essential = entries.filter((e) => isKeyEssential(e.key));
-      const advanced = entries.filter((e) => !isKeyEssential(e.key));
+      const essential = entries.filter((e) => isKeyEssential(e));
+      const advanced = entries.filter((e) => !isKeyEssential(e));
       const isExpanded = viewMode === 'all' || Boolean(q) || expandedGroups.has(g);
       const displayed = isExpanded ? entries : (essential.length ? essential : entries);
 
