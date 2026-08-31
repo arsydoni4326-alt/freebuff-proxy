@@ -108,7 +108,7 @@ async function mockDashboard(
   });
 
   // Config — Supports override that includes API_KEYS for Tokens parsing test.
-  await page.route('**/admin/api/config', async (route) => {
+  await page.route(/\/admin\/api\/config(\?.*)?$/, async (route) => {
     const cfg = overrides['configWithApiKeys'] ?? pick('config');
     await route.fulfill({
       status: 200,
@@ -118,7 +118,7 @@ async function mockDashboard(
   });
 
   // Config meta — the Settings page key catalog (JSON array from /admin/api/config/meta).
-  await page.route('**/admin/api/config/meta', async (route) => {
+  await page.route(/\/admin\/api\/config\/meta(\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -221,7 +221,7 @@ async function mockDashboard(
   });
 
   // Also mock POST /admin/config save (Tokens add-token flow uses POST /admin/config with form)
-  await page.route('**/admin/config', async (route) => {
+  await page.route(/\/admin\/config$/, async (route) => {
     if (route.request().method() === 'POST') {
       await route.fulfill({
         status: 200,

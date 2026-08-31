@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { RefreshCw, Save, X, Eye, EyeOff } from '@lucide/svelte';
+  import { RefreshCw, Save, X, Eye, EyeOff, Search, Sparkles, SlidersHorizontal, ChevronDown, ChevronUp } from '@lucide/svelte';
   import PageHeader from '../components/PageHeader.svelte';
   import Button from '../components/Button.svelte';
   import Card from '../components/Card.svelte';
@@ -24,9 +24,9 @@
   let rawText = $state('');        // canonical .env document (single source of truth)
   let baseContent = $state('');    // last-saved server env_content
   let formValues = $state({});     // meta key → display value
-  let changedKeys = $state(new Set()); // form-touched keys — only these are serialized into the document
-  let effectiveMap = $state(new Map()); // key → { value, secret }
-  let unsetKeys = $state(new Set());    // meta keys absent from the effective config
+  let changedKeys = $state.raw(new Set()); // form-touched keys — only these are serialized into the document
+  let effectiveMap = $state.raw(new Map()); // key → { value, secret }
+  let unsetKeys = $state.raw(new Set());    // meta keys absent from the effective config
 
   let saving = $state(false);
   let result = $state(null); // { ok, message, restart_only: string[] } — save outcome
@@ -35,6 +35,41 @@
 
   const GROUP_ORDER = ['general', 'pool', 'quota', 'upstream', 'security'];
 
+  // Minimalist settings filter & view modes
+  let searchQuery = $state('');
+  let viewMode = $state('essential'); // 'essential' | 'all'
+  let expandedGroups = $state.raw(new Set());
+
+  const ESSENTIAL_KEYS = new Set([
+    'LISTEN_ADDR',
+    'LOG_LEVEL',
+    'LOG_FILE',
+    'SAFE_MODE',
+    'AUTO_DISCOVER_TOKEN',
+    'DASHBOARD_ENABLED',
+    'BRIDGE_ENABLED',
+    'TOKEN_ROTATION',
+    'RATE_LIMIT_PER_IP',
+    'MAX_MESSAGES_PER_DAY',
+    'FALLBACK_AFTER_MS',
+    'COST_MODE',
+    'MODELS_ALLOW',
+    'TLS_FINGERPRINT',
+    'ADMIN_TOKEN',
+    'CORS_ALLOWED_ORIGIN',
+    'WEBHOOK_URL',
+  ]);
+
+  function isKeyEssential(key) {
+    return ESSENTIAL_KEYS.has(key);
+  }
+
+  function toggleGroup(g) {
+    const next = new Set(expandedGroups);
+    if (next.has(g)) next.delete(g);
+    else next.add(g);
+    expandedGroups = next;
+  }
   // ---------------------------------------------------------------------------
   // .env parsing / merging (line-replace, comments preserved for untouched lines)
   // ---------------------------------------------------------------------------
@@ -100,11 +135,6 @@
     return vals;
   }
 
-  // Rebuild the canonical document from the form: replace (or append) the
-  // lines of managed keys the form actually touched; everything else —
-  // comments, unknown keys, and untouched keys — is preserved verbatim.
-  // A key whose line is absent from the .env stays absent unless the form
-  // changed it (no accidental line materialization).
   function rebuildRaw() {
     let out = rawText;
     for (const entry of meta) {
@@ -114,9 +144,6 @@
     rawText = out;
   }
 
-  // Raw editor input: the text is authoritative now — re-derive form values
-  // so both views always agree. Removing a line clears the control; a line
-  // restored by typing is picked up regardless of prior form edits.
   function onRawInput(e) {
     rawText = e.currentTarget.value;
     const env = parseEnv(rawText);
@@ -134,17 +161,18 @@
 
   function setField(key, value) {
     formValues[key] = value;
-    changedKeys.add(key);
+    const next = new Set(changedKeys);
+    next.add(key);
+    changedKeys = next;
     rebuildRaw();
   }
 
   function discard() {
     rawText = baseContent;
     formValues = deriveValues(baseContent);
-    changedKeys.clear();
+    changedKeys = new Set();
     result = null;
   }
-
   // ---------------------------------------------------------------------------
   // Derived
   // ---------------------------------------------------------------------------
@@ -161,10 +189,34 @@
     return n;
   });
 
-  let groups = $derived(
-    GROUP_ORDER.map((g) => ({ name: g, entries: meta.filter((e) => e.group === g) })).filter((g) => g.entries.length)
-  );
+  let groups = $derived.by(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return GROUP_ORDER.map((g) => {
+      let entries = meta.filter((e) => e.group === g);
+      if (q) {
+        entries = entries.filter(
+          (e) =>
+            e.key.toLowerCase().includes(q) ||
+            (e.description && e.description.toLowerCase().includes(q))
+        );
+      }
+      if (!entries.length) return null;
 
+      const essential = entries.filter((e) => isKeyEssential(e.key));
+      const advanced = entries.filter((e) => !isKeyEssential(e.key));
+      const isExpanded = viewMode === 'all' || Boolean(q) || expandedGroups.has(g);
+      const displayed = isExpanded ? entries : (essential.length ? essential : entries);
+
+      return {
+        name: g,
+        entries,
+        essential,
+        advanced,
+        isExpanded,
+        displayed,
+      };
+    }).filter(Boolean);
+  });
   let lastSavedTimeStr = $derived(lastSavedTime ? formatTime(lastSavedTime) : '');
 
   // Live client-side .env parse — same rules as the legacy editor (separators,
@@ -204,7 +256,6 @@
       meta = Array.isArray(metaRes) ? metaRes : (metaRes?.entries ?? []);
       data = cfgRes;
       baseContent = cfgRes.env_content || '';
-
       effectiveMap = new Map();
       for (const kv of cfgRes.effective ?? []) {
         effectiveMap.set(kv.key, kv);
@@ -221,7 +272,7 @@
 
       rawText = baseContent;
       formValues = deriveValues(baseContent);
-      changedKeys.clear();
+      changedKeys = new Set();
     } catch (e) {
       error = e.message || $tr('Failed to fetch configuration');
     } finally {
@@ -269,7 +320,7 @@
         // mirror that in the document and the form.
         rawText = baseContent;
         formValues = deriveValues(baseContent);
-        changedKeys.clear();
+        changedKeys = new Set();
       }
     } catch (e) {
       result = { ok: false, message: e.message || $tr('Network error saving configuration'), restart_only: [] };
@@ -403,13 +454,57 @@
       </Alert>
     {/if}
 
+    <!-- Filter and Search Toolbar -->
+    <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between pb-1">
+      <!-- Mode Toggle -->
+      <div class="flex items-center gap-1 p-1 rounded-lg bg-[var(--fp-surface)] border border-[var(--fp-border)]">
+        <button
+          type="button"
+          class="px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 {viewMode === 'essential' ? 'bg-[var(--fp-accent)] text-[var(--fp-accent-fg,white)] font-semibold shadow-sm' : 'text-[var(--fp-muted)] hover:text-[var(--fp-text)]'}"
+          onclick={() => viewMode = 'essential'}
+        >
+          <Sparkles size={13} />
+          <span>{$tr('Essential (17)')}</span>
+        </button>
+        <button
+          type="button"
+          class="px-3 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5 {viewMode === 'all' ? 'bg-[var(--fp-accent)] text-[var(--fp-accent-fg,white)] font-semibold shadow-sm' : 'text-[var(--fp-muted)] hover:text-[var(--fp-text)]'}"
+          onclick={() => viewMode = 'all'}
+        >
+          <SlidersHorizontal size={13} />
+          <span>{$tr('All Settings ({count})', { count: meta.length })}</span>
+        </button>
+      </div>
+
+      <!-- Search Box -->
+      <div class="relative min-w-[220px] sm:w-72">
+        <input
+          type="text"
+          bind:value={searchQuery}
+          placeholder={$tr('Search settings by key or description…')}
+          class="fp-input pl-8 pr-7 py-1.5 text-xs w-full"
+        />
+        <Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--fp-dim)] pointer-events-none" />
+        {#if searchQuery}
+          <button
+            type="button"
+            onclick={() => searchQuery = ''}
+            class="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--fp-dim)] hover:text-[var(--fp-text)] p-0.5"
+            aria-label={$tr('Clear search')}
+          >
+            <X size={13} />
+          </button>
+        {/if}
+      </div>
+    </div>
+
     <!-- Key catalog groups: one Card per group, one typed control per key -->
     <div class="space-y-6">
       {#each groups as group}
         <Card title={groupLabel(group.name)} description={groupDescription(group.name)}>
           <div class="divide-y divide-[var(--fp-border)]">
-            {#each group.entries as entry (entry.key)}
-              <div class="py-4 first:pt-0 last:pb-0 grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-6 items-start">
+            {#each group.displayed as entry (entry.key)}
+              <div class="py-3.5 first:pt-0 last:pb-0 grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-6 items-start">
                 <div class="md:col-span-6 min-w-0">
                   <div class="flex flex-wrap items-center gap-2">
                     <span id={`setting-${entry.key}`} class="fp-num text-[12px] font-semibold text-[var(--fp-text)]">{entry.key}</span>
@@ -516,19 +611,52 @@
               </div>
             {/each}
           </div>
+          {#if !group.isExpanded && group.advanced.length > 0}
+            <div class="pt-3 border-t border-[var(--fp-border)]/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 text-xs text-[var(--fp-accent)] hover:underline font-medium"
+                onclick={() => toggleGroup(group.name)}
+              >
+                <ChevronDown size={14} />
+                <span>{$tr('Show {count} more advanced settings in {group}', { count: group.advanced.length, group: groupLabel(group.name) })}</span>
+              </button>
+              <span class="text-[11px] text-[var(--fp-dim)] font-mono truncate max-w-xs">
+                {group.advanced.slice(0, 3).map((e) => e.key).join(', ')}{group.advanced.length > 3 ? '…' : ''}
+              </span>
+            </div>
+          {:else if group.isExpanded && group.advanced.length > 0 && viewMode === 'essential'}
+            <div class="pt-3 border-t border-[var(--fp-border)]/60">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 text-xs text-[var(--fp-dim)] hover:text-[var(--fp-text)] font-medium"
+                onclick={() => toggleGroup(group.name)}
+              >
+                <ChevronUp size={14} />
+                <span>{$tr('Hide advanced settings')}</span>
+              </button>
+            </div>
+          {/if}
         </Card>
       {/each}
 
+
       {#if !groups.length}
         <Card>
-          <EmptyState title={$tr('No configuration keys')} description={$tr('The key catalog is empty — nothing to edit here.')} />
+          <EmptyState title={$tr('No matching configuration keys')} description={$tr('No settings match the active search or category filter.')}>
+            {#snippet action()}
+              <Button variant="secondary" onclick={() => { searchQuery = ''; viewMode = 'essential'; }}>
+                <RefreshCw size={14} />
+                {$tr('Reset filters')}
+              </Button>
+            {/snippet}
+          </EmptyState>
         </Card>
       {/if}
     </div>
-
     <!-- Current values: read-only effective config, secrets masked -->
     <Card title={$tr('Current Values')} description={$tr('Read-only view of the running configuration. Secret values are masked.')} pad="none">
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto max-h-96 overflow-y-auto">
         {#if data?.effective?.length}
           <table class="fp-table">
             <caption class="sr-only">{$tr('Effective configuration — key and value')}</caption>
@@ -568,18 +696,19 @@
             </tbody>
           </table>
         {:else}
-          <EmptyState title={$tr('No effective configuration')} description={$tr('Start the proxy to populate this view.')}>
-            {#snippet action()}
-              <Button variant="secondary" onclick={fetchData}>
-                <RefreshCw size={15} />
-                {$tr('Refresh')}
-              </Button>
-            {/snippet}
-          </EmptyState>
+          <div class="p-5">
+            <EmptyState title={$tr('No effective configuration')} description={$tr('Start the proxy to populate this view.')}>
+              {#snippet action()}
+                <Button variant="secondary" onclick={fetchData}>
+                  <RefreshCw size={15} />
+                  {$tr('Refresh')}
+                </Button>
+              {/snippet}
+            </EmptyState>
+          </div>
         {/if}
       </div>
     </Card>
-
     <!-- Advanced: raw .env editor (same rules as the legacy editor) -->
     <details class="fp-card">
       <summary class="flex items-center justify-between gap-3 px-5 py-4 cursor-pointer text-sm font-medium text-[var(--fp-text)] list-none">
