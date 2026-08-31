@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // The login fingerprint mirrors the official CLI's enhanced device
@@ -37,6 +39,18 @@ func generateFingerprintID() string {
 		fingerprintID = fingerprintIDFrom(hostname, macs, ifaceCount, runtime.NumCPU())
 	})
 	return fingerprintID
+}
+
+// GenerateIsolatedFingerprintID creates a fresh, random "enhanced-" fingerprint
+// (mirroring gen-freebuff-token.sh: "enhanced-" + base64url(random-32-bytes)).
+// Used by the dashboard login wizard and multi-account flows so multiple
+// accounts added to a pool are not correlated by a shared hardware identifier.
+func GenerateIsolatedFingerprintID() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fingerprintIDFrom(time.Now().Format(time.RFC3339Nano), nil, 0, runtime.NumCPU())
+	}
+	return "enhanced-" + base64.RawURLEncoding.EncodeToString(b[:])
 }
 
 // networkIdentity collects the host's non-loopback MAC addresses (sorted,

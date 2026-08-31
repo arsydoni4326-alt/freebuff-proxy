@@ -108,13 +108,25 @@ type CLILoginStatus struct {
 	Done      bool
 }
 
-// StartCLILogin begins the headless GitHub OAuth login: sends the stable
-// machine-derived fingerprint, POSTs /api/auth/cli/code, and returns the
-// login URL plus the credentials needed for PollCLILogin (reference
-// account_login.go startGitHubLoginWithProfile).
+// StartCLILogin begins the headless GitHub OAuth login with the stable
+// machine-derived fingerprint (reference account_login.go startGitHubLoginWithProfile).
 func (c *Client) StartCLILogin(ctx context.Context) (*CLILoginCode, error) {
-	sent := generateFingerprintID()
-	payload, _ := json.Marshal(map[string]any{"fingerprintId": sent})
+	return c.StartCLILoginWithFingerprint(ctx, generateFingerprintID())
+}
+
+// StartCLILoginIsolated begins the login with a fresh, random "enhanced-"
+// fingerprint (mirroring gen-freebuff-token.sh). Used by the dashboard login
+// wizard so multiple accounts added to a pool are not correlated by a shared hardware identifier.
+func (c *Client) StartCLILoginIsolated(ctx context.Context) (*CLILoginCode, error) {
+	return c.StartCLILoginWithFingerprint(ctx, GenerateIsolatedFingerprintID())
+}
+
+// StartCLILoginWithFingerprint begins the login with an explicit fingerprintId.
+func (c *Client) StartCLILoginWithFingerprint(ctx context.Context, fingerprintID string) (*CLILoginCode, error) {
+	if fingerprintID == "" {
+		fingerprintID = generateFingerprintID()
+	}
+	payload, _ := json.Marshal(map[string]any{"fingerprintId": fingerprintID})
 	req, err := c.authLoginRequest(ctx, http.MethodPost, "/api/auth/cli/code", payload)
 	if err != nil {
 		return nil, err
@@ -144,17 +156,10 @@ func (c *Client) StartCLILogin(ctx context.Context) (*CLILoginCode, error) {
 	if decoded.FingerprintHash == "" || decoded.LoginURL == "" {
 		return nil, fmt.Errorf("upstream: login code response missing fields")
 	}
-	// A missing/zero expiresAt is tolerated with a 1h default, mirroring the
-	// reference (login.ts substitutes Date.now()+60min when absent) — the
-	// login wizard must not die because the server omitted an advisory field.
 	if decoded.ExpiresAt <= 0 {
 		decoded.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
 	}
-	// The server echoes the fingerprint id back; prefer its value for the
-	// returned code, but NEVER write it into the process-wide cache — the
-	// machine-derived id is stable by design and must not be replaced by
-	// whatever the server echoed (a local copy only).
-	echoed := sent
+	echoed := fingerprintID
 	if decoded.FingerprintID != "" {
 		echoed = decoded.FingerprintID
 	}
