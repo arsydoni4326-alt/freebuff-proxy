@@ -405,6 +405,7 @@
               <code class="fp-num text-xs text-[var(--fp-accent)] font-mono font-semibold">{dynamicBaseURL}</code>
             </div>
             <CopyButton text={dynamicBaseURL} label={$tr('Copy URL')} />
+          </div>
           <p class="mt-3 text-xs text-[var(--fp-muted)]">
             {$tr('Authentication: Use any Client API Key below via Bearer token or x-api-key header.')}
           </p>
