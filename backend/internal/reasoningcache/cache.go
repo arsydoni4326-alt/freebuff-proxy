@@ -27,8 +27,17 @@ type Entry struct {
 type cacheNode struct {
 	entry       *Entry
 	toolCallIDs []string
-	hashKey     string
-	element     *list.Element
+	// hashKey is sha256(content+toolCallsJSON) as recorded at Put time. It
+	// indexes byHash.
+	hashKey string
+	// bindKey is the content-only binding (sha256 of the content alone,
+	// "" when the entry was stored with no content). Get verifies it on
+	// toolID hits: it is symmetric across every Put call site (streaming
+	// relays do not always know the toolCallsJSON at Put time) while still
+	// rejecting cross-conversation tool_call_id collisions whose content
+	// differs.
+	bindKey string
+	element *list.Element
 }
 
 // Cache is a thread-safe LRU/TTL cache for tool call reasoning content and signatures.
@@ -73,6 +82,8 @@ func hashKey(content, toolCallsJSON string) string {
 // Put stores reasoning content and signature in the cache.
 // If reasoning == "" && signature == "", Put does nothing.
 // Stored entries are indexed by each non-empty toolCallID and by sha256(content + toolCallsJSON).
+// A content-only binding (sha256 of the content) is also recorded and verified on toolID hits, so
+// a tool_call_id reused across conversations cannot restore another conversation's reasoning.
 func (c *Cache) Put(toolCallIDs []string, content string, toolCallsJSON string, reasoning string, signature string, model string) {
 	if reasoning == "" && signature == "" {
 		return
@@ -119,6 +130,8 @@ func (c *Cache) Put(toolCallIDs []string, content string, toolCallsJSON string, 
 
 	// 4. Compute hash key
 	hKey := hashKey(content, toolCallsJSON)
+	// Content-only binding for toolID-hit verification (see cacheNode.bindKey).
+	bindKey := hashKey(content, "")
 
 	// 5. Create entry and node
 	entry := &Entry{
@@ -132,6 +145,7 @@ func (c *Cache) Put(toolCallIDs []string, content string, toolCallsJSON string, 
 		entry:       entry,
 		toolCallIDs: validIDs,
 		hashKey:     hKey,
+		bindKey:     bindKey,
 	}
 
 	node.element = c.lru.PushFront(node)
@@ -167,12 +181,20 @@ func (c *Cache) evictNode(node *cacheNode) {
 }
 
 // Get looks up reasoning content and signature by toolID first (if non-empty), and falls back to hash(content, toolCallsJSON).
+//
+// Every entry carries a content-only binding recorded at Put time (sha256 of
+// the content alone). A toolID hit is only returned when it is consistent with
+// the caller's context: callers that supply content must present the same
+// content, otherwise the hit is discarded and the lookup falls through to the
+// hash index. This keeps per-conversation sequential tool_call_ids ("call_1",
+// ...) from restoring another conversation's reasoning. Callers that supply no
+// content keep the plain toolID-only behavior.
 func (c *Cache) Get(toolID string, content, toolCallsJSON string) (reasoning, signature string, ok bool) {
 	if c == nil {
 		return "", "", false
 	}
 	if strings.TrimSpace(toolID) != "" {
-		if r, s, found := c.GetByToolID(toolID); found {
+		if r, s, found := c.getByToolIDBound(toolID, content, toolCallsJSON); found {
 			return r, s, true
 		}
 	}
@@ -182,19 +204,35 @@ func (c *Cache) Get(toolID string, content, toolCallsJSON string) (reasoning, si
 	return "", "", false
 }
 
-// GetByToolID looks up reasoning content and signature by tool_call_id.
-// If the entry is expired, it is removed and ok is false.
-func (c *Cache) GetByToolID(toolID string) (reasoning, signature string, ok bool) {
+// getByToolIDBound is Get's toolID step: it resolves the entry for toolID and
+// enforces the content binding recorded at Put time when the caller presents
+// one. A binding mismatch is reported as a miss so the caller falls through to
+// the hash index instead of restoring foreign reasoning.
+func (c *Cache) getByToolIDBound(toolID, content, toolCallsJSON string) (reasoning, signature string, ok bool) {
+	entry, node, ok := c.lookupByToolID(toolID)
+	if !ok {
+		return "", "", false
+	}
+	if want := hashKey(content, ""); want != "" && (node == nil || node.bindKey != want) {
+		return "", "", false
+	}
+	return entry.ReasoningContent, entry.Signature, true
+}
+
+// lookupByToolID returns the live entry for toolID together with its node,
+// evicting the entry first if it has expired. The entry and node are immutable
+// once published, so they are safe to read after the lock is released.
+func (c *Cache) lookupByToolID(toolID string) (*Entry, *cacheNode, bool) {
 	toolID = strings.TrimSpace(toolID)
 	if toolID == "" {
-		return "", "", false
+		return nil, nil, false
 	}
 
 	c.mu.RLock()
 	entry, found := c.byToolID[toolID]
 	if !found {
 		c.mu.RUnlock()
-		return "", "", false
+		return nil, nil, false
 	}
 
 	if c.ttl > 0 && time.Since(entry.CreatedAt) > c.ttl {
@@ -208,13 +246,22 @@ func (c *Cache) GetByToolID(toolID string) (reasoning, signature string, ok bool
 			}
 		}
 		c.mu.Unlock()
-		return "", "", false
+		return nil, nil, false
 	}
 
-	r := entry.ReasoningContent
-	s := entry.Signature
+	node := c.nodes[entry]
 	c.mu.RUnlock()
-	return r, s, true
+	return entry, node, true
+}
+
+// GetByToolID looks up reasoning content and signature by tool_call_id.
+// If the entry is expired, it is removed and ok is false.
+func (c *Cache) GetByToolID(toolID string) (reasoning, signature string, ok bool) {
+	entry, _, ok := c.lookupByToolID(toolID)
+	if !ok {
+		return "", "", false
+	}
+	return entry.ReasoningContent, entry.Signature, true
 }
 
 // GetByHash looks up reasoning content and signature by content and toolCallsJSON.
@@ -254,34 +301,11 @@ func (c *Cache) GetByHash(content, toolCallsJSON string) (reasoning, signature s
 
 // GetEntryByToolID returns a copy of the Entry for the given tool_call_id.
 func (c *Cache) GetEntryByToolID(toolID string) (*Entry, bool) {
-	toolID = strings.TrimSpace(toolID)
-	if toolID == "" {
+	entry, _, ok := c.lookupByToolID(toolID)
+	if !ok {
 		return nil, false
 	}
-
-	c.mu.RLock()
-	entry, found := c.byToolID[toolID]
-	if !found {
-		c.mu.RUnlock()
-		return nil, false
-	}
-
-	if c.ttl > 0 && time.Since(entry.CreatedAt) > c.ttl {
-		c.mu.RUnlock()
-		c.mu.Lock()
-		if e, exists := c.byToolID[toolID]; exists && c.ttl > 0 && time.Since(e.CreatedAt) > c.ttl {
-			if node, hasNode := c.nodes[e]; hasNode {
-				c.evictNode(node)
-			} else {
-				delete(c.byToolID, toolID)
-			}
-		}
-		c.mu.Unlock()
-		return nil, false
-	}
-
 	res := *entry
-	c.mu.RUnlock()
 	return &res, true
 }
 
