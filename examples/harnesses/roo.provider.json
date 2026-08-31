@@ -1,0 +1,10 @@
+{
+  // roo.provider.json — reference shape for Roo Code provider settings
+  // (the provider settings UI writes equivalent fields).
+  // Wire surface: OpenAI Chat Completions.
+  "apiProvider": "openai-compatible",
+  "openAiBaseUrl": "http://127.0.0.1:3457/v1",
+  "openAiApiKey": "YOUR_KEY",
+  "openAiModelId": "deepseek/deepseek-v4-flash",
+  "openAiStreamingEnabled": true
+}

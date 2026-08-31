@@ -1,0 +1,22 @@
+{
+  // opencode.json — place in your project root or ~/.config/opencode/opencode.json
+  // Wire surface: OpenAI Chat (openai-compatible). Use "npm": "@ai-sdk/openai"
+  // instead to talk the Responses surface.
+  "provider": {
+    "freebuff": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "freebuff-proxy",
+      "options": {
+        // base URL must include /v1; opencode appends the endpoint path
+        "baseURL": "http://127.0.0.1:3457/v1",
+        "apiKey": "YOUR_KEY"
+      },
+      "models": {
+        // one served model id from the proxy catalog
+        "deepseek/deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash"
+        }
+      }
+    }
+  }
+}

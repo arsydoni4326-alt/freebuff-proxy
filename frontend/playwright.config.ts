@@ -20,6 +20,5 @@ export default defineConfig({
     url: 'http://127.0.0.1:4173/admin/',
     reuseExistingServer: !process.env.CI,
     timeout: 120 * 1000,
-    cwd: 'frontend',
   },
 });

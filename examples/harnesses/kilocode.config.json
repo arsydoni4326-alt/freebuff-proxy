@@ -1,0 +1,17 @@
+{
+  // kilocode.config.json — configure the provider in Kilo Code
+  // (settings location ~/.kilocode/config.json or project-level config).
+  // Wire surface: openai-compatible-chat (Chat Completions).
+  // IMPORTANT: baseURL must include /v1 — Kilo appends /chat/completions
+  // (or /responses for the "openai-responses" api) to it.
+  "providers": {
+    "freebuff": {
+      "id": "freebuff",
+      "name": "freebuff-proxy",
+      "baseURL": "http://127.0.0.1:3457/v1",
+      "api": "openai-compatible-chat",
+      "apiKey": "YOUR_KEY",
+      "models": ["deepseek/deepseek-v4-flash"]
+    }
+  }
+}

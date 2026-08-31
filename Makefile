@@ -1,33 +1,33 @@
-.PHONY: all build build-ui build-proxy test test-race lint dev-ui dev-proxy clean
+.PHONY: all build web-build build-proxy test test-race lint web-dev dev-proxy clean
 
 BINARY_NAME=freebuff-proxy
 BIN_DIR=bin
 
 all: build
 
-build-ui:
-	cd frontend && npm run build
+web-build:
+	npm --prefix frontend run build
 
 build-proxy:
-	go build -tags dashboard -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/freebuff-proxy
+	go build -tags dashboard -o $(BIN_DIR)/$(BINARY_NAME) ./backend/cmd/freebuff-proxy
 
-build: build-ui build-proxy
+build: web-build build-proxy
 
 test:
-	env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
+	env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/...
 
 test-race:
-	env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./...
+	env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race ./backend/...
 
 lint:
-	go vet ./...
-	golangci-lint run ./...
+	go vet ./backend/...
+	golangci-lint run ./backend/...
 
-dev-ui:
-	cd frontend && npm run dev
+web-dev:
+	npm --prefix frontend run dev
 
 dev-proxy:
-	go run -tags dashboard ./cmd/freebuff-proxy
+	go run -tags dashboard ./backend/cmd/freebuff-proxy
 
 clean:
 	rm -rf $(BIN_DIR)

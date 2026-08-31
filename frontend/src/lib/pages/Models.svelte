@@ -8,6 +8,7 @@
   import EmptyState from '../components/EmptyState.svelte';
   import Button from '../components/Button.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
 
   let data = $state(null);
@@ -18,7 +19,7 @@
     loading = true;
     error = '';
     try {
-      data = await fetchAPI('/admin/api/models');
+      data = await fetchAPI(adminApi.models);
     } catch (e) {
       error = e.message || $tr('Failed to load models');
     } finally {
@@ -32,22 +33,6 @@
     data ? data.models.filter((m) => m.agent).length : 0
   );
 
-  function quotaFor(id) {
-    switch (id) {
-      case 'openai/gpt-5.6-luna':
-      case 'upstage/solar-pro4':
-        return '5/day shared premium';
-      case 'z-ai/glm-5.3-flash':
-        return '5/day shared premium';
-      case 'deepseek/deepseek-v4-flash':
-      case 'mimo/mimo-v2.5':
-        return 'unmetered';
-      case 'z-ai/glm-5.2':
-        return 'referral +1/day';
-      default:
-        return '—';
-    }
-  }
 </script>
 
 <div class="space-y-6 page-enter">
@@ -111,7 +96,7 @@
                       <span class="text-[var(--fp-dim)]">—</span>
                     {/if}
                   </td>
-                  <td><span class="fp-num text-xs text-[var(--fp-muted)]">{quotaFor(m.id)}</span></td>
+                  <td><span class="fp-num text-xs text-[var(--fp-muted)]">{m.quota || 'unmetered'}</span></td>
                 </tr>
               {/each}
             </tbody>

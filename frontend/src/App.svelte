@@ -4,23 +4,31 @@
   import Footer from './lib/Footer.svelte';
   import Overview from './lib/pages/Overview.svelte';
   import Tokens from './lib/pages/Tokens.svelte';
+  import QuotaTracker from './lib/pages/QuotaTracker.svelte';
   import Models from './lib/pages/Models.svelte';
-  import Config from './lib/pages/Config.svelte';
+  import Settings from './lib/pages/Settings.svelte';
   import Logs from './lib/pages/Logs.svelte';
   import DevTools from './lib/pages/DevTools.svelte';
   import Login from './lib/pages/Login.svelte';
+  import Setup from './lib/pages/Setup.svelte';
+  import Metrics from './lib/pages/Metrics.svelte';
+  import Traces from './lib/pages/Traces.svelte';
   import ChangePasswordModal from './lib/components/ChangePasswordModal.svelte';
   import Alert from './lib/components/Alert.svelte';
   import Button from './lib/components/Button.svelte';
+  import EmptyState from './lib/components/EmptyState.svelte';
   import { X } from '@lucide/svelte';
   import { fetchAPI } from './lib/api/client.js';
+  import { adminApi, adminActions } from './lib/api/paths.js';
   import { sessionExpired, dismissSessionExpired } from './lib/stores/session.js';
   import { tr } from './lib/i18n.js';
   function getInitialTab() {
     if (typeof window === 'undefined') return 'overview';
     const path = window.location.pathname;
     const hash = window.location.hash.replace('#', '');
-    if (path === '/admin/login' || hash === 'login') return 'login';
+    if (path === adminActions.login || hash === 'login') return 'login';
+    // Legacy alias: '#config' still routes to the Settings page.
+    if (hash === 'config') return 'settings';
     if (hash) return hash;
     const segments = path.split('/').filter(Boolean);
     if (segments.length >= 2 && segments[0] === 'admin' && segments[1]) {
@@ -46,18 +54,19 @@
 
   // Explicit user action only — never invoked from background polling.
   function goToLogin() {
-    const hash = window.location.hash.replace('#', '');
-    // Carry the current tab through the login page so Login.svelte can send
-    // the user back where they were after signing in.
-    window.location.assign(hash && hash !== 'login' ? `/admin/login#${hash}` : '/admin/login');
-  }
+		// Hash-only navigation: the SPA owns the login view, so no
+		// network round-trip to the gateway's login route (which on the dev
+		// server is the gateway's own route). Login.svelte reads the carried hash after
+		// signing in, if any was present.
+		window.location.hash = 'login';
+	}
 
   onMount(() => {
     syncTabFromURL();
     window.addEventListener('hashchange', syncTabFromURL);
 
     // Fetch version / update check
-    fetch('/admin/api/version')
+    fetch(adminApi.version)
       .then((res) => res.json())
       .then((data) => {
         versionInfo = {
@@ -70,7 +79,7 @@
       .catch((e) => console.warn('version check failed', e));
 
     // Check if using default admin token (for security banner)
-    fetchAPI('/admin/api/auth/status')
+    fetchAPI(adminApi.authStatus)
       .then((data) => {
         isDefaultAdminToken = data?.is_default_admin_token ?? false;
       })
@@ -135,16 +144,34 @@
             <Overview />
           {:else if activeTab === 'tokens'}
             <Tokens />
+          {:else if activeTab === 'quota'}
+            <QuotaTracker />
           {:else if activeTab === 'models'}
             <Models />
-          {:else if activeTab === 'config'}
-            <Config />
+          {:else if activeTab === 'settings'}
+            <Settings />
           {:else if activeTab === 'logs'}
             <Logs />
           {:else if activeTab === 'devtools'}
             <DevTools />
+          {:else if activeTab === 'playground'}
+            <DevTools />
+          {:else if activeTab === 'setup'}
+            <Setup />
+          {:else if activeTab === 'metrics'}
+            <Metrics />
+          {:else if activeTab === 'traces'}
+            <Traces />
           {:else if activeTab === 'login'}
             <Login />
+          {:else}
+            <EmptyState title={$tr('Page not found')} description={$tr('This tab does not exist. Pick a page from the sidebar.')}>
+              {#snippet action()}
+                <Button variant="secondary" onclick={() => (activeTab = 'overview')}>
+                  {$tr('Back to Overview')}
+                </Button>
+              {/snippet}
+            </EmptyState>
           {/if}
         </div>
       {/key}

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Fetches CodebuffAI/freebuff upstream changes, syncs pinned registry files
-    (internal/registry/testdata/upstream/), verifies hash parity, and runs tests.
+    (backend/internal/registry/testdata/upstream/), verifies hash parity, and runs tests.
 
 .DESCRIPTION
     Automates synchronizing the freebuff-proxy repository with upstream FreeBuff CLI
@@ -20,7 +20,7 @@
     Skip running tests after sync.
 
 .PARAMETER TestAll
-    Run the entire test suite (go test ./...) instead of only registry tests.
+    Run the entire test suite (go test ./backend/...) instead of only registry tests.
 
 .EXAMPLE
     .\scripts\sync-upstream.ps1
@@ -46,7 +46,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $VendorUrl = "https://github.com/CodebuffAI/freebuff.git"
 $UpstreamPrefix = "common/src/constants"
-$PinnedDir = Join-Path $RepoRoot "internal\registry\testdata\upstream"
+$PinnedDir = Join-Path $RepoRoot "backend\internal\registry\testdata\upstream"
 
 if (-not $CloneDir) {
     if ($env:FREEBUFF_REFERENCE_DIR) {
@@ -198,7 +198,7 @@ if ($CheckOnly) {
 }
 else {
     if ($updatedCount -gt 0) {
-        Write-Host "==> 3. Updated $updatedCount pinned file(s) in internal\registry\testdata\upstream\" -ForegroundColor Green
+        Write-Host "==> 3. Updated $updatedCount pinned file(s) in backend\internal\registry\testdata\upstream\" -ForegroundColor Green
     }
     else {
         Write-Host "==> 3. All pinned files are already up-to-date (0 files updated)."
@@ -236,18 +236,18 @@ if (-not $NoTest) {
             $env:ADMIN_TOKEN = ""
 
             if ($TestAll) {
-                Write-Host "    Executing: go test ./..."
-                go test ./...
+                Write-Host "    Executing: go test ./backend/..."
+                go test ./backend/...
                 if ($LASTEXITCODE -ne 0) {
                     throw "Full test suite failed."
                 }
                 Write-Host "    [PASS] Full test suite passed cleanly." -ForegroundColor Green
             }
             else {
-                Write-Host "    Executing: go test ./internal/registry/..."
-                go test ./internal/registry/...
+                Write-Host "    Executing: go test ./backend/internal/registry/..."
+                go test ./backend/internal/registry/...
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Error "Registry tests failed. If upstream added/removed models or agents, update fallbackAgents or fallbackRootByModel in internal/registry/registry.go."
+                    Write-Error "Registry tests failed. If upstream added/removed models or agents, update fallbackAgents or fallbackRootByModel in backend/internal/registry/registry.go."
                     throw "Registry test failure"
                 }
                 Write-Host "    [PASS] Registry tests and fallback parity check passed." -ForegroundColor Green
@@ -263,15 +263,15 @@ if (-not $NoTest) {
 Write-Host ""
 Write-Host "==> Upstream Sync Complete!" -ForegroundColor Green
 
-$diffOut = git -C $RepoRoot diff --name-only "internal/registry/testdata/upstream"
+$diffOut = git -C $RepoRoot diff --name-only "backend/internal/registry/testdata/upstream"
 if (-not $diffOut) {
     Write-Host "No working tree changes (pins were already identical to upstream)."
 }
 else {
-    Write-Host "Working tree changes in internal\registry\testdata\upstream\:" -ForegroundColor Yellow
-    git -C $RepoRoot status --short "internal/registry/testdata/upstream"
+    Write-Host "Working tree changes in backend\internal\registry\testdata\upstream\:" -ForegroundColor Yellow
+    git -C $RepoRoot status --short "backend/internal/registry/testdata/upstream"
     Write-Host ""
     Write-Host "Suggested commit command:"
-    Write-Host "  git add internal/registry/testdata/upstream"
+    Write-Host "  git add backend/internal/registry/testdata/upstream"
     Write-Host "  git commit -m `"chore(registry): sync pinned upstream models to vendor $($UpstreamSha.Substring(0, 7))`""
 }
