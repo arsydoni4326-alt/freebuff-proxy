@@ -249,16 +249,21 @@ func normalizeMessages(payload map[string]any, model string) {
 					if fnPtr := globalReasoningLookup.Load(); fnPtr != nil && *fnPtr != nil {
 						fn := *fnPtr
 						// Look up by each tool call id, bound to this message's
-						// content so a per-conversation sequential tool_call_id
-						// cannot restore another conversation's reasoning.
+						// content and the canonical identity of its tool_calls so
+						// a per-conversation sequential tool_call_id cannot
+						// restore another conversation's reasoning — including
+						// tool-only turns whose content is empty or null (the
+						// cache canonicalizes the raw array internally, so both
+						// wire shapes bind identically).
 						cStr0 := ""
 						if s, ok := cVal.(string); ok {
 							cStr0 = s
 						}
+						rawTC, _ := json.Marshal(msg["tool_calls"])
 						for _, item := range tcSlice {
 							if tcMap, ok := item.(map[string]any); ok {
 								if id, _ := tcMap["id"].(string); id != "" {
-									if r, _, ok := fn(id, cStr0, ""); ok && r != "" {
+									if r, _, ok := fn(id, cStr0, string(rawTC)); ok && r != "" {
 										rc = r
 										msg["reasoning_content"] = r
 										break
@@ -272,10 +277,7 @@ func normalizeMessages(payload map[string]any, model string) {
 							if s, ok := msg["content"].(string); ok {
 								cStr = s
 							}
-							var tcJSON string
-							if b, err := json.Marshal(msg["tool_calls"]); err == nil {
-								tcJSON = string(b)
-							}
+							tcJSON := string(rawTC)
 							if r, _, ok := fn("", cStr, tcJSON); ok && r != "" {
 								rc = r
 								msg["reasoning_content"] = r
