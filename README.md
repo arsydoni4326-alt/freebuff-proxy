@@ -281,7 +281,9 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `AUTH_TOKENS` | `""` | Comma-separated upstream tokens (empty = bridge mode; set = pooled or hybrid) |
 | `BRIDGE_ENABLED` | `true` | With `AUTH_TOKENS` set, accept bridge-mode clients (their own token relayed) alongside the pool — **hybrid mode**. `0` = locked-down pooled-only instance (the pre-hybrid behavior) |
 | `BRIDGE_IDLE_EVICT` | `72h` | How long a bridge entry may sit unused before its runs are FINISHed and it is evicted from the cache (sliding TTL; zero or invalid → 72h) |
+| `BRIDGE_DAILY_LIMIT` | `0` | Global daily chat cap across **all** bridge-mode entries (`0` = unlimited) |
 | `MODELS_HIDE_UNAVAILABLE` | `false` | `/v1/models` prunes models marked unavailable (region/tier demotion, quota exhaustion) so picker clients cannot select them; off by default so a stale signal never hides a working model |
+| `MODEL_UNAVAILABLE_CACHE_TTL` | `1h` | How long a `model_unavailable` admission refusal is remembered per model (off-window models short-circuit to the fallback within the TTL) |
 | `MODELS_ALLOW` | `""` | Comma-separated model allowlist (JSON array or string). When set, only these model ids are served — `/v1/models` lists only them, and `chat/messages/responses` requests whose resolved model (after alias resolution) is not listed are rejected with `404 model_not_found` (`"model not allowed by MODELS_ALLOW"`). Empty = all models allowed |
 | `AUTO_DISCOVER_TOKEN` | `true` | When `AUTH_TOKENS` is empty, read credentials from the official CLI login files (`false` disables) |
 | `API_KEYS` | `""` | Comma-separated client keys required for `/v1/*` (empty = open; ignored in bridge mode). **In hybrid mode `API_KEYS` is the discriminator**: a credential matching an entry uses the pool, any other is relayed as a bridge token |
@@ -290,10 +292,11 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `REQUEST_TIMEOUT` | `15m` | Upstream request timeout |
 | `SESSION_CALL_TIMEOUT` | `30s` | Session call timeout |
 | `REGISTRY_REFRESH` | `6h` | Model catalog refresh interval |
-| `COST_MODE` | `free` | `free` (free-tier) or paid billing mode |
+| `COST_MODE` | `free` | `free` (default) or unset; any other value fails startup validation |
 | `ACTING_USER_ID` | `""` | Optional FreeBuff account id; sent on every chat call as `x-freebuff-acting-user-id`. BAN RISK: only the token's own account id is safe (the CLI derives it from `GET /api/v1/me`; the server honors the header only for the FreeBuff Web service account) — any other value impersonates another user. Pre-rename name `USER_ID` still works. Empty = header omitted |
 | `TLS_FINGERPRINT` | `auto` | `auto`, `chrome120`, `chrome126`, `safari17`, `safari18`, `firefox120`, `firefox128`, `edge126`, `random` |
 | `DEBUG_DUMP` | `false` | Persist redacted traffic dumps to `./dump/` (mode 0600) |
+| `DASHBOARD_ENABLED` | `true` | Serve the embedded admin dashboard at `/admin` (`false` disables all `/admin` routes with 404) |
 | `DEVTOOLS_ENABLED` | `false` | Show the Dev Tools page (batch chat, session spawner) in the admin dashboard. Default **off** — it is a manual testing surface that hammers `/v1/*` and is not for public dashboards. |
 | `LOG_FILE` | `""` | Append log lines to a file (e.g. `./logs/proxy.log`) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, `trace` (trace = wire-level bodies) |
@@ -301,8 +304,10 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `LOG_ACCESS` | `true` | Log one `access` line per HTTP request (`false` disables; `/healthz`, `/metrics`, OPTIONS are rate-limited to 1/min regardless) |
 | `LOG_RING_SIZE` | `500` | In-memory log ring for `/admin/logs` (50–5000) |
 | `MAX_MESSAGES_PER_DAY` | `0` | Per-token daily cap on successful chats (`0` = unlimited, default; the upstream `429` lock is the real enforcement) |
+| `MAX_SPEND_PER_DAY` | `0` | Advisory per-token Pacific-day spend ceiling in ledger units (`0` = unlimited). Never enforced — surfacing only, on `/healthz` |
 | `IDLE_ROTATION_TIMEOUT` | `0` | Finish runs after this idle period (`0` = disabled; `SAFE_MODE` sets 30m when unset) |
 | `SESSION_IDLE_END` | `0` | End upstream sessions after this idle period, releasing the token's daily admission slot while the proxy sits unused; the next request re-admits and consumes a fresh slot (`0` = disabled, opt-in) |
+| `SCARCE_SESSION_MODELS` | `openai/gpt-5.6-luna` | 1-session/day models to keep alive for their full session (never idle-evict or DELETE on shutdown while active) |
 | `QUOTA_FALLBACK_MODELS` | `flash→mimo, glm→flash, luna→flash` | Map model → fallback when its session quota is exhausted/unentitled. Defaults: `deepseek/deepseek-v4-flash=mimo/mimo-v2.5`, `z-ai/glm-5.2=deepseek/deepseek-v4-flash`, `openai/gpt-5.6-luna=deepseek/deepseek-v4-flash` (luna degrades the scarce premium session locally instead of hammering quota 429s; #203) |
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
 | `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 2s when unset) |
@@ -328,6 +333,9 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `WEBHOOK_URL` | `""` | Best-effort alert POSTs for three events: `pool_exhausted` (all tokens rate-limited), `token_banned` (from chat **or** admission — including bridge tokens, sent with `token_index 0`), and `agent_model_mismatch_escalation` (3+ allowlist refusals in 60s on one token — issue #140; empty = disabled; at most one POST per event type per 5m, never blocks the request path) |
 | `RATE_LIMIT_PER_IP` | `0` | Requests/second allowed per client IP (`0` = disabled; e.g. `20`) |
 | `RATE_LIMIT_BURST` | `0` | Burst request capacity per client IP (`0` = default `2 * RATE_LIMIT_PER_IP`) |
+| `TOKEN_ROTATION` | `drain` | Token selection strategy: `drain` (exhaust a token's session before rotating), `round_robin`, `least_used`, or `random` |
+
+The three request-translation knobs (`COMPRESS_PROMPT`, `CACHE_CONTROL_INJECTION`, `REASONING_IN_CONTENT`) are environment-only (never read from `-config` JSON or `.env` in a native install) and are documented in `.env.example` / `.env.full-example`.
 
 When `SESSION_PERSIST=true`, the state file stores a SHA-256 hash of each
 active token plus its session metadata (instance id, expiry, tier/country)
@@ -404,7 +412,7 @@ opt out). It enables essential anti-ban protections and presets:
 |---|---|---|
 | `POST /v1/chat/completions` | `API_KEYS` (when set) | OpenAI-compatible chat, streaming and non-streaming |
 | `GET /v1/models` | `API_KEYS` (when set) | Model catalog from the registry (fallback at boot + live refresh). Each row carries `available`/`status`/`current_access_tier`: models outside the limited-tier allowlist (`mimo-v2.5`) are marked `available:false, status:"region_limited"` when the token's egress region demotes it to the limited tier; `MODELS_HIDE_UNAVAILABLE=true` prunes them from the list; `MODELS_ALLOW` prunes every id not in the allowlist |
-| `GET /healthz` | none | JSON: `status`, `uptime_seconds`, `models`, per-token snapshot (incl. per-model `quota` map when the last admission carried it), `bridge_tokens` |
+| `GET /healthz` | none | Liveness + pool snapshot — JSON: `status`, `uptime_seconds`, `models`, per-token snapshot (incl. per-model `quota` map when the last admission carried it), `bridge_tokens`. It does **not** probe upstream reachability, so the container stays healthy during an upstream outage |
 | `GET /metrics` | none | Prometheus text format: uptime, model count, per-token 24h messages / requests / active runs / cooldown, per-model quota (`freebuff_proxy_quota_recent` / `freebuff_proxy_quota_limit`) |
 | `POST /admin/reload` | `ADMIN_TOKEN` (when set) | Hot-reload configuration from disk without restart |
 | `GET /admin` | session cookie (login via `ADMIN_TOKEN`) | Admin dashboard: overview, tokens, config, logs, metrics (see [Admin Dashboard](#admin-dashboard)) |
