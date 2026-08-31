@@ -86,7 +86,7 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
   });
 
   // Config — Supports override that includes API_KEYS for Tokens parsing test.
-  await page.route('**/admin/api/config', async (route) => {
+  await page.route(/\/admin\/api\/config(\?.*)?$/, async (route) => {
     const cfg = overrides['configWithApiKeys'] ?? pick('config');
     await route.fulfill({
       status: 200,
@@ -96,7 +96,7 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
   });
 
   // Config meta — the Settings page key catalog (JSON array from /admin/api/config/meta).
-  await page.route('**/admin/api/config/meta', async (route) => {
+  await page.route(/\/admin\/api\/config\/meta(\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -189,7 +189,7 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
   });
 
   // Also mock POST /admin/config save (Tokens add-token flow uses POST /admin/config with form)
-  await page.route('**/admin/config', async (route) => {
+  await page.route(/\/admin\/config$/, async (route) => {
     if (route.request().method() === 'POST') {
       await route.fulfill({
         status: 200,
@@ -322,8 +322,6 @@ test.describe('dashboard hermetic mocks', () => {
       ],
     };
     await mockDashboard(page, f, { configWithApiKeys: configWithContent });
-
-    // The meta catalog is consumed: multiple groups render as Cards.
     const metaResp = page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 });
     await page.goto('http://127.0.0.1:4173/admin/#settings');
     await metaResp;
@@ -331,7 +329,6 @@ test.describe('dashboard hermetic mocks', () => {
     await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Pool' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
-
     // A documented bool renders as a checkbox; effective value drives it.
     const safeMode = page.getByRole('checkbox', { name: 'SAFE_MODE' });
     await expect(safeMode).toBeVisible();
@@ -344,8 +341,7 @@ test.describe('dashboard hermetic mocks', () => {
 
     // Save posts the built .env: the toggled line plus untouched lines.
     let savedBody = '';
-    await page.unroute('**/admin/config');
-    await page.route('**/admin/config', async (route) => {
+    await page.route(/\/admin\/config$/, async (route) => {
       if (route.request().method() === 'POST') {
         savedBody = decodeURIComponent(route.request().postData() || '');
         await route.fulfill({
@@ -446,8 +442,7 @@ test.describe('dashboard hermetic mocks', () => {
     await mockDashboard(page, f, { configWithApiKeys: configWithContent });
 
     // The server rejects this write (validation failure) and rolls the file back.
-    await page.unroute('**/admin/config');
-    await page.route('**/admin/config', async (route) => {
+    await page.route(/\/admin\/config$/, async (route) => {
       if (route.request().method() === 'POST') {
         await route.fulfill({
           status: 400,
@@ -459,8 +454,9 @@ test.describe('dashboard hermetic mocks', () => {
       }
     });
 
+    const metaResp = page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 }).catch(() => {});
     await page.goto('http://127.0.0.1:4173/admin/#settings');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await metaResp;
     const safeMode = page.getByRole('checkbox', { name: 'SAFE_MODE' });
     await expect(safeMode).toBeChecked();
 
