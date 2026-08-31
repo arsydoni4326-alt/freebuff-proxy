@@ -207,6 +207,17 @@
 
   let atRiskTokens = $derived((data?.tokens ?? []).filter((t) => t.risk_level && t.risk_level !== 'low'));
 
+  // Dynamic Base URL follows the browser's current host (VPS IP, domain, VPN reverse proxy)
+  // as computed dynamically by the backend from the request headers (Host, X-Forwarded-Host/Proto).
+  let dynamicBaseURL = $derived.by(() => {
+    if (data?.base_url) {
+      return data.base_url;
+    }
+    if (typeof window !== 'undefined' && window.location.host) {
+      return `${window.location.protocol}//${window.location.host}/v1`;
+    }
+    return 'http://127.0.0.1:3457/v1';
+  });
 </script>
 
 <div class="space-y-6 page-enter">
@@ -391,10 +402,9 @@
         <Card title={$tr('Gateway Base URL')} description={$tr('Universal base endpoint for any OpenAI or Anthropic client, SDK, or CLI tool.')}>
           <div class="flex items-center gap-2">
             <div class="fp-inset flex-1 px-3 py-2 overflow-x-auto">
-              <code class="fp-num text-xs text-[var(--fp-accent)] font-mono font-semibold">{data?.base_url || 'http://127.0.0.1:3457/v1'}</code>
+              <code class="fp-num text-xs text-[var(--fp-accent)] font-mono font-semibold">{dynamicBaseURL}</code>
             </div>
-            <CopyButton text={data?.base_url || 'http://127.0.0.1:3457/v1'} label={$tr('Copy URL')} />
-          </div>
+            <CopyButton text={dynamicBaseURL} label={$tr('Copy URL')} />
           <p class="mt-3 text-xs text-[var(--fp-muted)]">
             {$tr('Authentication: Use any Client API Key below via Bearer token or x-api-key header.')}
           </p>
