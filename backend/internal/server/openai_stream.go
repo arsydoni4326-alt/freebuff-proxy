@@ -70,6 +70,12 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	var toolIDs []string
 	endTurnCallIndexes := make(map[int]bool)
 	seenRealToolCalls := false
+	// lastFinishReason records the last finish_reason actually relayed to
+	// the client (read after the rewrites below): tool calls flushed from
+	// an unclosed XML block arrive AFTER the terminal chunk, so the
+	// in-loop stop→tool_calls flip cannot fire for them and the flush
+	// path must repair the stream's terminal reason itself.
+	lastFinishReason := ""
 	// Streaming XML tool-call extraction: models like MiMo/Hermes/Qwen
 	// emit tool calls as XML/fenced blocks inside delta.content instead of
 	// native delta.tool_calls. One extractor per stream (not concurrency
@@ -137,16 +143,43 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 		if stats.toolMap.Len() > 0 {
 			stats.toolMap.FromUpstreamChunk(chunk)
 		}
-		if b, err := json.Marshal(chunk); err == nil {
+		writeFrame := func(chunk map[string]any) bool {
+			b, err := json.Marshal(chunk)
+			if err != nil {
+				return false
+			}
 			frame := convert.EncodeSSE(b)
 			if _, err := w.Write(frame); err != nil {
 				s.logger.Debug("stream write failed", "err", err)
-				return
+				return false
 			}
 			stats.chunks++
 			stats.bytes += len(frame)
 			lastWrite = time.Now()
 			flusher.Flush()
+			return true
+		}
+		if !writeFrame(chunk) {
+			return
+		}
+		// Tool calls flushed from an unclosed XML block arrive AFTER the
+		// terminal chunk, so the in-loop stop→tool_calls flip (keyed on
+		// xmlCallsSeen at terminal time) never fired for them: the client
+		// already saw finish_reason "stop" and would end a turn that
+		// carried fully-delivered extracted calls. Append a synthetic
+		// empty-delta terminal chunk reading "tool_calls" so the stream
+		// ends consistent with the relayed calls — only when the extracted
+		// calls are the sole delivery (no native tool-call fragments,
+		// mirroring relayJSON's guard) and the upstream reason was "stop"
+		// ("length" stays honest).
+		if xmlCallsSeen && lastFinishReason == "stop" && !seenRealToolCalls {
+			writeFrame(map[string]any{
+				"id":      streamID,
+				"object":  "chat.completion.chunk",
+				"created": time.Now().Unix(),
+				"model":   streamModel,
+				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}},
+			})
 		}
 	}
 
@@ -279,6 +312,23 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 					}
 					if b, err := json.Marshal(chunk); err == nil {
 						clean = b
+					}
+				}
+			}
+			// Record the finish_reason the client actually sees (after the
+			// two flips above) for the XML-flush terminal repair. Cheap
+			// substring probe: only the terminal chunk unmarshals.
+			if bytes.Contains(clean, []byte(`"finish_reason"`)) {
+				var fr struct {
+					Choices []struct {
+						FinishReason string `json:"finish_reason"`
+					} `json:"choices"`
+				}
+				if json.Unmarshal(clean, &fr) == nil {
+					for _, c := range fr.Choices {
+						if c.FinishReason != "" {
+							lastFinishReason = c.FinishReason
+						}
 					}
 				}
 			}

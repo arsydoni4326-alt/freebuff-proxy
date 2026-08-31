@@ -205,8 +205,13 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 			lastWrite = time.Now()
 			stats.chunks++
 			stats.bytes += len(clean)
-			if m, _ := chunk["model"].(string); m != "" {
-				st.model = m
+			if stats.servedModel == "" {
+				// Lease-less relay: trust the upstream echo (it is the only
+				// identity available). With a lease, the served model is
+				// authoritative — the upstream echo must not override it.
+				if m, _ := chunk["model"].(string); m != "" {
+					st.model = m
+				}
 			}
 			if usage, ok := chunk["usage"]; ok && usage != nil {
 				if um, ok := usage.(map[string]any); ok {
@@ -245,6 +250,31 @@ func (st *anthropicStreamState) closeOpenToolCalls(send func(map[string]any)) {
 	// must close them sequentially (mirror of finalizeAnthropicStream).
 	indexes := make([]int, 0, len(st.toolCalls))
 	for i := range st.toolCalls {
+		indexes = append(indexes, i)
+	}
+	sort.Ints(indexes)
+	for _, i := range indexes {
+		ts := st.toolCalls[i]
+		if ts.started && !ts.blockClosed {
+			send(map[string]any{"type": "content_block_stop", "index": ts.index})
+			ts.blockClosed = true
+		}
+	}
+}
+
+// closeOtherOpenToolCalls emits content_block_stop for every open tool_use
+// block whose upstream index differs from upIdx. Tool fragments per upstream
+// index are contiguous on the wire, so this closes exactly the one currently
+// open block on an index transition and the stream stays strictly
+// sequential: start, deltas, stop per block, never two open blocks. A later
+// straggler fragment for a closed index reopens its block at a fresh index
+// through ensureStarted's replay machinery (issue #171).
+func (st *anthropicStreamState) closeOtherOpenToolCalls(upIdx int, send func(map[string]any)) {
+	indexes := make([]int, 0, len(st.toolCalls))
+	for i := range st.toolCalls {
+		if i == upIdx {
+			continue
+		}
 		indexes = append(indexes, i)
 	}
 	sort.Ints(indexes)
@@ -330,6 +360,12 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 				continue
 			}
 			st.sawToolCall = true
+			// Sequential block lifecycle: at most one tool_use block may be
+			// open at a time. A fragment for a different upstream index than
+			// the currently open block closes that block first, so the new
+			// block's start cannot straddle it (stops deferred to finalize
+			// would leave two open blocks on multi-tool turns).
+			st.closeOtherOpenToolCalls(upIdx, send)
 			ts := st.toolState(upIdx)
 			if id, ok := tc["id"].(string); ok && id != "" {
 				ts.id = id

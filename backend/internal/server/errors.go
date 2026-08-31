@@ -106,7 +106,7 @@ func defaultHintForCode(code, message string) string {
 	case code == "country_blocked" || strings.Contains(lowerMsg, "country blocked") || strings.Contains(lowerMsg, "country_blocked"):
 		return "Your egress IP is in an unsupported region. Route traffic through an allowed country (e.g. US/EU/ID/SG)."
 	case code == "out_of_credits" || strings.Contains(lowerMsg, "out of credits"):
-		return "Upstream free-tier credits exhausted. Check COST_MODE=free in .env — a typo routes requests as PAID and fresh free accounts get 402."
+		return "Upstream free-tier credits exhausted. Check COST_MODE in .env — valid values are free or unset; any other value fails startup validation."
 	case code == "upstream_timeout":
 		return "The upstream request exceeded its deadline. Retry, or raise REQUEST_TIMEOUT/SESSION_CALL_TIMEOUT in .env."
 	case code == "upstream_auth_rejected" || code == "invalid_api_key" || strings.Contains(lowerMsg, "invalid api key"):
@@ -129,7 +129,7 @@ func defaultHintForCode(code, message string) string {
 }
 
 // rateLimitWarnDedupe gates identical (token, code, window) `request failed`
-// WARNs (D6): the first + every 50th occurrence fire; the per-key counter
+// logs (D6): the first + every 50th occurrence fire; the per-key counter
 // always increments so a silent burst stays countable, and the client
 // response is always written. Package-level = per-process, shared by every
 // server instance.
@@ -145,7 +145,7 @@ func resetRateLimitWarnDedupe() {
 	rateLimitWarnDedupe.m = make(map[string]int64)
 }
 
-// rateLimitWarnShouldLog reports whether the (token, code, window) WARN
+// rateLimitWarnShouldLog reports whether the (token, code, window) log
 // should fire for this occurrence, always incrementing the occurrence count.
 func rateLimitWarnShouldLog(key string) bool {
 	rateLimitWarnDedupe.mu.Lock()
@@ -406,7 +406,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 	}
 
 	if code == "rate_limited" {
-		// D6 dedupe: identical (token, code, window) WARNs fire on the 1st +
+		// D6 dedupe: identical (token, code, window) logs fire on the 1st +
 		// every 50th; the counter always increments and the response is
 		// always written.
 		key := tokenLabel(lease) + "|" + code + "|" + window
@@ -419,7 +419,15 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 			return
 		}
 	}
-	s.logger.Warn("request failed", attrs...)
+	// Routine client-caused 429 rate_limited (daily session quota) is
+	// expected churn, not an operator-actionable fault: log at Info. Every
+	// upstream-class failure stays Warn (5xx, upstream_unavailable, bans;
+	// the upstream-class 429 variants carry their own codes above).
+	if code == "rate_limited" {
+		s.logger.Info("request failed", attrs...)
+	} else {
+		s.logger.Warn("request failed", attrs...)
+	}
 	if isAnthropicRequest(r) {
 		s.writeAnthropicError(w, r, status, message, code, retryAfter)
 	} else {

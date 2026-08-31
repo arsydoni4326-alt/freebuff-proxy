@@ -255,42 +255,14 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 				}
 			}
 			toolCallsRemaining, _ := convert.StripEndTurnToolCalls(chunk)
-			// Drop continuation fragments for stripped end_turn indexes.
-			if rawChoices, ok := chunk["choices"].([]any); ok && len(endTurnCallIndexes) > 0 {
-				for _, c := range rawChoices {
-					choice, _ := c.(map[string]any)
-					if choice == nil {
-						continue
-					}
-					delta, _ := choice["delta"].(map[string]any)
-					raw, _ := delta["tool_calls"].([]any)
-					if len(raw) == 0 {
-						continue
-					}
-					filtered := make([]any, 0, len(raw))
-					dropped := false
-					for _, r := range raw {
-						tc, ok := r.(map[string]any)
-						if !ok {
-							filtered = append(filtered, r)
-							continue
-						}
-						idx, _ := tc["index"].(float64)
-						if endTurnCallIndexes[int(idx)] {
-							dropped = true
-							continue
-						}
-						filtered = append(filtered, r)
-					}
-					if dropped {
-						if len(filtered) == 0 {
-							delete(delta, "tool_calls")
-							toolCallsRemaining = false
-						} else {
-							delta["tool_calls"] = filtered
-						}
-					}
-				}
+			// Drop continuation fragments for stripped end_turn indexes
+			// (shared map-level helper): a later arguments-only fragment
+			// for a stripped index carries an empty name, so only its
+			// index identifies it. A drop that empties a choice's
+			// tool_calls list means no real calls remain (feeds the flip
+			// below).
+			if _, emptied := dropEndTurnContinuationsInChunk(chunk, endTurnCallIndexes); emptied {
+				toolCallsRemaining = false
 			}
 			// Flip finish_reason only when end_turn calls were actually found
 			// in this chunk and no real tool calls remain. Without the
@@ -630,6 +602,20 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 		if choice, ok := choices[0].(map[string]any); ok {
 			finishReason, _ = choice["finish_reason"].(string)
 			if msg, ok := choice["message"].(map[string]any); ok {
+				// Stream/non-stream parity: relay upstream reasoning as a
+				// first-class reasoning output item (never output text),
+				// mirroring accumulateResponsesChunk's item shape. Emitted
+				// first so it precedes the message item like the streaming
+				// path's output order.
+				if reasoning, ok := firstStringOf(msg, "reasoning_content", "reasoning", "reasoning_text", "thinking"); ok && reasoning != "" {
+					out = append(out, map[string]any{
+						"id":      "rs_" + randHexString(12),
+						"type":    "reasoning",
+						"status":  "completed",
+						"summary": []any{},
+						"content": []any{map[string]any{"type": "reasoning_text", "text": reasoning}},
+					})
+				}
 				text, _ := msg["content"].(string)
 				if text != "" {
 					item := map[string]any{
