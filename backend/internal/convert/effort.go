@@ -239,9 +239,18 @@ func extractLeakedThinkTags(content string) (string, string) {
 //     rungs (down-nearest, never rejected; unknown efforts fall back to
 //     "high"). The DeepSeek thinking translation is server-side per issue
 //     #111 — the proxy never emits a thinking block.
-//   - "medium" on DeepSeek V4 / Ox Alpha routes rewrites to "high" first
-//     (CLI resolveFreebuffReasoningEffort: medium → high when the ladder
-//     lacks it, #112).
+//   - "medium" on mediumless ladders rewrites to "high" — a deliberate
+//     proxy translation policy, NOT an upstream rule: upstream's authority
+//     (resolveFreebuffReasoningEffort) special-cases medium→high ONLY for
+//     DeepSeek, and clamps everything else DOWN (GLM medium → low = zero
+//     thinking chars, measured). Real CLI clients can never send medium on
+//     those ladders (refused at /reasoning), so this rewrite only ever
+//     fires for stale/non-CLI preferences, where mapping to high preserves
+//     the user's evident intent (high > low for deliberation) instead of
+//     silently downgrading to a rung that emits no thinking at all.
+//   - The normalized effort is mirrored into codebuff_metadata
+//     freebuff_reasoning_effort on the upstream chat body — the field the
+//     server's effort authority actually reads.
 //   - reasoning.enabled === false or thinking.type "disabled" suppresses the
 //     effort entirely (no reasoning_effort, no thinking field).
 func normalizeReasoning(payload, out map[string]any) {

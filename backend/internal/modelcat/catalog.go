@@ -240,8 +240,13 @@ func shortName(id string) string {
 
 // IsMediumlessLadderModel reports whether the model's catalog effort ladder
 // offers multiple rungs but omits "medium" (DeepSeek V4, Ox Alpha, GLM 5.3
-// Flash): a requested "medium" must rewrite to "high" (#112) instead of the
-// generic down-clamp, which would pick "low". Single-rung ladders (["high"])
+// Flash). Consumers use this to decide the medium-rewrite policy (#112):
+// DeepSeek routes map medium→high because upstream's own authority does;
+// the other mediumless ladders map medium→high as a deliberate proxy
+// translation for stale preferences (upstream would clamp DOWN to low —
+// zero thinking on GLM — but CLI clients can never send medium there, so
+// no on-wire request ever contradicts upstream). Single-rung ladders
+// (["high"])
 // are excluded — their medium requests down-clamp to the single rung
 // anyway. Matching is suffix-tolerant on the row's short name, mirroring the
 // matching convert historically applied: stealth/ox-alpha-20260812 matches
