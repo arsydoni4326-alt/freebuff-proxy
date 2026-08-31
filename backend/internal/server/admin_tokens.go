@@ -83,6 +83,9 @@ func (s *Server) handleTokenSpawnSession(w http.ResponseWriter, r *http.Request)
 		s.dash.RenderConfigResult(w, r, false, "Invalid token ID: "+err.Error())
 		return
 	}
+	// Cap the body before FormValue: ParseForm would otherwise slurp the
+	// entire request into memory. The form field is a model id, a few bytes.
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	model := strings.TrimSpace(r.FormValue("model"))
 	if model == "" {
 		model = modelcat.FallbackModelID
@@ -223,10 +226,7 @@ func (s *Server) syncTokensAfterMutation(tokens []string) error {
 		restoreEnvFile(old, oldErr)
 		return fmt.Errorf("AUTH_TOKENS overridden by environment or -config JSON (%d effective vs %d requested) — persisted to .env but NOT activated; clear it there or restart without env_file, then retry", len(newCfg.AuthTokens), len(tokens))
 	}
-	s.cfg.Store(&newCfg)
-	s.reg.SetConfig(&newCfg)
-	s.pool.SetConfig(&newCfg)
-	s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+	s.applyReloadedConfig(&newCfg)
 	return nil
 }
 
@@ -252,6 +252,9 @@ func (s *Server) probeTokenGate(ctx context.Context, token string) (*upstream.Se
 }
 
 func (s *Server) handleTokenAdd(w http.ResponseWriter, r *http.Request) {
+	// Cap the body before FormValue: ParseForm would otherwise slurp the
+	// entire request into memory before the JSON fallback's 8KB cap applies.
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -338,6 +341,10 @@ func (s *Server) handleTokenAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTokenRemove(w http.ResponseWriter, r *http.Request) {
+	// Cap the body before FormValue: ParseForm would otherwise slurp the
+	// entire request into memory. The form value is a token index, a few
+	// bytes.
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	// adminSaveMu serializes the pool mutation + persist + reload with the
 	// other .env writers, exactly like handleTokenAdd.
 	s.adminSaveMu.Lock()
@@ -410,6 +417,9 @@ func (s *Server) handleTokenRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
+	// Cap the body before FormValue: ParseForm would otherwise slurp the
+	// entire request into memory before the JSON fallback's 4KB cap applies.
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var req struct {
 		Mode string `json:"mode"`
 	}
@@ -461,10 +471,7 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 			s.dash.RenderConfigResult(w, r, false, "Could not switch to bridge mode: AUTH_TOKENS is still set by a -config JSON file or the environment, which overrides .env. Clear it there, or run without -config, then retry.")
 			return
 		}
-		s.cfg.Store(&newCfg)
-		s.reg.SetConfig(&newCfg)
-		s.pool.SetConfig(&newCfg)
-		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+		s.applyReloadedConfig(&newCfg)
 		s.pool.RemoveAllTokens(r.Context())
 		s.logger.Info("dashboard switched to bridge mode")
 		s.dash.RenderConfigResult(w, r, true, "Switched to bridge mode — AUTH_TOKENS cleared; clients now send their own token.")
@@ -501,10 +508,7 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 			s.dash.RenderConfigResult(w, r, false, "Could not switch to pooled mode: BRIDGE_ENABLED is still set by a -config JSON file or the environment, which overrides .env. Clear it there, then retry.")
 			return
 		}
-		s.cfg.Store(&newCfg)
-		s.reg.SetConfig(&newCfg)
-		s.pool.SetConfig(&newCfg)
-		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+		s.applyReloadedConfig(&newCfg)
 		s.logger.Info("dashboard switched to pooled mode")
 		s.dash.RenderConfigResult(w, r, true, "Switched to pooled mode — bridge relay disabled.")
 	case "hybrid":
@@ -535,10 +539,7 @@ func (s *Server) handleModeSwitch(w http.ResponseWriter, r *http.Request) {
 			s.dash.RenderConfigResult(w, r, false, "Could not switch to hybrid mode: BRIDGE_ENABLED is still set to 0 by a -config JSON file or the environment, which overrides .env. Clear it there, then retry.")
 			return
 		}
-		s.cfg.Store(&newCfg)
-		s.reg.SetConfig(&newCfg)
-		s.pool.SetConfig(&newCfg)
-		s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+		s.applyReloadedConfig(&newCfg)
 		s.logger.Info("dashboard switched to hybrid mode")
 		s.dash.RenderConfigResult(w, r, true, "Switched to hybrid mode — pooled + bridge active.")
 	default:

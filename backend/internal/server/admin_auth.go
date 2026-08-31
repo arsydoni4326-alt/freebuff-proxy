@@ -241,11 +241,24 @@ func (a *adminAuth) releaseLogin() {
 
 func (s *Server) dashboardAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cfg := s.cfg.Load()
+		// Open mode (ADMIN_TOKEN unset) must not expose the dashboard read
+		// tier to non-loopback clients: per-token quota/spend/standing and
+		// routing metadata would be anonymously readable. Apply the exact
+		// gate adminSensitive uses (RemoteAddr + Host loopback check; no
+		// trusted-proxy header handling). Behavior change: remote open-mode
+		// requests now get 403 instead of pass-through; the AuthNone routes
+		// (login page, logout, static assets) stay reachable, and setting
+		// ADMIN_TOKEN restores remote access.
+		if cfg.AdminToken == "" &&
+			(!isLoopbackAddr(r.RemoteAddr) || !isLoopbackHost(r.Host)) {
+			http.Error(w, "forbidden: the dashboard is unauthenticated (ADMIN_TOKEN unset) and only reachable from loopback; set ADMIN_TOKEN to enable remote access", http.StatusForbidden)
+			return
+		}
 		// The SPA reads fb_csrf (double-submit token) out of
 		// document.cookie on page load; issue it on the page response when
 		// missing so the first state-changing POST already carries the pair.
 		s.setCSRFCookieIfAbsent(w, r)
-		cfg := s.cfg.Load()
 		if cfg.AdminToken == "" {
 			next.ServeHTTP(w, r)
 			return
@@ -358,7 +371,9 @@ func newCSRFToken() (string, error) {
 // HttpOnly: the SPA reads it from document.cookie and echoes the value as
 // the X-CSRF-Token header on state-changing requests.
 func csrfCookie(r *http.Request, value string) *http.Cookie {
-	// double-submit CSRF cookie is readable JS by design; Secure follows the same trusted-proxy rule as the session cookie (plain-HTTP loopback only)
+	// double-submit CSRF cookie is readable JS by design; Secure is set for
+	// direct TLS or when a loopback/private/link-local peer advertises
+	// X-Forwarded-Proto: https; non-Secure otherwise
 	// codeql[go/cookie-secure-not-set]
 	return &http.Cookie{
 		Name:     csrfCookieName,
@@ -376,7 +391,9 @@ func csrfCookie(r *http.Request, value string) *http.Cookie {
 func (s *Server) setCSRFCookieIfAbsent(w http.ResponseWriter, r *http.Request) {
 	if _, err := r.Cookie(csrfCookieName); err != nil {
 		if value, err := newCSRFToken(); err == nil {
-			// CSRF cookie is non-Secure only over plain-HTTP loopback for local dev; secureCookie() ensures Secure for every remote path (TLS or trusted-proxy X-Forwarded-Proto:https)
+			// CSRF cookie: Secure is set for direct TLS or when a
+			// loopback/private/link-local peer advertises
+			// X-Forwarded-Proto: https; non-Secure otherwise
 			// codeql[go/cookie-secure-not-set]
 			http.SetCookie(w, csrfCookie(r, value))
 		}
@@ -576,6 +593,10 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 			return
 		}
 	} else {
+		// Form path: cap the body before FormValue — ParseForm would
+		// otherwise slurp the entire request into memory. Passwords fit in
+		// a few hundred bytes; the JSON branch above keeps its own 64KB cap.
+		r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 		req.CurrentPassword = r.FormValue("current_password")
 		req.NewPassword = r.FormValue("new_password")
 	}
@@ -650,9 +671,7 @@ func (s *Server) handleAdminChangePassword(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	s.cfg.Store(&newCfg)
-	s.reg.SetConfig(&newCfg)
-	s.pool.SetConfig(&newCfg)
+	s.applyReloadedConfig(&newCfg)
 
 	// Set updated session cookie (Secure follows the trusted transport;
 	// X-Forwarded-Proto is honored only from a loopback/private peer).

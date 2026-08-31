@@ -39,6 +39,11 @@ func (s *Server) handleSmoke(w http.ResponseWriter, r *http.Request) {
 	// The dashboard form posts urlencoded model=&prompt=&token=; read those
 	// first and only fall back to JSON for programmatic clients (mirrors
 	// handleTokenAdd).
+	// Cap the body before FormValue: ParseForm would otherwise slurp the
+	// entire request into memory before the fallback read applies its own
+	// cap. The 8KB bound here governs both the form and the JSON fallback
+	// paths (form fields are tiny; a smoke request needs no more).
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 	var err error
 	req.Model = strings.TrimSpace(r.FormValue("model"))
 	req.Prompt = strings.TrimSpace(r.FormValue("prompt"))
@@ -289,6 +294,18 @@ func (s *Server) pruneLoginFlows() {
 	s.loginMu.Unlock()
 }
 
+// applyReloadedConfig propagates a freshly loaded config to every live
+// consumer: the atomic config snapshot, the registry, the pool, and the
+// per-IP rate limiter. Every config-save/reload path must apply new
+// settings through this one method so no consumer is skipped — the
+// change-password reload historically dropped the rate limiter.
+func (s *Server) applyReloadedConfig(cfg *config.Config) {
+	s.cfg.Store(cfg)
+	s.reg.SetConfig(cfg)
+	s.pool.SetConfig(cfg)
+	s.rateLimiter.SetRate(cfg.RateLimitPerIP, cfg.RateLimitBurst)
+}
+
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("admin reload requested", "remote", remoteHost(r), "path", r.URL.Path)
 	// Serialize with the .env writers (config editor, token add/remove,
@@ -303,10 +320,7 @@ func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONError(w, http.StatusInternalServerError, "failed to reload config: "+err.Error(), "internal_error", "reload_failed", 0)
 		return
 	}
-	s.cfg.Store(&newCfg)
-	s.reg.SetConfig(&newCfg)
-	s.pool.SetConfig(&newCfg)
-	s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+	s.applyReloadedConfig(&newCfg)
 	s.logger.Info("config reloaded successfully", "remote", remoteHost(r), "path", r.URL.Path,
 		"auth_tokens", len(newCfg.AuthTokens), "safe_mode", newCfg.SafeMode)
 	w.Header().Set("Content-Type", "application/json")
