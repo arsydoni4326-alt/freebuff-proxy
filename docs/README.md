@@ -1,9 +1,7 @@
 # Documentation
 
 Public documentation for freebuff-proxy. This folder is committed to the
-repository; local-only development study (reverse-engineering notes, plans,
-research) lives in the ignored `devdocs/` directory and is not part of the
-public repo.
+repository.
 
 ## Reference Documents (Project Root)
 
@@ -27,6 +25,7 @@ These top-level documents serve as the canonical design and specification refere
 | [Ban-Avoidance & Signature Research](ban-avoidance.md) | Upstream detection landscape, proxy countermeasures, risk engine, operator hygiene rules, research plan |
 | [Upstream Drift Tracking](upstream-drift-tracking.md) | Pinned registry snapshots, drift detection/sync scripts, CI integration, response playbook, runtime freshness |
 | [Automated Token Rotation](automated-token-rotation.md) | Token lifecycle management, health scoring, exhaustion prediction, anti-ban rotation rules, implementation plan |
+| [User Lifecycle](user-lifecycle.md) | Full operator lifecycle: install per OS → first run → add tokens → use clients → monitor → edit config → rotate/remove → quota review → update |
 
 ## Related
 

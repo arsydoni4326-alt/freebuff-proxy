@@ -10,6 +10,7 @@ type Fixtures = {
   tokens: unknown;
   models: unknown;
   config: unknown;
+  configMeta: unknown;
   logs: { entries: Array<{ level: string; message: string; fields?: string }> } & Record<string, unknown>;
   metrics: unknown;
   setup: unknown;
@@ -25,6 +26,7 @@ function loadFixtures(): Fixtures {
     tokens: JSON.parse(readFileSync(join(dir, 'tokens.json'), 'utf-8')),
     models: JSON.parse(readFileSync(join(dir, 'models.json'), 'utf-8')),
     config: JSON.parse(readFileSync(join(dir, 'config.json'), 'utf-8')),
+    configMeta: JSON.parse(readFileSync(join(dir, 'config-meta.json'), 'utf-8')),
     logs: JSON.parse(readFileSync(join(dir, 'logs.json'), 'utf-8')),
     metrics: JSON.parse(readFileSync(join(dir, 'metrics.json'), 'utf-8')),
     setup: JSON.parse(readFileSync(join(dir, 'setup.json'), 'utf-8')),
@@ -90,6 +92,15 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify(cfg),
+    });
+  });
+
+  // Config meta — the Settings page key catalog (JSON array from /admin/api/config/meta).
+  await page.route('**/admin/api/config/meta', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(pick('configMeta')),
     });
   });
 
@@ -192,6 +203,10 @@ async function mockDashboard(page: Page, fixtures: Fixtures, overrides: Partial<
 }
 
 test.describe('dashboard hermetic mocks', () => {
+  // The Settings tests render the 58-key catalog; under parallel workers on
+  // slow runners the render can exceed the default 5s expect window, so give
+  // this group a wider one (CI: 1 worker + retries anyway).
+  test.use({ expect: { timeout: 10_000 } });
   test('Overview polls every 15s and shows token risk cards', async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
@@ -217,44 +232,248 @@ test.describe('dashboard hermetic mocks', () => {
     expect(overviewCount).toBeGreaterThanOrEqual(2);
   });
 
-  test('Tokens lists pooled tokens and expands quota table', async ({ page }) => {
+  test('Tokens lists pooled tokens and expands details', async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
 
     await page.goto('http://127.0.0.1:4173/admin/#tokens');
     await expect(page.getByRole('heading', { name: 'Tokens', exact: true })).toBeVisible();
     await expect(page.getByText('#0')).toBeVisible({ timeout: 10000 });
-    const expandBtn = page.locator('button[aria-label*="Expand quotas"]').first();
+    const expandBtn = page.locator('button[aria-label*="Expand details"]').first();
     await expect(expandBtn).toBeVisible();
     await expandBtn.click();
-    await expect(page.locator('td', { hasText: 'deepseek/deepseek-v4-flash' }).first()).toBeVisible();
+    // Without DEVTOOLS_ENABLED the Dev Session toolbar stays hidden; the
+    // expanded row keeps the active-session line.
+    await expect(page.getByText('Dev Session:')).not.toBeVisible();
+    await expect(page.getByText('Active Session:')).toBeVisible();
+
+    // With DEVTOOLS_ENABLED=true the toolbar appears (per-token session spawn).
+    await page.unroute('**/admin/api/config');
+    await page.route('**/admin/api/config', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          env_content: 'PORT=3457\nAUTH_TOKENS=tok0,tok1\nDEVTOOLS_ENABLED=true\n',
+          has_env_file: true,
+        }),
+      });
+    });
+    await page.reload();
+    await page.waitForResponse((r) => r.url().includes('/admin/api/tokens') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await page.locator('button[aria-label*="Expand details"]').first().click();
+    await expect(page.getByText('Dev Session:')).toBeVisible();
   });
 
-  test('Config shows env_content in editor and effective table', async ({ page }) => {
+  test('Quota Tracker shows premium pool and per-model session quota', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    let tokensCount = 0;
+    page.on('response', (res) => {
+      if (res.url().includes('/admin/api/tokens')) tokensCount++;
+    });
+
+    await page.goto('http://127.0.0.1:4173/admin/#quota');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/tokens') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Quota Tracker', exact: true })).toBeVisible();
+    // Sidebar entry links to the new tab
+    await expect(page.getByRole('link', { name: 'Quota Tracker' })).toBeVisible();
+
+    // Per-token cards: one per pooled token
+    await expect(page.getByRole('heading', { name: 'Token #0' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Token #4' })).toBeVisible();
+    // Token 0 fixture carries premium_quota → Premium pool bar renders
+    await expect(page.getByText('Premium pool').first()).toBeVisible();
+    await expect(page.getByText('4/day pacific_day')).toBeVisible();
+    // Tokens without premium data show the subtle hint
+    await expect(
+      page.getByText('No premium quota data — run a request or -test-token to populate.').first()
+    ).toBeVisible();
+
+    // Session quota by model tables from the fixture rows
+    await expect(page.getByRole('heading', { name: 'Session quota by model' }).first()).toBeVisible();
+    await expect(page.getByText('deepseek/deepseek-v4-flash').first()).toBeVisible();
+    await expect(page.getByText('(in 5h 32m)').first()).toBeVisible();
+    await expect(page.getByText('base=1, referral=1').first()).toBeVisible();
+    // Usage bars under quota rows
+    await expect(page.locator('table [role="progressbar"]').first()).toBeVisible();
+
+    // Polls every 10s: a second tokens fetch proves periodic refresh
+    await page.waitForResponse((r) => r.url().includes('/admin/api/tokens') && r.status() === 200, { timeout: 12000 });
+    expect(tokensCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test('Settings renders catalog groups and saves a toggled bool into the .env', async ({ page }) => {
     const f = loadFixtures();
     const configWithContent = {
       ...f.config,
-      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\n',
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n',
       has_env_file: true,
       effective: [
         { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'AUTH_TOKENS', value: '2 token(s)', secret: true },
         { key: 'API_KEYS', value: '1 key(s)', secret: true },
+        { key: 'ADMIN_TOKEN', value: 'set', secret: true },
+        { key: 'SAFE_MODE', value: 'true', secret: false },
+        { key: 'LOG_LEVEL', value: 'info', secret: false },
+        { key: 'COST_MODE', value: 'free', secret: false },
+        { key: 'MAX_MESSAGES_PER_DAY', value: '0', secret: false },
       ],
     };
     await mockDashboard(page, f, { configWithApiKeys: configWithContent });
 
-    await page.goto('http://127.0.0.1:4173/admin/#config');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/config') && r.status() === 200, { timeout: 5000 }).catch(() => {});
-    await expect(page.getByRole('heading', { name: 'Config', exact: true })).toBeVisible();
+    // The meta catalog is consumed: multiple groups render as Cards.
+    const metaResp = page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 });
+    await page.goto('http://127.0.0.1:4173/admin/#settings');
+    await metaResp;
+    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Pool' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible();
 
-    // Textarea with id config-env should contain env_content
+    // A documented bool renders as a checkbox; effective value drives it.
+    const safeMode = page.getByRole('checkbox', { name: 'SAFE_MODE' });
+    await expect(safeMode).toBeVisible();
+    await expect(safeMode).toBeChecked();
+
+    // Toggling marks the form dirty and surfaces the unsaved-changes banner.
+    await safeMode.uncheck();
+    await expect(page.getByText('Unsaved changes')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save' })).toBeEnabled();
+
+    // Save posts the built .env: the toggled line plus untouched lines.
+    let savedBody = '';
+    await page.unroute('**/admin/config');
+    await page.route('**/admin/config', async (route) => {
+      if (route.request().method() === 'POST') {
+        savedBody = decodeURIComponent(route.request().postData() || '');
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ok: true,
+            message: 'Saved and reloaded. These keys apply after restart only: LOG_LEVEL',
+            restart_only: ['LOG_LEVEL'],
+          }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText(/apply after restart only/)).toBeVisible();
+    await expect(page.getByText('Applies after restart: LOG_LEVEL')).toBeVisible();
+    expect(savedBody).toContain('SAFE_MODE=false');
+    expect(savedBody).toContain('AUTH_TOKENS=tok0,tok1');
+    expect(savedBody).toContain('LOG_LEVEL=info');
+  });
+
+  test('Settings legacy #config alias, select save, secret masking and raw editor validation', async ({ page }) => {
+    const f = loadFixtures();
+    const configWithContent = {
+      ...f.config,
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n',
+      has_env_file: true,
+      effective: [
+        { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'AUTH_TOKENS', value: '2 token(s)', secret: true },
+        { key: 'API_KEYS', value: '1 key(s)', secret: true },
+        { key: 'ADMIN_TOKEN', value: 'set', secret: true },
+        { key: 'SAFE_MODE', value: 'true', secret: false },
+        { key: 'LOG_LEVEL', value: 'info', secret: false },
+        { key: 'COST_MODE', value: 'free', secret: false },
+        { key: 'MAX_MESSAGES_PER_DAY', value: '0', secret: false },
+      ],
+    };
+    await mockDashboard(page, f, { configWithApiKeys: configWithContent });
+
+    // Legacy '#config' hash still routes to the Settings page.
+    const metaRespLegacy = page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 });
+    await page.goto('http://127.0.0.1:4173/admin/#config');
+    await metaRespLegacy;
+    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+
+    // Select renders enum options from meta; changing it edits the document.
+    const logLevel = page.getByRole('combobox', { name: 'LOG_LEVEL' });
+    await expect(logLevel).toBeVisible();
+    await expect(logLevel).toContainText('debug');
+    await expect(logLevel).toContainText('trace');
+    await logLevel.selectOption('warn');
+
+    // Keys absent from the effective config render as disabled 'not set'.
+    await expect(page.getByText('not set', { exact: true }).first()).toBeVisible();
+
+    // Advanced raw editor mirrors the form edit and still validates.
+    await page.getByText('Advanced: raw .env editor').click();
     const editor = page.locator('#config-env');
     await expect(editor).toBeVisible();
-    await expect(editor).toHaveValue(/AUTH_TOKENS/);
-    await expect(editor).toHaveValue(/API_KEYS=sk-local-xyz/);
+    await expect(editor).toHaveValue(/LOG_LEVEL=warn/);
+    await page.getByRole('button', { name: 'Validate' }).click();
+    await expect(page.getByText(/Configuration is valid/)).toBeVisible();
 
-    // Effective table shows masked secret for API_KEYS
-    await expect(page.getByRole('table')).toContainText('API_KEYS');
+    // Save posts the built .env line for the edited select.
+    const postReqPromise = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/config'));
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Save' }).click();
+    const postReq = await postReqPromise;
+    expect(decodeURIComponent(postReq.postData() ?? '')).toContain('LOG_LEVEL=warn');
+
+    // Current-values table masks secrets and exposes no copy buttons for them.
+    const valuesTable = page.locator('table');
+    await expect(valuesTable.getByText('redacted')).toHaveCount(3);
+    await expect(valuesTable.getByRole('button', { name: 'copy' })).toHaveCount(5);
+  });
+
+  test('Settings rejected save reverts the form to the server state', async ({ page }) => {
+    const f = loadFixtures();
+    const configWithContent = {
+      ...f.config,
+      env_content: 'LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n',
+      has_env_file: true,
+      effective: [
+        { key: 'LISTEN_ADDR', value: '127.0.0.1:3457', secret: false },
+        { key: 'AUTH_TOKENS', value: '2 token(s)', secret: true },
+        { key: 'API_KEYS', value: '1 key(s)', secret: true },
+        { key: 'ADMIN_TOKEN', value: 'set', secret: true },
+        { key: 'SAFE_MODE', value: 'true', secret: false },
+        { key: 'LOG_LEVEL', value: 'info', secret: false },
+        { key: 'COST_MODE', value: 'free', secret: false },
+        { key: 'MAX_MESSAGES_PER_DAY', value: '0', secret: false },
+      ],
+    };
+    await mockDashboard(page, f, { configWithApiKeys: configWithContent });
+
+    // The server rejects this write (validation failure) and rolls the file back.
+    await page.unroute('**/admin/config');
+    await page.route('**/admin/config', async (route) => {
+      if (route.request().method() === 'POST') {
+        await route.fulfill({
+          status: 400,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: false, message: 'Rejected: invalid value' }),
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.goto('http://127.0.0.1:4173/admin/#settings');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/config/meta') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    const safeMode = page.getByRole('checkbox', { name: 'SAFE_MODE' });
+    await expect(safeMode).toBeChecked();
+
+    // Toggle the bool, accept the confirm dialog, and save.
+    await safeMode.uncheck();
+    page.once('dialog', (d) => d.accept());
+    await page.getByRole('button', { name: 'Save' }).click();
+
+    // Failure alert shown and the control restored to the server state.
+    await expect(page.getByText('Rejected: invalid value')).toBeVisible();
+    await expect(safeMode).toBeChecked();
+    // Dirty reverted — Save button disabled again.
+    await expect(page.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   test('Logs filters by ?msg= and paginates with Next/Prev', async ({ page }) => {
@@ -357,8 +576,11 @@ test.describe('dashboard hermetic mocks', () => {
     const f = loadFixtures();
     await mockDashboard(page, f);
 
+    // Register the response wait before navigating; the mocked overview
+    // response can resolve during goto and the late wait would miss it.
+    const overviewResp = page.waitForResponse((r) => r.url().includes('/admin/api/overview'), { timeout: 5000 });
     await page.goto('http://127.0.0.1:4173/admin/#overview');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/overview'), { timeout: 5000 });
+    await overviewResp;
     // Overview loading skeleton used aria-live="polite" and aria-busy="true"
     // After load, risk section should have aria-label
     await expect(page.locator('section[aria-label="At-risk tokens"]')).toBeVisible();
@@ -373,11 +595,67 @@ test.describe('dashboard hermetic mocks', () => {
     // Check that at least one element has aria-live or aria-describedby
     const liveCount = await page.locator('[aria-live]').count();
     expect(liveCount).toBeGreaterThanOrEqual(0);
-    // Field/Config should have label association
-    await page.goto('http://127.0.0.1:4173/admin/#config');
-    await page.waitForResponse((r) => r.url().includes('/admin/api/config'), { timeout: 5000 });
+    // Settings keeps the raw editor's label association (behind the advanced details)
+    const configResp = page.waitForResponse((r) => r.url().includes('/admin/api/config'), { timeout: 5000 });
+    await page.goto('http://127.0.0.1:4173/admin/#settings');
+    await configResp;
+    await page.getByText('Advanced: raw .env editor').click();
     await expect(page.locator('#config-env')).toBeVisible();
     // Verify the textarea has accessible label (sr-only)
     await expect(page.locator('label[for="config-env"]')).toHaveCount(1);
+  });
+
+  test('Metrics tab renders KPIs, sparklines and per-token rows', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    await page.goto('http://127.0.0.1:4173/admin/#metrics');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/metrics') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Metrics', exact: true })).toBeVisible();
+
+    // KPI stats from fixtures/metrics.json
+    await expect(page.getByText('Requests served')).toBeVisible();
+    await expect(page.getByText('Models served')).toBeVisible();
+    // Sparkline SVG embedded from the API payload
+    await expect(page.locator('svg[role="img"]').first()).toBeVisible();
+    // Per-token table rows (risk column renders the fixture risk levels)
+    await expect(page.getByRole('heading', { name: 'Per-token metrics' })).toBeVisible();
+    const metricRows = page.locator('table tbody tr');
+    await expect(metricRows.nth(0)).toContainText('low');
+    await expect(metricRows.nth(1)).toContainText('high');
+    await expect(metricRows).toHaveCount(2);
+  });
+
+  test('Traces tab renders the trace table from /admin/api/traces', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    await page.goto('http://127.0.0.1:4173/admin/#traces');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/traces') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Traces', exact: true })).toBeVisible();
+    await expect(page.locator('table tbody tr')).toHaveCount(2);
+    await expect(page.getByText('deepseek/deepseek-v4-flash')).toBeVisible();
+    // Phase chips render the per-phase latency names from the payload
+    await expect(page.getByText('acquire_ms')).toBeVisible();
+    // The error row surfaces the error text
+    await expect(page.getByText('upstream timeout')).toBeVisible();
+  });
+
+  test('Direct /admin/setup and /admin/playground URLs render; unknown tab shows NotFound', async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    // /admin/setup — previously a blank shell rendered from dead code
+    await page.goto('http://127.0.0.1:4173/admin/setup');
+    await page.waitForResponse((r) => r.url().includes('/admin/api/setup') && r.status() === 200, { timeout: 5000 }).catch(() => {});
+    await expect(page.getByRole('heading', { name: 'Setup', exact: true })).toBeVisible();
+
+    // /admin/playground maps to Dev Tools (self-gated; shows the disabled notice here)
+    await page.goto('http://127.0.0.1:4173/admin/playground');
+    await expect(page.getByRole('heading', { name: 'Dev Tools', exact: true })).toBeVisible();
+
+    // Unknown tab renders the NotFound fallback, not a blank shell
+    await page.goto('http://127.0.0.1:4173/admin/#does-not-exist');
+    await expect(page.getByText('Page not found')).toBeVisible();
   });
 });

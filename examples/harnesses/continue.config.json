@@ -1,0 +1,15 @@
+{
+  // continue.config.json — merge into ~/.continue/config.json
+  // Wire surface: OpenAI Chat Completions (apiBase must end in /v1).
+  // Continue only uses Responses against the official api.openai.com URL,
+  // so a custom apiBase always routes to /chat/completions.
+  "models": [
+    {
+      "title": "DeepSeek V4 Flash (freebuff-proxy)",
+      "provider": "openai",
+      "model": "deepseek/deepseek-v4-flash",
+      "apiBase": "http://127.0.0.1:3457/v1",
+      "apiKey": "YOUR_KEY"
+    }
+  ]
+}

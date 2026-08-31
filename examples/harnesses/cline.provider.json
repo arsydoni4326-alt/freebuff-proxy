@@ -1,0 +1,9 @@
+{
+  // cline.provider.json — reference shape for Cline provider settings
+  // (VS Code > Cline Settings; the UI for API Provider > "OpenAI Compatible"
+  // writes equivalent fields). Wire surface: OpenAI Chat Completions (AI SDK v7).
+  "apiProvider": "openai-compatible",
+  "openAiBaseUrl": "http://127.0.0.1:3457/v1",
+  "openAiApiKey": "YOUR_KEY",
+  "openAiModelId": "deepseek/deepseek-v4-flash"
+}

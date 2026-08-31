@@ -6,14 +6,18 @@ ARG APP_COMMIT=unknown
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+ARG VERSION=dev
 RUN set -eux;   \
     export BUILD_DATE="$(date +%Y-%m-%d)";   \
     CGO_ENABLED=1 \
         GOOS=linux \
         go build \
             -buildvcs=false \
-            -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.Commit=${APP_COMMIT}' -X 'main.BuildDate=${BUILD_DATE}'" \
-            -o /out/freebuff-proxy ./cmd/freebuff-proxy ;  \
+            -trimpath \
+            -tags dashboard \
+            -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.Commit=${APP_COMMIT}' -X 'main.BuildDate=${BUILD_DATE}' -X 'main.Version=${VERSION}'" \
+            -tags dashboard \
+            -o /out/freebuff-proxy ./backend/cmd/freebuff-proxy ;  \
     chmod +x /out/freebuff-proxy
 
 FROM debian:trixie-slim

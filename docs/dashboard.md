@@ -12,7 +12,7 @@ Open `http://127.0.0.1:3457/admin` (or your configured `LISTEN_ADDR`). You land 
 
 | Setting | Behavior |
 |---|---|
-| `ADMIN_TOKEN` set | **Password required**: `ADMIN_TOKEN` is both the bearer token for `/admin/reload` and the login password. Enter it on the login page; a signed `HttpOnly` + `SameSite=Strict` cookie (`fb_admin`) unlocks the dashboard for 24h (`Secure` is set automatically when connecting over HTTPS). Failed logins are rate-limited per IP (5 failed attempts $\to$ 1-minute lockout). |
+| `ADMIN_TOKEN` set | **Password required**: `ADMIN_TOKEN` is both the bearer token for `/admin/reload` and the login password. Enter it on the login page; a signed `HttpOnly` + `SameSite=Strict` cookie (`fb_admin`) unlocks the dashboard for 24h (`Secure` is set automatically when connecting over HTTPS, or when a TLS-terminating reverse proxy on the same machine or private network sets `X-Forwarded-Proto: https` — a spoofed header from a public address is ignored; the password is capped at 256 characters). Failed logins are rate-limited per IP (5 failed attempts $\to$ 1-minute lockout) plus a process-wide budget (20 failures per minute, then a global lockout that doubles with each breach, capped at 5 minutes). |
 | `ADMIN_TOKEN` unset | **Open mode (local-only safe default)**: When running locally without `ADMIN_TOKEN`, the dashboard is open. When accessed from a non-loopback IP without `ADMIN_TOKEN`, sensitive routes (`/admin/config`, `/admin/logs`) return `403 Forbidden` to prevent remote secret disclosure. |
 
 The session cookie is stateless (HMAC-signed expiry with a per-process random key): restarting the proxy automatically signs out active sessions.
@@ -61,6 +61,7 @@ The dashboard provides 6 focused operational sections:
   - **Validate Button**: Checks syntax, port availability, and token formats before applying.
   - **Save & Reload**: Writes `.env` atomically via temp-file rename (mode `0600`) and triggers hot reload (`POST /admin/reload`) without dropping active connections.
   - **Rollback**: Automatically reverts to the previous valid configuration if validation fails.
+  - **Restart-only keys**: A save reports which keys only take effect after a restart (`TLS_FINGERPRINT`, `TRANSIENT_RETRIES`, `UPSTREAM_BASE_URL`, and the other construction-time knobs) instead of implying a fully live update.
 - **Effective Configuration Table**: Read-only breakdown of active in-memory settings with:
   - Automatic secret redaction (`AUTH_TOKENS`, `ADMIN_TOKEN`, `API_KEYS` masked).
   - **Search/Filter**: Filter config keys by name or value.

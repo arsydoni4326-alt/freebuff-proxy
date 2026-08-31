@@ -40,7 +40,7 @@ export function dismissSessionExpired() {
 
 /**
  * Reload-loop guard for any remaining automatic (non-user-initiated)
- * navigation to /admin/login: at most ONE attempt per 30s window; afterwards
+ * navigation to the login page: at most ONE attempt per 30s window; afterwards
  * callers must fall back to the banner instead of navigating. Returns true
  * exactly when the caller may navigate (and records that attempt).
  */
