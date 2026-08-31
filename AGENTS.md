@@ -55,7 +55,8 @@ Official reference specifications and SDKs reside in `reference/` (gitignored).
 
 - `backend/cmd/freebuff-proxy` — Entrypoint, CLI flag parsing (`-doctor`, `-test-token`, `-version`, `-config`, `-setup`).
 - `backend/internal/config` — Typed configuration loader, `.env` + JSON precedence, hot-reloading via `atomic.Pointer`.
-- `backend/internal/registry` — Model catalog synced from upstream; alias resolution and the `ServedModels` gate.
+- `backend/internal/registry` — Upstream model→agent mapping (fallback agents + per-model roots, synced from upstream) and alias resolution (`ResolveModel`); per-model facts (served/paused/premium/efforts) live in `modelcat`.
+- `backend/internal/modelcat` — Single source of truth for per-model facts (served/paused/premium/caps/context windows/efforts); consumers derive; parity test `catalog_test.go` pins the upstream snapshot.
 - `backend/internal/convert` — Pure conversion logic:
   - `convert.go` — Request normalization, parameter whitelisting, role rewriting (`developer` → `system`), legacy function normalization.
   - `accumulator.go` — Non-streaming response assembler, XML tool call extractor, `Finish()` JSON builder.

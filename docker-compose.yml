@@ -13,12 +13,18 @@ services:
       # the host: the nearest tag, or the short SHA past it.
       args:
         VERSION: ${VERSION:-dev}
-    image: freebuff-proxy:latest
+    # Pin/retain a specific build: VERSION=v1.7.0 docker compose up -d --build
+    # produces freebuff-proxy:v1.7.0 and rolls back by re-running an older tag.
+    image: freebuff-proxy:${VERSION:-latest}
     container_name: freebuff-proxy
     env_file: .env
     environment:
       - LISTEN_ADDR=:3457
     ports:
+      # ⚠️ 0.0.0.0 default: /healthz and /metrics are ALWAYS unauthenticated by
+      # design (monitoring). Exposing this port beyond localhost publishes them
+      # publicly. Bind to loopback on the host instead if that is not wanted:
+      #   - "127.0.0.1:3457:3457"
       - "3457:3457"
     restart: unless-stopped
     # Docker's default 10s stop timeout races the app's 10s drain while

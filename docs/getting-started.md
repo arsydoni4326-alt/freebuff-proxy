@@ -146,6 +146,10 @@ git fetch --tags 2>/dev/null || true
 VERSION=$(git describe --tags 2>/dev/null || echo dev) docker compose up -d --build
 ```
 
+> **State is ephemeral in Docker:** without a mounted volume, a container recreate
+> (`docker compose up -d --build`) discards the on-disk session state file
+> (`SESSION_PERSIST`) — see the Docker note in `.env.example`.
+
 ---
 
 ## Step 2: Verify It Works
@@ -175,6 +179,10 @@ curl http://localhost:3457/v1/models
 
 `/healthz` also reports each token's live per-model quota (`quota` map) when the last session admission carried it.
 
+`/healthz` is a **liveness + pool-snapshot** check: it does **not** probe upstream reachability, so the container stays healthy during an upstream outage.
+
+**Exposure:** `/healthz` and `/metrics` are always unauthenticated by design (for monitoring scrapers). If the port leaves localhost, bind it to loopback (docker compose: `- "127.0.0.1:3457:3457"`) or firewall it.
+
 ## Step 3: Connect Your Favorite AI Client
 
 Point your AI tool to:
@@ -187,6 +195,24 @@ Fastest path: run `./freebuff-proxy -setup` to write the client config automatic
 See the [Client Integration Guide](client-integration.md) for copy-paste config for OpenCode, pi, 9router, LiteLLM, and more.
 
 ---
+
+## Upgrading & Rollback
+
+Upgrade a compose deployment by re-running the build with a `VERSION` pin —
+the image tag follows the version, so older images stay on disk for rollback:
+
+```bash
+git fetch --tags
+VERSION=$(git describe --tags) docker compose up -d --build
+```
+
+Roll back to the previous release:
+
+```bash
+git fetch --tags
+git checkout <previous-tag>
+docker compose up -d --build
+```
 
 ## Troubleshooting
 
