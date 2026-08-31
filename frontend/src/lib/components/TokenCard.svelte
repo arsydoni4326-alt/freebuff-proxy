@@ -14,7 +14,9 @@
   import StatusBadge from './StatusBadge.svelte';
   import CopyButton from './CopyButton.svelte';
   import { formatLocalDate } from '../utils/format.js';
+  import { fallbackModelOptions, fetchModelOptions } from '../modelOptions.js';
   import { tr } from '../i18n.js';
+  import { onMount } from 'svelte';
 
   let {
     token,
@@ -29,6 +31,11 @@
     onSpawn,
     onRefresh,
   } = $props();
+
+  let modelOptions = $state(fallbackModelOptions);
+  onMount(() => {
+    fetchModelOptions().then((rows) => (modelOptions = rows));
+  });
 
   function banBadge(token) {
     if (token.ban_type === 'hard') {
@@ -176,12 +183,9 @@
               bind:value={spawnModel}
               class="fp-input !text-xs !py-1 !px-2 !h-7 !w-44 !inline-block"
             >
-              <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (shared premium pool)</option>
-              <option value="upstage/solar-pro4">upstage/solar-pro4 (shared premium pool)</option>
-              <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (unmetered)</option>
-              <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash (unmetered)</option>
-              <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unmetered)</option>
-              <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral +1/day)</option>
+              {#each modelOptions as m (m.id)}
+                <option value={m.id}>{m.label}</option>
+              {/each}
             </select>
             <Button
               variant="secondary"
