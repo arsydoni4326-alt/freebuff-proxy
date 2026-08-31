@@ -20,19 +20,33 @@ import (
 
 // --- Open Dashboard Auth Optional -------------------------------------------
 
-// TestDashboardAuthOptional verifies the dashboard is clean and accessible when ADMIN_TOKEN is unset.
+// TestDashboardAuthOptional verifies open-mode dashboard access when
+// ADMIN_TOKEN is unset: loopback clients are served, remote clients are
+// refused with 403 by the open-mode gate in dashboardAuth (setting
+// ADMIN_TOKEN restores remote access).
 func TestDashboardAuthOptional(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	srv := newServer(t, mock, nil)
-	for _, host := range []string{"192.168.1.50:3457", "127.0.0.1:3457", "localhost:3457"} {
+	for _, host := range []string{"127.0.0.1:3457", "localhost:3457"} {
 		req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+		req.RemoteAddr = "127.0.0.1:5555"
 		req.Host = host
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Errorf("host %s: status = %d, want 200", host, rec.Code)
+			t.Errorf("loopback host %s: status = %d, want 200", host, rec.Code)
 		}
+	}
+	// Open mode is loopback-only: a remote peer is refused, since the
+	// dashboard read tier must not be anonymously readable from off-box.
+	req := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.Host = "192.168.1.50:3457"
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("remote host 192.168.1.50:3457: status = %d, want 403", rec.Code)
 	}
 }
 
@@ -60,6 +74,9 @@ func TestPlaygroundPageRenders(t *testing.T) {
 	defer mock.Close()
 	srv := newServer(t, mock, nil)
 	req := httptest.NewRequest(http.MethodGet, "/admin/playground", nil)
+	// Loopback peer + host: the open-mode dashboard gate requires both.
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Host = "127.0.0.1:3457"
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -233,6 +250,9 @@ func TestUpdateBadgeRendered(t *testing.T) {
 		s.updates = checker
 	})
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/version", nil)
+	// Loopback peer: the open-mode dashboard gate requires a loopback
+	// RemoteAddr in addition to the loopback Host.
+	req.RemoteAddr = "127.0.0.1:12345"
 	req.Host = "127.0.0.1:3457"
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)

@@ -260,10 +260,7 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldCfg := s.cfg.Load()
-	s.cfg.Store(&newCfg)
-	s.reg.SetConfig(&newCfg)
-	s.pool.SetConfig(&newCfg)
-	s.rateLimiter.SetRate(newCfg.RateLimitPerIP, newCfg.RateLimitBurst)
+	s.applyReloadedConfig(&newCfg)
 	s.logger.Info("dashboard config saved and reloaded",
 		"remote", remoteHost(r), "changed_keys", changedConfigKeys(oldCfg, &newCfg),
 		"auth_tokens", len(newCfg.AuthTokens), "safe_mode", newCfg.SafeMode)
@@ -315,6 +312,11 @@ var restartOnlyConfigKeys = []string{
 	"SESSION_STATE_FILE",
 	"ADOPT_CLI_SESSION",
 	"WEBHOOK_URL",
+	"ROTATION_INTERVAL",
+	"RUN_FINISH_QUEUE_SIZE",
+	"RUN_FINISH_INLINE_TIMEOUT",
+	"RUNS_DRAIN_QUEUE_CAP",
+	"RUNS_DRAIN_TTL",
 }
 
 // changedRestartOnlyKeys returns the subset of restartOnlyConfigKeys whose
