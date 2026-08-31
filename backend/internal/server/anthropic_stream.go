@@ -17,6 +17,7 @@ import (
 
 	"freebuff-proxy/backend/internal/convert"
 	"freebuff-proxy/backend/internal/phasetiming"
+	"freebuff-proxy/backend/internal/reasoningcache"
 )
 
 // --- streaming translation ---
@@ -466,9 +467,34 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 		thinking := strings.Join(st.thinkingParts, "")
 		if thinking != "" {
 			content := strings.Join(st.textParts, "")
-			s.reasoningCache.Put(st.toolIDs, content, "", thinking, "", st.model)
+			s.reasoningCache.PutCanonical(st.toolIDs, content, canonicalAnthropicToolKey(st), thinking, "", st.model)
 		}
 	}
+}
+
+// canonicalAnthropicToolKey reduces the stream state's tool calls to the
+// canonical identity key in upstream index order — the order the relayed
+// tool_use blocks (and therefore the client's echo) follow, which matches
+// the st.toolIDs arrival order for every well-formed upstream stream. The
+// id is the SANITIZED one: that is the identity the client saw on the wire
+// (content_block_start carries sanitizeToolID(ts.id)) and the only one it
+// can echo back. Calls whose id never arrived are skipped, matching the
+// toolIDs list that is put alongside the key.
+func canonicalAnthropicToolKey(st *anthropicStreamState) string {
+	indexes := make([]int, 0, len(st.toolCalls))
+	for i := range st.toolCalls {
+		indexes = append(indexes, i)
+	}
+	sort.Ints(indexes)
+	triples := make([][3]string, 0, len(indexes))
+	for _, i := range indexes {
+		ts := st.toolCalls[i]
+		if ts == nil || ts.id == "" {
+			continue
+		}
+		triples = append(triples, [3]string{sanitizeToolID(ts.id), ts.name, ts.args.String()})
+	}
+	return reasoningcache.CanonicalToolKey(triples)
 }
 
 // ensureThinking opens the thinking content block on first reasoning delta.

@@ -2,13 +2,16 @@ package dashboard
 
 import (
 	"fmt"
-	"freebuff-proxy/backend/internal/pool"
-	"freebuff-proxy/backend/internal/stealth"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/stealth"
 )
 
 // --- overview ---
@@ -150,24 +153,24 @@ type bridgeQuotaRow struct {
 
 // bridgeTokenCard is a dashboard-ready view of one bridge entry (#187).
 type bridgeTokenCard struct {
-	Key             string           `json:"key"`    // masked hash prefix
-	Status          string           `json:"status"` // active|cooldown|locked|dead
-	Model           string           `json:"model"`
-	ActiveRuns      int              `json:"active_runs"`
-	Requests        int              `json:"requests"`
-	Locked          bool             `json:"locked"`
-	CooldownUntil   string           `json:"cooldown_until"`
-	SessionActive   bool             `json:"session_active"`
-	SpendDay        float64          `json:"spend_day"`
-	SpendPct        int              `json:"spend_pct"`
-	SpendLimit      int64            `json:"spend_limit"`
-	BanType         string           `json:"ban_type,omitempty"`
-	BannedUntil     string           `json:"banned_until,omitempty"`
-	PremiumQuota  	*pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
-	Quota           []bridgeQuotaRow `json:"quota,omitempty"`
-	RateLimitHits   int64            `json:"rate_limit_hits"`
-	RateLimitMisses int64            `json:"rate_limit_misses"`
-	RateLimitRate   float64          `json:"rate_limit_rate"`
+	Key             string                     `json:"key"`    // masked hash prefix
+	Status          string                     `json:"status"` // active|cooldown|locked|dead
+	Model           string                     `json:"model"`
+	ActiveRuns      int                        `json:"active_runs"`
+	Requests        int                        `json:"requests"`
+	Locked          bool                       `json:"locked"`
+	CooldownUntil   string                     `json:"cooldown_until"`
+	SessionActive   bool                       `json:"session_active"`
+	SpendDay        float64                    `json:"spend_day"`
+	SpendPct        int                        `json:"spend_pct"`
+	SpendLimit      int64                      `json:"spend_limit"`
+	BanType         string                     `json:"ban_type,omitempty"`
+	BannedUntil     string                     `json:"banned_until,omitempty"`
+	PremiumQuota    *pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
+	Quota           []bridgeQuotaRow           `json:"quota,omitempty"`
+	RateLimitHits   int64                      `json:"rate_limit_hits"`
+	RateLimitMisses int64                      `json:"rate_limit_misses"`
+	RateLimitRate   float64                    `json:"rate_limit_rate"`
 }
 
 func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot, spendLimit int64) bridgeTokenCard {
@@ -210,7 +213,7 @@ func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot, spendLimit int64) bri
 		SpendLimit:      spendLimit,
 		BanType:         snap.BanType,
 		BannedUntil:     bannedUntil,
-		PremiumQuota:  snap.PremiumQuota,
+		PremiumQuota:    snap.PremiumQuota,
 		Quota:           quota,
 		RateLimitHits:   snap.RateLimitHits,
 		RateLimitMisses: snap.RateLimitMisses,
@@ -305,19 +308,51 @@ const defaultEnvTemplate = `# freebuff-proxy configuration (.env)
 #RISK_THRESHOLD_HIGH=40
 `
 
-func (d *Dashboard) overviewData() overviewData {
+// baseURLForRequest computes the dynamic API base URL (/v1) for dashboard views.
+// It prioritizes the incoming request's Host / X-Forwarded headers so that operators
+// accessing the dashboard via VPS IP, domain, VPN, or reverse proxy see the exact
+// URL their AI coding clients should dial. Falls back to LISTEN_ADDR when r is nil.
+func baseURLForRequest(cfg *config.Config, r *http.Request) string {
+	scheme := "http"
+	host := ""
+	if r != nil {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		} else if r.TLS != nil {
+			scheme = "https"
+		}
+		if fHost := r.Header.Get("X-Forwarded-Host"); fHost != "" {
+			host = fHost
+		} else if r.Host != "" {
+			host = r.Host
+		}
+	}
+	if host == "" {
+		host = "127.0.0.1:3457"
+		if cfg != nil && cfg.ListenAddr != "" {
+			h, p, err := net.SplitHostPort(cfg.ListenAddr)
+			if err == nil {
+				if h == "" || h == "0.0.0.0" || h == "::" {
+					h = "127.0.0.1"
+				}
+				host = net.JoinHostPort(h, p)
+			} else {
+				host = cfg.ListenAddr
+			}
+		}
+	}
+	return scheme + "://" + host + "/v1"
+}
+
+func (d *Dashboard) overviewData(r *http.Request) overviewData {
 	cfg := d.cfg()
 	ps := d.pool.PoolSnapshot()
 	mode := cfg.EffectiveMode()
 	// Phase 3.5: read the shared passive ban-risk engine verdict for the
 	// dashboard overview.
 	rs := stealth.DefaultRiskEngine.Score()
-	host := "localhost"
-	if h, _, err := net.SplitHostPort(cfg.ListenAddr); err == nil && h != "" && h != "0.0.0.0" && h != "::" {
-		host = h
-	}
 	od := overviewData{
-		BaseURL:              "http://" + host + "/v1",
+		BaseURL:              baseURLForRequest(cfg, r),
 		Mode:                 mode,
 		InBridge:             mode == "bridge",
 		ShowBridge:           mode == "bridge" || mode == "hybrid",

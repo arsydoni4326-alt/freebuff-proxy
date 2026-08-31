@@ -1,5 +1,26 @@
 # Session: SQLite Token Database + UI
 
+## Latest Fix: Dashboard-Tagged Docker Build Repair
+
+- Repaired merge artifacts in `backend/internal/dashboard/dashboard_data.go` that stopped
+  the dashboard-tagged Docker build: the `pool` package had been imported twice and the
+  former `overviewData` local `host` calculation was unused after `BaseURL` moved to
+  `baseURLForRequest(cfg, r)`.
+- Preserved the incoming-request-aware base URL behavior; only the duplicate import and
+  obsolete local calculation were removed. `gofmt` also normalized adjacent field alignment.
+- Validation passed: `env -u AUTH_TOKENS -u ADMIN_TOKEN go test -count=1 -tags dashboard
+  ./backend/internal/dashboard/...`, `env -u AUTH_TOKENS -u ADMIN_TOKEN go vet -tags dashboard
+  ./backend/internal/dashboard/...`, and the Docker-equivalent Linux build with `CGO_ENABLED=1`,
+  `GOOS=linux`, `-tags dashboard`, and production linker flags.
+- Full `env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/...` remains blocked before
+  registry tests run because the unmodified `backend/internal/registry/registry_test.go:1032`
+  leaves an `if` block unclosed before `TestPausedModelPolicy`. The pre-existing server-suite
+  failures remain 404 access-log suppression, `/v1` rate-limit coverage/envelopes, and
+  concurrent-reload EOF handling. Repository-wide `git diff --check` also reports trailing
+  whitespace in the already-staged generated asset
+  `backend/internal/dashboard/dist/assets/index-CbIpiumU.js`; the repaired Go source passes
+  scoped formatting and whitespace checks.
+
 ## Latest Fix: Tokens Page Runtime Error
 
 - Removed the stale duplicate Client API Keys card from `frontend/src/lib/pages/Tokens.svelte`.
