@@ -144,24 +144,6 @@ func TestApplyProfileHeaders(t *testing.T) {
 	})
 }
 
-func TestSanitizeAndApply(t *testing.T) {
-	h := http.Header{}
-	h.Set("X-Forwarded-For", "1.2.3.4")
-	h.Set("Authorization", "Bearer tok")
-
-	SanitizeAndApply(h, ProfileChrome120)
-
-	if v := h.Get("X-Forwarded-For"); v != "" {
-		t.Errorf("proxy header not removed")
-	}
-	if v := h.Get("Authorization"); v != "Bearer tok" {
-		t.Errorf("Authorization clobbered: %q", v)
-	}
-	if v := h.Get("User-Agent"); v != ProfileChrome120.UserAgent {
-		t.Errorf("User-Agent = %q", v)
-	}
-}
-
 func TestDialerTLS(t *testing.T) {
 	// Generate a self-signed cert for the TLS server.
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

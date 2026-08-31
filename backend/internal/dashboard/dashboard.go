@@ -14,6 +14,7 @@ import (
 
 	"freebuff-proxy/backend/internal/config"
 	"freebuff-proxy/backend/internal/logring"
+	"freebuff-proxy/backend/internal/modelcat"
 	"freebuff-proxy/backend/internal/pool"
 	"freebuff-proxy/backend/internal/registry"
 	"freebuff-proxy/backend/internal/updatecheck"
@@ -74,19 +75,21 @@ func New(cfg func() *config.Config, p *pool.Pool, reg *registry.Registry, logger
 // releaseURL is where the update badge points (the releases page).
 const releaseURL = "https://github.com/trefeon/freebuff-proxy/releases"
 
-// pickDefaultModel selects mimo/mimo-v2.5 when present, or the first available model.
+// pickDefaultModel selects the catalog fallback (the mimo row) when present, or the first available model.
 func pickDefaultModel(models []string) string {
 	if len(models) == 0 {
 		return ""
 	}
-	const preferred = "mimo/mimo-v2.5"
+	preferred := modelcat.FallbackModelID
 	for _, m := range models {
 		if m == preferred {
 			return preferred
 		}
 	}
+	// Tolerate variants of the fallback's short name (mimo-v2.5).
+	fallbackShort := preferred[strings.LastIndex(preferred, "/")+1:]
 	for _, m := range models {
-		if strings.Contains(m, "mimo-v2.5") {
+		if strings.Contains(m, fallbackShort) {
 			return m
 		}
 	}

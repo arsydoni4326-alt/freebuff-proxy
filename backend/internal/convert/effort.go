@@ -186,17 +186,16 @@ func isDeepSeekModel(model string) bool {
 // isMediumlessLadderModel reports whether the model's upstream effort ladder
 // omits "medium" (DeepSeek V4, Ox Alpha, GLM 5.3 Flash): all rewrite a
 // requested "medium" to "high" (#112) instead of the generic down-clamp,
-// which would pick "low".
+// which would pick "low". The ladder facts live in modelcat.
 func isMediumlessLadderModel(model string) bool {
-	m := strings.ToLower(model)
-	return isDeepSeekModel(m) || strings.HasSuffix(m, "ox-alpha") || strings.HasSuffix(m, "glm-5.3-flash")
+	return modelcat.IsMediumlessLadderModel(model)
 }
 
 // isStrictReasoningModel reports whether the model requires an explicit reasoning_content
 // field on assistant messages with tool calls (e.g. MiMo, DeepSeek-V4, Kimi).
+// The matching rules live in modelcat.
 func isStrictReasoningModel(model string) bool {
-	m := strings.ToLower(model)
-	return strings.Contains(m, "mimo") || strings.Contains(m, "deepseek-v4") || strings.Contains(m, "kimi")
+	return modelcat.IsStrictReasoningModel(model)
 }
 
 var (

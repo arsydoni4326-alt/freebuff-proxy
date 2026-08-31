@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"freebuff-proxy/backend/internal/modelcat"
 	"freebuff-proxy/backend/internal/pool"
 	"sort"
 	"time"
@@ -114,7 +115,7 @@ func (d *Dashboard) tokensData() tokensData {
 		// like GLM/Luna/Pro. Synthesize a dashboard row for z-ai/glm-5.2 so
 		// the promo is visible even though no per-model quota was admitted;
 		// a real rateLimitsByModel entry for the model wins over the promo.
-		if _, exists := t.QuotaByModel["z-ai/glm-5.2"]; !exists && t.GlmPromo != "" {
+		if _, exists := t.QuotaByModel[modelcat.Glm52ModelID]; !exists && t.GlmPromo != "" {
 			var gp struct {
 				DailySessions float64 `json:"dailySessions"`
 				EndsAt        string  `json:"endsAt"`
@@ -134,7 +135,7 @@ func (d *Dashboard) tokensData() tokensData {
 					}
 				}
 				glmRow := quotaRow{
-					Model:          "z-ai/glm-5.2",
+					Model:          modelcat.Glm52ModelID,
 					Limit:          formatQuota(gp.DailySessions),
 					Recent:         "0",
 					Remaining:      gp.DailySessions,

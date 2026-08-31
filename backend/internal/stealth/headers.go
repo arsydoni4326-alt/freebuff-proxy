@@ -84,9 +84,3 @@ func ApplyProfileHeaders(h http.Header, p *Profile) {
 	h.Set("Sec-Fetch-Mode", "cors")
 	h.Set("Sec-Fetch-Dest", "empty")
 }
-
-// SanitizeAndApply removes proxy headers and applies browser profile headers.
-func SanitizeAndApply(h http.Header, p *Profile) {
-	SanitizeHeaders(h)
-	ApplyProfileHeaders(h, p)
-}

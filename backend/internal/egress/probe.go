@@ -9,15 +9,12 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
-
-	"freebuff-proxy/backend/internal/stealth"
 )
 
 // ProbeURL is the Cloudflare trace endpoint that reports the caller's
@@ -110,53 +107,6 @@ func DirectDialer(timeout time.Duration) func(ctx context.Context, network, addr
 type Path struct {
 	Key    string
 	Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
-}
-
-// RunLoop probes all paths once at startup, then every interval until ctx
-// is canceled, storing each result into cache. Probe failures are logged
-// and cached with Err set (fail-open); the loop keeps running.
-func RunLoop(ctx context.Context, logger *slog.Logger, cache *Cache, paths []Path, timeout, interval time.Duration) {
-	if cache == nil {
-		panic("egress: RunLoop requires a non-nil cache")
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-	if interval <= 0 {
-		// time.NewTicker panics on a non-positive interval; fall back to the
-		// default so a misconfigured caller gets periodic probing instead of
-		// a crash. (Audit B7.)
-		interval = DefaultTTL
-	}
-	run := func() {
-		for key, r := range probeAll(ctx, paths, timeout) {
-			cache.Set(key, r)
-			if r.Err != nil {
-				logger.Warn("egress probe failed", "path", key, "err", r.Err)
-			} else {
-				logger.Debug("egress probe", "path", key, "ip", r.IP, "country", r.Country)
-				// Passive ban-risk feed (#64): every successful probe
-				// contributes an egress-geo sample to the shared risk
-				// engine. Read-only; the engine only warns.
-				stealth.DefaultRiskEngine.Observe(stealth.RiskSample{
-					At:       time.Now(),
-					EgressIP: r.IP,
-					Country:  r.Country,
-				})
-			}
-		}
-	}
-	run()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			run()
-		}
-	}
 }
 
 // probeAll probes every path concurrently and returns one Result per key.
