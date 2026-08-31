@@ -69,7 +69,16 @@
 
   // Snippet templates are the real strings from the previous Setup page,
   // interpolated with the live payload and the chosen client key.
-  const baseURL = $derived(data?.base_url ?? '');
+  // Base URL dynamically reflects the current browser origin (VPS IP, domain, VPN reverse proxy).
+  const baseURL = $derived.by(() => {
+    if (data?.base_url) {
+      return data.base_url;
+    }
+    if (typeof window !== 'undefined' && window.location.host) {
+      return `${window.location.protocol}//${window.location.host}/v1`;
+    }
+    return 'http://127.0.0.1:3457/v1';
+  });
   const model = $derived(data?.model ?? '');
   const snippets = $derived([
     {
@@ -188,9 +197,9 @@
       <Card title={$tr('Base URL')} description={$tr('OpenAI-compatible endpoint — same for every tool.')}>
         <div class="flex items-center gap-2">
           <div class="fp-inset flex-1 px-3 py-2 overflow-x-auto">
-            <code class="text-xs">{data.base_url}</code>
+            <code class="text-xs">{baseURL}</code>
           </div>
-          <CopyButton text={data.base_url} label="Copy URL" />
+          <CopyButton text={baseURL} label="Copy URL" />
         </div>
       </Card>
 

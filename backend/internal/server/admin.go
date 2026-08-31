@@ -182,7 +182,17 @@ func (s *Server) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.pruneLoginFlows()
-	code, err := s.authClient.StartCLILogin(r.Context())
+	// The dashboard device login defaults to isolated random fingerprints
+	// (mirroring gen-freebuff-token.sh: "enhanced-" + base64url(random-32-bytes))
+	// so multiple accounts added to a pool are not correlated by a single machine
+	// identifier. Passing ?isolated=false requests the stable machine fingerprint.
+	var code *upstream.CLILoginCode
+	var err error
+	if r.URL.Query().Get("isolated") == "false" {
+		code, err = s.authClient.StartCLILogin(r.Context())
+	} else {
+		code, err = s.authClient.StartCLILoginIsolated(r.Context())
+	}
 	if err != nil {
 		s.logger.Warn("login wizard: start failed", "err", err)
 		s.writeJSONError(w, http.StatusBadGateway, "failed to start browser login: "+err.Error(), "server_error", "login_start_failed", 0)

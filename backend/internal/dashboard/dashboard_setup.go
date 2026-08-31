@@ -1,7 +1,7 @@
 package dashboard
 
 import (
-	"net"
+	"net/http"
 )
 
 // --- client setup ---
@@ -18,15 +18,11 @@ type setupData struct {
 	HasTokens    bool     `json:"has_tokens"`
 }
 
-func (d *Dashboard) setupData() setupData {
+func (d *Dashboard) setupData(r *http.Request) setupData {
 	cfg := d.cfg()
-	host := "localhost"
-	if h, _, err := net.SplitHostPort(cfg.ListenAddr); err == nil && h != "" && h != "0.0.0.0" && h != "::" {
-		host = h
-	}
 	mode := cfg.EffectiveMode()
 	sd := setupData{
-		BaseURL:      "http://" + host + "/v1",
+		BaseURL:      baseURLForRequest(cfg, r),
 		Mode:         mode,
 		Bridge:       mode == "bridge",
 		BridgeTokens: d.pool.BridgeCount(),

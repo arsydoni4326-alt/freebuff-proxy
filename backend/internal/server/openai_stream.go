@@ -13,11 +13,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"freebuff-proxy/backend/internal/convert"
 	"freebuff-proxy/backend/internal/phasetiming"
+	"freebuff-proxy/backend/internal/reasoningcache"
 )
 
 // relayStream forwards sanitized upstream SSE lines to the client with
@@ -67,6 +69,12 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	// field when no lease drove the relay (direct unit-test calls).
 	streamModel := stats.servedModel
 	toolIDsMap := make(map[string]bool)
+	// streamToolCalls accumulates the per-index tool-call fragments observed
+	// in the upstream chunk stream (P2-5 canonical tool-calls binding): the
+	// first fragment carries the id and function name, later fragments
+	// append argument bytes. Index-ordered at finalize, so the canonical key
+	// matches the tool_calls array the client will reconstruct.
+	streamToolCalls := make(map[int]*streamToolAcc)
 	var toolIDs []string
 	endTurnCallIndexes := make(map[int]bool)
 	seenRealToolCalls := false
@@ -202,7 +210,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 					_, _ = w.Write(convert.DONE)
 					flusher.Flush()
 				}
-				s.ingestStreamReasoning(streamModel, reasoningParts, contentParts, toolIDs)
+				s.ingestStreamReasoning(streamModel, reasoningParts, contentParts, toolIDs, streamToolCalls)
 				return
 			}
 			if lc.done {
@@ -210,7 +218,7 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 				emitXMLFlush()
 				_, _ = w.Write(convert.DONE)
 				flusher.Flush()
-				s.ingestStreamReasoning(streamModel, reasoningParts, contentParts, toolIDs)
+				s.ingestStreamReasoning(streamModel, reasoningParts, contentParts, toolIDs, streamToolCalls)
 				return
 			}
 			clean, drop := convert.SanitizeChunk(lc.line)
@@ -359,7 +367,12 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 							Reasoning        *string `json:"reasoning"`
 							Thinking         *string `json:"thinking"`
 							ToolCalls        []struct {
-								ID string `json:"id"`
+								Index    int    `json:"index"`
+								ID       string `json:"id"`
+								Function struct {
+									Name      string `json:"name"`
+									Arguments string `json:"arguments"`
+								} `json:"function"`
 							} `json:"tool_calls"`
 						} `json:"delta"`
 					} `json:"choices"`
@@ -388,6 +401,18 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 								toolIDsMap[tc.ID] = true
 								toolIDs = append(toolIDs, tc.ID)
 							}
+							acc := streamToolCalls[tc.Index]
+							if acc == nil {
+								acc = &streamToolAcc{}
+								streamToolCalls[tc.Index] = acc
+							}
+							if tc.ID != "" && acc.id == "" {
+								acc.id = tc.ID
+							}
+							if acc.name == "" {
+								acc.name = tc.Function.Name
+							}
+							acc.args.WriteString(tc.Function.Arguments)
 						}
 					}
 				}
@@ -415,7 +440,16 @@ func (s *Server) relayStream(ctx context.Context, w http.ResponseWriter, r io.Re
 	}
 }
 
-func (s *Server) ingestStreamReasoning(model string, reasoningParts, contentParts, toolIDs []string) {
+// streamToolAcc accumulates one upstream tool call's identity across its
+// streamed fragments: the first fragment carries the id and function name,
+// later fragments append argument bytes.
+type streamToolAcc struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
+func (s *Server) ingestStreamReasoning(model string, reasoningParts, contentParts, toolIDs []string, streamToolCalls map[int]*streamToolAcc) {
 	if s.reasoningCache == nil || len(reasoningParts) == 0 {
 		return
 	}
@@ -424,7 +458,29 @@ func (s *Server) ingestStreamReasoning(model string, reasoningParts, contentPart
 		return
 	}
 	cStr := strings.Join(contentParts, "")
-	s.reasoningCache.Put(toolIDs, cStr, "", rc, "", model)
+	s.reasoningCache.PutCanonical(toolIDs, cStr, canonicalStreamToolKey(streamToolCalls), rc, "", model)
+}
+
+// canonicalStreamToolKey reduces the per-index accumulated tool calls to
+// the canonical identity key, in upstream index order — the order the
+// relayed fragments reconstruct the client's tool_calls array from. Only
+// calls whose id actually arrived are included, matching the toolIDs list
+// that is put alongside the key.
+func canonicalStreamToolKey(calls map[int]*streamToolAcc) string {
+	indexes := make([]int, 0, len(calls))
+	for i := range calls {
+		indexes = append(indexes, i)
+	}
+	sort.Ints(indexes)
+	triples := make([][3]string, 0, len(indexes))
+	for _, i := range indexes {
+		acc := calls[i]
+		if acc.id == "" {
+			continue
+		}
+		triples = append(triples, [3]string{acc.id, acc.name, acc.args.String()})
+	}
+	return reasoningcache.CanonicalToolKey(triples)
 }
 
 // relayJSON drains the upstream SSE stream through the accumulator and

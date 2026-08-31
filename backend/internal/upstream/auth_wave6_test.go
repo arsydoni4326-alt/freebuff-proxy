@@ -384,6 +384,49 @@ func TestGenerateFingerprintIDStableShape(t *testing.T) {
 	}
 }
 
+// TestGenerateIsolatedFingerprintID verifies the isolated fingerprint has the
+// official enhanced- shape (43-char base64url payload) and produces distinct
+// random values across repeated calls (matching gen-freebuff-token.sh).
+func TestGenerateIsolatedFingerprintID(t *testing.T) {
+	re := regexp.MustCompile(`^enhanced-[A-Za-z0-9_-]{43}$`)
+	seen := make(map[string]bool)
+	for range 10 {
+		fp := GenerateIsolatedFingerprintID()
+		if !re.MatchString(fp) {
+			t.Fatalf("isolated fingerprint = %q, want ^enhanced-[A-Za-z0-9_-]{43}$", fp)
+		}
+		if seen[fp] {
+			t.Fatalf("duplicate isolated fingerprint generated: %q", fp)
+		}
+		seen[fp] = true
+	}
+}
+
+// TestLoginCarriesIsolatedFingerprint verifies StartCLILoginIsolated sends a
+// fresh distinct fingerprint per login.
+func TestLoginCarriesIsolatedFingerprint(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	client, err := NewForAuth(testConfig(mock.URL(), nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.StartCLILoginIsolated(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := mock.LastAuthFingerprintID
+	if !strings.HasPrefix(first, "enhanced-") {
+		t.Errorf("login fingerprintId = %q, want enhanced- prefix", first)
+	}
+	if _, err := client.StartCLILoginIsolated(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := mock.LastAuthFingerprintID
+	if first == second {
+		t.Fatalf("isolated logins produced identical fingerprint: %q", first)
+	}
+}
+
 // TestFingerprintIDVariesByHost verifies the derivation is a function of
 // the machine identity: identical inputs reproduce byte-for-byte, distinct
 // hosts (hostname or MACs) produce distinct ids.

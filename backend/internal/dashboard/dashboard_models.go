@@ -1,9 +1,12 @@
 package dashboard
 
 import (
+	"fmt"
+	"sort"
+	"strconv"
+
 	"freebuff-proxy/backend/internal/modelcat"
 	"freebuff-proxy/backend/internal/registry"
-	"sort"
 )
 
 // --- models ---
@@ -40,19 +43,48 @@ type aliasRow struct {
 	Real  string `json:"real"`
 }
 
-// quotaFor returns the daily session-quota label for a model row: the
-// shared premium pool (luna, solar-pro4) shows the 5/day premium
-// entitlement, GLM 5.2 is the referral reward (+1/day), and every other
-// served row is unmetered. These strings are the displayed copy and stay
-// in sync with the upstream catalog facts (modelcat).
-func quotaFor(id string) string {
+// quotaFor returns the daily session-quota label for a model row. The label
+// prefers the LIVE wire snapshot (rateLimitsByModel mirrored per token) —
+// the server-computed limit moves with trust-level/streak/referral bonuses,
+// so a static number goes stale (the old copy said 5/day while the wire
+// limit is base 4 plus bonuses). With no live data it falls back to catalog
+// copy: shared premium pool (luna, solar-pro4), the referral reward (GLM
+// 5.2), else unmetered.
+func (d *Dashboard) quotaFor(id string) string {
+	if d.pool != nil {
+		if live := d.liveQuotaLabel(id); live != "" {
+			return live
+		}
+	}
 	if modelcat.IsPremium(id) {
-		return "5/day shared premium"
+		return "shared premium pool"
 	}
 	if id == modelcat.Glm52ModelID {
 		return "referral +1/day"
 	}
 	return "unmetered"
+}
+
+// liveQuotaLabel renders "used of limit" from the first token quota snapshot
+// carrying an entry for the model ("1.6 of 5 used" — the CLI's fractional
+// unit display). "" when no token has live data for the model.
+func (d *Dashboard) liveQuotaLabel(id string) string {
+	for _, t := range d.pool.Snapshot() {
+		if q, ok := t.QuotaByModel[id]; ok && q.Limit > 0 {
+			return fmt.Sprintf("%s of %s used", formatSessionUnits(q.RecentCount), formatSessionUnits(q.Limit))
+		}
+	}
+	return ""
+}
+
+// formatSessionUnits mirrors the CLI's unit display
+// (format-session-units.ts): integers render bare, fractionals to one
+// decimal — a long run can consume 1.3 sessions and billing floors at 0.1.
+func formatSessionUnits(v float64) string {
+	if v == float64(int64(v)) {
+		return strconv.FormatInt(int64(v), 10)
+	}
+	return strconv.FormatFloat(v, 'f', 1, 64)
 }
 
 func (d *Dashboard) modelsData() modelsData {
@@ -69,7 +101,7 @@ func (d *Dashboard) modelsData() modelsData {
 		if agent, err := d.reg.AgentForModel(id); err == nil {
 			row.Agent = agent
 		}
-		row.Quota = quotaFor(id)
+		row.Quota = d.quotaFor(id)
 		md.Models = append(md.Models, row)
 	}
 	md.Count = len(md.Models)

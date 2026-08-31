@@ -1,6 +1,7 @@
 # Upstream drift detection (CodebuffAI/freebuff).
 #
-# Three automations:
+#  Wire drift is additionally classified by scripts/review-wire-drift.sh:
+#  COMMENT-ONLY (docs) vs FUNCTIONAL (needs a Go-side port).
 #  1. **Registry pin drift** (the 5 files in backend/internal/registry/testdata/upstream/):
 #     auto-open a PR that runs sync-upstream so the change lands in front of a
 #     human reviewer. Idempotent: reruns reuse the same branch + open PR.
@@ -26,10 +27,11 @@ name: upstream-drift
 on:
   workflow_dispatch:
   schedule:
-    # Twice a week (Mon + Thu 06:17 UTC) so a missed run doesn't leave the
-    # repo blind for seven days.
-    - cron: '17 6 * * 1'
-    - cron: '17 6 * * 4'
+    # Every 6h: the upstream public-sync bot lands batches near-daily (three
+    # commits inside 40 minutes observed 2026-08-31), and wire drift once sat
+    # unreviewed between twice-weekly runs. 6h bounds blind windows while
+    # keeping PR/branch churn bounded by the close-superseded step below.
+    - cron: '17 */6 * * *'
 
 permissions:
   contents: write
@@ -191,6 +193,26 @@ jobs:
           fi
           git push -u origin HEAD
 
+      - name: Close superseded sync PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          # One rolling sync PR per upstream SHA; an older open PR for a
+          # different SHA is stale the moment a newer SHA exists.
+          gh pr list --state open --json number,title,headRefName \
+            --jq '.[] | select(.title | startswith("chore(registry): sync pinned upstream models to vendor")) | {number, title, branch: .headRefName}' \
+          | jq -c . \
+          | while read -r pr; do
+              num=$(echo "$pr" | jq -r .number)
+              branch=$(echo "$pr" | jq -r .branch)
+              case "$branch" in
+                chore/upstream-drift-"${UPSTREAM_SHA:0:7}"|chore/upstream-drift-"${UPSTREAM_SHA}") ;;
+                *) gh pr close "$num" --comment "Superseded by upstream ${UPSTREAM_SHA:0:7}; a fresh sync PR covers the current pin state." \
+                     && git push origin --delete "$branch" || true ;;
+              esac
+            done
+
       - name: Open or update PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -225,22 +247,58 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Open needs-port issue
+      - name: Clone upstream reference
+        env:
+          FREEBUFF_REFERENCE_DIR: ${{ runner.temp }}/freebuff-ref
+        run: |
+          mkdir -p "$FREEBUFF_REFERENCE_DIR"
+          git clone --depth 50 https://github.com/CodebuffAI/freebuff.git "$FREEBUFF_REFERENCE_DIR"
+          git -C "$FREEBUFF_REFERENCE_DIR" fetch --unshallow || true
+
+      - name: Classify wire drift
+        id: classify
+        env:
+          FREEBUFF_REFERENCE_DIR: ${{ runner.temp }}/freebuff-ref
+        run: |
+          out="$(bash scripts/review-wire-drift.sh || true)"
+          {
+            echo "classification<<EOF"
+            echo "$out"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Open or update needs-port issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
           DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
+          CLASSIFICATION: ${{ steps.classify.outputs.classification }}
         run: |
+          body="Upstream SHA: $UPSTREAM_SHA
+
+          $DRIFT_SUMMARY
+
+          ## Drift classification (scripts/review-wire-drift.sh)
+          COMMENT-ONLY rows need only a baseline refresh (\`check-upstream.sh --update-wire-baseline\`).
+          FUNCTIONAL rows need a Go-side port (e.g. injectEnvelope, classifyError, parseSessionResponse) plus a test.
+
+          \`\`\`
+          $CLASSIFICATION
+          \`\`\`"
           existing=$(gh issue list --state open --json number,title \
             --jq '.[] | select(.title == "Upstream wire drift needs porting") | .number' | head -1)
           if [ -n "$existing" ]; then
-            echo "Existing needs-port issue #$existing already open; skipping."
+            if gh issue view "$existing" --json body,comments --jq '.body, (.comments[]?.body)' | grep -qF "$UPSTREAM_SHA"; then
+              echo "Issue #$existing already covers $UPSTREAM_SHA; skipping."
+              exit 0
+            fi
+            gh issue comment "$existing" --body "$body"
+            echo "Appended drift at $UPSTREAM_SHA to existing issue #$existing."
             exit 0
           fi
           gh issue create \
             --title "Upstream wire drift needs porting" \
-            --body "Upstream SHA: ${{ needs.drift.outputs.upstream_sha }}
-          
-          $DRIFT_SUMMARY" \
+            --body "$body" \
             --label "anti-ban"
 
   publish-drift-data:
@@ -263,8 +321,28 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Close superseded drift-data PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          # Mirror of the registry job's close-superseded: one rolling PR per
+          # upstream SHA; an older open PR for a different SHA is stale.
+          gh pr list --state open --json number,title,headRefName \
+            --jq '.[] | select(.title | startswith("chore(dashboard): refresh upstream-drift embed to vendor")) | {number, title, branch: .headRefName}' \
+          | jq -c . \
+          | while read -r pr; do
+              num=$(echo "$pr" | jq -r .number)
+              branch=$(echo "$pr" | jq -r .branch)
+              case "$branch" in
+                chore/upstream-drift-data-"${UPSTREAM_SHA:0:7}"|chore/upstream-drift-data-"${UPSTREAM_SHA}") ;;
+                *) gh pr close "$num" --comment "Superseded by upstream ${UPSTREAM_SHA:0:7}; a fresh drift-data PR covers the current embed." \
+                     && git push origin --delete "$branch" || true ;;
+              esac
+            done
+
       - name: Set up Go
-        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26'
           cache: false

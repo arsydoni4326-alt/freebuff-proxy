@@ -259,18 +259,23 @@
         title={oauthStatus.message}
       >
         {#if oauthStatus.loginUrl}
-          <div class="flex flex-wrap items-center gap-2">
-            <code class="fp-num text-xs break-all max-w-full">{oauthStatus.loginUrl}</code>
-            <CopyButton text={oauthStatus.loginUrl} label={$tr('Copy link')} />
-            <a
-              href={oauthStatus.loginUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="inline-flex items-center gap-1 text-xs text-[var(--fp-accent)] hover:underline"
-            >
-              {$tr('Open')}
-              <ExternalLink size={12} />
-            </a>
+          <div class="flex flex-col gap-2 mt-2">
+            <div class="flex flex-wrap items-center gap-2">
+              <code class="fp-num text-xs break-all max-w-full">{oauthStatus.loginUrl}</code>
+              <CopyButton text={oauthStatus.loginUrl} label={$tr('Copy link')} />
+              <a
+                href={oauthStatus.loginUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center gap-1 text-xs text-[var(--fp-accent)] hover:underline font-medium"
+              >
+                {$tr('Open in New Tab')}
+                <ExternalLink size={12} />
+              </a>
+            </div>
+            <p class="text-xs text-[var(--fp-dim)]">
+              {$tr('Tip: To add a different FreeBuff account, open this link in an Incognito / Private window so your browser does not reuse an existing GitHub session.')}
+            </p>
           </div>
         {/if}
       </Alert>

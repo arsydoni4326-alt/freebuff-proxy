@@ -109,6 +109,7 @@ func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, 
 			}
 		}
 
+		var toolUseBlocks []any
 		if reasoningStr == "" || len(toolIDs) == 0 {
 			if contentBlocks, ok := msgObj["content"].([]any); ok {
 				for _, block := range contentBlocks {
@@ -119,12 +120,25 @@ func (s *Server) relayAnthropicJSON(ctx context.Context, w http.ResponseWriter, 
 						} else if bType == "tool_use" {
 							if id, ok := bm["id"].(string); ok && id != "" {
 								toolIDs = append(toolIDs, id)
+								toolUseBlocks = append(toolUseBlocks, bm)
 							}
 						} else if bType == "text" && contentStr == "" {
 							contentStr, _ = bm["text"].(string)
 						}
 					}
 				}
+			}
+		}
+
+		// Legacy function_call completions have no tool_calls for the
+		// primary branch to record: the tool_use blocks carry the identity
+		// (sanitized id, name, input) the client will echo back, so the
+		// canonical binding must be derived from them when the raw JSON is
+		// absent. toolCallsJSON is left untouched when the primary branch
+		// already recorded it (the blocks would be redundant duplicates).
+		if len(toolUseBlocks) > 0 && toolCallsJSON == "" {
+			if b, err := json.Marshal(toolUseBlocks); err == nil {
+				toolCallsJSON = string(b)
 			}
 		}
 
