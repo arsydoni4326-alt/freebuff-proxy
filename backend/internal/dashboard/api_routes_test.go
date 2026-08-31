@@ -358,10 +358,12 @@ func TestAdminRoutesParity(t *testing.T) {
 
 // --- models payload quota ---
 
-// TestModelsPageQuota pins the /admin/api/models quota column: premium
-// pool rows carry the shared 5/day label, GLM 5.2 the referral label, and
-// every other served row is unmetered (contract: glm-5.3-flash ==
-// "unmetered").
+// TestModelsPageQuota pins the /admin/api/models quota column fallback
+// contract (no live pool quota in this fixture): premium pool rows carry
+// the shared-pool label, GLM 5.2 the referral label, and every other
+// served row is unmetered. With live quota data the column instead shows
+// "used of limit" from the wire snapshot (quotaFor prefers it).
+// Contract: glm-5.3-flash == "unmetered" when no live data exists.
 func TestModelsPageQuota(t *testing.T) {
 	ts := newDashboardForPages(t, false, "models")
 	resp, err := http.Get(ts.URL + "/models")
@@ -388,8 +390,8 @@ func TestModelsPageQuota(t *testing.T) {
 		"z-ai/glm-5.3-flash":         "unmetered",
 		"deepseek/deepseek-v4-flash": "unmetered",
 		"mimo/mimo-v2.5":             "unmetered",
-		"openai/gpt-5.6-luna":        "5/day shared premium",
-		"upstage/solar-pro4":         "5/day shared premium",
+		"openai/gpt-5.6-luna":        "shared premium pool",
+		"upstage/solar-pro4":         "shared premium pool",
 		"z-ai/glm-5.2":               "referral +1/day",
 	}
 	for id, wantQuota := range want {
