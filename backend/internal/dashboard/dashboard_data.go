@@ -2,12 +2,15 @@ package dashboard
 
 import (
 	"fmt"
-	"freebuff-proxy/backend/internal/pool"
 	"net"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/pool"
 )
 
 // --- overview ---
@@ -233,16 +236,48 @@ const defaultEnvTemplate = `# freebuff-proxy configuration (.env)
 #TRANSIENT_RETRIES=1
 `
 
-func (d *Dashboard) overviewData() overviewData {
+// baseURLForRequest computes the dynamic API base URL (/v1) for dashboard views.
+// It prioritizes the incoming request's Host / X-Forwarded headers so that operators
+// accessing the dashboard via VPS IP, domain, VPN, or reverse proxy see the exact
+// URL their AI coding clients should dial. Falls back to LISTEN_ADDR when r is nil.
+func baseURLForRequest(cfg *config.Config, r *http.Request) string {
+	scheme := "http"
+	host := ""
+	if r != nil {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			scheme = proto
+		} else if r.TLS != nil {
+			scheme = "https"
+		}
+		if fHost := r.Header.Get("X-Forwarded-Host"); fHost != "" {
+			host = fHost
+		} else if r.Host != "" {
+			host = r.Host
+		}
+	}
+	if host == "" {
+		host = "127.0.0.1:3457"
+		if cfg != nil && cfg.ListenAddr != "" {
+			h, p, err := net.SplitHostPort(cfg.ListenAddr)
+			if err == nil {
+				if h == "" || h == "0.0.0.0" || h == "::" {
+					h = "127.0.0.1"
+				}
+				host = net.JoinHostPort(h, p)
+			} else {
+				host = cfg.ListenAddr
+			}
+		}
+	}
+	return scheme + "://" + host + "/v1"
+}
+
+func (d *Dashboard) overviewData(r *http.Request) overviewData {
 	cfg := d.cfg()
 	ps := d.pool.PoolSnapshot()
 	mode := cfg.EffectiveMode()
-	host := "localhost"
-	if h, _, err := net.SplitHostPort(cfg.ListenAddr); err == nil && h != "" && h != "0.0.0.0" && h != "::" {
-		host = h
-	}
 	od := overviewData{
-		BaseURL:              "http://" + host + "/v1",
+		BaseURL:              baseURLForRequest(cfg, r),
 		Mode:                 mode,
 		InBridge:             mode == "bridge",
 		ShowBridge:           mode == "bridge" || mode == "hybrid",

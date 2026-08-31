@@ -137,7 +137,7 @@ func (d *Dashboard) APIVersion(w http.ResponseWriter, r *http.Request) {
 func (d *Dashboard) dataFor(name string, r *http.Request) any {
 	switch name {
 	case "overview":
-		return d.overviewData()
+		return d.overviewData(r)
 	case "config":
 		return d.configData()
 	case "tokens":
@@ -149,7 +149,7 @@ func (d *Dashboard) dataFor(name string, r *http.Request) any {
 	case "traces":
 		return d.tracesData()
 	case "setup":
-		return d.setupData()
+		return d.setupData(r)
 	case "metrics":
 		return d.metricsData()
 	case "upstream":
