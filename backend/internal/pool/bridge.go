@@ -144,7 +144,16 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	// followers block on the admissionGate channel until it completes.
 	// On failure, the gate resets so the next request retries.
 	// Guarded by entry.mu to avoid races on admissionGate/Once/Err.
+	// Review 2026-08-31 P2-4: the single-flight is per ENTRY, not per
+	// model — a follower that parked on a leader admitted for a different
+	// model re-checks the live session after the leader result below and
+	// restarts admission for its own model (admitRetry), bounded by
+	// admitAttempts so back-to-back foreign-model leaders cannot livelock.
 	var needsCreation bool
+	var admitAttempts int
+	// maxAdmissionModelRetries bounds the foreign-model restarts below.
+	const maxAdmissionModelRetries = 3
+admitRetry:
 	entry.mu.Lock()
 	select {
 	case <-entry.admissionGate:
@@ -261,10 +270,52 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 	}
 	entry.mu.Unlock()
 
+	// Review 2026-08-31 P2-4: the single-flight above is per ENTRY, not
+	// per model. A follower that parked on a leader whose session was
+	// admitted for a different model must not chat on that session while
+	// reporting its own model: reset the gate exactly like the
+	// closed-gate branch above and restart admission for the requested
+	// model, bounded so pathological interleavings give up instead of
+	// looping.
+	if snap := entry.session.Snapshot(); snap.Usable() && snap.Model != "" && snap.Model != model {
+		admitAttempts++
+		if admitAttempts >= maxAdmissionModelRetries {
+			entry.mu.Lock()
+			entry.admissionGate = make(chan struct{})
+			entry.admissionOnce = sync.Once{}
+			entry.admissionErr = nil
+			entry.mu.Unlock()
+			return nil, fmt.Errorf("bridge: session serves model %q, requested %q (admission retry bound exhausted)", snap.Model, model)
+		}
+		entry.mu.Lock()
+		entry.admissionGate = make(chan struct{})
+		entry.admissionOnce = sync.Once{}
+		entry.admissionErr = nil
+		entry.mu.Unlock()
+		goto admitRetry
+	}
+
 sessionReady:
 	// The error path was handled above (inside the leader-result check):
 	// every admission error returns there, so this label is only reached
 	// with a usable session and err == nil.
+	// Re-validate the entry is still cached before handing it a run: the
+	// admission single-flight can park this goroutine with zero in-flight
+	// leases, and an eviction (dead-token or LRU) in that window deletes
+	// the entry and ends its upstream session — chatting against it would
+	// surface a spurious 401/428 to a live client and strand the run
+	// outside bridgeMaintain/Pool.Shutdown (review 2026-08-31 P2). The
+	// pooled path skips a token that vanished mid-admission
+	// (acquire.go:499); bridge has no failover, so the analog is aborting
+	// with a retryable error — a fresh AcquireBridge recreates the entry.
+	// An in-call retry was rejected: it would redo the whole admission
+	// single-flight for a brand-new entry.
+	p.bridgeMu.RLock()
+	evicted := p.bridge[tokenKey(clientToken)] != entry
+	p.bridgeMu.RUnlock()
+	if evicted {
+		return nil, fmt.Errorf("bridge: entry evicted during admission; retry the request")
+	}
 	entry.runs.ClearCooldowns()
 	ss := entry.session.Snapshot()
 	effectiveModel := model

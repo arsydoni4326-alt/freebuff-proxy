@@ -299,6 +299,14 @@ type Pool struct {
 	// Guarded by bridgeMu.
 	bridgeDailyUsage int
 
+	// bridgeSurvivors preserves the 24h-window usage of evicted bridge
+	// entries so an eviction does not reset an active client's contribution
+	// to the global BRIDGE_DAILY_LIMIT between maintain recomputes
+	// (review 2026-08-31 P3). Bounded; survivors expire after one usage
+	// window. Guarded by bridgeMu. Type and helpers live in
+	// bridge_cache.go.
+	bridgeSurvivors []bridgeSurvivor
+
 	// unfit is the per-(egress, model) unfit registry (issue #74): models
 	// refused upstream with limited_ip on this egress are marked unfit for
 	// modelUnfitTTL so new requests are refused fast (409 model_ip_limited)
