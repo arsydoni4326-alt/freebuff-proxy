@@ -128,9 +128,18 @@ export async function postAPI(path, body) {
  * @returns {Promise<Response>} Raw response (login/config use non-JSON responses)
  */
 export async function postForm(path, fields) {
-  return fetch(path, {
+  const res = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
     body: new URLSearchParams(fields),
   });
+
+  // Detect auth failures (302 redirect to login page) like fetchAPI does.
+  // Without this, the HTML login page is returned and res.json() throws
+  // "Unexpected token '<'" instead of a proper session-expired error.
+  if (res.redirected && new URL(res.url).pathname.startsWith(`${adminRoot}/`)) {
+    handleAuthFailure('Session expired');
+  }
+
+  return res;
 }
