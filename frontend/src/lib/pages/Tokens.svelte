@@ -1,10 +1,15 @@
 <script>
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy } from 'svelte';
   import {
+    ChevronDown,
+    ChevronRight,
     LogIn,
+    Lock,
     Plus,
     ExternalLink,
     RefreshCw,
+    Trash2,
+    Unlock,
   } from '@lucide/svelte';
   import Button from '../components/Button.svelte';
   import Card from '../components/Card.svelte';
@@ -13,11 +18,12 @@
   import EmptyState from '../components/EmptyState.svelte';
   import CopyButton from '../components/CopyButton.svelte';
   import PageHeader from '../components/PageHeader.svelte';
-  import TokenCard from '../components/TokenCard.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
   import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
   import { fetchAPI, postAPI, csrfHeader } from '../api/client.js';
-  import { adminApi, adminActions, tokenActions } from '../api/paths.js';
+  import { adminApi, adminActions } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
+  import { formatLocalDate } from '../utils/format.js';
   import { tr } from '../i18n.js';
 
   let data = $state(null);
@@ -29,11 +35,6 @@
   let adding = $state(false);
   let actionMessage = $state('');
   let actionOK = $state(true);
-  // Dev Tools surfaces (per-token session spawn toolbar) are hidden unless
-  // the operator enables DEVTOOLS_ENABLED=true in .env (same gate as the
-  // sidebar's Dev Tools tab and the server-side DevTools route).
-  let devToolsEnabled = $state(false);
-
   // Device login flow
   let oauthStarting = $state(false);
   let oauthStatus = $state(null);
@@ -50,7 +51,6 @@
 
   // Token table
   let expandedToken = $state(null);
-  let spawnModels = $state({});
   let actionPending = $state(false);
   let now = $state(Date.now());
   let quotaModelFilter = $state('');
@@ -83,16 +83,50 @@
       : /^cb_[A-Za-z0-9_-]{20,}$/.test(newToken.trim())
   );
 
+  function banBadge(token) {
+    if (token.ban_type === 'hard') {
+      return { label: $tr('banned — appeal required'), tone: 'critical', pulse: true };
+    }
+    if (token.ban_type === 'temporary') {
+      const until = formatLocalDate(token.banned_until);
+      return { label: until ? $tr('banned until {time}', { time: until }) : $tr('banned (temporary)'), tone: 'bad' };
+    }
+    return null;
+  }
+
+  function statusFor(token) {
+    const ban = banBadge(token);
+    if (ban) return ban;
+    if (token.locked) return { label: $tr('locked'), tone: 'warn' };
+    if (token.cooldown_active) return { label: $tr('cooldown'), tone: 'warn' };
+    const status = token.session_status || '';
+    if (status === 'active') return { label: $tr('leased'), tone: 'good', pulse: true };
+    if (status === 'queued') return { label: $tr('queued'), tone: 'info' };
+    if (status === 'banned') return { label: $tr('banned'), tone: 'bad' };
+    return { label: $tr('idle'), tone: 'idle' };
+  }
+
+  function cooldownLabel(token) {
+    if (!token.cooldown_active || !token.cooldown_until) return '—';
+    const milliseconds = new Date(token.cooldown_until).getTime() - now;
+    if (milliseconds <= 0) return 'expiring';
+    const seconds = Math.floor(milliseconds / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+  }
+
+  function cooldownTone(token) {
+    if (!token.cooldown_until) return 'default';
+    const milliseconds = new Date(token.cooldown_until).getTime() - now;
+    return milliseconds >= 0 && milliseconds < 5 * 60_000 ? 'warn' : 'default';
+  }
+
   async function fetchData() {
     try {
       data = await fetchAPI(adminApi.tokens);
-      // Seed the per-token spawn-model map so no TokenCard binding ever sees
-      // undefined — Svelte 5 rejects bind:spawnModel={undefined} for a prop
-      // with a fallback (props_invalid_value) and unmounts the table.
-      (data?.tokens ?? []).forEach((t, i) => {
-        const idx = t.index ?? i;
-        if (!(idx in spawnModels)) spawnModels[idx] = '';
-      });
       error = '';
     } catch (e) {
       error = e.message || $tr('Failed to fetch tokens');
@@ -135,33 +169,6 @@
     } finally {
       actionPending = false;
     }
-  }
-
-  function handleTokenAction(token, idx, action) {
-    switch (action) {
-      case 'clear':
-        return triggerAction(tokenActions.unlock(idx), {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }));
-      case 'unlock':
-        return triggerAction(tokenActions.unlockLock(idx), {}, $tr('Unlock token {idx}?', { idx }));
-      case 'lock':
-        return triggerAction(tokenActions.lock(idx), {}, $tr('Lock token {idx}?', { idx }));
-      case 'remove':
-        return triggerAction(adminActions.tokenRemove, { token: idx }, $tr('Remove token {idx} from the pool and .env?', { idx }));
-      default:
-        return;
-    }
-  }
-
-  function handleSpawn(idx, model) {
-    const m = model || 'mimo/mimo-v2.5';
-    triggerAction(tokenActions.session(idx), { model: m }, $tr('Create upstream session for token #{idx} on {model}?', { idx, model: m }));
-  }
-
-  function handleRefresh(idx, action) {
-    if (action === 'probe') {
-      return triggerAction(tokenActions.test(idx), {}, $tr('Probe token #{idx} against upstream?', { idx }));
-    }
-    return triggerAction(tokenActions.finish(idx), {}, $tr('Finish active runs on token #{idx}?', { idx }));
   }
 
   async function startOAuthLogin() {
@@ -225,18 +232,6 @@
 
   usePolling(fetchData, 10000);
   const tick = setInterval(() => { now = Date.now(); }, 1000);
-  onMount(async () => {
-    try {
-      const cfgRes = await fetchAPI(adminApi.config);
-      const envContent = cfgRes?.env_content || '';
-      const m = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
-      const val = m ? m[1].trim().toLowerCase() : '';
-      devToolsEnabled = val === 'true' || val === '1';
-    } catch {
-      devToolsEnabled = false;
-    }
-  });
-
   onDestroy(() => {
     clearInterval(oauthTimer);
     clearInterval(tick);
@@ -245,7 +240,7 @@
 
 <div class="page-enter">
   <div class="flex flex-col gap-6">
-    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, client API keys, and per-token session quotas')} />
+    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, and per-token session quotas')} />
 
     {#if actionMessage}
       <Alert tone={actionOK ? 'success' : 'error'} title={actionMessage} />
@@ -331,33 +326,6 @@
           <span>{$tr('Add Token')}</span>
         </Button>
       </form>
-    </Card>
-
-    <!-- Client API-key management -->
-    <Card
-      title={$tr('Client API Keys')}
-      description={$tr('sk-fb-… credentials for clients (omp, curl) to authenticate against this proxy. Stored in the API_KEYS line of .env.')}
-    >
-      {#if generatedKey}
-        <div class="fp-inset rounded p-3 mb-3 flex flex-wrap items-center gap-2">
-          <span class="text-xs text-[var(--fp-muted)]">{$tr('New key:')}</span>
-          <code class="fp-num text-xs text-[var(--fp-accent)] break-all">{generatedKey}</code>
-          <CopyButton text={generatedKey} label="Copy" />
-        </div>
-      {/if}
-      {#if apiKeys.length > 0}
-        <div class="flex flex-col gap-2 mb-3">
-          {#each apiKeys as key}
-            <div class="fp-inset rounded flex items-center justify-between gap-2 px-3 py-2">
-              <code class="fp-num text-xs truncate">{key}</code>
-              <CopyButton text={key} label="Copy" />
-            </div>
-          {/each}
-        </div>
-      {/if}
-      {#if clientKeyMessage}
-        <Alert tone={clientKeyOK ? 'success' : 'error'} title={clientKeyMessage} />
-      {/if}
     </Card>
 
     <!-- Bridge Quota section (bridge mode only) -->
@@ -758,19 +726,6 @@
                   </td>
                 </tr>
               {/if}
-              <TokenCard
-                {token}
-                {idx}
-                expanded={expandedToken === idx}
-                bind:spawnModel={spawnModels[idx]}
-                {actionPending}
-                {now}
-                {devToolsEnabled}
-                onToggle={() => toggleExpand(idx)}
-                onAction={(action) => handleTokenAction(token, idx, action)}
-                onSpawn={(model) => handleSpawn(idx, model)}
-                onRefresh={(action) => handleRefresh(idx, action)}
-              />
             {/each}
           </tbody>
         </table>

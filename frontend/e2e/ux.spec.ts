@@ -242,6 +242,7 @@ async function mockDashboard(
 function tokenRow(idx: number, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     index: idx,
+    token_value: `cb_test_${idx}`,
     session_status: 'idle',
     queue_position: 0,
     queue_depth: 0,
@@ -285,7 +286,10 @@ function tokenRowsOf(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(arr)) return [];
   return arr
       .filter((t): t is Record<string, unknown> => typeof t === 'object' && t !== null)
-      .map((t) => ({ ...t }));
+      .map((t, index) => ({
+        ...t,
+        token_value: typeof t.token_value === 'string' && t.token_value ? t.token_value : `cb_test_${String(t.index ?? index)}`,
+      }));
 }
 
 test.describe('operator UX journey (hermetic mocks)', () => {
@@ -429,12 +433,11 @@ test.describe('operator UX journey (hermetic mocks)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 5. REGRESSION: removing a middle (non-last) row POSTs its own index and
-  //    the previously-last token remains.
-  //    Pins the by-index removal fix (pool.RemoveTokenAt) against the old
-  //    remove-last behavior.
+  // 5. REGRESSION: removing a middle (non-last) row posts its token value and
+  //    the previously-last token remains. This pins the SQLite-safe removal
+  //    contract against the old index/last-token behavior.
   // ---------------------------------------------------------------------------
-  test('tokens: remove of a middle row posts its own index and keeps the last token (regression)', async ({ page }) => {
+  test('tokens: remove of a middle row posts its value and keeps the last token (regression)', async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
 
@@ -445,14 +448,14 @@ test.describe('operator UX journey (hermetic mocks)', () => {
     });
 
     let removeBody = '';
-    await page.route('**/admin/tokens/remove', async (route) => {
+    await page.route('**/admin/tokens/remove-specific', async (route) => {
       removeBody = route.request().postData() || '';
-      const idx = JSON.parse(removeBody || '{}').token as number;
-      state.tokens = state.tokens.filter((t) => t.index !== idx);
+      const token = JSON.parse(removeBody || '{}').token as string;
+      state.tokens = state.tokens.filter((entry) => entry.token_value !== token);
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ ok: true, message: `Token ${idx} removed from the pool and .env.` }),
+        body: JSON.stringify({ ok: true, message: 'Token removed successfully.' }),
       });
     });
 
@@ -461,17 +464,17 @@ test.describe('operator UX journey (hermetic mocks)', () => {
     await expect(page.locator('table tbody tr')).toHaveCount(3);
     await expect(page.getByText('#1', { exact: true })).toBeVisible();
 
-    const removeReq = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/tokens/remove'));
+    const removeReq = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/tokens/remove-specific'));
     const refetch = page.waitForResponse((r) => r.url().includes('/admin/api/tokens') && r.status() === 200);
     const rowToRemove = page.locator('table tbody tr').filter({ hasText: '#1' });
     page.once('dialog', (d) => d.accept());
     await rowToRemove.getByRole('button', { name: 'Remove', exact: true }).click();
     const req = await removeReq;
 
-    // Row index 1 (the middle row — NOT the last) travels as token=1.
-    expect(JSON.parse(req.postData() || '{}')).toEqual({ token: 1 });
+    // The middle row's stable token value, not its index, travels to the server.
+    expect(JSON.parse(req.postData() || '{}')).toEqual({ token: 'cb_test_1' });
     await refetch;
-    await expect(page.getByText('Token 1 removed from the pool and .env.')).toBeVisible();
+    await expect(page.getByText('Token removed successfully.')).toBeVisible();
     await expect(page.locator('table tbody tr')).toHaveCount(2);
     // The middle row is gone; the previously-last token (index 2) remains.
     await expect(page.getByText('#1', { exact: true })).toHaveCount(0);
@@ -625,10 +628,10 @@ test.describe('operator UX journey (hermetic mocks)', () => {
       if (t) t.locked = true;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, message: 'Token 1 locked' }) });
     });
-    await page.route('**/admin/tokens/remove', async (route) => {
-      const idx = JSON.parse(route.request().postData() || '{}').token as number;
-      state.tokens = state.tokens.filter((t) => t.index !== idx);
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, message: `Token ${idx} removed from the pool and .env.` }) });
+    await page.route('**/admin/tokens/remove-specific', async (route) => {
+      const token = JSON.parse(route.request().postData() || '{}').token as string;
+      state.tokens = state.tokens.filter((entry) => entry.token_value !== token);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, message: 'Token removed successfully.' }) });
     });
 
     // --- add token (POST /admin/tokens/add) ---
@@ -648,9 +651,9 @@ test.describe('operator UX journey (hermetic mocks)', () => {
     await row1.getByRole('button', { name: 'Lock' }).click();
     await lockReq;
 
-    // --- remove token 0 (POST /admin/tokens/remove) ---
+    // --- remove token 0 (POST /admin/tokens/remove-specific) ---
     const row0 = page.locator('table tbody tr').filter({ hasText: '#0' });
-    const removeReq = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/tokens/remove'));
+    const removeReq = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/tokens/remove-specific'));
     page.once('dialog', (d) => d.accept());
     await row0.getByRole('button', { name: 'Remove' }).click();
     await removeReq;
@@ -668,7 +671,7 @@ test.describe('operator UX journey (hermetic mocks)', () => {
     await configReq;
 
     // Every recorded admin POST carried the matching X-CSRF-Token.
-    const expectedPaths = ['/admin/tokens/add', '/admin/tokens/1/lock', '/admin/tokens/remove', '/admin/config'];
+    const expectedPaths = ['/admin/tokens/add', '/admin/tokens/1/lock', '/admin/tokens/remove-specific', '/admin/config'];
     const seenPaths = posts.map((p) => p.path);
     for (const p of expectedPaths) {
       expect(seenPaths).toContain(p);

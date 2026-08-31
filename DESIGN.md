@@ -112,11 +112,11 @@ text, never glassmorphism.
 6 sections + login:
 
 1. **Overview** — mode/version/uptime status; 6 KPIs (pool total, busy, cooldown, banned,
-   requests today, models); token risk cards (at-risk tokens from snapshot).
+   requests today, models); token risk cards (at-risk tokens from snapshot); client API-key
+   management (generate, reveal, copy, revoke).
    No smoke/diag, no sparklines (moved to CLI `-test-token`/`-doctor`).
-2. **Tokens** — add-token form, device-login flow, client API-key management, token table
-   (short id, status badge, instance, cooldown countdown, actions: clear cooldown, remove),
-   per-model quota expand rows.
+2. **Tokens** — add-token form, device-login flow, token table (short id, status badge,
+   instance, cooldown countdown, actions: clear cooldown, remove), per-model quota expand rows.
 3. **Models** — served model catalog table (mono id, served badge, aliases) + count summary.
 4. **Config** — `.env` editor (mono textarea) + Validate/Save/Reload + redacted effective
    config table.

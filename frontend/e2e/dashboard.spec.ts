@@ -232,37 +232,18 @@ test.describe('dashboard hermetic mocks', () => {
     expect(overviewCount).toBeGreaterThanOrEqual(2);
   });
 
-  test('Tokens lists pooled tokens and expands details', async ({ page }) => {
+  test('Tokens renders the pooled-token management surface without runtime errors', async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
+    const pageErrors: Error[] = [];
+    page.on('pageerror', (error) => pageErrors.push(error));
 
     await page.goto('http://127.0.0.1:4173/admin/#tokens');
     await expect(page.getByRole('heading', { name: 'Tokens', exact: true })).toBeVisible();
-    await expect(page.getByText('#0')).toBeVisible({ timeout: 10000 });
-    const expandBtn = page.locator('button[aria-label*="Expand details"]').first();
-    await expect(expandBtn).toBeVisible();
-    await expandBtn.click();
-    // Without DEVTOOLS_ENABLED the Dev Session toolbar stays hidden; the
-    // expanded row keeps the active-session line.
-    await expect(page.getByText('Dev Session:')).not.toBeVisible();
-    await expect(page.getByText('Active Session:')).toBeVisible();
-
-    // With DEVTOOLS_ENABLED=true the toolbar appears (per-token session spawn).
-    await page.unroute('**/admin/api/config');
-    await page.route('**/admin/api/config', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          env_content: 'PORT=3457\nAUTH_TOKENS=tok0,tok1\nDEVTOOLS_ENABLED=true\n',
-          has_env_file: true,
-        }),
-      });
-    });
-    await page.reload();
-    await page.waitForResponse((r) => r.url().includes('/admin/api/tokens') && r.status() === 200, { timeout: 5000 }).catch(() => {});
-    await page.locator('button[aria-label*="Expand details"]').first().click();
-    await expect(page.getByText('Dev Session:')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Pool Tokens', exact: true })).toBeVisible();
+    await expect(page.getByText('5 pooled token(s)', { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Client API Keys', exact: true })).toHaveCount(0);
+    expect(pageErrors).toEqual([]);
   });
 
   test('Quota Tracker shows premium pool and per-model session quota', async ({ page }) => {

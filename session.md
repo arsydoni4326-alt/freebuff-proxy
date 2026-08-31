@@ -1,5 +1,20 @@
 # Session: SQLite Token Database + UI
 
+## Latest Fix: Tokens Page Runtime Error
+
+- Removed the stale duplicate Client API Keys card from `frontend/src/lib/pages/Tokens.svelte`.
+  It referenced removed `generatedKey`, `apiKeys`, `clientKeyMessage`, and `clientKeyOK` state,
+  causing the embedded dashboard bundle to throw `ReferenceError: generatedKey is not defined`
+  when the Tokens page rendered.
+- Client API-key management remains exclusively on the complete Overview implementation, which
+  supports generation, display/copy, and deletion through the existing CSRF-protected config save.
+- Added Playwright coverage that asserts the Tokens page produces no uncaught browser errors.
+- Validation: `npm --prefix frontend run build`, the serial `npm --prefix frontend run test:e2e`
+  suite (25/25), `env -u AUTH_TOKENS -u ADMIN_TOKEN go test -tags dashboard
+  ./backend/internal/dashboard/...`, and a dashboard-tagged Go binary build pass.
+- `Permissions-Policy: attribution-reporting` is not emitted by this repository; investigate the
+  deployment reverse proxy/CDN configuration if its browser-console warning must be removed.
+
 ## Latest Fix: Dashboard Settings Metadata Route
 
 - Fixed `GET /admin/api/config/meta` being omitted from the live `Server.Handler()` mux even though it was present in the admin route catalogue and handler resolver.
