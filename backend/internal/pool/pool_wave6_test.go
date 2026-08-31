@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -42,13 +43,8 @@ func TestAcquireFiresPoolExhaustedWebhook(t *testing.T) {
 		t.Fatal("Acquire succeeded, want rate-limit error")
 	}
 	// The webhook POST is fire-and-forget: wait for it.
-	deadline := time.Now().Add(3 * time.Second)
-	for posts.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if posts.Load() != 1 {
-		t.Fatalf("webhook posts = %d, want 1 (pool_exhausted)", posts.Load())
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool { return posts.Load() == 1 },
+		fmt.Sprintf("pool_exhausted webhook posts = %d, want 1", posts.Load()))
 
 	// Second exhausted Acquire within the 5m throttle window: no new POST.
 	_, _ = p.Acquire(context.Background(), modelA)
@@ -79,22 +75,16 @@ func TestAcquireFiresPoolExhaustedPayload(t *testing.T) {
 	p.SetNotifier(notify.New(srv.URL, nil))
 	_, _ = p.Acquire(context.Background(), modelA)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	testutil.WaitFor(t, 3*time.Second, func() bool {
 		ev, ok := got.Load().(notify.Event)
-		if ok && ev.Event != "" {
-			if ev.Event != "pool_exhausted" || ev.Model != modelA || ev.TokenIndex != 0 {
-				t.Fatalf("event = %+v, want pool_exhausted for model %s", ev, modelA)
-			}
-			if _, err := time.Parse(time.RFC3339, ev.Timestamp); err != nil {
-				t.Fatalf("timestamp %q not RFC3339", ev.Timestamp)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("webhook payload never arrived")
-		}
-		time.Sleep(10 * time.Millisecond)
+		return ok && ev.Event != ""
+	}, "webhook payload never arrived")
+	ev := got.Load().(notify.Event)
+	if ev.Event != "pool_exhausted" || ev.Model != modelA || ev.TokenIndex != 0 {
+		t.Fatalf("event = %+v, want pool_exhausted for model %s", ev, modelA)
+	}
+	if _, err := time.Parse(time.RFC3339, ev.Timestamp); err != nil {
+		t.Fatalf("timestamp %q not RFC3339", ev.Timestamp)
 	}
 }
 
@@ -123,22 +113,16 @@ func TestCooldownTokenBanFiresWebhook(t *testing.T) {
 	if err == nil {
 		t.Fatal("Acquire succeeded, want ban error")
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	testutil.WaitFor(t, 3*time.Second, func() bool {
 		ev, ok := got.Load().(notify.Event)
-		if ok && ev.Event != "" {
-			if ev.Event != "token_banned" {
-				t.Fatalf("event = %q, want token_banned", ev.Event)
-			}
-			if ev.TokenIndex != 1 {
-				t.Errorf("token_index = %d, want 1 (1-based pooled index)", ev.TokenIndex)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("token_banned webhook never arrived")
-		}
-		time.Sleep(10 * time.Millisecond)
+		return ok && ev.Event != ""
+	}, "token_banned webhook never arrived")
+	ev := got.Load().(notify.Event)
+	if ev.Event != "token_banned" {
+		t.Fatalf("event = %q, want token_banned", ev.Event)
+	}
+	if ev.TokenIndex != 1 {
+		t.Errorf("token_index = %d, want 1 (1-based pooled index)", ev.TokenIndex)
 	}
 }
 

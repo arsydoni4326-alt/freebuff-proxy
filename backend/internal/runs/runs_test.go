@@ -40,17 +40,30 @@ func newTestManager(t *testing.T, mock *testutil.MockUpstream, rotationInterval 
 	return NewRunManager(client, sess, rotationInterval), sess
 }
 
-// eventually polls cond until it holds or the deadline passes.
+// eventually polls cond until it holds or the deadline passes. Thin
+// package wrapper over testutil.WaitFor so the runs package's many call
+// sites keep their signature; the loop itself lives in testutil/poll.go.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	testutil.WaitFor(t, 3*time.Second, cond, what)
+}
+
+// ageRun backdates the live run for agentID so its age exceeds minAge,
+// making the next Acquire/Maintain rotate it deterministically: the
+// production rotation checks compare time.Since(run.StartedAt) against the
+// injected rotationInterval (Acquire/Maintain in runs.go), so a backdated
+// StartedAt replaces fixed sleeps that raced that interval on loaded
+// machines. minAge is expressed relative to the test's injected rotation
+// interval (callers pass e.g. 2*rotInt).
+func ageRun(t *testing.T, m *RunManager, agentID string, minAge time.Duration) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.runs[agentID]
+	if run == nil {
+		t.Fatalf("ageRun: no live run for agent %q", agentID)
 	}
-	t.Fatalf("timeout waiting for %s", what)
+	run.StartedAt = time.Now().Add(-minAge)
 }
 
 func finishedRun(mock *testutil.MockUpstream, runID string) (testutil.FinishedRun, bool) {
@@ -67,7 +80,8 @@ func finishedRun(mock *testutil.MockUpstream, runID string) (testutil.FinishedRu
 func TestRotationAtInterval(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mgr, _ := newTestManager(t, mock, 40*time.Millisecond)
+	const rotInt = 40 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	first, err := mgr.Acquire(context.Background(), agentA)
 	if err != nil {
@@ -81,9 +95,10 @@ func TestRotationAtInterval(t *testing.T) {
 	}
 	mgr.Release(first)
 
-	// Let the run age past the rotation interval, then acquire again: the
-	// old run must be rotated away and FINISHed asynchronously.
-	time.Sleep(80 * time.Millisecond)
+	// Age the run past the rotation interval deterministically (the old
+	// 80ms sleep raced the 40ms interval), then acquire again: the old run
+	// must be rotated away and FINISHed asynchronously.
+	ageRun(t, mgr, agentA, 2*rotInt)
 	second, err := mgr.Acquire(context.Background(), agentA)
 	if err != nil {
 		t.Fatal(err)
@@ -255,19 +270,23 @@ func TestShutdownFinishesAllAndEndsSession(t *testing.T) {
 func TestMaintainDrainsOnlyWhenIdle(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mgr, _ := newTestManager(t, mock, 40*time.Millisecond)
+	const rotInt = 40 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	lease, err := mgr.Acquire(context.Background(), agentA)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	time.Sleep(80 * time.Millisecond) // age the run
+	ageRun(t, mgr, agentA, 2*rotInt) // age the run deterministically
 	mgr.Maintain(context.Background())
 
-	// The old run is draining but has an outstanding lease: give the async
-	// finish goroutine time to run, then assert it was NOT finished.
-	time.Sleep(100 * time.Millisecond)
+	// The old run is draining but has an outstanding lease: the async
+	// finish goroutine must observe inflight > 0 and skip it. No exposed
+	// state signals "the worker ran and skipped", so this negative
+	// assertion is bounded by wall time: 400ms (4x the old 100ms) gives a
+	// buggy implementation that ignores the lease ample chance to FINISH.
+	time.Sleep(400 * time.Millisecond)
 	if _, ok := finishedRun(mock, "run-0001"); ok {
 		t.Fatal("draining run FINISHed while inflight > 0")
 	}
@@ -284,7 +303,8 @@ func TestMaintainDrainsOnlyWhenIdle(t *testing.T) {
 func TestMaintainSkipsDuringCooldown(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mgr, _ := newTestManager(t, mock, 40*time.Millisecond)
+	const rotInt = 40 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	// A live run aged past rotation would normally make Maintain rotate it
 	// (START) and a draining run would be FINISHed; with the token in
@@ -296,7 +316,7 @@ func TestMaintainSkipsDuringCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.Release(run)
-	time.Sleep(80 * time.Millisecond) // age the run past rotation
+	ageRun(t, mgr, agentA, 2*rotInt) // age the run past rotation deterministically
 
 	mgr.Cooldown(time.Hour)
 
@@ -877,7 +897,8 @@ func TestSingleFlightRunAcquisition(t *testing.T) {
 func TestSingleFlightRunRotation(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mgr, _ := newTestManager(t, mock, 50*time.Millisecond)
+	const rotInt = 50 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	// First acquire
 	r1, err := mgr.Acquire(context.Background(), agentA)
@@ -889,8 +910,9 @@ func TestSingleFlightRunRotation(t *testing.T) {
 	}
 	mgr.Release(r1)
 
-	// Wait for rotation interval to pass
-	time.Sleep(70 * time.Millisecond)
+	// Age the run past the rotation interval deterministically (the old
+	// 70ms sleep raced the 50ms interval).
+	ageRun(t, mgr, agentA, 2*rotInt)
 
 	const concurrency = 20
 	var wg sync.WaitGroup
@@ -1011,7 +1033,8 @@ func captureSlogLocked() (restore func(), logged func() string) {
 func TestRunStartedFinishedLogTraceSessionID(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mgr, _ := newTestManager(t, mock, 40*time.Millisecond)
+	const rotInt = 40 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	restore, logged := captureSlogLocked()
 	defer restore()
@@ -1021,9 +1044,10 @@ func TestRunStartedFinishedLogTraceSessionID(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.Release(first)
-	// Let the run age past the rotation interval: the next acquire rotates
-	// it away and FINISHes it asynchronously through the deferred queue.
-	time.Sleep(60 * time.Millisecond)
+	// Age the run past the rotation interval deterministically (the old
+	// 60ms sleep raced the 40ms interval): the next acquire rotates it
+	// away and FINISHes it asynchronously through the deferred queue.
+	ageRun(t, mgr, agentA, 2*rotInt)
 	second, err := mgr.Acquire(context.Background(), agentA)
 	if err != nil {
 		t.Fatal(err)
@@ -1059,7 +1083,8 @@ func TestRunFinishedLogCarriesLifecycleAttrs(t *testing.T) {
 	testutil.UnsetConfigEnv(t)
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mgr, _ := newTestManager(t, mock, 40*time.Millisecond)
+	const rotInt = 40 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	restore, logged := captureSlogLocked()
 	defer restore()
@@ -1071,9 +1096,10 @@ func TestRunFinishedLogCarriesLifecycleAttrs(t *testing.T) {
 	mgr.RecordStep(first, "chatcmpl-1")
 	mgr.RecordStep(first, "chatcmpl-2")
 	mgr.Release(first)
-	// Let the run age past the rotation interval: the next acquire rotates
-	// it away and FINISHes it asynchronously through the deferred queue.
-	time.Sleep(60 * time.Millisecond)
+	// Age the run past the rotation interval deterministically (the old
+	// 60ms sleep raced the 40ms interval): the next acquire rotates it
+	// away and FINISHes it asynchronously through the deferred queue.
+	ageRun(t, mgr, agentA, 2*rotInt)
 	second, err := mgr.Acquire(context.Background(), agentA)
 	if err != nil {
 		t.Fatal(err)
@@ -1166,7 +1192,8 @@ func TestShutdownAbandonWarnLogsFields(t *testing.T) {
 	// The rotation sequence STARTs four runs (two per agent); the default
 	// pool holds three ids.
 	mock.RunIDs = append([]string{"run-0001", "run-0002", "run-0003", "run-0004", "run-0005"}, mock.RunIDs...)
-	mgr, _ := newTestManager(t, mock, 40*time.Millisecond)
+	const rotInt = 40 * time.Millisecond
+	mgr, _ := newTestManager(t, mock, rotInt)
 
 	// Rotate both agents so the worker is mid-FINISH (slow mock) with a
 	// second FINISH queued when Shutdown's deadline expires.
@@ -1175,19 +1202,19 @@ func TestShutdownAbandonWarnLogsFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	mgr.Release(first)
-	time.Sleep(60 * time.Millisecond)
+	ageRun(t, mgr, agentA, 2*rotInt)
 	second, err := mgr.Acquire(context.Background(), agentA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mgr.Release(second)
-	time.Sleep(60 * time.Millisecond)
+	ageRun(t, mgr, agentA, 2*rotInt)
 	b1, err := mgr.Acquire(context.Background(), agentB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mgr.Release(b1)
-	time.Sleep(60 * time.Millisecond)
+	ageRun(t, mgr, agentB, 2*rotInt)
 	b2, err := mgr.Acquire(context.Background(), agentB)
 	if err != nil {
 		t.Fatal(err)

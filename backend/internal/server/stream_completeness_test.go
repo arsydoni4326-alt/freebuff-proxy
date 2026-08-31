@@ -9,10 +9,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestOpenAIStreamFirstChunkRoleInjected pins the first-chunk role
@@ -114,6 +118,161 @@ func TestAnthropicStreamInBandErrorChunk(t *testing.T) {
 	if strings.Contains(body, `"stop_reason":"end_turn"`) {
 		t.Errorf("message_delta stop_reason end_turn after error: %q", truncateStr(body, 400))
 	}
+}
+
+// TestChatStreamUpstreamErrorEnvelope pins the OpenAI chat streaming error
+// contract at both failure points, the /v1/chat/completions counterpart of
+// TestAnthropicStreamInBandErrorChunk:
+//
+//   - Pre-stream (upstream refuses admission): the response is a plain HTTP
+//     status error carrying the OpenAI JSON error envelope + Retry-After —
+//     never SSE-framed (no stream was ever committed, so a 200 envelope
+//     would hide the status code and Retry-After from OpenAI SDK clients,
+//     which parse the body only after seeing a 2xx) and never the Anthropic
+//     envelope on the OpenAI surface.
+//   - Mid-stream (upstream dies after committing the stream): the client
+//     gets the in-band OpenAI error frame (code "upstream_stream_error",
+//     message "upstream stream interrupted: ...") and then [DONE] — the
+//     failed turn is never dressed up as a completed one with a synthesized
+//     finish_reason, and no Anthropic envelope vocabulary leaks.
+func TestChatStreamUpstreamErrorEnvelope(t *testing.T) {
+	t.Run("pre-stream 429 is a JSON status error, not SSE", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"status":"rate_limited","message":"Daily session quota exhausted","retryAfterMs":13000}`))
+		}
+		srv := newServer(t, mock, nil)
+		ts := httptest.NewServer(srv.Handler())
+		t.Cleanup(ts.Close)
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		body := `{"model":"` + testModelA + `","messages":[{"role":"user","content":"ping"}],"stream":true}`
+		resp, err := client.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		data := string(raw)
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("status = %d, want 429: %s", resp.StatusCode, truncateStr(data, 300))
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Errorf("Content-Type = %q, want application/json (the stream never started)", ct)
+		}
+		if ra := resp.Header.Get("Retry-After"); ra != "13" {
+			t.Errorf("Retry-After = %q, want 13 (ceil of retryAfterMs 13000)", ra)
+		}
+		// No SSE framing may leak: a "data:"-framed error body would parse
+		// as garbage for a client that never got a 2xx stream commitment.
+		if strings.Contains(data, "data: ") || strings.Contains(data, "[DONE]") {
+			t.Errorf("pre-stream error must not be SSE-framed: %s", truncateStr(data, 300))
+		}
+		var env struct {
+			Error struct {
+				Message string  `json:"message"`
+				Type    string  `json:"type"`
+				Param   *string `json:"param"`
+				Code    string  `json:"code"`
+			} `json:"error"`
+			TopLevelType string `json:"type"` // Anthropic envelope sentinel
+		}
+		if err := json.Unmarshal(raw, &env); err != nil {
+			t.Fatalf("body is not OpenAI error JSON: %v: %s", err, truncateStr(data, 300))
+		}
+		if env.Error.Code != "rate_limited" {
+			t.Errorf("error.code = %q, want rate_limited", env.Error.Code)
+		}
+		if env.Error.Type != "upstream_error" {
+			t.Errorf("error.type = %q, want upstream_error", env.Error.Type)
+		}
+		if env.Error.Message == "" || env.Error.Param != nil {
+			t.Errorf("error message/param wrong: %+v", env.Error)
+		}
+		if env.TopLevelType == "error" {
+			t.Errorf("Anthropic envelope leaked on the OpenAI surface: %s", truncateStr(data, 300))
+		}
+	})
+
+	t.Run("mid-stream abort emits error frame then DONE, no synthesized turn end", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`data: {"id":"chatcmpl-mid","object":"chat.completion.chunk","created":1,"model":"` + testModelA + `","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}` + "\n\n"))
+			w.(http.Flusher).Flush()
+			// Abort the connection after committing the stream: the proxy
+			// sees a mid-body read failure, not a clean EOF.
+			panic(http.ErrAbortHandler)
+		}
+		srv := newServer(t, mock, nil)
+		ts := httptest.NewServer(srv.Handler())
+		t.Cleanup(ts.Close)
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		body := `{"model":"` + testModelA + `","messages":[{"role":"user","content":"ping"}],"stream":true}`
+		resp, err := client.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		data := string(raw)
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (the stream was already committed): %s", resp.StatusCode, truncateStr(data, 300))
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+			t.Errorf("Content-Type = %q, want text/event-stream", ct)
+		}
+		if !strings.Contains(data, "partial") {
+			t.Errorf("first chunk lost before the abort: %s", truncateStr(data, 300))
+		}
+		// The in-band error frame carries the OpenAI error shape with the
+		// transport code and the interrupted-stream message.
+		var errPayload map[string]any
+		for _, f := range collectSSEFrames(t, data) {
+			if e, ok := f.data["error"].(map[string]any); ok {
+				errPayload = e
+				break
+			}
+		}
+		if errPayload == nil {
+			t.Fatalf("no error frame in stream: %s", truncateStr(data, 400))
+		}
+		if errPayload["type"] != "upstream_error" {
+			t.Errorf("error.type = %v, want upstream_error", errPayload["type"])
+		}
+		if errPayload["code"] != "upstream_stream_error" {
+			t.Errorf("error.code = %v, want upstream_stream_error", errPayload["code"])
+		}
+		if msg, _ := errPayload["message"].(string); !strings.HasPrefix(msg, "upstream stream interrupted: ") {
+			t.Errorf("error.message = %q, want 'upstream stream interrupted: ...'", msg)
+		}
+		// [DONE] terminates the stream, after the error frame.
+		errIdx := strings.Index(data, `"upstream_stream_error"`)
+		doneIdx := strings.Index(data, "data: [DONE]")
+		if errIdx < 0 || doneIdx < 0 || errIdx > doneIdx {
+			t.Fatalf("error frame must precede [DONE]: errIdx=%d doneIdx=%d body=%s", errIdx, doneIdx, truncateStr(data, 400))
+		}
+		if !strings.HasSuffix(data, "data: [DONE]\n\n") {
+			t.Errorf("stream must terminate with [DONE]: %q", truncateStr(data, 200))
+		}
+		// A failed turn is never dressed up as a completed one: no
+		// synthesized finish_reason (OpenAI vocabulary) and no Anthropic
+		// envelope vocabulary on the OpenAI surface.
+		if strings.Contains(data, `"finish_reason":"stop"`) || strings.Contains(data, `"finish_reason":"tool_calls"`) {
+			t.Errorf("finish_reason synthesized after upstream error: %s", truncateStr(data, 400))
+		}
+		if strings.Contains(data, `"stop_reason"`) || strings.Contains(data, `"type":"error"`) || strings.Contains(data, "message_stop") {
+			t.Errorf("Anthropic envelope vocabulary leaked on the OpenAI surface: %s", truncateStr(data, 400))
+		}
+	})
 }
 
 // TestAnthropicStreamContentFilterMapsToRefusal pins the stop_reason

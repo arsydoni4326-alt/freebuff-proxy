@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -154,13 +155,8 @@ func TestBridgeAdmissionBanNotifies(t *testing.T) {
 	if err == nil {
 		t.Fatal("AcquireBridge succeeded, want ban error")
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for posts.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if posts.Load() != 1 {
-		t.Fatalf("webhook posts = %d, want 1 (token_banned)", posts.Load())
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool { return posts.Load() == 1 },
+		fmt.Sprintf("token_banned webhook posts = %d, want 1", posts.Load()))
 	var ev notify.Event
 	select {
 	case ev = <-gotEvent:

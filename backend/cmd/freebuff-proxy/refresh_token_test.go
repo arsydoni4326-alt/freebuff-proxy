@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestUpdateEnvKeysAt pins the atomic .env key rewriter (issue #66):
@@ -14,6 +16,9 @@ import (
 // file errors.
 func TestUpdateEnvKeysAt(t *testing.T) {
 	dir := t.TempDir()
+	// Drain before TempDir's own RemoveAll: Windows AV locks can leave a
+	// stray .env.tmp* behind that would fail the cleanup (see poll.go).
+	testutil.DrainStrayTempFiles(t, dir)
 	envPath := filepath.Join(dir, ".env")
 	original := "# comment stays\nAUTH_TOKENS=tok-old-1,tok-old-2\n# another comment\nLISTEN_ADDR=127.0.0.1:3457\n"
 	if err := os.WriteFile(envPath, []byte(original), 0o600); err != nil {

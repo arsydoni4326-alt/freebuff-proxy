@@ -337,6 +337,11 @@ func TestRestoreEnvFileUnreadable(t *testing.T) {
 // endings (a Windows-edited .env must never be rewritten mixed-EOL).
 func TestUpdateEnvKeys(t *testing.T) {
 	t.Chdir(t.TempDir())
+	// Windows: Defender may hold a scan handle on a just-written .env,
+	// leaving a locked .bak/.tmp stray that breaks TempDir's RemoveAll.
+	// Registered after Chdir, so the drain runs first (LIFO) while the
+	// working directory still points at the temp dir.
+	testutil.DrainStrayTempFiles(t, ".")
 	if err := os.WriteFile(".env", []byte("SAFE_MODE=true\r\nAUTH_TOKENS=tok-a\r\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -373,6 +378,9 @@ func TestUpdateEnvKeys(t *testing.T) {
 // temp file, on every platform (no unconditional pre-remove on Windows).
 func TestWriteFileAtomicReplacesAndCleansUp(t *testing.T) {
 	dir := t.TempDir()
+	// Drain before TempDir's own RemoveAll: Windows AV locks can leave a
+	// stray .bak/.tmp behind that would fail the cleanup (see poll.go).
+	testutil.DrainStrayTempFiles(t, dir)
 	path := filepath.Join(dir, ".env")
 	if err := os.WriteFile(path, []byte("OLD\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -395,6 +403,9 @@ func TestWriteFileAtomicReplacesAndCleansUp(t *testing.T) {
 // platform, so it doubles as a deterministic failure injection.
 func TestWriteFileAtomicFailurePreservesTarget(t *testing.T) {
 	dir := t.TempDir()
+	// Drain before TempDir's own RemoveAll: Windows AV locks can leave a
+	// stray .bak/.tmp behind that would fail the cleanup (see poll.go).
+	testutil.DrainStrayTempFiles(t, dir)
 	path := filepath.Join(dir, ".env")
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)

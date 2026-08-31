@@ -86,8 +86,9 @@ func TestFinishQueueBoundsInlineFallback(t *testing.T) {
 	defer mock.Close()
 	mock.SetFinishDelay(300 * time.Millisecond)
 	mock.RunIDs = []string{"run-0001", "run-0002", "run-0003", "run-0004", "run-0005"}
+	const rotInt = 5 * time.Millisecond
 	mgr, _ := newTestManagerOpts(t, mock, Options{
-		RotationInterval:    5 * time.Millisecond,
+		RotationInterval:    rotInt,
 		FinishQueueSize:     1,
 		InlineFinishTimeout: 50 * time.Millisecond,
 	})
@@ -102,11 +103,25 @@ func TestFinishQueueBoundsInlineFallback(t *testing.T) {
 		return r
 	}
 	r1 := acquire()
-	time.Sleep(15 * time.Millisecond) // let r1 age past the rotation interval
-	r2 := acquire()                   // rotates r1 → worker FINISHes r1 (slow)
-	time.Sleep(5 * time.Millisecond)
+	// Rotate r1 deterministically (the old 15ms sleep raced the 5ms
+	// rotation interval).
+	ageRun(t, mgr, agentA, 2*rotInt)
+	r2 := acquire() // rotates r1 → worker FINISHes r1 (slow)
+
+	// The ordering asserted below holds only while the worker is busy
+	// inside r1's 300ms FINISH: r2's rotated FINISH then lands in the
+	// queue (cap 1) and r3's rotation finds it full and hits the inline
+	// fallback. If the worker dequeued r1's job between the r3 and r4
+	// acquisitions, r3's FINISH would queue and complete instead of
+	// aborting inline — the old 5ms sleeps raced exactly that window. Poll
+	// the mock's started-FINISH counter (exposed in-flight state) until
+	// the worker is mid-FINISH on r1 so the ordering is deterministic.
+	eventually(t, "worker mid-FINISH on r1", func() bool {
+		return mock.FinishesStartedSnapshot() >= 1
+	})
+	ageRun(t, mgr, agentA, 2*rotInt)
 	r3 := acquire() // rotates r2 → queued (queue cap 1, worker busy)
-	time.Sleep(5 * time.Millisecond)
+	ageRun(t, mgr, agentA, 2*rotInt)
 	r4 := acquire() // rotates r3 → queue full → inline fallback (aborts)
 
 	// r3's inline FINISH was aborted by the 50ms deadline: it must still be

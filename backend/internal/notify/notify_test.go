@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestSendPostsPayload verifies the webhook POST carries the JSON event
@@ -30,22 +33,16 @@ func TestSendPostsPayload(t *testing.T) {
 
 	s := New(srv.URL, nil)
 	s.Send(Event{Event: "token_banned", TokenIndex: 3, Model: "deepseek/deepseek-v4-pro", Message: "banned"})
-	deadline := time.Now().Add(3 * time.Second)
-	for {
+	testutil.WaitFor(t, 3*time.Second, func() bool {
 		ev, ok := got.Load().(Event)
-		if ok && ev.Event != "" {
-			if ev.Event != "token_banned" || ev.TokenIndex != 3 || ev.Model != "deepseek/deepseek-v4-pro" || ev.Message != "banned" {
-				t.Fatalf("payload = %+v, want full event contract", ev)
-			}
-			if _, err := time.Parse(time.RFC3339, ev.Timestamp); err != nil {
-				t.Fatalf("timestamp %q not RFC3339: %v", ev.Timestamp, err)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("webhook POST never arrived")
-		}
-		time.Sleep(10 * time.Millisecond)
+		return ok && ev.Event != ""
+	}, "webhook POST never arrived")
+	ev := got.Load().(Event)
+	if ev.Event != "token_banned" || ev.TokenIndex != 3 || ev.Model != "deepseek/deepseek-v4-pro" || ev.Message != "banned" {
+		t.Fatalf("payload = %+v, want full event contract", ev)
+	}
+	if _, err := time.Parse(time.RFC3339, ev.Timestamp); err != nil {
+		t.Fatalf("timestamp %q not RFC3339: %v", ev.Timestamp, err)
 	}
 }
 
@@ -71,10 +68,8 @@ func TestSendThrottle(t *testing.T) {
 	s.Send(Event{Event: "pool_exhausted", TokenIndex: 1, Model: "m"})
 	s.Send(Event{Event: "pool_exhausted", TokenIndex: 2, Model: "m"}) // throttled
 	s.Send(Event{Event: "token_banned", TokenIndex: 1})               // different type: fires
-	deadline := time.Now().Add(3 * time.Second)
-	for count.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool { return count.Load() >= 2 },
+		fmt.Sprintf("webhook POSTs = %d, want 2 (one per event type, 5m throttle)", count.Load()))
 	if got := count.Load(); got != 2 {
 		t.Fatalf("webhook POSTs = %d, want 2 (one per event type, 5m throttle)", got)
 	}
@@ -158,10 +153,9 @@ func TestSendFailureLogsWarn(t *testing.T) {
 		s.SetLogger(slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		s.Send(Event{Event: "token_banned"})
 
-		deadline := time.Now().Add(3 * time.Second)
-		for !strings.Contains(sink.String(), "webhook send failed") && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
+		testutil.WaitFor(t, 3*time.Second, func() bool {
+			return strings.Contains(sink.String(), "webhook send failed")
+		}, "status-failure WARN never logged")
 		logs := sink.String()
 		for _, want := range []string{"webhook send failed", "webhook returned status 503", "target=" + srv.URL} {
 			if !strings.Contains(logs, want) {
@@ -176,10 +170,9 @@ func TestSendFailureLogsWarn(t *testing.T) {
 		s.SetLogger(slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelWarn})))
 		s.Send(Event{Event: "pool_exhausted"})
 
-		deadline := time.Now().Add(3 * time.Second)
-		for !strings.Contains(sink.String(), "webhook send failed") && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
+		testutil.WaitFor(t, 3*time.Second, func() bool {
+			return strings.Contains(sink.String(), "webhook send failed")
+		}, "transport-failure WARN never logged")
 		logs := sink.String()
 		for _, want := range []string{"webhook send failed", "webhook unreachable", "target=https://webhook.invalid"} {
 			if !strings.Contains(logs, want) {
@@ -230,10 +223,9 @@ func TestSendRejectsRedirect(t *testing.T) {
 	s.SetLogger(slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	s.Send(Event{Event: "token_banned"})
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !strings.Contains(sink.String(), "webhook send failed") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool {
+		return strings.Contains(sink.String(), "webhook send failed")
+	}, "redirect-failure WARN never logged")
 	if got := finalHits.Load(); got != 0 {
 		t.Fatalf("/final hit %d times, want 0 (redirect must not be followed)", got)
 	}
@@ -252,10 +244,9 @@ func TestSendFailureRedactsURL(t *testing.T) {
 	s.SetLogger(slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	s.Send(Event{Event: "pool_exhausted"})
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !strings.Contains(sink.String(), "webhook send failed") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool {
+		return strings.Contains(sink.String(), "webhook send failed")
+	}, "redaction-failure WARN never logged")
 	logs := sink.String()
 	if !strings.Contains(logs, "target=https://webhook.invalid") {
 		t.Errorf("WARN missing redacted target: %s", logs)
