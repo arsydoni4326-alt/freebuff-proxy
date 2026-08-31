@@ -300,26 +300,8 @@
   {/if}
 
   {#if data && !loading}
-    {#if data.in_bridge}
-      <!-- Bridge mode: no pool snapshot to summarize -->
-      <Card>
-        <p class="text-sm text-[var(--fp-muted)]">
-          {$tr('Bridge mode relays upstream tokens per client request')}
-          (<span class="fp-num">{data.bridge_tokens}</span> {$tr('active bridge client(s)')}).
-          {$tr('Session pools and quota tracking are client-scoped.')}
-        </p>
-      </Card>
-    {:else if !data.has_tokens}
-      <EmptyState
-        title={$tr('No upstream tokens configured')}
-        description={$tr('Add tokens to AUTH_TOKENS in Settings to start the pooled relay.')}
-      >
-        {#snippet action()}
-          <a href="#settings" class="fp-btn fp-btn-secondary">{$tr('Go to Settings')}</a>
-        {/snippet}
-      </EmptyState>
-    {:else}
-      <!-- KPI row -->
+    {#if data.has_tokens}
+      <!-- KPI row (pooled tokens active) -->
       <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
         <Stat label={$tr('Pool total')} value={poolTotal} big />
         <Stat label={$tr('Busy')} value={busyTokens} hint={$tr('tokens with active runs')} big />
@@ -353,50 +335,94 @@
 
       <!-- Token risk cards -->
       <RiskCards tokens={atRiskTokens} total={poolTotal} />
+    {:else}
+      <!-- Bridge mode / empty pool summary -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Stat label={$tr('Relay Mode')} value={data.in_bridge ? 'Bridge' : 'Hybrid'} hint={data.in_bridge ? $tr('client-supplied tokens') : $tr('shared pool + bridge')} big />
+        <Stat label={$tr('Active Bridge Clients')} value={data.bridge_tokens ?? 0} hint={$tr('relaying upstream sessions')} big />
+        <Stat label={$tr('Served Models')} value={data.model_count ?? 0} hint={$tr('OpenAI & Anthropic')} big />
+      </div>
 
-      <!-- Universal Client Integration & Endpoints Card -->
-      <section aria-label="Client integration">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="text-lg font-semibold text-[var(--fp-text)]">{$tr('Client Integration')}</h2>
-          <span class="text-xs font-mono text-[var(--fp-muted)]">OpenAI & Anthropic Compatible</span>
+      <Card
+        title={$tr('Gateway Ready — Bridge & Pooled Relay')}
+        description={$tr('The gateway is online and ready for traffic. Connect your tools directly in Bridge mode, or add FreeBuff accounts to create a shared token pool.')}
+      >
+        {#snippet actions()}
+          <a href="#tokens" class="fp-btn fp-btn-secondary fp-btn-sm inline-flex items-center gap-1.5">
+            <span>{$tr('Manage Tokens')}</span>
+          </a>
+        {/snippet}
+        <div class="text-xs text-[var(--fp-muted)] space-y-2">
+          <p>
+            <strong class="text-[var(--fp-text)]">{$tr('Bridge Mode (Active):')}</strong> {$tr('Clients can send requests using their own FreeBuff token (cb_…) as the Bearer or x-api-key credential.')}
+          </p>
+          <p>
+            <strong class="text-[var(--fp-text)]">{$tr('Pooled Mode (Ready):')}</strong> {$tr('Add FreeBuff accounts in Tokens (via Device Login or pasting tokens) to enable shared pool rotation, admission coercion, and Client API Key routing.')}
+          </p>
         </div>
+      </Card>
 
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <!-- Gateway Base URL -->
-          <Card title={$tr('Gateway Base URL')} description={$tr('Universal base endpoint for any OpenAI or Anthropic client, SDK, or CLI tool.')}>
-            <div class="flex items-center gap-2">
-              <div class="fp-inset flex-1 px-3 py-2 overflow-x-auto">
-                <code class="fp-num text-xs text-[var(--fp-accent)] font-mono font-semibold">{data?.base_url || 'http://127.0.0.1:3457/v1'}</code>
-              </div>
-              <CopyButton text={data?.base_url || 'http://127.0.0.1:3457/v1'} label={$tr('Copy URL')} />
+      {#if data.bridge_token_cards?.length}
+        <Card title={$tr('Active Bridge Clients')}>
+          <ul class="flex flex-col gap-1.5">
+            {#each data.bridge_token_cards as bc (bc.key)}
+              <li class="flex flex-wrap items-center gap-2 text-xs">
+                <StatusBadge status={bc.status} />
+                <code class="fp-num font-mono text-[var(--fp-text)]">{bc.key}</code>
+                {#if bc.model}
+                  <code class="fp-num font-mono text-[var(--fp-muted)]">{bc.model}</code>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </Card>
+      {/if}
+    {/if}
+
+    <!-- Universal Client Integration & Endpoints Card (Always Available) -->
+    <section aria-label="Client integration">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-lg font-semibold text-[var(--fp-text)]">{$tr('Client Integration')}</h2>
+        <span class="text-xs font-mono text-[var(--fp-muted)]">OpenAI & Anthropic Compatible</span>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <!-- Gateway Base URL -->
+        <Card title={$tr('Gateway Base URL')} description={$tr('Universal base endpoint for any OpenAI or Anthropic client, SDK, or CLI tool.')}>
+          <div class="flex items-center gap-2">
+            <div class="fp-inset flex-1 px-3 py-2 overflow-x-auto">
+              <code class="fp-num text-xs text-[var(--fp-accent)] font-mono font-semibold">{data?.base_url || 'http://127.0.0.1:3457/v1'}</code>
             </div>
-            <p class="mt-3 text-xs text-[var(--fp-muted)]">
-              {$tr('Authentication: Use any Client API Key below via Bearer token or x-api-key header.')}
-            </p>
-          </Card>
+            <CopyButton text={data?.base_url || 'http://127.0.0.1:3457/v1'} label={$tr('Copy URL')} />
+          </div>
+          <p class="mt-3 text-xs text-[var(--fp-muted)]">
+            {$tr('Authentication: Use any Client API Key below via Bearer token or x-api-key header.')}
+          </p>
+        </Card>
 
-          <!-- Supported Protocols & Routes -->
-          <Card title={$tr('Supported Wire Protocols')} description={$tr('Dual-protocol translation handled transparently by the gateway.')}>
-            <div class="space-y-2">
-              <div class="fp-inset px-3 py-2 flex items-center justify-between gap-2 text-xs">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono text-[10px] text-[var(--fp-accent)]">OpenAI</span>
-                  <span class="font-mono text-[var(--fp-text)] truncate">POST /v1/chat/completions</span>
-                </div>
-                <span class="text-[var(--fp-dim)] text-[11px] shrink-0">Cursor, Aider, OMP</span>
+        <!-- Supported Protocols & Routes -->
+        <Card title={$tr('Supported Wire Protocols')} description={$tr('Dual-protocol translation handled transparently by the gateway.')}>
+          <div class="space-y-2">
+            <div class="fp-inset px-3 py-2 flex items-center justify-between gap-2 text-xs">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono text-[10px] text-[var(--fp-accent)]">OpenAI</span>
+                <span class="font-mono text-[var(--fp-text)] truncate">POST /v1/chat/completions</span>
               </div>
-              <div class="fp-inset px-3 py-2 flex items-center justify-between gap-2 text-xs">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono text-[10px] text-[#A78BFA]">Anthropic</span>
-                  <span class="font-mono text-[var(--fp-text)] truncate">POST /v1/messages</span>
-                </div>
-                <span class="text-[var(--fp-dim)] text-[11px] shrink-0">Claude Code, Cline</span>
-              </div>
+              <span class="text-[var(--fp-dim)] text-[11px] shrink-0">Cursor, Aider, OMP</span>
             </div>
-          </Card>
-        </div>
+            <div class="fp-inset px-3 py-2 flex items-center justify-between gap-2 text-xs">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono text-[10px] text-[#A78BFA]">Anthropic</span>
+                <span class="font-mono text-[var(--fp-text)] truncate">POST /v1/messages</span>
+              </div>
+              <span class="text-[var(--fp-dim)] text-[11px] shrink-0">Claude Code, Cline</span>
+            </div>
+          </div>
+        </Card>
+      </div>
 
-        <!-- Token Rotation Scheme Selector -->
+      <!-- Token Rotation Scheme Selector (when pool has tokens) -->
+      {#if data.has_tokens}
         <div class="mt-4">
           <Card
             title={$tr('Token Rotation Scheme')}
@@ -475,74 +501,75 @@
             </div>
           </Card>
         </div>
-        <!-- Client API-key management -->
-        <div class="mt-4">
-          <Card
-            title={$tr('Client API Keys')}
-            description={$tr('sk-fb-… credentials for clients (omp, Cursor, Claude Code, curl) to authenticate against this gateway. Stored in API_KEYS in .env.')}
-          >
-            {#snippet actions()}
-              <Button variant="primary" size="sm" onclick={generateClientKey} disabled={generatingKey}>
-                {#if generatingKey}
-                  <RefreshCw size={14} class="animate-spin" />
-                  <span>{$tr('Generating…')}</span>
-                {:else}
-                  <Key size={14} />
-                  <span>{$tr('Generate API Key')}</span>
-                {/if}
-              </Button>
-            {/snippet}
+      {/if}
 
-            {#if apiKeys.length > 0}
-              <div class="flex flex-col gap-2 mb-3">
-                {#each apiKeys as key (key)}
-                  <div class="fp-inset rounded flex items-center justify-between gap-2 px-3 py-2">
-                    <code class="fp-num text-xs truncate flex-1 select-all font-mono">{maskKey(key)}</code>
-                    <div class="flex items-center gap-1 shrink-0">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onclick={() => toggleKeyVisibility(key)}
-                        aria-label={visibleKeys[key] ? $tr('Hide API key') : $tr('Show API key')}
-                        title={visibleKeys[key] ? $tr('Hide API key') : $tr('Show API key')}
-                      >
-                        {#if visibleKeys[key]}
-                          <EyeOff size={14} />
-                        {:else}
-                          <Eye size={14} />
-                        {/if}
-                      </Button>
-                      <CopyButton text={key} label="Copy" />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onclick={() => deleteApiKey(key)}
-                        disabled={deletingKey === key}
-                        aria-label={$tr('Delete API key')}
-                        title={$tr('Delete API key')}
-                      >
-                        <Trash2 size={14} />
-                        <span>{$tr('Delete')}</span>
-                      </Button>
-                    </div>
+      <!-- Client API-key management (Always Available) -->
+      <div class="mt-4">
+        <Card
+          title={$tr('Client API Keys')}
+          description={$tr('sk-fb-… credentials for clients (omp, Cursor, Claude Code, curl) to authenticate against this gateway. Stored in API_KEYS in .env.')}
+        >
+          {#snippet actions()}
+            <Button variant="primary" size="sm" onclick={generateClientKey} disabled={generatingKey}>
+              {#if generatingKey}
+                <RefreshCw size={14} class="animate-spin" />
+                <span>{$tr('Generating…')}</span>
+              {:else}
+                <Key size={14} />
+                <span>{$tr('Generate API Key')}</span>
+              {/if}
+            </Button>
+          {/snippet}
+
+          {#if apiKeys.length > 0}
+            <div class="flex flex-col gap-2 mb-3">
+              {#each apiKeys as key (key)}
+                <div class="fp-inset rounded flex items-center justify-between gap-2 px-3 py-2">
+                  <code class="fp-num text-xs truncate flex-1 select-all font-mono">{maskKey(key)}</code>
+                  <div class="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onclick={() => toggleKeyVisibility(key)}
+                      aria-label={visibleKeys[key] ? $tr('Hide API key') : $tr('Show API key')}
+                      title={visibleKeys[key] ? $tr('Hide API key') : $tr('Show API key')}
+                    >
+                      {#if visibleKeys[key]}
+                        <EyeOff size={14} />
+                      {:else}
+                        <Eye size={14} />
+                      {/if}
+                    </Button>
+                    <CopyButton text={key} label="Copy" />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onclick={() => deleteApiKey(key)}
+                      disabled={deletingKey === key}
+                      aria-label={$tr('Delete API key')}
+                      title={$tr('Delete API key')}
+                    >
+                      <Trash2 size={14} />
+                      <span>{$tr('Delete')}</span>
+                    </Button>
                   </div>
-                {/each}
-              </div>
-            {:else}
-              <p class="text-xs text-[var(--fp-dim)] mb-3">
-                {$tr('No client API keys configured. In open mode, clients can authenticate with any key or leave it unset.')}
-              </p>
-            {/if}
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="text-xs text-[var(--fp-dim)] mb-3">
+              {$tr('No client API keys configured. In open mode, clients can authenticate with any key or leave it unset.')}
+            </p>
+          {/if}
 
-            {#if clientKeyMessage}
-              <Alert tone={clientKeyOK ? 'success' : 'error'} title={clientKeyMessage} />
-            {/if}
-          </Card>
-        </div>
-      </section>
+          {#if clientKeyMessage}
+            <Alert tone={clientKeyOK ? 'success' : 'error'} title={clientKeyMessage} />
+          {/if}
+        </Card>
+      </div>
+    </section>
 
-      <!-- Pop-up modal for newly generated API key -->
-      <GeneratedKeyModal bind:open={showGeneratedModal} key={generatedKey} onClose={closeGeneratedKeyModal} />
-    {/if}
+    <!-- Pop-up modal for newly generated API key -->
+    <GeneratedKeyModal bind:open={showGeneratedModal} key={generatedKey} onClose={closeGeneratedKeyModal} />
   {/if}
 </div>
