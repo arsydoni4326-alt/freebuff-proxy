@@ -29,8 +29,8 @@
     bind:value={spawnModel}
     class="fp-input !text-xs !py-1 !px-2 !h-8 !w-48"
   >
-    <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/day shared premium)</option>
-    <option value="upstage/solar-pro4">upstage/solar-pro4 (5/day shared premium)</option>
+    <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (shared premium pool)</option>
+    <option value="upstage/solar-pro4">upstage/solar-pro4 (shared premium pool)</option>
     <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unmetered)</option>
     <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (unmetered)</option>
     <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash (unmetered)</option>

@@ -38,8 +38,8 @@
   let actionPending = $state(false);
 
   const modelsList = [
-    { id: 'openai/gpt-5.6-luna', label: 'openai/gpt-5.6-luna (5/day shared)', tag: '5/d' },
-    { id: 'upstage/solar-pro4', label: 'upstage/solar-pro4 (5/day shared · experimental)', tag: '5/d' },
+    { id: 'openai/gpt-5.6-luna', label: 'openai/gpt-5.6-luna (shared premium pool)', tag: 'premium' },
+    { id: 'upstage/solar-pro4', label: 'upstage/solar-pro4 (shared premium pool · experimental)', tag: 'premium' },
     { id: 'mimo/mimo-v2.5', label: 'mimo/mimo-v2.5 (unmetered entry)', tag: 'unmetered' },
     { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (unmetered)', tag: 'unmetered' },
     { id: 'deepseek/deepseek-v4-flash', label: 'deepseek/deepseek-v4-flash (unmetered)', tag: 'unmetered' },
