@@ -104,6 +104,18 @@ export async function fetchAPI(path, opts = {}) {
     throw new Error(msg || `HTTP ${res.status}`);
   }
 
+  // Guard against non-JSON responses (e.g. SPA shell from a reverse proxy,
+  // middleware intercept, or network appliance). The Content-Type may be
+  // missing or set to text/html. Without this guard res.json() throws the
+  // cryptic "Unexpected token '<'" error instead of a actionable message.
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    const snippet = (await res.text().catch(() => '')).slice(0, 200);
+    throw new Error(
+      `Expected JSON but received ${ct || '(no content-type)'}: ${snippet}`
+    );
+  }
+
   return res.json();
 }
 
