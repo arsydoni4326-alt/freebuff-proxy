@@ -413,8 +413,9 @@ func toolCallsOf(delta map[string]any) []map[string]any {
 // and the effective finish reason. If no tool calls remain and finish_reason was
 // "tool_calls", finish_reason is flipped to "stop" in-place.
 //
-// The Anthropic relay must NOT use this — it deliberately passes end_turn
-// through to Claude-Code-style clients.
+// Every relay must strip end_turn before downstream emission; the Anthropic
+// relays implement the strip in their own state machines rather than via
+// this helper.
 func StripEndTurnToolCalls(chunk map[string]any) (toolCallsRemaining bool, finishReason string) {
 	anyRemaining := false
 	for _, choice := range choicesOf(chunk) {

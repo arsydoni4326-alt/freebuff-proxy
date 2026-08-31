@@ -89,47 +89,7 @@ func dropEndTurnContinuations(clean []byte, endTurnCallIndexes map[int]bool) []b
 	if json.Unmarshal(clean, &chunk) != nil {
 		return clean
 	}
-	dropped := false
-	if choices, ok := chunk["choices"].([]any); ok {
-		for _, raw := range choices {
-			choice, _ := raw.(map[string]any)
-			if choice == nil {
-				continue
-			}
-			delta, _ := choice["delta"].(map[string]any)
-			if delta == nil {
-				continue
-			}
-			tcs, _ := delta["tool_calls"].([]any)
-			if len(tcs) == 0 {
-				continue
-			}
-			filtered := make([]any, 0, len(tcs))
-			for _, tc := range tcs {
-				tcMap, _ := tc.(map[string]any)
-				if tcMap == nil {
-					filtered = append(filtered, tc)
-					continue
-				}
-				idx := 0
-				if i, ok := tcMap["index"].(float64); ok {
-					idx = int(i)
-				}
-				if endTurnCallIndexes[idx] {
-					dropped = true
-					continue // drop continuation fragment
-				}
-				filtered = append(filtered, tc)
-			}
-			if dropped {
-				if len(filtered) == 0 {
-					delete(delta, "tool_calls")
-				} else {
-					delta["tool_calls"] = filtered
-				}
-			}
-		}
-	}
+	dropped, _ := dropEndTurnContinuationsInChunk(chunk, endTurnCallIndexes)
 	if !dropped {
 		return clean
 	}
@@ -137,6 +97,60 @@ func dropEndTurnContinuations(clean []byte, endTurnCallIndexes map[int]bool) []b
 		return b
 	}
 	return clean
+}
+
+// dropEndTurnContinuationsInChunk is the map-level core shared by the
+// bytes-based streaming drop above and the Responses relay's chunk loop:
+// it removes delta.tool_calls fragments whose index belongs to an
+// already-stripped end_turn call from an unmarshalled chat chunk map.
+// dropped reports whether any fragment was removed; emptied reports
+// whether a choice's tool_calls list was emptied by the drop (its delta
+// key is deleted).
+func dropEndTurnContinuationsInChunk(chunk map[string]any, endTurnCallIndexes map[int]bool) (dropped, emptied bool) {
+	if len(endTurnCallIndexes) == 0 {
+		return false, false
+	}
+	choices, _ := chunk["choices"].([]any)
+	for _, raw := range choices {
+		choice, _ := raw.(map[string]any)
+		if choice == nil {
+			continue
+		}
+		delta, _ := choice["delta"].(map[string]any)
+		if delta == nil {
+			continue
+		}
+		tcs, _ := delta["tool_calls"].([]any)
+		if len(tcs) == 0 {
+			continue
+		}
+		filtered := make([]any, 0, len(tcs))
+		for _, tc := range tcs {
+			tcMap, _ := tc.(map[string]any)
+			if tcMap == nil {
+				filtered = append(filtered, tc)
+				continue
+			}
+			idx := 0
+			if i, ok := tcMap["index"].(float64); ok {
+				idx = int(i)
+			}
+			if endTurnCallIndexes[idx] {
+				dropped = true
+				continue // drop continuation fragment
+			}
+			filtered = append(filtered, tc)
+		}
+		if dropped {
+			if len(filtered) == 0 {
+				delete(delta, "tool_calls")
+				emptied = true
+			} else {
+				delta["tool_calls"] = filtered
+			}
+		}
+	}
+	return dropped, emptied
 }
 
 // ensureChatChunkRole injects "role":"assistant" into the FIRST relayed
