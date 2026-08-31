@@ -1,5 +1,14 @@
 # Session: SQLite Token Database + UI
 
+## Latest Fix: Dashboard Settings Metadata Route
+
+- Fixed `GET /admin/api/config/meta` being omitted from the live `Server.Handler()` mux even though it was present in the admin route catalogue and handler resolver.
+- The `/admin/` SPA fallback had consequently returned `index.html` (`text/html`) to the Settings page metadata fetch while `/admin/api/config` correctly returned JSON.
+- Added the missing authenticated JSON route, a regression assertion for `Content-Type: application/json`, and the API contract row in `SPECIFICATION.md`.
+- Validation: `TestDashboardConfigMetaEndpoint`, `TestAdminRoutesAllRegister`, `go vet ./backend/internal/server/...`, `gofmt`, `git diff --check`, and `go build -o freebuff-proxy.exe ./backend/cmd/freebuff-proxy` pass.
+- The full `backend/internal/server` suite still has pre-existing failures in 404 access-log suppression, `/v1/*` rate-limit coverage/envelopes, and concurrent reload EOF handling; the config-metadata regression now passes.
+- Deployment note: the active proxy process is an already-unlinked `/usr/local/bin/freebuff-proxy` executable with working directory `/app`; it was not replaced or restarted from this workspace. Deploy `/home/denny/Project/freebuff-proxy/freebuff-proxy.exe` using the environment's normal process/container workflow.
+
 ## Current Objective
 Migrating AUTH_TOKENS from `.env` file persistence to a SQLite-backed database for hot-reload support without container recreation. Adding UI for token management.
 
