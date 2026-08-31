@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-
-	"freebuff-proxy/backend/internal/telemetry"
 )
 
 // Validate checks the resolved configuration. It must be called before use.
@@ -131,7 +129,7 @@ func (c Config) Validate() error {
 	}
 
 	if c.LogLevel != "" {
-		if _, ok := telemetry.ParseLevel(c.LogLevel); !ok {
+		if _, ok := ParseLevel(c.LogLevel); !ok {
 			return fmt.Errorf("LOG_LEVEL %q must be one of: debug, info, warn, error, trace", c.LogLevel)
 		}
 	}

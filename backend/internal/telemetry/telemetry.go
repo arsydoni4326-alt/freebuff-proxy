@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"freebuff-proxy/backend/internal/config"
 )
 
 // ANSI 4-color scheme: DEBUG gray, INFO green, WARN yellow, ERROR red.
@@ -36,8 +38,10 @@ const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 // LevelTrace is the most verbose log level, one step below debug. slog has
 // no built-in trace level; -8 sits below LevelDebug (-4). slog's String()
 // renders it "DEBUG-4", so the handlers and the startup banner print TRACE
-// explicitly (see levelName).
-const LevelTrace = slog.Level(-8)
+// explicitly (see levelName). Defined in config (the bottom layer validates
+// LOG_LEVEL without importing telemetry); this alias keeps the
+// telemetry-level name for the logging API.
+const LevelTrace = config.LevelTrace
 
 // NewLogger builds the process logger at Info level, or Debug when verbose.
 // It is a convenience wrapper over New keeping the original API (text format).
@@ -49,22 +53,14 @@ func NewLogger(verbose bool, logFile string) *slog.Logger {
 	return New(level, logFile, "text")
 }
 
-// ParseLevel parses a LOG_LEVEL-style string into a slog level. The empty
-// string returns ok=false (caller falls back to its default). "trace"
+// ParseLevel parses a LOG_LEVEL-style string into a slog level. The level
+// table is owned by config (bottom layer); this wrapper forwards so the
+// telemetry logging API and its callers are unchanged. The empty string
+// returns ok=false (caller falls back to its default). "trace"
 // (case-insensitive) maps to LevelTrace; the four slog names are accepted
 // as before.
 func ParseLevel(s string) (slog.Level, bool) {
-	if s == "" {
-		return 0, false
-	}
-	if strings.EqualFold(s, "trace") {
-		return LevelTrace, true
-	}
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(s)); err != nil {
-		return 0, false
-	}
-	return level, true
+	return config.ParseLevel(s)
 }
 
 // New builds the process logger at the given level. stderr gets the

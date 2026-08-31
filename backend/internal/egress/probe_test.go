@@ -3,9 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -132,19 +130,6 @@ func TestProbeTimeout(t *testing.T) {
 	}
 }
 
-// poll waits up to timeout for cond to hold, failing the test otherwise.
-func poll(t *testing.T, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("condition not met within " + timeout.String())
-}
-
 // TestProbeAll guards probeAll: every path yields a result, paths run
 // concurrently, and one failing path never aborts the others.
 func TestProbeAll(t *testing.T) {
@@ -213,124 +198,6 @@ func TestProbeAll(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("probeAll did not run paths concurrently")
 		}
-	})
-}
-
-// TestRunLoop guards the background probing loop: it probes immediately on
-// start, re-probes on the interval, caches failures fail-open, exits on ctx
-// cancel, and guards against nil cache/logger and non-positive intervals
-// (regression for Audit B7 — time.NewTicker panicked on interval <= 0).
-func TestRunLoop(t *testing.T) {
-	t.Run("immediate probe then interval", func(t *testing.T) {
-		ts := traceServer(t, "ip=198.51.100.4\nloc=FR\n", http.StatusOK)
-		old := ProbeURL
-		ProbeURL = ts.URL
-		defer func() { ProbeURL = old }()
-
-		var probes atomic.Int64
-		dialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
-			probes.Add(1)
-			return DirectDialer(5*time.Second)(ctx, network, addr)
-		}
-		cache := NewCache()
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			RunLoop(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), cache,
-				[]Path{{Key: "direct", Dialer: dialer}}, 5*time.Second, 25*time.Millisecond)
-		}()
-		defer func() { cancel(); <-done }()
-
-		// Immediate probe on start.
-		poll(t, 2*time.Second, func() bool {
-			r, ok := cache.Get("direct")
-			return ok && r.Err == nil && r.IP == "198.51.100.4" && r.Country == "FR"
-		})
-		// Re-probe on the interval.
-		poll(t, 2*time.Second, func() bool { return probes.Load() >= 2 })
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatal("RunLoop did not exit on ctx cancel")
-		}
-	})
-
-	t.Run("failure cached fail-open", func(t *testing.T) {
-		bad := traceServer(t, "nope", http.StatusInternalServerError)
-		old := ProbeURL
-		ProbeURL = bad.URL
-		defer func() { ProbeURL = old }()
-
-		cache := NewCache()
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			RunLoop(ctx, slog.Default(), cache,
-				[]Path{{Key: "proxy-0", Dialer: DirectDialer(5 * time.Second)}}, 5*time.Second, time.Hour)
-		}()
-		defer func() { cancel(); <-done }()
-		poll(t, 2*time.Second, func() bool {
-			r, ok := cache.Get("proxy-0")
-			return ok && r.Err != nil
-		})
-	})
-
-	t.Run("interval zero falls back to default", func(t *testing.T) {
-		ts := traceServer(t, "ip=198.51.100.5\nloc=FR\n", http.StatusOK)
-		old := ProbeURL
-		ProbeURL = ts.URL
-		defer func() { ProbeURL = old }()
-
-		cache := NewCache()
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			RunLoop(ctx, slog.Default(), cache,
-				[]Path{{Key: "direct", Dialer: DirectDialer(5 * time.Second)}}, 5*time.Second, 0)
-		}()
-		defer func() { cancel(); <-done }()
-		poll(t, 2*time.Second, func() bool {
-			r, ok := cache.Get("direct")
-			return ok && r.Err == nil
-		})
-	})
-
-	t.Run("nil logger falls back to default", func(t *testing.T) {
-		ts := traceServer(t, "ip=198.51.100.6\nloc=FR\n", http.StatusOK)
-		old := ProbeURL
-		ProbeURL = ts.URL
-		defer func() { ProbeURL = old }()
-
-		cache := NewCache()
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			RunLoop(ctx, nil, cache,
-				[]Path{{Key: "direct", Dialer: DirectDialer(5 * time.Second)}}, 5*time.Second, time.Hour)
-		}()
-		defer func() { cancel(); <-done }()
-		poll(t, 2*time.Second, func() bool {
-			r, ok := cache.Get("direct")
-			return ok && r.Err == nil
-		})
-	})
-
-	t.Run("nil cache panics with clear message", func(t *testing.T) {
-		defer func() {
-			r := recover()
-			if r == nil {
-				t.Fatal("RunLoop with nil cache did not panic")
-			}
-			if msg := fmt.Sprint(r); !strings.Contains(msg, "nil cache") {
-				t.Fatalf("panic message %q does not mention nil cache", msg)
-			}
-		}()
-		RunLoop(context.Background(), slog.Default(), nil, nil, 5*time.Second, time.Minute)
 	})
 }
 

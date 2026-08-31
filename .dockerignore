@@ -37,7 +37,8 @@ coverage.html
 
 # ── caches / editor / OS cruft ──
 .ruff_cache/
-node_modules/
+**/node_modules
+/main/
 .idea/
 .vscode/
 Thumbs.db
