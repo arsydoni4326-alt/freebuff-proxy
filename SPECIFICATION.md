@@ -293,6 +293,7 @@ All under `/admin/`. Cookie-authenticated via HMAC-signed `fb_admin` session coo
 | `/admin/api/tokens` | GET | Cookie | Token list and quotas |
 | `/admin/api/models` | GET | Cookie | Model catalog |
 | `/admin/api/config` | GET | Cookie + `adminSensitive` | Effective config (secrets redacted) |
+| `/admin/api/config/meta` | GET | Cookie | Configuration-key catalog for the Settings form |
 | `/admin/api/logs` | GET | Cookie + `adminSensitive` | Live log stream |
 | `/admin/api/setup` | GET | Cookie | Client setup snippets |
 | `/admin/api/metrics` | GET | Cookie | Metrics data |

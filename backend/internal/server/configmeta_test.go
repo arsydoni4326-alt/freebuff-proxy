@@ -31,6 +31,9 @@ func TestDashboardConfigMetaEndpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("meta status = %d, want 200", resp.StatusCode)
 	}
+	if contentType := resp.Header.Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("meta Content-Type = %q, want application/json", contentType)
+	}
 	var catalog []config.KeyDef
 	if err := json.Unmarshal([]byte(bodyOf(t, resp)), &catalog); err != nil {
 		t.Fatalf("meta response is not a JSON array: %v", err)
