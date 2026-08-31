@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // TestFixedTokenBannedQuarantined pins the terminal-ban quarantine (anti-ban

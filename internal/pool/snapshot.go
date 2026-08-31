@@ -4,8 +4,8 @@ package pool
 import (
 	"time"
 
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // BridgeTokenSnapshot is a dashboard-ready view of one bridge entry (#187).

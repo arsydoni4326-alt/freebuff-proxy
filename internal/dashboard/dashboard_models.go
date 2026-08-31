@@ -1,7 +1,7 @@
 package dashboard
 
 import (
-	"freebuff-proxy/internal/registry"
+	"freebuff-proxy/backend/internal/registry"
 	"sort"
 )
 

@@ -15,9 +15,9 @@ import (
 	"time"
 	"unicode"
 
-	"freebuff-proxy/internal/phasetiming"
-	"freebuff-proxy/internal/runs"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/phasetiming"
+	"freebuff-proxy/backend/internal/runs"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // maxClientTokenLen is the maximum allowed length of a client-supplied

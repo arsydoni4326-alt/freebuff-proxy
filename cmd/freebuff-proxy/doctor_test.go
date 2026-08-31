@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/egress"
-	"freebuff-proxy/internal/testutil"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/egress"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // TestDoctorEgressProbeParsesTrace guards the doctor's region probe: a

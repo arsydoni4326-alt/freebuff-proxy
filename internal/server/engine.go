@@ -10,13 +10,13 @@ import (
 	"strconv"
 	"time"
 
-	"freebuff-proxy/internal/convert"
-	"freebuff-proxy/internal/phasetiming"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/runs"
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/convert"
+	"freebuff-proxy/backend/internal/phasetiming"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/runs"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // --- Shared completion engine (protocol-neutral) ---

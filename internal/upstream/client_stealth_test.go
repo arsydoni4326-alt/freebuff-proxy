@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/stealth"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/stealth"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 func TestUAIsCLIUserAgent(t *testing.T) {

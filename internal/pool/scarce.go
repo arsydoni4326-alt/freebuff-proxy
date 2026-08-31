@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // scarceSwitchLead is how long before a scarce session expires that a request

@@ -1,8 +1,8 @@
 package pool
 
 import (
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 	"math/rand/v2"
 	"sort"
 	"time"

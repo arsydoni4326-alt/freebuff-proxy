@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 func TestAdminReload(t *testing.T) {

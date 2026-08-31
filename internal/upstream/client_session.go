@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/telemetry"
+	"freebuff-proxy/backend/internal/telemetry"
 )
 
 func getNumber(m map[string]any, keys ...string) (float64, bool) {

@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/config"
+	"freebuff-proxy/backend/internal/config"
 )
 
 // loginCallTimeout bounds each login HTTP call (code request, status poll,

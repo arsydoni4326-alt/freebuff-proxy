@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"freebuff-proxy/internal/tokenestimate"
+	"freebuff-proxy/backend/internal/tokenestimate"
 )
 
 func mustNew(t *testing.T) *tokenestimate.Estimator {

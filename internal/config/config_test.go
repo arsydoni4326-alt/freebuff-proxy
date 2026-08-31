@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // envKeys lists every environment variable the package reads. Tests clear

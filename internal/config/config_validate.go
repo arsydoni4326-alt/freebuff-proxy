@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"freebuff-proxy/internal/telemetry"
+	"freebuff-proxy/backend/internal/telemetry"
 )
 
 // Validate checks the resolved configuration. It must be called before use.

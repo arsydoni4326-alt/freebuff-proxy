@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // quotaSummary renders the live per-model session quota from a probe's

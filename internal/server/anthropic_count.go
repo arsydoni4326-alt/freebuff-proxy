@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/tokenestimate"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/tokenestimate"
 )
 
 func (s *Server) handleMessagesCountTokens(w http.ResponseWriter, r *http.Request) {

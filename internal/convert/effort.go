@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"freebuff-proxy/internal/modelcat"
+	"freebuff-proxy/backend/internal/modelcat"
 )
 
 // ExtractReasoningEffort extracts the requested thinking/reasoning effort from

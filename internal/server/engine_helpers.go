@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"freebuff-proxy/internal/phasetiming"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/phasetiming"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // traceChat records a structured "chat trace" entry for the dashboard

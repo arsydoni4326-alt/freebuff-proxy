@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestChatToolNameToleranceE2E pins the issue #140 P2a layer end-to-end: a

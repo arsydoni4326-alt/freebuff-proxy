@@ -20,14 +20,14 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/logring"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/server"
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/testutil"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/logring"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/server"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // newTestServerWithLogger builds the full stack like newTestServer but with

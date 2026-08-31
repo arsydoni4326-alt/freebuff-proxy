@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestChatOversizedBody413 pins the 32MiB body cap: a larger payload is

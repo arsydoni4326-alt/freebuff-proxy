@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 func TestPremiumSnapshotFromQuotaMap(t *testing.T) {

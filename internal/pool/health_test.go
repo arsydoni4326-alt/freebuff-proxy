@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/session"
+	"freebuff-proxy/backend/internal/session"
 )
 
 func TestComputeHealthScore_HealthyToken(t *testing.T) {

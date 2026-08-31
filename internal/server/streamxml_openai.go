@@ -11,7 +11,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"freebuff-proxy/internal/convert"
+	"freebuff-proxy/backend/internal/convert"
 )
 
 // streamChatContentToToolCalls feeds one sanitized chat chunk through the

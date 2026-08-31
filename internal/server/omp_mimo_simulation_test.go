@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/convert"
-	"freebuff-proxy/internal/reasoningcache"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/convert"
+	"freebuff-proxy/backend/internal/reasoningcache"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // ompWorkspace simulates the local filesystem and tool runner of the Oh My Pi (omp) harness.

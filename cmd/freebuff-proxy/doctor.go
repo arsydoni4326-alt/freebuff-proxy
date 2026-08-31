@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/egress"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/egress"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // egressRegionRow renders the doctor's egress region line from the direct

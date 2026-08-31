@@ -2,8 +2,8 @@ package dashboard
 
 import (
 	"fmt"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/stealth"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/stealth"
 	"net"
 	"os"
 	"strconv"

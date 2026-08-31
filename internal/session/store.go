@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // storeVersion guards the on-disk format; bump it when the schema changes so

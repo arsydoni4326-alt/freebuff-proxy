@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/convert"
-	"freebuff-proxy/internal/phasetiming"
+	"freebuff-proxy/backend/internal/convert"
+	"freebuff-proxy/backend/internal/phasetiming"
 )
 
 // --- streaming translation ---

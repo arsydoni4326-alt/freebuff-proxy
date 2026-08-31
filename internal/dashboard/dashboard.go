@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/logring"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/updatecheck"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/logring"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/updatecheck"
 )
 
 // Dashboard renders the admin UI over the live pool, registry, and config.

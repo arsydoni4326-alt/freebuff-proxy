@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/testutil"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 func TestCreateActive(t *testing.T) {

@@ -28,18 +28,18 @@ import (
 	// resets fall back to a month-based approximation.
 	_ "time/tzdata"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/logring"
-	"freebuff-proxy/internal/notify"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/server"
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/stealth"
-	"freebuff-proxy/internal/telemetry"
-	"freebuff-proxy/internal/tokendb"
-	"freebuff-proxy/internal/updatecheck"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/logring"
+	"freebuff-proxy/backend/internal/notify"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/server"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/stealth"
+	"freebuff-proxy/backend/internal/telemetry"
+	"freebuff-proxy/backend/internal/tokendb"
+	"freebuff-proxy/backend/internal/updatecheck"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // version is injected at build time by GoReleaser (-ldflags -X main.version=...).

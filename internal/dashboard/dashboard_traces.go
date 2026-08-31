@@ -1,7 +1,7 @@
 package dashboard
 
 import (
-	"freebuff-proxy/internal/phasetiming"
+	"freebuff-proxy/backend/internal/phasetiming"
 	"strconv"
 	"strings"
 )

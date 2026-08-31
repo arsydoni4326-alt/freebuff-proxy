@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/stealth"
+	"freebuff-proxy/backend/internal/stealth"
 )
 
 // SessionState is the parsed result of a free-session create/poll.

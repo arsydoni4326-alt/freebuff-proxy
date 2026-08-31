@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"freebuff-proxy/internal/notify"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/notify"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // CooldownToken puts token in a cooldown window of duration d (auth-reject

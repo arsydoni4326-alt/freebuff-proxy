@@ -2,7 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
-	"freebuff-proxy/internal/pool"
+	"freebuff-proxy/backend/internal/pool"
 	"sort"
 	"time"
 )

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 func TestBucketStartPacificDay(t *testing.T) {

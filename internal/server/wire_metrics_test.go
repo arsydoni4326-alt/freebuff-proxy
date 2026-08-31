@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"freebuff-proxy/internal/logring"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/logring"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestMetricsRateLimitEvents pins T7's metrics surface: a classified 429

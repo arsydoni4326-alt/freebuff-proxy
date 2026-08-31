@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"freebuff-proxy/internal/phasetiming"
+	"freebuff-proxy/backend/internal/phasetiming"
 )
 
 // RenderLogin renders the login page with an optional error message.

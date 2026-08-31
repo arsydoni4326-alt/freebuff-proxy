@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"time"
 
-	"freebuff-proxy/internal/convert"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/convert"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // chatAttempt runs the retry-once recovery loop for one chat request: chat

@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // refreshPollTimeout bounds the whole interactive poll (the login code

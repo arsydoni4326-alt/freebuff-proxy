@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // testDashboard builds a dashboard over an empty (bridge-mode) pool: enough

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestAnthropicClaudeCodeStreamingSequence tests the exact Anthropic SSE event sequence

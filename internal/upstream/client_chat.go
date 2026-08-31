@@ -27,8 +27,8 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 
-	"freebuff-proxy/internal/stealth"
-	"freebuff-proxy/internal/telemetry"
+	"freebuff-proxy/backend/internal/stealth"
+	"freebuff-proxy/backend/internal/telemetry"
 )
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {

@@ -2,7 +2,7 @@ package dashboard
 
 import (
 	"fmt"
-	"freebuff-proxy/internal/pool"
+	"freebuff-proxy/backend/internal/pool"
 	"sort"
 	"strconv"
 	"strings"

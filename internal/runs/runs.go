@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/session"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // shutdownTimeout bounds Shutdown when the caller passes a context without a

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/session"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/session"
 )
 
 func TestHealthState_CheckTransition(t *testing.T) {

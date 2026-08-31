@@ -16,7 +16,7 @@ package pool
 import (
 	"time"
 
-	"freebuff-proxy/internal/session"
+	"freebuff-proxy/backend/internal/session"
 )
 
 // Health score component weights. They sum to 100.

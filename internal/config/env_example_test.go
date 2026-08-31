@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestEnvExampleLoadsCleanly proves the shipped .env.example is a valid,

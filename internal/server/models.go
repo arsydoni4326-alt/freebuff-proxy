@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/session"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/session"
 )
 
 // ModelUnavailableMessage formats the rejection error message for

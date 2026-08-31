@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 func TestWave3KnobDefaults(t *testing.T) {

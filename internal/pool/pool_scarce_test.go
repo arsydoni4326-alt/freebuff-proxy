@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/testutil"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // TestQuotaCooldownIsolationAcrossModels pins issue #178 at the pool level:

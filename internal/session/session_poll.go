@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // SetAdmissionProbeTTL configures the admission probe cache TTL (issue #60):

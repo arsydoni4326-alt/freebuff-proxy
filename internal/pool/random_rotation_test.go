@@ -5,8 +5,8 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestRandomRotationMode exercises the TOKEN_ROTATION=random path (issue #218,

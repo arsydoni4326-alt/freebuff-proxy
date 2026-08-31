@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/convert"
+	"freebuff-proxy/backend/internal/convert"
 )
 
 // --- Anthropic Messages API (/v1/messages) ---

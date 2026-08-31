@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestShutdownBridgeDrainOutsideBridgeMu is the regression guard for the

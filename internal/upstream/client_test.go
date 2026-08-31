@@ -20,8 +20,8 @@ import (
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // testConfig builds a config; baseURL "" keeps the default (only for tests

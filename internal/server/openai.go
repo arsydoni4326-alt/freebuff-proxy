@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"freebuff-proxy/internal/convert"
+	"freebuff-proxy/backend/internal/convert"
 )
 
 // completions, Responses, embeddings, model catalog) onto the mux. The

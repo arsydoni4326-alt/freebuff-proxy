@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // asyncJobKind discriminates the deferred-side-effect jobs carried by the

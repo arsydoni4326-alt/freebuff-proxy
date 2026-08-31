@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // newLoggingServer builds a full test server (one mock token, fallback

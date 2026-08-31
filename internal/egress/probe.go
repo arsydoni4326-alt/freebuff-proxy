@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/stealth"
+	"freebuff-proxy/backend/internal/stealth"
 )
 
 // ProbeURL is the Cloudflare trace endpoint that reports the caller's

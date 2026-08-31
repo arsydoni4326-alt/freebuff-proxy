@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // newHybridTestServer wires the server in hybrid mode: AUTH_TOKENS pool +

@@ -11,7 +11,7 @@ import (
 	"encoding/binary"
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // DefaultCooldown is the token cooldown applied on upstream auth rejection

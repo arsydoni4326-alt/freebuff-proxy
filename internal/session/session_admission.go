@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // SetReAdmitLead configures the pre-emptive re-admit lead (issue #99): when

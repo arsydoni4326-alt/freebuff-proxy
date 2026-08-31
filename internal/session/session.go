@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 const (

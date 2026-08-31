@@ -3,7 +3,7 @@ package pool
 import (
 	"time"
 
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // ReferralGatedModel is the referral-earned model in the FreeBuff catalog

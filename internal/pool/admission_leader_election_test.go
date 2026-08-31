@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestLeaderElection_BasicLeaderFollower verifies the fundamental flow:

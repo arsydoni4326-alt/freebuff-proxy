@@ -20,9 +20,9 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/stealth"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/stealth"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // flakyRT is a RoundTripper that fails the first failN calls with a fixed

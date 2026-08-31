@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/notify"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/notify"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // TestMismatchEscalationFiresOncePerWindow pins the issue #140 P1 guard:

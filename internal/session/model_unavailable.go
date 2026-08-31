@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"time"
 
-	"freebuff-proxy/internal/telemetry"
-	"freebuff-proxy/internal/upstream"
+	"freebuff-proxy/backend/internal/telemetry"
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // modelUnavailableEntry is one cached model_unavailable refusal (issue

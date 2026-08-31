@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/registry"
-	"freebuff-proxy/internal/server"
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/server"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 func TestWaitingRoom503ThenRetry(t *testing.T) {

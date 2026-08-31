@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/config"
+	"freebuff-proxy/backend/internal/config"
 )
 
 // fileSource builds a file:// URL for a local fixture path (no network).

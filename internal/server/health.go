@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"freebuff-proxy/internal/pool"
-	"freebuff-proxy/internal/telemetry"
+	"freebuff-proxy/backend/internal/pool"
+	"freebuff-proxy/backend/internal/telemetry"
 )
 
 // handleHealthz reports uptime, model count, the per-token snapshot, the

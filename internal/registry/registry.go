@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"freebuff-proxy/internal/config"
-	"freebuff-proxy/internal/modelcat"
+	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/modelcat"
 )
 
 // RawBase is the upstream source of the Codebuff TS constant files.

@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"freebuff-proxy/internal/testutil"
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 // TestMain strips ambient freebuff-proxy config env vars (AUTH_TOKENS,

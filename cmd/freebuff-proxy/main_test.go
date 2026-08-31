@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/internal/egress"
-	"freebuff-proxy/internal/telemetry"
+	"freebuff-proxy/backend/internal/egress"
+	"freebuff-proxy/backend/internal/telemetry"
 )
 
 // TestHoldForExitIfConsolePipedStderrNoHang guards the console hold: with

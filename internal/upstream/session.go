@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/internal/modelcat"
+	"freebuff-proxy/backend/internal/modelcat"
 )
 
 // CreateSession POSTs /api/v1/freebuff/session with no body.
