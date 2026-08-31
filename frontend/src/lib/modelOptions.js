@@ -25,18 +25,22 @@ function tagFor(quota) {
 
 // fetchModelOptions returns {id, label, tag} rows from /admin/api/models
 // (registry → modelcat → upstream-parity-pinned), falling back to the
-// static list on any error. Callers pass the rows through $state so the
-// pickers track the served set without manual Svelte edits.
+// static list on any error. Results are memoized per page load: multiple
+// consumers (TokenCard renders one per pool token) share one fetch, and
+// callers re-assign $state rows from the promise.
+let cached = null;
 export async function fetchModelOptions() {
+  if (cached) return cached;
   try {
     const data = await fetchAPI(adminApi.models);
     const rows = Array.isArray(data?.models) ? data.models : [];
     if (rows.length === 0) return fallbackModelOptions;
-    return rows.map((m) => ({
+    cached = rows.map((m) => ({
       id: m.id,
       label: m.quota ? `${m.id} (${m.quota})` : m.id,
       tag: tagFor(m.quota),
     }));
+    return cached;
   } catch {
     return fallbackModelOptions;
   }

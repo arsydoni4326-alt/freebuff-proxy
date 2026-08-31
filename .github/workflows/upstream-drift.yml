@@ -298,6 +298,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Close superseded drift-data PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          # Mirror of the registry job's close-superseded: one rolling PR per
+          # upstream SHA; an older open PR for a different SHA is stale.
+          gh pr list --state open --json number,title,headRefName \
+            --jq '.[] | select(.title | startswith("chore(dashboard): refresh upstream-drift embed to vendor")) | {number, title, branch: .headRefName}' \
+          | jq -c . \
+          | while read -r pr; do
+              num=$(echo "$pr" | jq -r .number)
+              branch=$(echo "$pr" | jq -r .branch)
+              case "$branch" in
+                chore/upstream-drift-data-"${UPSTREAM_SHA:0:7}"|chore/upstream-drift-data-"${UPSTREAM_SHA}") ;;
+                *) gh pr close "$num" --comment "Superseded by upstream ${UPSTREAM_SHA:0:7}; a fresh drift-data PR covers the current embed." \
+                     && git push origin --delete "$branch" || true ;;
+              esac
+            done
+
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
