@@ -578,13 +578,26 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	m.mu.Lock()
 	instanceID := ""
 	scarceKeep := false
+	var snap *cachedState
 	if m.state != nil && m.state.instanceID != "" {
 		instanceID = m.state.instanceID
 		// Issue #155: keep scarce active sessions with remaining lifetime.
 		if m.state.status == "active" && m.scarce[m.state.model] && !m.state.expiresAt.IsZero() && time.Until(m.state.expiresAt) > 0 {
 			scarceKeep = true
 		}
-		m.store.Save(m.key, m.state)
+		// Snapshot under the lock; the flush + verification re-read below
+		// run outside it (review 2026-08-31 P3): both are disk I/O and
+		// must not block concurrent manager users.
+		s := *m.state
+		snap = &s
+		// Take persistMu while m.mu is still held so this write lands in
+		// commit order relative to any concurrent commit.
+		m.persistMu.Lock()
+	}
+	m.mu.Unlock()
+
+	if snap != nil {
+		m.store.Save(m.key, snap)
 		// Surface a failed flush: without the persisted entry a restart
 		// cannot resume the slot, so a write/rename failure must not be
 		// silent. Re-read the FILE through a fresh Store — the in-memory
@@ -592,8 +605,8 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		if persisted := NewStore(m.store.path).Load(m.key); persisted == nil || persisted.instanceID != instanceID {
 			slog.Warn("session: shutdown persist failed", "instance_id", shortInstance(instanceID))
 		}
+		m.persistMu.Unlock()
 	}
-	m.mu.Unlock()
 
 	if instanceID == "" {
 		return nil

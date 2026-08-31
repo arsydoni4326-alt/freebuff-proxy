@@ -93,7 +93,15 @@ type Manager struct {
 	store *Store
 	key   string
 
-	mu         sync.Mutex
+	mu sync.Mutex
+	// persistMu serializes the store writes issued by commit/Shutdown
+	// (review 2026-08-31 P3): those writes run with mu RELEASED — the
+	// temp write + rename inside Store is disk I/O and must not sit under
+	// the manager lock — so persistMu, always taken while mu is still
+	// held, keeps them landing in the order the commits were made. Lock
+	// hierarchy: mu → persistMu; persistMu is released before mu is
+	// re-acquired, so no cycle is possible.
+	persistMu  sync.Mutex
 	state      *cachedState
 	refreshCh  chan struct{} // closed by the in-flight refresher when done
 	refreshing bool
@@ -255,15 +263,15 @@ func sessionUsable(s *cachedState) bool {
 	if s == nil || s.instanceID == "" {
 		return false
 	}
-	if s.status == "active" && time.Now().Before(s.expiresAt.Add(-expiryMargin)) {
-		return true
-	}
 	graceEnd := graceEndsAt(s)
 	return !graceEnd.IsZero() && time.Now().Before(graceEnd)
 }
 
 // commit replaces the cached state and mirrors it into the store (when
-// configured). Caller must hold m.mu.
+// configured). Caller must hold m.mu; m.mu is still held when commit
+// returns. The store write itself runs with m.mu released (see
+// persistSaveLocked): a slow flush must not amplify admission latency for
+// concurrent EnsureSessionForModel/Snapshot callers.
 //
 // A nil cs removes the store entry conditionally on the instance id being
 // dropped: the entry is only deleted while it still belongs to the session
@@ -316,11 +324,42 @@ func (m *Manager) commit(cs *cachedState) {
 	m.state = cs
 	if m.store != nil && m.key != "" {
 		if cs == nil {
-			m.store.Remove(m.key, oldInstance)
+			m.persistRemoveLocked(oldInstance)
 		} else {
-			m.store.Save(m.key, cs)
+			// Snapshot before the lock release: Save reads the struct
+			// fields, and concurrent refreshes mutate the live state in
+			// place after the release (quota/glmPromo/remaining probes).
+			// The shared maps are only ever read — nothing writes into
+			// them after parse — so a shallow copy is a stable view.
+			snap := *cs
+			m.persistSaveLocked(&snap)
 		}
 	}
+}
+
+// persistSaveLocked persists snap outside the manager lock (review
+// 2026-08-31 P3): Store.Save's temp write + rename is disk I/O. Caller
+// must hold m.mu; it is released around the write and re-acquired before
+// returning, so callers keep their lock discipline. persistMu — taken
+// while m.mu is still held — keeps concurrent commits' writes ordered as
+// committed even though the I/O itself runs unlocked.
+func (m *Manager) persistSaveLocked(snap *cachedState) {
+	m.persistMu.Lock()
+	m.mu.Unlock()
+	m.store.Save(m.key, snap)
+	m.persistMu.Unlock()
+	m.mu.Lock()
+}
+
+// persistRemoveLocked drops the old store entry outside the manager lock,
+// mirroring persistSaveLocked (Remove flushes the file too). Caller must
+// hold m.mu.
+func (m *Manager) persistRemoveLocked(oldInstance string) {
+	m.persistMu.Lock()
+	m.mu.Unlock()
+	m.store.Remove(m.key, oldInstance)
+	m.persistMu.Unlock()
+	m.mu.Lock()
 }
 
 // EnsureSession returns the session instance id for the default model, or ""
