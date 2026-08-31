@@ -29,8 +29,8 @@ import (
 	"freebuff-proxy/backend/internal/ratelimit"
 	"freebuff-proxy/backend/internal/reasoningcache"
 	"freebuff-proxy/backend/internal/registry"
-	"freebuff-proxy/backend/internal/tokenestimate"
 	"freebuff-proxy/backend/internal/tokendb"
+	"freebuff-proxy/backend/internal/tokenestimate"
 	"freebuff-proxy/backend/internal/updatecheck"
 	"freebuff-proxy/backend/internal/upstream"
 )
@@ -209,6 +209,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /admin/api/traces", s.dashboardAuth(s.dash.APIHandler("traces")))
 		mux.Handle("GET /admin/api/setup", s.dashboardAuth(s.dash.APIHandler("setup")))
 		mux.Handle("GET /admin/api/config", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("config"))))
+		mux.Handle("GET /admin/api/config/meta", s.dashboardAuth(http.HandlerFunc(s.dash.APIConfigMeta)))
 		mux.Handle("GET /admin/api/logs", s.dashboardAuth(s.adminSensitive(s.dash.APIHandler("logs"))))
 		mux.Handle("GET /admin/api/metrics", s.dashboardAuth(s.dash.APIHandler("metrics")))
 		mux.Handle("GET /admin/api/version", s.dashboardAuth(http.HandlerFunc(s.dash.APIVersion)))
