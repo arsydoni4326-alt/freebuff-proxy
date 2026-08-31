@@ -1,6 +1,7 @@
 # Upstream drift detection (CodebuffAI/freebuff).
 #
-# Three automations:
+#  Wire drift is additionally classified by scripts/review-wire-drift.sh:
+#  COMMENT-ONLY (docs) vs FUNCTIONAL (needs a Go-side port).
 #  1. **Registry pin drift** (the 5 files in backend/internal/registry/testdata/upstream/):
 #     auto-open a PR that runs sync-upstream so the change lands in front of a
 #     human reviewer. Idempotent: reruns reuse the same branch + open PR.
@@ -20,10 +21,10 @@ name: upstream-drift
 on:
   workflow_dispatch:
   schedule:
-    # Twice a week (Mon + Thu 06:17 UTC) so a missed run doesn't leave the
-    # repo blind for seven days.
-    - cron: '17 6 * * 1'
-    - cron: '17 6 * * 4'
+    # Daily 06:17 UTC: upstream's public-sync bot lands batches several
+    # times a week (three commits inside 40 minutes observed 2026-08-31),
+    # so a twice-weekly scan left multi-day blind windows.
+    - cron: '17 6 * * *'
 
 permissions:
   contents: write
@@ -202,22 +203,58 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Open needs-port issue
+      - name: Clone upstream reference
+        env:
+          FREEBUFF_REFERENCE_DIR: ${{ runner.temp }}/freebuff-ref
+        run: |
+          mkdir -p "$FREEBUFF_REFERENCE_DIR"
+          git clone --depth 50 https://github.com/CodebuffAI/freebuff.git "$FREEBUFF_REFERENCE_DIR"
+          git -C "$FREEBUFF_REFERENCE_DIR" fetch --unshallow || true
+
+      - name: Classify wire drift
+        id: classify
+        env:
+          FREEBUFF_REFERENCE_DIR: ${{ runner.temp }}/freebuff-ref
+        run: |
+          out="$(bash scripts/review-wire-drift.sh || true)"
+          {
+            echo "classification<<EOF"
+            echo "$out"
+            echo "EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Open or update needs-port issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
           DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
+          CLASSIFICATION: ${{ steps.classify.outputs.classification }}
         run: |
+          body="Upstream SHA: $UPSTREAM_SHA
+
+          $DRIFT_SUMMARY
+
+          ## Drift classification (scripts/review-wire-drift.sh)
+          COMMENT-ONLY rows need only a baseline refresh (\`check-upstream.sh --update-wire-baseline\`).
+          FUNCTIONAL rows need a Go-side port (e.g. injectEnvelope, classifyError, parseSessionResponse) plus a test.
+
+          \`\`\`
+          $CLASSIFICATION
+          \`\`\`"
           existing=$(gh issue list --state open --json number,title \
             --jq '.[] | select(.title == "Upstream wire drift needs porting") | .number' | head -1)
           if [ -n "$existing" ]; then
-            echo "Existing needs-port issue #$existing already open; skipping."
+            if gh issue view "$existing" --json body --jq .body | grep -q "$UPSTREAM_SHA"; then
+              echo "Issue #$existing already covers $UPSTREAM_SHA; skipping."
+              exit 0
+            fi
+            gh issue comment "$existing" --body "$body"
+            echo "Appended drift at $UPSTREAM_SHA to existing issue #$existing."
             exit 0
           fi
           gh issue create \
             --title "Upstream wire drift needs porting" \
-            --body "Upstream SHA: ${{ needs.drift.outputs.upstream_sha }}
-          
-          $DRIFT_SUMMARY" \
+            --body "$body" \
             --label "anti-ban"
 
   publish-drift-data:
