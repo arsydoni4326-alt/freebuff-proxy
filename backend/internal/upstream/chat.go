@@ -337,6 +337,18 @@ func injectEnvelope(body []byte, costMode string, opts ChatOptions) ([]byte, err
 	if costMode != "" {
 		metadata["cost_mode"] = costMode
 	}
+	// freebuff_reasoning_effort mirrors the normalized top-level
+	// reasoning_effort the convert layer already clamped to the model's
+	// ladder. This is the field the upstream server's effort authority
+	// actually reads (reference/freebuff freebuff-models.ts
+	// resolveFreebuffReasoningEffort, carried per request by the CLI as
+	// codebuff_metadata.freebuff_reasoning_effort — use-send-message.ts
+	// :602-608); a top-level reasoning_effort alone may never reach it.
+	// Absent when the client requested none, so upstream applies its own
+	// catalog default — matching the CLI's silent-turn contract.
+	if re, ok := payload["reasoning_effort"].(string); ok && re != "" {
+		metadata["freebuff_reasoning_effort"] = re
+	}
 	payload["codebuff_metadata"] = metadata
 	payload["provider"] = map[string]any{"data_collection": "deny"}
 	payload["stream"] = true
