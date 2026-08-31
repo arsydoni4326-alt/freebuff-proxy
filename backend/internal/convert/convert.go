@@ -248,11 +248,17 @@ func normalizeMessages(payload map[string]any, model string) {
 				if rc == "" {
 					if fnPtr := globalReasoningLookup.Load(); fnPtr != nil && *fnPtr != nil {
 						fn := *fnPtr
-						// Look up by each tool call id
+						// Look up by each tool call id, bound to this message's
+						// content so a per-conversation sequential tool_call_id
+						// cannot restore another conversation's reasoning.
+						cStr0 := ""
+						if s, ok := cVal.(string); ok {
+							cStr0 = s
+						}
 						for _, item := range tcSlice {
 							if tcMap, ok := item.(map[string]any); ok {
 								if id, _ := tcMap["id"].(string); id != "" {
-									if r, _, ok := fn(id, "", ""); ok && r != "" {
+									if r, _, ok := fn(id, cStr0, ""); ok && r != "" {
 										rc = r
 										msg["reasoning_content"] = r
 										break
