@@ -311,6 +311,13 @@ func (s *Server) chatAttempt(
 			// run's step counter starts at 1 — stamp its number so
 			// llm_step_number stays per-run like the CLI.
 			opts.StepNumber = int(lease.Run.NextStepNumber())
+			// The trace identity is minted once per run: a retry onto a
+			// fresh run must carry the fresh run's ids upstream, or the
+			// dead run's trace session/client pair labels the new run's
+			// steps (review 2026-08-31 P3 — traces conflated two runs).
+			opts.TraceSessionID = lease.Run.TraceSessionID
+			opts.ClientID = lease.Run.ClientID
+			opts.AgentID = lease.Run.AgentID
 		}
 		opts.RunID = lease.Run.RunID
 		opts.SessionInstanceID = lease.SessionInstanceID

@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"freebuff-proxy/backend/internal/config"
 )
 
 // statusWriter captures the response status for access logging. It forwards
@@ -232,7 +234,26 @@ func remoteHost(r *http.Request) string {
 	return host
 }
 
-// --- Auth Middleware & Helpers ---
+// cfgSnapshotKey carries the per-request *config.Config snapshot through
+// the request context. requireAuth (the outermost /v1 auth wrapper) loads
+// the config ONCE per request and stamps it here; chatCore and authorized
+// then decide pooled-vs-bridge routing from that same snapshot, so a
+// config swap (e.g. /admin/reload) landing between the middleware's
+// pass-through and the handler's routing cannot split one request's
+// decision across two different config views.
+type cfgSnapshotKey struct{}
+
+func withCfgSnapshot(ctx context.Context, cfg *config.Config) context.Context {
+	return context.WithValue(ctx, cfgSnapshotKey{}, cfg)
+}
+
+// cfgSnapshotFrom returns the config snapshot stamped by requireAuth, or
+// nil when the request never passed through it (direct handler calls in
+// tests) — callers fall back to their own load in that case.
+func cfgSnapshotFrom(ctx context.Context) *config.Config {
+	cfg, _ := ctx.Value(cfgSnapshotKey{}).(*config.Config)
+	return cfg
+}
 
 // requireAuth wraps a handler with client-auth enforcement. When no API keys
 // are configured the handler passes through untouched; /healthz is always
@@ -242,6 +263,9 @@ func remoteHost(r *http.Request) string {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.cfg.Load()
+		// Pin the snapshot this decision used: chatCore and authorized
+		// below must route this same request from the same config view.
+		r = r.WithContext(withCfgSnapshot(r.Context(), cfg))
 		// Hybrid mode (AUTH_TOKENS + BRIDGE_ENABLED) passes through too:
 		// the per-request decision — pooled vs bridge — happens in
 		// chatCore, where a credential matching API_KEYS uses the pool and
@@ -250,7 +274,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		if !s.authorized(r) {
+		if !s.authorized(cfg, r) {
 			s.writeJSONError(w, http.StatusUnauthorized,
 				"Invalid API key", "invalid_request_error", "invalid_api_key", 0)
 			return
@@ -273,9 +297,10 @@ func extractBearerToken(authHeader string) (string, bool) {
 // authorized reports whether the request carries a configured API key,
 // either as "Authorization: Bearer <key>", "x-api-key: <key>", or
 // "anthropic-api-key: <key>". Comparison is constant-time against every
-// configured key.
-func (s *Server) authorized(r *http.Request) bool {
-	cfg := s.cfg.Load()
+// configured key. cfg is the caller's config snapshot (see cfgSnapshotKey):
+// the check must use the same view that made the surrounding routing
+// decision, never a fresh load.
+func (s *Server) authorized(cfg *config.Config, r *http.Request) bool {
 	provided := ""
 	if tok, ok := extractBearerToken(r.Header.Get("Authorization")); ok {
 		provided = tok

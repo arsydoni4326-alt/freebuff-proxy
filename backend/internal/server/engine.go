@@ -92,7 +92,15 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	// the pool.
 	var up io.ReadCloser
 	var lease *pool.Lease
-	cfg := s.cfg.Load()
+	// One request, one snapshot: requireAuth pinned the config it made its
+	// pass-through decision with into the request context; chatCore and
+	// authorized route from that same view, so a config swap mid-request
+	// cannot split the pooled-vs-bridge decision across two configs.
+	cfg := cfgSnapshotFrom(r.Context())
+	if cfg == nil {
+		// No stamped snapshot (direct handler calls in tests): load live.
+		cfg = s.cfg.Load()
+	}
 	fallbackUsed := false
 	tok := bearerToken(r)
 	bridge := false
@@ -120,7 +128,7 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 			}
 			return
 		}
-		if provided != "" && len(cfg.APIKeys) > 0 && !s.authorized(r) {
+		if provided != "" && len(cfg.APIKeys) > 0 && !s.authorized(cfg, r) {
 			bridge = true
 			tok = provided
 		}
