@@ -134,18 +134,11 @@ func freePort(t *testing.T) int {
 }
 
 // eventually polls fn until it returns true or the deadline elapses.
+// Delegates to testutil.WaitFor; kept as a wrapper so the e2e call sites
+// that pass an explicit timeout keep their shape.
 func eventually(t *testing.T, what string, timeout time.Duration, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if fn() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s (timeout %s)", what, timeout)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testutil.WaitFor(t, timeout, fn, what)
 }
 
 // e2eHTTPClient returns a client that closes connections after every request

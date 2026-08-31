@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -300,10 +301,8 @@ func TestMismatchEscalationModelUsesRefusedModel(t *testing.T) {
 	p.recordMismatchEscalation(1, rle)
 	p.recordMismatchEscalation(1, rle)
 	p.recordMismatchEscalation(1, rle)
-	deadline := time.Now().Add(3 * time.Second)
-	for gotIdx.Load() != 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool { return gotIdx.Load() == 1 },
+		fmt.Sprintf("mismatch-escalation webhook posts = %d, want 1", posts.Load()))
 	if got := gotModel.Load().(string); got != modelA {
 		t.Errorf("event Model = %q, want %q", got, modelA)
 	}
@@ -316,10 +315,13 @@ func TestMismatchEscalationModelUsesRefusedModel(t *testing.T) {
 	gotIdx.Store(0)
 	p.recordMismatchEscalation(0, rle)
 	p.recordMismatchEscalation(0, rle)
-	p.recordMismatchEscalation(0, rle)
-	deadline = time.Now().Add(3 * time.Second)
-	for gotIdx.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// The notify throttle is per event TYPE (notify.go throttle): the
+	// bridge-keyed storm shares the pooled storm's event type, so it must
+	// NOT produce a second POST inside the window. Age past any
+	// fire-and-forget delivery and assert the silence.
+	time.Sleep(time.Second)
+	if posts.Load() != 1 {
+		t.Errorf("bridge-keyed storm posted again: posts = %d, want 1 (throttled per event type)", posts.Load())
 	}
 	if got := gotIdx.Load(); got != 0 {
 		t.Errorf("bridge-keyed event TokenIndex = %d, want 0 (bridge shared window)", got)
@@ -343,13 +345,9 @@ func TestMismatchEscalationModelUsesRefusedModel(t *testing.T) {
 		RetryAfter: upstream.InvalidModelCooldown})
 	p.recordMismatchEscalation(2, &upstream.RateLimitError{Status: "free_mode_invalid_agent_model",
 		RetryAfter: upstream.InvalidModelCooldown})
-	deadline = time.Now().Add(3 * time.Second)
-	for {
-		if got := gotModel.Load().(string); got == "free_mode_invalid_agent_model" || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testutil.WaitFor(t, 3*time.Second, func() bool {
+		return gotModel.Load().(string) == "free_mode_invalid_agent_model"
+	}, "code-fallback webhook never posted a model")
 	if got := gotModel.Load().(string); got != "free_mode_invalid_agent_model" {
 		t.Errorf("event Model without body model = %q, want code fallback", got)
 	}

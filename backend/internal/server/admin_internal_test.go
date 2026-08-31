@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"freebuff-proxy/backend/internal/testutil"
 )
 
 func testIP(n int) string {
@@ -107,6 +109,10 @@ func TestAdminAuthLoginSlotBound(t *testing.T) {
 // without a recoverable copy.
 func TestWriteFileAtomicRestoresBackupOnRenameFailure(t *testing.T) {
 	dir := t.TempDir()
+	// Drain before TempDir's own RemoveAll: Windows AV locks can leave a
+	// stray .bak behind (the injected-failure path restores it), failing
+	// the cleanup (see poll.go).
+	testutil.DrainStrayTempFiles(t, dir)
 	path := filepath.Join(dir, ".env")
 	if err := os.WriteFile(path, []byte("OLD\n"), 0o644); err != nil {
 		t.Fatal(err)

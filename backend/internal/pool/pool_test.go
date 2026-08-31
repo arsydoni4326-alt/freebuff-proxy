@@ -98,17 +98,12 @@ func chatOnce(t *testing.T, p *Pool, lease *Lease) {
 	_ = rc.Close()
 }
 
-// eventually polls cond until it holds or the deadline passes.
+// eventually polls cond until it holds or the deadline passes. Thin
+// package wrapper over testutil.WaitFor so the pool package's many call
+// sites keep their signature; the loop itself lives in testutil/poll.go.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timeout waiting for %s", what)
+	testutil.WaitFor(t, 5*time.Second, cond, what)
 }
 
 // atomicErr is a thread-safe first-error holder for the hammer.

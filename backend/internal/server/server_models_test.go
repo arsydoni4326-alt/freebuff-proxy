@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/logring"
 	"freebuff-proxy/backend/internal/pool"
 	"freebuff-proxy/backend/internal/registry"
 	"freebuff-proxy/backend/internal/server"
@@ -1164,4 +1167,150 @@ func TestPausedModelWithdrawnMessage(t *testing.T) {
 	if respCT.StatusCode != http.StatusOK {
 		t.Errorf("count_tokens status = %d, want 200 (paused ids stay recognized)", respCT.StatusCode)
 	}
+}
+
+// TestMetricsFamiliesContract pins the /metrics exposition contract: the
+// EXACT set of Prometheus families — presence AND absence of unknown
+// additions, so a new family forces a conscious update here (the review
+// found families drifting untracked). The expected list mirrors
+// handleMetrics (server/health.go) plus the package counter it reads
+// (telemetry.ModelUnavailableSkips). freebuff_proxy_log_events_total is
+// emitted only when the dashboard log ring is wired, so it is pinned in the
+// ring variant below and must be ABSENT without one.
+func TestMetricsFamiliesContract(t *testing.T) {
+	// metricsFamilies maps family name -> TYPE value (the full contract
+	// minus the ring-conditional log_events_total).
+	metricsFamilies := map[string]string{
+		"freebuff_proxy_uptime_seconds":                "gauge",
+		"freebuff_proxy_models_total":                  "gauge",
+		"freebuff_proxy_tokens_total":                  "gauge",
+		"freebuff_proxy_rate_limit_rejected_total":     "counter",
+		"freebuff_proxy_model_unavailable_skips_total": "counter",
+		"freebuff_proxy_token_messages_24h":            "gauge",
+		"freebuff_proxy_token_requests_total":          "counter",
+		"freebuff_proxy_token_active_runs":             "gauge",
+		"freebuff_proxy_token_cooldown_active":         "gauge",
+		"freebuff_proxy_quota_recent":                  "gauge",
+		"freebuff_proxy_quota_limit":                   "gauge",
+		"freebuff_proxy_quota_remaining":               "gauge",
+		"freebuff_proxy_session_remaining_seconds":     "gauge",
+		"freebuff_proxy_transient_retries_total":       "counter",
+		"freebuff_proxy_fingerprint_rotations_total":   "counter",
+		"freebuff_proxy_rate_limit_events_total":       "counter",
+		"freebuff_proxy_model_locked_total":            "counter",
+		"freebuff_proxy_premium_quota_limit":           "gauge",
+		"freebuff_proxy_premium_quota_used":            "gauge",
+		"freebuff_proxy_premium_quota_remaining":       "gauge",
+		"freebuff_proxy_premium_quota_percent":         "gauge",
+	}
+
+	// assertFamilies checks every expected family has a HELP and a TYPE
+	// line with the pinned type, and fails on ANY family not in want —
+	// additions must be a conscious contract update.
+	assertFamilies := func(t *testing.T, body string, want map[string]string) {
+		t.Helper()
+		help := map[string]bool{}
+		typ := map[string]string{}
+		for _, line := range strings.Split(body, "\n") {
+			switch {
+			case strings.HasPrefix(line, "# HELP "):
+				name := strings.TrimSpace(strings.TrimPrefix(line, "# HELP "))
+				if i := strings.IndexByte(name, ' '); i >= 0 {
+					name = name[:i]
+				}
+				help[name] = true
+			case strings.HasPrefix(line, "# TYPE "):
+				rest := strings.TrimSpace(strings.TrimPrefix(line, "# TYPE "))
+				name, tval, ok := strings.Cut(rest, " ")
+				if !ok {
+					t.Fatalf("malformed TYPE line %q", line)
+				}
+				typ[name] = tval
+			}
+		}
+		for name, wantType := range want {
+			if !help[name] {
+				t.Errorf("family %s missing from /metrics HELP set", name)
+			}
+			gotType, ok := typ[name]
+			if !ok {
+				t.Errorf("family %s missing from /metrics TYPE set", name)
+			} else if gotType != wantType {
+				t.Errorf("family %s TYPE = %q, want %q", name, gotType, wantType)
+			}
+		}
+		for name := range help {
+			if _, ok := want[name]; !ok {
+				t.Errorf("unknown family %s added to /metrics HELP (update TestMetricsFamiliesContract consciously)", name)
+			}
+		}
+		for name := range typ {
+			if _, ok := want[name]; !ok {
+				t.Errorf("unknown family %s has a /metrics TYPE (update TestMetricsFamiliesContract consciously)", name)
+			}
+		}
+	}
+
+	populatedChatBody := func(mock *testutil.MockUpstream) {
+		mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-fam", 1, `"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]`)) +
+			testutil.SSEEvent(chunk("chatcmpl-fam", 1, `"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]`)) +
+			"data: [DONE]\n\n"
+	}
+
+	t.Run("exact families on a populated server", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		populatedChatBody(mock)
+		ts, _ := newTestServer(t, nil, mock)
+
+		// Populate: one successful streamed chat so the per-token families
+		// carry rows, not just HELP/TYPE headers.
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+		}
+
+		resp, data = doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("metrics status = %d, want 200", resp.StatusCode)
+		}
+		body := string(data)
+		assertFamilies(t, body, metricsFamilies)
+		// The populated server's request counter must carry a real row.
+		if !strings.Contains(body, `freebuff_proxy_token_requests_total{token="1"} 1`) {
+			t.Errorf("populated server missing token_requests_total{token=\"1\"} 1 row:\n%s", body)
+		}
+		// No ring wired: the log-ring family must be absent.
+		if strings.Contains(body, "freebuff_proxy_log_events_total") {
+			t.Error("log_events_total emitted without a dashboard log ring")
+		}
+	})
+
+	t.Run("dashboard log ring adds exactly the log_events family", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		populatedChatBody(mock)
+		ring := logring.NewHandler(slog.NewTextHandler(io.Discard, nil), 500)
+		ts, _ := newTestServerWithLogger(t, nil, slog.New(ring), ring, mock)
+
+		// One chat so the ring holds records (chat request/routing/done).
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+		}
+
+		resp, data = doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("metrics status = %d, want 200", resp.StatusCode)
+		}
+		body := string(data)
+		want := map[string]string{"freebuff_proxy_log_events_total": "counter"}
+		for name, tval := range metricsFamilies {
+			want[name] = tval
+		}
+		assertFamilies(t, body, want)
+		if !strings.Contains(body, `freebuff_proxy_log_events_total{level="info",msg="chat request"}`) {
+			t.Errorf("log_events_total missing the chat request row:\n%s", body)
+		}
+	})
 }

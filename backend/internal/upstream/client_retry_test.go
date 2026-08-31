@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	_ "time/tzdata"
 
 	utls "github.com/refraction-networking/utls"
 
@@ -149,12 +150,39 @@ func TestClassifyRateLimit(t *testing.T) {
 }
 
 func TestNextPacificMidnight(t *testing.T) {
+	now := time.Now()
 	next := NextPacificMidnight()
-	if !next.After(time.Now()) {
-		t.Fatalf("NextPacificMidnight %v is not after now %v", next, time.Now())
+	if !next.After(now) {
+		t.Fatalf("NextPacificMidnight %v is not after now %v", next, now)
 	}
 	if next.Location() != time.UTC {
 		t.Errorf("expected UTC location, got %v", next.Location())
+	}
+
+	// Strengthened: the result must be the NEXT midnight Pacific — the
+	// wall clock in America/Los_Angeles is exactly 00:00:00 on the day
+	// after now (the daily quota reset; isDailyCapReset locks both
+	// pacific_day and pacific_week refusals on it) — and never more than
+	// 8 days out, a loose tripwire for a badly broken computation (the
+	// true bound is ~25h: one day plus DST drift).
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("time.LoadLocation(America/Los_Angeles) failed even with embedded tzdata: %v", err)
+	}
+	todayMidnight := func(t time.Time) time.Time {
+		l := t.In(loc)
+		return time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, loc)
+	}
+	want := todayMidnight(now).AddDate(0, 0, 1)
+	// The time.Now() sample inside NextPacificMidnight may land a moment
+	// after ours; if that crosses Pacific midnight the result is the
+	// following day's midnight. Accept both candidates so the exact
+	// wall-clock pin does not add a once-per-day flake window.
+	if got := next.In(loc); !got.Equal(want) && !got.Equal(want.AddDate(0, 0, 1)) {
+		t.Errorf("NextPacificMidnight = %s, want next Pacific midnight %s (or %s if the internal sample crossed midnight)", got, want, want.AddDate(0, 0, 1))
+	}
+	if maxWait := now.Add(8 * 24 * time.Hour); next.After(maxWait) {
+		t.Errorf("NextPacificMidnight %v is more than 8 days out (now %v)", next, now)
 	}
 }
 
