@@ -33,6 +33,7 @@ The dashboard provides 6 focused operational sections:
   - Requests Served Today
   - Served Models Count
 - **Token Risk Cards**: Surfaces tokens with active cooldowns, elevated ban risk scores, or rate limits.
+- **Client API Keys**: Generates, displays, copies, and revokes downstream `API_KEYS` credentials. Newly generated keys are shown once in a copyable modal.
 
 ### 2. Tokens & Quotas
 - **Token Table**: Lists all managed tokens with masked short IDs (`cb_...`), status badges, instance IDs, active runs, cooldown countdown timers, and per-token actions:
