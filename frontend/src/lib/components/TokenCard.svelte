@@ -13,7 +13,6 @@
   import Button from './Button.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import CopyButton from './CopyButton.svelte';
-  import PremiumQuotaBar from './PremiumQuotaBar.svelte';
   import { formatLocalDate } from '../utils/format.js';
   import { tr } from '../i18n.js';
 
@@ -23,6 +22,7 @@
     expanded,
     spawnModel = $bindable(''),
     actionPending,
+    devToolsEnabled = false,
     now,
     onToggle,
     onAction,
@@ -82,7 +82,7 @@
       type="button"
       onclick={onToggle}
       aria-expanded={expanded}
-      aria-label={expanded ? `Collapse quotas for token ${idx}` : `Expand quotas for token ${idx}`}
+      aria-label={expanded ? `Collapse details for token ${idx}` : `Expand details for token ${idx}`}
       class="inline-flex items-center justify-center w-6 h-6 text-[var(--fp-dim)] hover:text-[var(--fp-text)]"
     >
       {#if expanded}
@@ -167,15 +167,8 @@
   <tr>
     <td colspan="6" class="!p-0">
       <div class="fp-inset m-2 rounded p-3">
-        <!-- Premium Quota Tracker — pacific_day 5/day shared premium pool -->
-        <div class="flex flex-col gap-2 mb-3">
-          {#if token.premium_quota}
-            <PremiumQuotaBar quota={token.premium_quota} title={$tr('Premium pool')} {now} />
-          {:else}
-            <p class="text-xs text-[var(--fp-dim)] italic">{$tr('No premium quota data — run a request or -test-token to populate.')}</p>
-          {/if}
-        </div>
-        <!-- Dev Tools: Session Generator & Diagnostics Toolbar -->
+        <!-- Dev Tools: Session Generator & Diagnostics Toolbar (hidden unless DEVTOOLS_ENABLED) -->
+        {#if devToolsEnabled}
         <div class="mb-3 p-2.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] flex flex-wrap items-center justify-between gap-2.5">
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider">{$tr('Dev Session:')}</span>
@@ -183,12 +176,12 @@
               bind:value={spawnModel}
               class="fp-input !text-xs !py-1 !px-2 !h-7 !w-44 !inline-block"
             >
-              <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/d)</option>
-              <option value="upstage/solar-pro4">upstage/solar-pro4 (5/d · experimental)</option>
-              <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (5/d)</option>
-              <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash</option>
-              <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unlimited)</option>
-              <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral)</option>
+              <option value="openai/gpt-5.6-luna">openai/gpt-5.6-luna (5/day shared premium)</option>
+              <option value="upstage/solar-pro4">upstage/solar-pro4 (5/day shared premium)</option>
+              <option value="z-ai/glm-5.3-flash">z-ai/glm-5.3-flash (unmetered)</option>
+              <option value="deepseek/deepseek-v4-flash">deepseek/deepseek-v4-flash (unmetered)</option>
+              <option value="mimo/mimo-v2.5">mimo/mimo-v2.5 (unmetered)</option>
+              <option value="z-ai/glm-5.2">z-ai/glm-5.2 (referral +1/day)</option>
             </select>
             <Button
               variant="secondary"
@@ -225,6 +218,7 @@
             </Button>
           </div>
         </div>
+        {/if}
         {#if token.session_remaining_seconds > 0 && token.session_model}
           <div class="mb-2 px-2 py-1 rounded bg-[var(--fp-accent)]/10 text-xs text-[var(--fp-accent)] flex items-center justify-between">
             <span>{$tr('Active Session:')} <code class="fp-num">{token.session_model}</code></span>
@@ -232,7 +226,8 @@
           </div>
         {/if}
         {#if token.has_standing}
-          <!-- Standing / trust block (issue #140 P3d): level,
+→
+          <!-- Standing / trust block (issue #140): level,
                score progress toward the next level, the cap
                holding the account (capped_by), and upstream's
                suggested earn-back actions. -->
@@ -282,34 +277,6 @@
               </ul>
             {/if}
           </div>
-        {/if}
-        {#if token.has_quota && token.quota?.length > 0}
-          <div class="flex flex-col gap-2">
-            <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Session quotas')}</p>
-            {#each token.quota as q}
-              <div class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 px-2 py-1.5 rounded bg-[var(--fp-bg)]/40">
-                <code class="fp-num text-xs text-[var(--fp-text)] sm:w-48 shrink-0 truncate">{q.model}</code>
-                <span class="fp-num text-xs text-[var(--fp-muted)]">
-                  <span class="text-[var(--fp-text)]">{q.recent}</span> / {q.limit}
-                  {#if q.limit !== '0' && q.limit !== ''}
-                    {$tr('(remaining {count})', { count: Math.max(0, parseFloat(q.limit) - parseFloat(q.recent)) })}
-                  {/if}
-                </span>
-                <span class="fp-num text-xs text-[var(--fp-dim)] sm:ml-auto">
-                  {q.period}{#if q.has_entitlement} · {$tr('entitled')} {q.entitled}{/if}
-                </span>
-                <span class="fp-num text-xs text-[var(--fp-dim)]">
-                  {#if q.resets_in}
-                    {$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at} ({q.resets_in})
-                  {:else}
-                    {$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at}
-                  {/if}
-                </span>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <p class="text-xs text-[var(--fp-dim)] italic">{$tr('No quota data available for this session.')}</p>
         {/if}
       </div>
     </td>

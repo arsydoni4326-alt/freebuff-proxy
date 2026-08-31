@@ -1,7 +1,7 @@
 # Upstream drift detection (CodebuffAI/freebuff).
 #
 # Three automations:
-#  1. **Registry pin drift** (the 5 files in internal/registry/testdata/upstream/):
+#  1. **Registry pin drift** (the 5 files in backend/internal/registry/testdata/upstream/):
 #     auto-open a PR that runs sync-upstream so the change lands in front of a
 #     human reviewer. Idempotent: reruns reuse the same branch + open PR.
 #  2. **Wire-shape file drift** (freebuff-trust.ts, foreign-client-signals.ts,
@@ -169,18 +169,26 @@ jobs:
 
       - name: Commit any changes
         run: |
-          git add internal/registry/testdata/upstream internal/registry/registry.go || true
+          git add backend/internal/registry/testdata/upstream backend/internal/registry/registry.go || true
           if git diff --cached --quiet; then
-            echo "No changes after sync-upstream; skipping PR."
-            exit 0
+            # No new changes this run. A branch that already carries the
+            # sync commit (pushed by an earlier run whose PR creation
+            # failed) must still reach the PR step; only a branch identical
+            # to main means there is genuinely nothing to publish.
+            if git diff --quiet origin/main HEAD; then
+              echo "No changes after sync-upstream and branch matches main; skipping PR."
+              exit 0
+            fi
+            echo "Branch already has sync commits ahead of main; reusing them."
+          else
+            sha="${{ needs.drift.outputs.upstream_sha }}"
+            short="${sha:0:7}"
+            git -c commit.gpgsign=false commit -m "chore(registry): sync pinned upstream models to vendor ${short}" \
+              -m "Automated sync triggered by .github/workflows/upstream-drift.yml." \
+              -m "Upstream SHA: ${sha}" \
+              -m "Drift summary:" \
+              -m "${{ needs.drift.outputs.drift_summary }}"
           fi
-          sha="${{ needs.drift.outputs.upstream_sha }}"
-          short="${sha:0:7}"
-          git -c commit.gpgsign=false commit -m "chore(registry): sync pinned upstream models to vendor ${short}" \
-            -m "Automated sync triggered by .github/workflows/upstream-drift.yml." \
-            -m "Upstream SHA: ${sha}" \
-            -m "Drift summary:" \
-            -m "${{ needs.drift.outputs.drift_summary }}"
           git push -u origin HEAD
 
       - name: Open or update PR
@@ -202,4 +210,113 @@ jobs:
           $DRIFT_SUMMARY
           
           Note: PRs created with GITHUB_TOKEN do not trigger CI workflows; run the checks manually before merging." \
+            --label "dependencies"
+
+  open-port-issue:
+    name: Open needs-port issue (wire drift)
+    needs: drift
+    if: needs.drift.outputs.has_wire_drift == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open needs-port issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRIFT_SUMMARY: ${{ needs.drift.outputs.drift_summary }}
+        run: |
+          existing=$(gh issue list --state open --json number,title \
+            --jq '.[] | select(.title == "Upstream wire drift needs porting") | .number' | head -1)
+          if [ -n "$existing" ]; then
+            echo "Existing needs-port issue #$existing already open; skipping."
+            exit 0
+          fi
+          gh issue create \
+            --title "Upstream wire drift needs porting" \
+            --body "Upstream SHA: ${{ needs.drift.outputs.upstream_sha }}
+          
+          $DRIFT_SUMMARY" \
+            --label "anti-ban"
+
+  publish-drift-data:
+    name: Publish drift JSON to dashboard embed
+    needs: drift
+    # Always runs (even when no drift) so the embedded checked_at stays
+    # current; the dashboard banner shows "last checked" even on clean runs.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure commit identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Refresh drift.json
+        env:
+          DRIFT_REPORT: backend/internal/dashboard/data/upstream_drift.json
+        run: |
+          # check-upstream writes the JSON report before exiting 1 on drift;
+          # a drift report is exactly what the embed must publish.
+          bash scripts/check-upstream.sh main || true
+          head -20 backend/internal/dashboard/data/upstream_drift.json
+
+      - name: Verify the embed still parses
+        run: |
+          go build ./backend/internal/dashboard/... ./backend/internal/server/...
+
+      - name: Open or update drift-data PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          BRANCH="chore/upstream-drift-data-${UPSTREAM_SHA:0:7}"
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            git checkout -B "$BRANCH" origin/"$BRANCH"
+            git checkout main -- backend/internal/dashboard/data/upstream_drift.json || true
+          else
+            git checkout -b "$BRANCH"
+          fi
+          git add backend/internal/dashboard/data/upstream_drift.json
+          if git diff --cached --quiet; then
+            # Same orphan-branch recovery as the registry sync job: a branch
+            # already carrying the refresh commit must still reach the PR step.
+            if git diff --quiet origin/main HEAD; then
+              echo "No data change and branch matches main; skipping PR."
+              exit 0
+            fi
+            echo "Branch already has refresh commits ahead of main; reusing them."
+          else
+            short="${UPSTREAM_SHA:0:7}"
+            git -c commit.gpgsign=false commit -m "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
+              -m "Automated refresh by .github/workflows/upstream-drift.yml." \
+              -m "Upstream SHA: ${UPSTREAM_SHA}"
+          fi
+          git push -u origin HEAD
+          existing=$(gh pr list --state open --json number,title \
+            --jq ".[] | select(.title | startswith(\"chore(dashboard): refresh upstream-drift embed to vendor ${short}\")) | .number" | head -1 || true)
+          if [ -n "$existing" ]; then
+            echo "Existing drift-data PR #$existing already open; skipping."
+            exit 0
+          fi
+          gh pr create --base main \
+            --title "chore(dashboard): refresh upstream-drift embed to vendor ${short}" \
+            --body "Refreshes backend/internal/dashboard/data/upstream_drift.json against CodebuffAI/freebuff @ ${UPSTREAM_SHA}." \
             --label "dependencies"

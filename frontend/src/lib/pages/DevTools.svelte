@@ -8,6 +8,7 @@
   import SessionSpawnPanel from '../components/SessionSpawnPanel.svelte';
   import BatchTestPanel from '../components/BatchTestPanel.svelte';
   import { fetchAPI, postAPI } from '../api/client.js';
+  import { adminApi, adminActions } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
   import { tr } from '../i18n.js';
   import { onMount } from 'svelte';
@@ -40,13 +41,13 @@
     { id: 'openai/gpt-5.6-luna', label: 'openai/gpt-5.6-luna (5/day shared)', tag: '5/d' },
     { id: 'upstage/solar-pro4', label: 'upstage/solar-pro4 (5/day shared · experimental)', tag: '5/d' },
     { id: 'mimo/mimo-v2.5', label: 'mimo/mimo-v2.5 (unmetered entry)', tag: 'unmetered' },
-    { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (5/day shared premium)', tag: '5/d' },
+    { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (unmetered)', tag: 'unmetered' },
     { id: 'deepseek/deepseek-v4-flash', label: 'deepseek/deepseek-v4-flash (unmetered)', tag: 'unmetered' },
     { id: 'z-ai/glm-5.2', label: 'z-ai/glm-5.2 (referral promo)', tag: 'referral' },
   ];
   onMount(async () => {
     try {
-      const cfgRes = await fetchAPI('/admin/api/config');
+      const cfgRes = await fetchAPI(adminApi.config);
       const envContent = cfgRes?.env_content || '';
       const mm = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
       const val = mm ? mm[1].trim().toLowerCase() : '';
@@ -59,7 +60,7 @@
 
   async function fetchTokens() {
     try {
-      tokensData = await fetchAPI('/admin/api/tokens');
+      tokensData = await fetchAPI(adminApi.tokens);
     } catch (e) {
       console.warn('Failed to fetch tokens in DevTools', e);
     } finally {
@@ -244,7 +245,7 @@
         variant="ghost"
         size="sm"
         disabled={actionPending || !tokensData?.token_count}
-        onclick={() => triggerTokenAction('/admin/tokens/test-all', {}, $tr('Probe all pool tokens against upstream?'))}
+        onclick={() => triggerTokenAction(adminActions.tokenTestAll, {}, $tr('Probe all pool tokens against upstream?'))}
       >
         <Activity size={14} />
         <span>{$tr('Probe All Tokens')}</span>

@@ -10,7 +10,29 @@ permissions:
   attestations: write
 
 jobs:
+  # Tag pushes bypass the branch- and PR-triggered CI runs, so gate the
+  # release on the same hermetic suite ci.yml runs before GoReleaser can
+  # publish anything.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test (race detector)
+        run: env -u AUTH_TOKENS -u ADMIN_TOKEN go test -race -timeout 10m ./backend/...
+
+      - name: Build (dashboard embed)
+        run: go build -tags dashboard ./backend/...
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

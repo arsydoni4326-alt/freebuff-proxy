@@ -6,6 +6,8 @@
   import Button from '../components/Button.svelte';
   import Card from '../components/Card.svelte';
   import Field from '../components/Field.svelte';
+  import { csrfHeader } from '../api/client.js';
+  import { adminActions, adminRoot } from '../api/paths.js';
 
   let token = $state('');
   let errorMsg = $state('');
@@ -41,17 +43,17 @@
     errorMsg = '';
 
     try {
-      const res = await fetch('/admin/login', {
+      const res = await fetch(adminActions.login, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...csrfHeader('POST') },
         body: new URLSearchParams({ token: token.trim() }),
       });
 
       if (res.ok || res.redirected) {
         // Return to the tab the user came from (hash carried through
-        // /admin/login by App.svelte's banner, or a direct #tab deep link).
+        // the login route by App.svelte's banner, or a direct #tab deep link).
         const tab = window.location.hash.replace('#', '');
-        window.location.href = tab && tab !== 'login' ? `/admin#${tab}` : '/admin';
+        window.location.href = tab && tab !== 'login' ? `${adminRoot}#${tab}` : adminRoot;
       } else {
         errorMsg = cleanLoginError(res, await res.text());
       }

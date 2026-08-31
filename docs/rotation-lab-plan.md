@@ -6,21 +6,21 @@
 
 ## Backend
 
-### 1) `internal/config/config.go` + `.env.example`
+### 1) `backend/internal/config/config.go` + `.env.example`
 - Field baru `TokenRotation string` (`drain|round_robin|least_used|random`, default `drain`)
 - Validasi enum, hot-reload via `atomic.Pointer` seperti knob lain
 - `.env.example` + `README` env table: jelasin `drain` aman, `round_robin`/`least_used`/`random` *study only — naikkan risiko ban*
-- `internal/config/config_wave6_test.go` tambah `TestTokenRotationDefaultIsDrain`
+- `backend/internal/config/config_wave6_test.go` tambah `TestTokenRotationDefaultIsDrain`
 
-### 2) `internal/pool/acquire.go` (`acquireOrder`)
+### 2) `backend/internal/pool/acquire.go` (`acquireOrder`)
 - Branch **hanya** di dalam `acquireOrder`, jaga `hot-session exclusion` + `quotaLimited` bucket tetap utuh (quota habis → 429 via `bestRateLimit`, bukan `BanError`)
 - `drain` (default): sort by `remaining asc` (paling kecil sisa dulu, issue #85) — kuras 1 token sampai `recentCount==limit` baru pindah
 - `round_robin`: `start = (start+1)%n` tiap `Acquire` sukses, ignore hot-session, murni putar
 - `least_used`: sort by `remaining desc` (paling banyak sisa dulu) — halus dari round-robin
 - `random`: `rand.New(rand.NewSource)` + test hook `pool.testRand` biar deterministik di test, pilih acak di antara `remaining>0`
-- `internal/pool/pool.go` tambah `TokenRotation` di struct, `internal/pool/pool_test.go` cover branching
+- `backend/internal/pool/pool.go` tambah `TokenRotation` di struct, `backend/internal/pool/pool_test.go` cover branching
 
-### 3) `internal/pool/rotation_study_test.go` (hermetik, `env -u AUTH_TOKENS`)
+### 3) `backend/internal/pool/rotation_study_test.go` (hermetik, `env -u AUTH_TOKENS`)
 - Mock 5 token × `openai/gpt-5.6-luna` limit 5 (reset `America/Los_Angeles` Pacific midnight), pakai `testutil.MockUpstream` yang track `rateLimitsByModel["openai/gpt-5.6-luna"].recentCount`
 - `TestLuna_5x5_DrainSequential` — 25 `Acquire("luna")` sukses, assert distribusi `tok0×5 tok1×5 … tok4×5`, ke-26 `ErrNoAvailableToken` + `Retry-After`, `banned_until == nil`
 - `TestLuna_5x5_RoundRobin` — 25 `Acquire`, assert `tok0 tok1 tok2 tok3 tok4 tok0 …` rata, hitung `429`/`ban` counter
@@ -42,8 +42,8 @@
 
 ## Verification
 
-- `env -u AUTH_TOKENS -u ADMIN_TOKEN go vet ./... && go test ./...` (18 paket, `rotation_study_test` 2 skenario)
-- `npm --prefix frontend run build` → `internal/dashboard/dist` (hash baru)
+- `env -u AUTH_TOKENS -u ADMIN_TOKEN go vet ./backend/... && go test ./backend/...` (18 paket, `rotation_study_test` 2 skenario)
+- `npm --prefix frontend run build` → `backend/internal/dashboard/dist` (hash baru)
 - `npx --prefix frontend playwright test` 8/8 hermetik (4173 `page.route`, 5-token fixtures lockstep, `reuseExistingServer:true` tapi `hub restart serve-static` sebelum run kalau hash baru)
 - Live `3457` (go-proxy `-tags dashboard` + `ADMIN_TOKEN=dev123`) + `5173` (vite HMR) + `4173` (serve-static) via `hub ps`
 

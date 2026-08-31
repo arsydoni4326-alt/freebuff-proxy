@@ -1,8 +1,7 @@
 <script>
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import {
     LogIn,
-    Key,
     Plus,
     ExternalLink,
     RefreshCw,
@@ -16,9 +15,9 @@
   import PageHeader from '../components/PageHeader.svelte';
   import TokenCard from '../components/TokenCard.svelte';
   import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
-  import { fetchAPI, postAPI } from '../api/client.js';
+  import { fetchAPI, postAPI, csrfHeader } from '../api/client.js';
+  import { adminApi, adminActions, tokenActions } from '../api/paths.js';
   import { usePolling } from '../utils/polling.js';
-  import { generateRandomApiKey } from '../utils/format.js';
   import { tr } from '../i18n.js';
 
   let data = $state(null);
@@ -30,13 +29,10 @@
   let adding = $state(false);
   let actionMessage = $state('');
   let actionOK = $state(true);
-
-  // Client API-key management (API_KEYS in .env)
-  let apiKeys = $state([]);
-  let clientKeyMessage = $state('');
-  let clientKeyOK = $state(true);
-  let generatingKey = $state(false);
-  let generatedKey = $state('');
+  // Dev Tools surfaces (per-token session spawn toolbar) are hidden unless
+  // the operator enables DEVTOOLS_ENABLED=true in .env (same gate as the
+  // sidebar's Dev Tools tab and the server-side DevTools route).
+  let devToolsEnabled = $state(false);
 
   // Device login flow
   let oauthStarting = $state(false);
@@ -89,16 +85,14 @@
 
   async function fetchData() {
     try {
-      data = await fetchAPI('/admin/api/tokens');
-      try {
-        const cfgRes = await fetchAPI('/admin/api/config');
-        const envContent = cfgRes?.env_content || '';
-        const m = envContent.match(/^\s*API_KEYS=(.*)$/m);
-        const val = m ? m[1].trim() : '';
-        apiKeys = val ? val.split(',').map((s) => s.trim()).filter(Boolean) : [];
-      } catch {
-        apiKeys = [];
-      }
+      data = await fetchAPI(adminApi.tokens);
+      // Seed the per-token spawn-model map so no TokenCard binding ever sees
+      // undefined — Svelte 5 rejects bind:spawnModel={undefined} for a prop
+      // with a fallback (props_invalid_value) and unmounts the table.
+      (data?.tokens ?? []).forEach((t, i) => {
+        const idx = t.index ?? i;
+        if (!(idx in spawnModels)) spawnModels[idx] = '';
+      });
       error = '';
     } catch (e) {
       error = e.message || $tr('Failed to fetch tokens');
@@ -112,7 +106,7 @@
     if (!newToken.trim() || tokenValid === false || adding) return;
     adding = true;
     try {
-      const result = await postAPI('/admin/tokens/add', { token: newToken.trim() });
+      const result = await postAPI(adminActions.tokenAdd, { token: newToken.trim() });
       actionOK = result.ok !== false;
       actionMessage = result.message || (actionOK ? $tr('Token added successfully') : $tr('Failed to add token'));
       if (actionOK) {
@@ -146,13 +140,13 @@
   function handleTokenAction(token, idx, action) {
     switch (action) {
       case 'clear':
-        return triggerAction(`/admin/tokens/${idx}/unlock`, {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }));
+        return triggerAction(tokenActions.unlock(idx), {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }));
       case 'unlock':
-        return triggerAction(`/admin/tokens/${idx}/unlock-lock`, {}, $tr('Unlock token {idx}?', { idx }));
+        return triggerAction(tokenActions.unlockLock(idx), {}, $tr('Unlock token {idx}?', { idx }));
       case 'lock':
-        return triggerAction(`/admin/tokens/${idx}/lock`, {}, $tr('Lock token {idx}?', { idx }));
+        return triggerAction(tokenActions.lock(idx), {}, $tr('Lock token {idx}?', { idx }));
       case 'remove':
-        return triggerAction('/admin/tokens/remove', { token: idx }, $tr('Remove token {idx} from the pool and .env?', { idx }));
+        return triggerAction(adminActions.tokenRemove, { token: idx }, $tr('Remove token {idx} from the pool and .env?', { idx }));
       default:
         return;
     }
@@ -160,49 +154,14 @@
 
   function handleSpawn(idx, model) {
     const m = model || 'mimo/mimo-v2.5';
-    triggerAction(`/admin/tokens/${idx}/session`, { model: m }, $tr('Create upstream session for token #{idx} on {model}?', { idx, model: m }));
+    triggerAction(tokenActions.session(idx), { model: m }, $tr('Create upstream session for token #{idx} on {model}?', { idx, model: m }));
   }
 
   function handleRefresh(idx, action) {
     if (action === 'probe') {
-      return triggerAction(`/admin/tokens/${idx}/test`, {}, $tr('Probe token #{idx} against upstream?', { idx }));
+      return triggerAction(tokenActions.test(idx), {}, $tr('Probe token #{idx} against upstream?', { idx }));
     }
-    return triggerAction(`/admin/tokens/${idx}/finish`, {}, $tr('Finish active runs on token #{idx}?', { idx }));
-  }
-
-  async function generateClientKey() {
-    if (generatingKey) return;
-    generatingKey = true;
-    generatedKey = '';
-    clientKeyMessage = '';
-    try {
-      const newKey = generateRandomApiKey();
-      const cfgRes = await fetchAPI('/admin/api/config');
-      const envContent = cfgRes?.env_content || '';
-      const regex = /^\s*API_KEYS=(.*)$/m;
-      const match = envContent.match(regex);
-      const existing = match ? match[1].trim() : '';
-      const updated = existing ? `${existing},${newKey}` : newKey;
-      const save = await fetch('/admin/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ content: envContent.replace(regex, `API_KEYS=${updated}`) }),
-      });
-      const result = await save.json();
-      clientKeyOK = save.ok && result.ok;
-      clientKeyMessage = clientKeyOK
-        ? $tr('Generated & saved client API key')
-        : (result.message || $tr('Failed to save client API key'));
-      if (clientKeyOK) {
-        generatedKey = newKey;
-        fetchData();
-      }
-    } catch (e) {
-      clientKeyOK = false;
-      clientKeyMessage = e.message || $tr('Network error generating client key');
-    } finally {
-      generatingKey = false;
-    }
+    return triggerAction(tokenActions.finish(idx), {}, $tr('Finish active runs on token #{idx}?', { idx }));
   }
 
   async function startOAuthLogin() {
@@ -210,7 +169,7 @@
     oauthStatus = { message: $tr('Starting headless login flow…'), type: 'info' };
 
     try {
-      const res = await fetch('/admin/login/start', { method: 'POST' });
+      const res = await fetch(adminActions.loginStart, { method: 'POST', headers: csrfHeader('POST') });
       const result = await res.json();
 
       if (result.fingerprint && result.login_url) {
@@ -224,7 +183,7 @@
         clearInterval(oauthTimer);
         oauthTimer = setInterval(async () => {
           try {
-            const pollRes = await fetch(`/admin/login/status?fingerprint=${encodeURIComponent(result.fingerprint)}`);
+            const pollRes = await fetch(`${adminApi.loginStatus}?fingerprint=${encodeURIComponent(result.fingerprint)}`);
             const pollData = await pollRes.json();
 
             if (pollData.status === 'completed') {
@@ -266,6 +225,17 @@
 
   usePolling(fetchData, 10000);
   const tick = setInterval(() => { now = Date.now(); }, 1000);
+  onMount(async () => {
+    try {
+      const cfgRes = await fetchAPI(adminApi.config);
+      const envContent = cfgRes?.env_content || '';
+      const m = envContent.match(/^\s*DEVTOOLS_ENABLED=(.*)$/m);
+      const val = m ? m[1].trim().toLowerCase() : '';
+      devToolsEnabled = val === 'true' || val === '1';
+    } catch {
+      devToolsEnabled = false;
+    }
+  });
 
   onDestroy(() => {
     clearInterval(oauthTimer);
@@ -275,38 +245,7 @@
 
 <div class="page-enter">
   <div class="flex flex-col gap-6">
-    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, client API keys, and per-token session quotas')}>
-      {#snippet actions()}
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={startOAuthLogin}
-          disabled={oauthStarting}
-        >
-          {#if oauthStarting}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Authorizing…')}</span>
-          {:else}
-            <LogIn size={14} />
-            <span>{$tr('Device Login')}</span>
-          {/if}
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onclick={generateClientKey}
-          disabled={generatingKey}
-        >
-          {#if generatingKey}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Generating…')}</span>
-          {:else}
-            <Key size={14} />
-            <span>{$tr('Generate API Key')}</span>
-          {/if}
-        </Button>
-      {/snippet}
-    </PageHeader>
+    <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, client API keys, and per-token session quotas')} />
 
     {#if actionMessage}
       <Alert tone={actionOK ? 'success' : 'error'} title={actionMessage} />
@@ -343,8 +282,27 @@
     {/if}
 
     <!-- Add token form -->
-    <Card title={$tr('Add Token to Pool')} description={$tr('Paste a FreeBuff auth token (cb_…) to add it to the shared pool and save it to .env. Adding burns no quota.')}>
-      <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-end gap-3">
+    <Card
+      title={$tr('Add Token to Pool')}
+      description={$tr('Paste a FreeBuff auth token (cb_…) to add it to the shared pool and save it to .env. Adding burns no quota.')}
+    >
+      {#snippet actions()}
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={startOAuthLogin}
+          disabled={oauthStarting}
+        >
+          {#if oauthStarting}
+            <RefreshCw size={14} class="animate-spin" />
+            <span>{$tr('Authorizing…')}</span>
+          {:else}
+            <LogIn size={14} />
+            <span>{$tr('Device Login')}</span>
+          {/if}
+        </Button>
+      {/snippet}
+      <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
         <div class="flex-1 w-full">
           <Field
             label={$tr('Token')}
@@ -807,6 +765,7 @@
                 bind:spawnModel={spawnModels[idx]}
                 {actionPending}
                 {now}
+                {devToolsEnabled}
                 onToggle={() => toggleExpand(idx)}
                 onAction={(action) => handleTokenAction(token, idx, action)}
                 onSpawn={(model) => handleSpawn(idx, model)}

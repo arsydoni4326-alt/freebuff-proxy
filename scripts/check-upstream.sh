@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # check-upstream.sh — detect drift between the pinned upstream registry files
-# (internal/registry/testdata/upstream/) and CodebuffAI/freebuff at a ref.
+# (backend/internal/registry/testdata/upstream/) and CodebuffAI/freebuff at a ref.
 #
 # Usage:
-#   scripts/check-upstream.sh [--update-wire-baseline] [ref] [clone-dir]
+#   scripts/check-upstream.sh [--update-wire-baseline] [--group <registry|wire>]
+#                             [ref] [clone-dir]
 #
 #   ref        upstream branch or full commit SHA to compare against
 #              (default: main)
 #   clone-dir  local clone of https://github.com/CodebuffAI/freebuff
 #              (default: $FREEBUFF_REFERENCE_DIR, else <repo>/../freebuff-reference).
 #              Missing → shallow-cloned with --depth 50; present → fetched.
+#   --group <registry|wire>
+#              Check only one file group. Default (no flag) checks both.
+#              sync-upstream's post-sync verification passes --group registry
+#              so concurrent wire drift cannot fail a registry-only sync;
+#              unqualified drift detection still fails on any drift.
 #   --update-wire-baseline
 #              Refresh scripts/wire-baseline.tsv with the current upstream
 #              content hash of every wire file, then exit 0 regardless of
@@ -27,10 +33,27 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() {
+	printf 'check-upstream: error: %s\n' "$1" >&2
+	exit 2
+}
+
 UPDATE_BASELINE=0
 if [[ "${1:-}" == "--update-wire-baseline" ]]; then
 	UPDATE_BASELINE=1
 	shift
+fi
+GROUP_FILTER=""
+if [[ "${1:-}" == "--group" ]]; then
+	shift
+	case "${1:-}" in
+		registry|wire) GROUP_FILTER="$1"; shift ;;
+		*) die "unknown --group value '${1:-}' (expected 'registry' or 'wire')" ;;
+	esac
+fi
+if ((UPDATE_BASELINE)) && [[ -n "$GROUP_FILTER" && "$GROUP_FILTER" != "wire" ]]; then
+	die "--update-wire-baseline writes the wire baseline; cannot combine with --group $GROUP_FILTER"
 fi
 REF="${1:-main}"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
@@ -51,11 +74,11 @@ else
 	CLONE_DIR="$REPO_ROOT/../freebuff-reference"
 fi
 UPSTREAM_PREFIX="common/src/constants"
-PINNED_DIR="$REPO_ROOT/internal/registry/testdata/upstream"
+PINNED_DIR="$REPO_ROOT/backend/internal/registry/testdata/upstream"
 
-# Registry mirror files: pinned into internal/registry/testdata/upstream/ and
+# Registry mirror files: pinned into backend/internal/registry/testdata/upstream/ and
 # diffed hash-for-hash. Keep in sync with sourceFiles in
-# internal/registry/registry.go.
+# backend/internal/registry/registry.go.
 REGISTRY_FILES=(
 	free-agents.ts
 	freebuff-model-ids.ts
@@ -85,10 +108,6 @@ WIRE_FILES=(
 	common/src/tools/constants.ts
 )
 
-die() {
-	printf 'check-upstream: error: %s\n' "$1" >&2
-	exit 2
-}
 command -v git >/dev/null 2>&1 || die "git not found on PATH"
 if command -v sha256sum >/dev/null 2>&1; then
 	SHA_CMD=(sha256sum)
@@ -194,12 +213,16 @@ check_file() {
 	JSON_ENTRIES+=("{\"group\":\"$group\",\"file\":\"$esc_file\",\"pinned_sha\":\"${pinned_sha:0:12}\",\"vendor_sha\":\"${vendor_sha:0:12}\",\"status\":\"$status\"}")
 }
 
-for f in "${REGISTRY_FILES[@]}"; do
-	check_file "registry" "$UPSTREAM_PREFIX/$f" "$f"
-done
-for f in "${WIRE_FILES[@]}"; do
-	check_file "wire" "$f" ""
-done
+if [[ -z "$GROUP_FILTER" || "$GROUP_FILTER" == "registry" ]]; then
+	for f in "${REGISTRY_FILES[@]}"; do
+		check_file "registry" "$UPSTREAM_PREFIX/$f" "$f"
+	done
+fi
+if [[ -z "$GROUP_FILTER" || "$GROUP_FILTER" == "wire" ]]; then
+	for f in "${WIRE_FILES[@]}"; do
+		check_file "wire" "$f" ""
+	done
+fi
 
 # Vendor npm wrapper version (informational; never fails the check).
 NPM_VERSION=""
@@ -258,7 +281,7 @@ fi
 if ((drift)); then
 	echo "check-upstream: DRIFT detected."
 	echo "Registry pins: refresh by running scripts/sync-upstream.sh and updating"
-	echo "fallbackAgents/fallbackRootByModel in internal/registry/registry.go until"
+	echo "fallbackAgents/fallbackRootByModel in backend/internal/registry/registry.go until"
 	echo "TestFallbackParityWithPinnedUpstream passes."
 	echo "Wire files: read the new file, apply the wire-shape change to the Go side"
 	echo "(e.g. injectEnvelope, classifyError, parseSessionResponse), and add a test."

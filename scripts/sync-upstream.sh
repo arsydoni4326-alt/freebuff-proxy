@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sync-upstream.sh — fetch CodebuffAI/freebuff changes, update pinned registry
-# files (internal/registry/testdata/upstream/), verify hash parity, and run tests.
+# files (backend/internal/registry/testdata/upstream/), verify hash parity, and run tests.
 #
 # Usage:
 #   scripts/sync-upstream.sh [options] [ref] [clone-dir]
@@ -8,7 +8,7 @@
 # Options:
 #   -c, --check       Check drift only; do not modify any files
 #   --no-test         Skip running Go tests after syncing
-#   --test-all        Run full test suite (go test ./...) instead of registry only
+#   --test-all        Run full test suite (go test ./backend/...) instead of registry only
 #   -h, --help        Show this help message
 #
 # Arguments:
@@ -27,7 +27,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR_URL="https://github.com/CodebuffAI/freebuff.git"
 UPSTREAM_PREFIX="common/src/constants"
-PINNED_DIR="$REPO_ROOT/internal/registry/testdata/upstream"
+PINNED_DIR="$REPO_ROOT/backend/internal/registry/testdata/upstream"
 
 CHECK_ONLY=0
 RUN_TESTS=1
@@ -205,6 +205,12 @@ fi
 if [[ -n "$NPM_VERSION" ]]; then
 	if [[ -n "$PINNED_VERSION" && "$NPM_VERSION" != "$PINNED_VERSION" ]]; then
 		echo "    npm freebuff@${NPM_VERSION} (pinned ${PINNED_VERSION}) — VERSION DRIFT"
+		# Count toward --check failure so a wrapper-version-only upstream
+		# move is loud, mirroring the pin-drift handling above. check-upstream
+		# reports the npm row informationally only and the drift workflow's
+		# has_drift jq inspects registry/wire groups, so a version-only drift
+		# is a manual --check/sync signal, not an automated PR trigger.
+		drift_count=$((drift_count + 1))
 		if ((!CHECK_ONLY)); then
 			printf '%s' "$NPM_VERSION" >"$VENDOR_VERSION_FILE"
 			echo "    Updated scripts/vendor-version.txt to ${NPM_VERSION}"
@@ -220,23 +226,32 @@ echo
 # 3. If in sync mode and files were updated, report status
 if ((CHECK_ONLY)); then
 	if ((drift_count > 0)); then
-		echo "sync-upstream: DRIFT detected in $drift_count file(s). Run without --check to synchronize."
+		echo "sync-upstream: DRIFT detected in $drift_count file(s)/pin(s). Run without --check to synchronize."
 		exit 1
 	else
 		echo "sync-upstream: All pinned files match upstream perfectly."
 	fi
 else
 	if ((updated_count > 0)); then
-		echo "==> 3. Updated $updated_count pinned file(s) in internal/registry/testdata/upstream/"
+		echo "==> 3. Updated $updated_count pinned file(s) in backend/internal/registry/testdata/upstream/"
 	else
 		echo "==> 3. All pinned files are already up-to-date (0 files updated)."
 	fi
 fi
 
-# 4. Verify parity via check-upstream.sh
+# 4. Verify parity via check-upstream.sh. After a sync, verify only the
+# registry group: the 13 wire files are deliberately not touched by this
+# sync, so wire drift arriving in the same upstream batch (tracked by the
+# drift workflow as a separate needs-port issue) must not fail the registry
+# sync. --check keeps the full check so drift reports still fail on wire
+# drift.
+CHECK_ARGS=()
+if ((!CHECK_ONLY)); then
+	CHECK_ARGS=(--group registry)
+fi
 echo
 echo "==> 4. Verifying pin parity..."
-if ! bash "$REPO_ROOT/scripts/check-upstream.sh" "$UPSTREAM_SHA" "$CLONE_DIR"; then
+if ! bash "$REPO_ROOT/scripts/check-upstream.sh" "${CHECK_ARGS[@]}" "$UPSTREAM_SHA" "$CLONE_DIR"; then
 	die "check-upstream.sh reported failure after sync"
 fi
 
@@ -248,20 +263,20 @@ if ((RUN_TESTS)); then
 		echo "    WARNING: 'go' binary not found on PATH. Skipping test execution."
 	else
 		if ((TEST_ALL)); then
-			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./..."
-			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...; then
+			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/..."
+			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/...; then
 				echo "    [PASS] Full test suite passed cleanly."
 			else
 				echo "    [FAIL] Full test suite failed. Review test output above." >&2
 				exit 1
 			fi
 		else
-			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./internal/registry/..."
-			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./internal/registry/...; then
+			echo "    Executing: env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/internal/registry/..."
+			if env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/internal/registry/...; then
 				echo "    [PASS] Registry tests and fallback parity check passed."
 			else
 				echo "    [FAIL] Registry tests failed. If upstream added/removed models or agents," >&2
-				echo "           update fallbackAgents / fallbackRootByModel in internal/registry/registry.go" >&2
+				echo "           update fallbackAgents / fallbackRootByModel in backend/internal/registry/registry.go" >&2
 				echo "           until TestFallbackParityWithPinnedUpstream passes." >&2
 				exit 1
 			fi
@@ -272,13 +287,13 @@ fi
 # 6. Show git status summary of changes
 echo
 echo "==> Upstream Sync Complete!"
-if git -C "$REPO_ROOT" diff --quiet internal/registry/testdata/upstream; then
+if git -C "$REPO_ROOT" diff --quiet backend/internal/registry/testdata/upstream; then
 	echo "No working tree changes (pins were already identical to upstream)."
 else
-	echo "Working tree changes in internal/registry/testdata/upstream/:"
-	git -C "$REPO_ROOT" status --short internal/registry/testdata/upstream
+	echo "Working tree changes in backend/internal/registry/testdata/upstream/:"
+	git -C "$REPO_ROOT" status --short backend/internal/registry/testdata/upstream
 	echo
 	echo "Suggested commit command:"
-	echo "  git add internal/registry/testdata/upstream"
+	echo "  git add backend/internal/registry/testdata/upstream"
 	echo "  git commit -m \"chore(registry): sync pinned upstream models to vendor ${UPSTREAM_SHA:0:7}\""
 fi

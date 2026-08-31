@@ -275,12 +275,17 @@ session slot; that is the knob to test if you run long sessions.
 
 The config page in the dashboard and `POST /admin/reload` reload `.env`
 without restarting. What a reload applies: registry aliases and the
-runtime knobs (session-create caps, re-admit lead, probe-cache TTL). What
-it does not do: change the pool's token list — editing `AUTH_TOKENS` in
-`.env` and reloading does not add or remove pooled tokens; that needs a
-restart. The dashboard's Tokens page is the live path instead: Add-token,
-Remove last, and mode switch take effect immediately and persist to
-`AUTH_TOKENS` in `.env` (surviving a restart), no restart needed.
+runtime knobs (session-create caps, re-admit lead, probe-cache TTL). A
+reload also reconciles the pool with `AUTH_TOKENS`: a slot whose token
+changed is rebuilt live — the old account's runs are FINISHed and its
+admitted session ended, and a fresh entry is built for the new token (some
+stale state, like a terminal quarantine for a dead account, never carries
+over to a different account). A token appended to `AUTH_TOKENS` is picked
+up the same way. Removing pooled tokens is still not something a reload
+does: use the dashboard's Tokens page (Remove last) or a restart, and the
+Tokens page remains the live path for add/remove and mode switch — those
+take effect immediately and persist to `AUTH_TOKENS` in `.env` (surviving
+a restart), no restart needed.
 
 Self-update is `./freebuff-proxy -update`, which checks GitHub and
 replaces the binary with the latest release. It skips the swap if the
