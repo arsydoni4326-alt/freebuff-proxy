@@ -3,6 +3,7 @@
   import Card from './Card.svelte';
   import Button from './Button.svelte';
   import { fetchAPI } from '../api/client.js';
+  import { fetchModelOptions } from '../modelOptions.js';
   import { adminApi } from '../api/paths.js';
   import { tr } from '../i18n.js';
 
@@ -14,15 +15,9 @@
   let batchSeq = 0;
   let selectedModel = $state('mimo/mimo-v2.5');
 
-  const modelsList = [
-    { id: 'openai/gpt-5.6-luna', label: 'openai/gpt-5.6-luna (shared premium pool)', tag: 'premium' },
-    { id: 'upstage/solar-pro4', label: 'upstage/solar-pro4 (shared premium pool · experimental)', tag: 'premium' },
-    { id: 'mimo/mimo-v2.5', label: 'mimo/mimo-v2.5 (unmetered entry)', tag: 'unmetered' },
-    { id: 'z-ai/glm-5.3-flash', label: 'z-ai/glm-5.3-flash (unmetered)', tag: 'unmetered' },
-    { id: 'deepseek/deepseek-v4-flash', label: 'deepseek/deepseek-v4-flash (unmetered)', tag: 'unmetered' },
-    { id: 'z-ai/glm-5.2', label: 'z-ai/glm-5.2 (referral promo)', tag: 'referral' },
-  ];
+  let modelsList = $state(fallbackModelOptions);
 
+  fetchModelOptions().then((rows) => (modelsList = rows));
   async function runBatchTraffic() {
     if (batchRunning) return;
     batchRunning = true;
