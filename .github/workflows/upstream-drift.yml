@@ -21,10 +21,11 @@ name: upstream-drift
 on:
   workflow_dispatch:
   schedule:
-    # Daily 06:17 UTC: upstream's public-sync bot lands batches several
-    # times a week (three commits inside 40 minutes observed 2026-08-31),
-    # so a twice-weekly scan left multi-day blind windows.
-    - cron: '17 6 * * *'
+    # Every 6h: the upstream public-sync bot lands batches near-daily (three
+    # commits inside 40 minutes observed 2026-08-31), and wire drift once sat
+    # unreviewed between twice-weekly runs. 6h bounds blind windows while
+    # keeping PR/branch churn bounded by the close-superseded step below.
+    - cron: '17 */6 * * *'
 
 permissions:
   contents: write
@@ -169,6 +170,26 @@ jobs:
           fi
           git push -u origin HEAD
 
+      - name: Close superseded sync PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_SHA: ${{ needs.drift.outputs.upstream_sha }}
+        run: |
+          # One rolling sync PR per upstream SHA; an older open PR for a
+          # different SHA is stale the moment a newer SHA exists.
+          gh pr list --state open --json number,title,headRefName \
+            --jq '.[] | select(.title | startswith("chore(registry): sync pinned upstream models to vendor")) | {number, title, branch: .headRefName}' \
+          | jq -c . \
+          | while read -r pr; do
+              num=$(echo "$pr" | jq -r .number)
+              branch=$(echo "$pr" | jq -r .branch)
+              case "$branch" in
+                chore/upstream-drift-"${UPSTREAM_SHA:0:7}"|chore/upstream-drift-"${UPSTREAM_SHA}") ;;
+                *) gh pr close "$num" --comment "Superseded by upstream ${UPSTREAM_SHA:0:7}; a fresh sync PR covers the current pin state." \
+                     && git push origin --delete "$branch" || true ;;
+              esac
+            done
+
       - name: Open or update PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -244,7 +265,7 @@ jobs:
           existing=$(gh issue list --state open --json number,title \
             --jq '.[] | select(.title == "Upstream wire drift needs porting") | .number' | head -1)
           if [ -n "$existing" ]; then
-            if gh issue view "$existing" --json body --jq .body | grep -q "$UPSTREAM_SHA"; then
+            if gh issue view "$existing" --json body,comments --jq '.body, (.comments[]?.body)' | grep -qF "$UPSTREAM_SHA"; then
               echo "Issue #$existing already covers $UPSTREAM_SHA; skipping."
               exit 0
             fi
