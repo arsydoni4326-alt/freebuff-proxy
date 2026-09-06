@@ -389,6 +389,7 @@ func (p *Pool) UnlockToken(token int) error {
 	}
 	(*toks)[token].runs.ClearCooldowns()
 	(*toks)[token].quarantine.Store(nil)
+	p.persistTokenState((*toks)[token])
 	return nil
 }
 
@@ -431,6 +432,7 @@ func (p *Pool) quarantineToken(tok *tokenEntry, reason string, err error) {
 	if tok.quarantine.CompareAndSwap(nil, rec) {
 		p.logger.Warn("pool: token quarantined (terminal account state)",
 			"token_label", tokenEntryLabel(tok), "state", reason, "reason", rec.detail)
+		p.persistTokenState(tok)
 	}
 }
 
@@ -453,6 +455,7 @@ func (p *Pool) clearLiftedQuarantine(tok *tokenEntry) bool {
 	if tok.quarantine.CompareAndSwap(q, nil) {
 		p.logger.Info("pool: quarantine lifted (temporary ban expired)",
 			"token_label", tokenEntryLabel(tok), "state", q.reason)
+		p.persistTokenState(tok)
 		return true
 	}
 	return false
@@ -466,6 +469,7 @@ func (p *Pool) LockToken(token int) error {
 		return fmt.Errorf("pool: token %d out of range", token)
 	}
 	(*toks)[token].locked.Store(true)
+	p.persistTokenState((*toks)[token])
 	return nil
 }
 
@@ -477,6 +481,7 @@ func (p *Pool) UnlockLockToken(token int) error {
 		return fmt.Errorf("pool: token %d out of range", token)
 	}
 	(*toks)[token].locked.Store(false)
+	p.persistTokenState((*toks)[token])
 	return nil
 }
 

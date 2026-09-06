@@ -58,6 +58,19 @@ func Open(path string, log *slog.Logger) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("tokendb: create table: %w", err)
 	}
+	// Per-token operational state (admin locks, terminal quarantines; later
+	// phases add cooldown windows and spend/quota ledgers). The state column
+	// is an opaque JSON blob owned by the pool — the store never parses it —
+	// so the schema can evolve without a migration for every pool change.
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS token_state (
+			token      TEXT    PRIMARY KEY,
+			state      BLOB    NOT NULL,
+			updated_at TEXT    NOT NULL
+		)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("tokendb: create state table: %w", err)
+	}
 	return &DB{db: db, path: path, log: log}, nil
 }
 
@@ -227,4 +240,63 @@ func prefix(token string) string {
 		return token[:8] + "…"
 	}
 	return token
+}
+
+// SaveState upserts the opaque per-token state blob (JSON owned by the pool)
+// for token, recording the write time. LoadStates only returns states whose
+// token is still in auth_tokens, so a row for a removed token is invisible.
+func (d *DB) SaveTokenState(token string, state []byte) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return fmt.Errorf("tokendb: state token must not be empty")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(
+		`INSERT INTO token_state (token, state, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(token) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+		token, state, time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return fmt.Errorf("tokendb: save state: %w", err)
+	}
+	return nil
+}
+
+// LoadStates returns every persisted state blob keyed by token value, joined
+// against the live auth_tokens table so state rows whose token was removed
+// (or never added) are never resurrected.
+func (d *DB) LoadTokenStates() (map[string][]byte, error) {
+	rows, err := d.db.Query(`
+		SELECT ts.token, ts.state
+		FROM token_state ts
+		INNER JOIN auth_tokens at ON at.token = ts.token`)
+	if err != nil {
+		return nil, fmt.Errorf("tokendb: load states: %w", err)
+	}
+	defer rows.Close()
+	states := make(map[string][]byte)
+	for rows.Next() {
+		var token string
+		var state []byte
+		if err := rows.Scan(&token, &state); err != nil {
+			return nil, fmt.Errorf("tokendb: load states scan: %w", err)
+		}
+		states[token] = state
+	}
+	return states, rows.Err()
+}
+
+// ClearState removes the persisted state blob for token (no-op when absent).
+func (d *DB) ClearTokenState(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, err := d.db.Exec(`DELETE FROM token_state WHERE token = ?`, token); err != nil {
+		return fmt.Errorf("tokendb: clear state: %w", err)
+	}
+	return nil
 }

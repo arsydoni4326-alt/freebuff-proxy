@@ -202,3 +202,86 @@ func TestTokensSorted(t *testing.T) {
 		t.Fatalf("expected sorted, got %v", tokens)
 	}
 }
+func TestSaveLoadTokenState(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+	db.Add("tok-a")
+	db.Add("tok-b")
+
+	if err := db.SaveTokenState("tok-a", []byte(`{"Locked":true}`)); err != nil {
+		t.Fatalf("SaveTokenState: %v", err)
+	}
+	if err := db.SaveTokenState("tok-b", []byte(`{"Quarantined":true,"QuarantineReason":"banned"}`)); err != nil {
+		t.Fatalf("SaveTokenState: %v", err)
+	}
+	states, err := db.LoadTokenStates()
+	if err != nil {
+		t.Fatalf("LoadTokenStates: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 states, got %d: %v", len(states), states)
+	}
+	if string(states["tok-a"]) != `{"Locked":true}` {
+		t.Errorf("tok-a state = %q", states["tok-a"])
+	}
+
+	// Upsert replaces the previous blob for the same token.
+	if err := db.SaveTokenState("tok-a", []byte(`{"Locked":false}`)); err != nil {
+		t.Fatal(err)
+	}
+	states, _ = db.LoadTokenStates()
+	if string(states["tok-a"]) != `{"Locked":false}` {
+		t.Errorf("after upsert tok-a state = %q, want {Locked:false}", states["tok-a"])
+	}
+	if len(states) != 2 {
+		t.Errorf("upsert must not add a row, got %d states", len(states))
+	}
+}
+
+func TestLoadTokenStatesIgnoresOrphans(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+
+	// State saved for a token that is NOT in auth_tokens must stay invisible.
+	if err := db.SaveTokenState("ghost", []byte(`{"Locked":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	states, err := db.LoadTokenStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("orphan state surfaced: %v", states)
+	}
+
+	// Once the token exists, its state becomes visible (re-added account
+	// keeps its terminal state — the anti-ban contract).
+	db.Add("ghost")
+	states, _ = db.LoadTokenStates()
+	if len(states) != 1 || string(states["ghost"]) != `{"Locked":true}` {
+		t.Errorf("after Add, states = %v, want the ghost state", states)
+	}
+}
+
+func TestClearTokenState(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+	db.Add("tok-a")
+	if err := db.SaveTokenState("tok-a", []byte(`{"Locked":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClearTokenState("tok-a"); err != nil {
+		t.Fatalf("ClearTokenState: %v", err)
+	}
+	states, _ := db.LoadTokenStates()
+	if len(states) != 0 {
+		t.Errorf("states after clear = %v, want empty", states)
+	}
+	// Clearing an absent token is a no-op.
+	if err := db.ClearTokenState("no-such"); err != nil {
+		t.Errorf("ClearTokenState(absent) = %v, want nil", err)
+	}
+}

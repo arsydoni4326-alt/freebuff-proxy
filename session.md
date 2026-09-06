@@ -1,16 +1,58 @@
 # Session: SQLite Token Database + UI
 
-## Latest: Dashboard Token Mutations Now Persist to the `-config` JSON File
+## Latest: Phase 1 — Tokens + Anti-Ban State in SQLite (config file never written)
 
-- **Report**: adding a token in `/admin#tokens` did not update `/app/config.json` — the file the proxy is started with via `-config`.
-- **Root cause**: token add/remove/swap/move mutations only ever wrote `.env` (or the SQLite token DB); the `-config` JSON file was read-only input, so a `-config /app/config.json` deployment lost dashboard token changes on container recreate/restart.
-- **Fix** (`backend/internal/server/admin_env.go` + `admin_tokens.go`): `syncTokensAfterMutation` (the single funnel for dashboard add/remove/swap/move/remove-specific and the login-wizard add) now ALSO mirrors the new `AUTH_TOKENS` list into the `-config` JSON file when one was supplied.
-  - `updateAuthTokensJSONFile` + `setJSONObjectKey` perform a byte-preserving splice: only the top-level `AUTH_TOKENS` member is replaced (or appended before the closing brace when the file has none); key order, indentation, unknown keys, BOM, and the trailing newline survive. Written atomically (0600) via the existing `config.WriteFileAtomic`.
-  - Both branches covered: tokenDB path (best-effort mirror after DB commit — DB stays authoritative on startup; the config file reseeds a recreated DB) and legacy `.env` path (config.json snapshot joined the .env snapshot in persist → reload-verify → rollback so a failed verify restores BOTH files byte-exact). A mirror failure only logs `token change not mirrored into -config file` and never rejects the mutation.
-  - Success messages now say "persisted to the config file" instead of ".env" when a `-config` path is active (`tokenPersistTarget`).
-- **Tests**: `configjson_internal_test.go` (unit: splice replace/append/empty-object/nested-key isolation/literals/round-trip/nil→[]/no-op/snapshot-restore) and `admin_tokens_configfile_test.go` (end-to-end add + remove against a real `config.json`-backed server, incl. a bridge-mode config without an `AUTH_TOKENS` key).
-- **Docs**: README Configuration Reference + Admin Dashboard, `docs/dashboard.md` (Docker caveat: prefer directory mounts over single-file bind mounts — the atomic rename can otherwise fail and the mirror is skipped with a warning), and this file.
-- **Validation**: `go vet ./backend/internal/server/` clean; hermetic `env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/internal/server/` passes EXCEPT the pre-existing `TestConcurrentReloadAndChat` EOF failure (verified identical on baseline via stash). `server_models_test.go` gofmt noise is pre-existing and untouched.
+- **Direction change**: the earlier `-config` JSON write-back (commit
+  `ec4ac56`) was rejected by the operator — writing a bind-mounted
+  `/app/config.json` makes the file resource-busy (rename-over-mount EBUSY).
+  Requirement: **never write the config file; store tokens AND state in the
+  SQLite token DB**. Full scope (tokens + locks + quarantines + cooldowns +
+  spend/quota + session/quota) is a multi-phase program; Phase 1 landed now.
+- **Phase 1 (this change) — tokens + locks + terminal quarantines in SQLite**:
+  - REVERTED the config-file write-back: `admin_env.go` helper block,
+    `admin_tokens.go` `syncTokensAfterMutation` wiring + `tokenPersistTarget`,
+    success-message changes, and the two config-file test files are gone. The
+    `-config` JSON file is read-only input, never rewritten.
+  - STARTUP POOL/DB SYNC FIX (`cli.Serve`): the pool was built from the
+    pre-DB token list, so dashboard-added tokens never reached the pool on
+    restart. Now after `cfg.AuthTokens = dbTokens` the pool is reconciled with
+    `p.SetConfig(&cfg)`, then `p.SetTokenStateStore(tokenDB)` +
+    `p.RestoreTokenState()`.
+  - `tokendb`: new `token_state` table (`token` PK, opaque `state` BLOB,
+    `updated_at`) + `SaveTokenState`/`LoadTokenStates`/`ClearTokenState`.
+    `LoadTokenStates` JOINs `auth_tokens` so a removed token's state is
+    invisible (and resurfaces if the same account is re-added — intentional:
+    the account's terminal state is still true; `ClearTokenState` is the
+    operator override).
+  - `pool`: new `state_store.go` — `TokenStateStore` interface (opaque blobs,
+    so the pool imports NOTHING new), `SetTokenStateStore`,
+    `persistTokenState` (best-effort, failure only logs), `RestoreTokenState`
+    (startup, keyed by token VALUE). Hooks on `LockToken` / `UnlockLockToken`
+    / `UnlockToken` / `quarantineToken` / `clearLiftedQuarantine`.
+  - `archtest`: matrix deliberately extended — `internal/tokendb` added as a
+    leaf; `internal/dashboard → stealth` (risk engine) and
+    `internal/{server,cli} → tokendb` were PRE-EXISTING edges that the matrix
+    had missed (CI was already red on HEAD); now green.
+- **Phases remaining** (documented, NOT implemented):
+  - Phase 2 — cooldown windows (rate-limit / ip_capped / country / ban
+    deadlines + reasons) via a `runs.RunManager` persist/restore API.
+  - Phase 3 — spend/quota ledgers (Pacific day/week/month buckets, daily
+    message/request counters).
+  - Phase 4 — session/quota durability (move `SESSION_PERSIST` JSON state into
+    SQLite / the same store).
+- **Tests**: `tokendb_test.go` (+state round-trip/upsert/orphan/clear),
+  `pool/state_store_test.go` (lock+quarantine persist/restore via a memory
+  store, unknown-token ignore, no-store no-op, liftAt round-trip).
+- **Validation**: `go vet` clean; hermetic
+  `env -u AUTH_TOKENS -u ADMIN_TOKEN go test` passes for tokendb, pool, cli,
+  archtest, config; server suite passes except the PRE-EXISTING
+  `TestConcurrentReloadAndChat` EOF failure (verified identical on baseline).
+- **Notes**: `.env` remains the fallback when the token DB is unavailable
+  (CGO-disabled build) — tokens then persist to `.env` as before; the DB is
+  authoritative whenever it opens. `MigrateFromEnv` re-seeds DB tokens from
+  config at every start (pre-existing design; a token removed via dashboard
+  while still listed in config.json comes back on restart — noted for Phase 3
+  review, not changed here).
 
 
 ## Latest: Merge of upstream/main Resolved (feature/port-upstream)

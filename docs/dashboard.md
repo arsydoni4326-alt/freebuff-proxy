@@ -53,11 +53,11 @@ first credential reads as account 1, never index 0.
   - **Move Up / Move Down**: Reorder pool priority (`POST /admin/tokens/swap`); Move Up is disabled on the first account, Move Down on the last. Reorders apply instantly even mid-stream: in-flight requests stay pinned to their account, and recovery paths (session invalidate, cooldowns) follow the lease, never the old index.
   - **Clear**: Clears a stale cooldown lock.
   - **Lock / Unlock**: Excludes an account from rotation until unlocked.
-  - **Remove**: Deletes the account from the pool and the active config (`.env`, `-config` JSON file, or token database).
+  - **Remove**: Deletes the account from the pool and the active config (`.env` or the SQLite token database; the `-config` JSON file is never rewritten).
   - Expandable rows: active-session countdown with **Drop Session**, model allowlist pinning, and (with `DEVTOOLS_ENABLED=true`) a session-spawn toolbar with **Make Session**, **Probe**, and **Finish Runs**.
 - **Account Risk Cards**: At-risk accounts (active cooldowns, elevated ban risk) with live cooldown countdowns — moved here from Overview so all account health lives on one page.
 - **Token Rotation Policy**: `Drain (safest)` / `Round Robin (1:1)` / `Least Used` / `Random` radios plus the **Auto Failover on Rate Limit (429)** switch, both persisted to `.env`.
-- **Add Token Form**: Appends new FreeBuff auth tokens to the active config — `.env`, the `-config` JSON file when the proxy runs with one, and/or the SQLite token database.
+- **Add Token Form**: Appends new FreeBuff auth tokens to the active config — the SQLite token database when active, otherwise `.env` (the `-config` JSON file is never rewritten).
 - **OAuth Login Wizard**: One-click device-code browser login flow for minting fresh tokens without the CLI.
 - **Per-Model Quota Breakdown**: Expandable rows showing real-time upstream quota limits, recent usage counts, period reset countdowns (Pacific midnight), and entitlement tiers.
   - **Model Filter**: Filter quota display by specific model name.
@@ -131,7 +131,7 @@ services:
       - ./.env:/app/.env
 ```
 
-When you run the proxy with `-config /app/config.json`, dashboard token add/remove/swap/move mutations are also written back into that file's `AUTH_TOKENS` array (`.env` and the token database stay in sync the same way). Prefer **mounting the whole `/app` directory** (or a directory containing the config file) rather than a single-file bind mount: the atomic rename the proxy uses to update the file succeeds on a directory mount, while a single-file bind mount can only be replaced from inside the container if the mount is set up to allow it — otherwise the mutation still applies to `.env`/the token DB and the server logs `token change not mirrored into -config file`.
+Tokens added/removed/reordered via the dashboard persist to the SQLite token database when active (`AUTH_TOKEN_DB_PATH`, default `data/auth_tokens.db`) and otherwise to `.env` — the `-config` JSON file is never rewritten, so a bind-mounted `config.json` is never touched. To keep both tokens and their anti-ban state (locks, terminal quarantines) across container recreates, persist the database path: either mount the whole `/app` directory, or bind-mount the data directory that holds `auth_tokens.db` (e.g. `./data:/app/data`). A single-file bind mount of `config.json` is fine — the proxy only reads it.
 
 ---
 

@@ -243,6 +243,17 @@ func Serve(configPath string, verbose bool, version string) int {
 		if dbTokens, listErr := tokenDB.List(); listErr == nil && len(dbTokens) > 0 {
 			cfg.AuthTokens = dbTokens
 			logger.Info("tokens loaded from database", "count", len(dbTokens))
+			// The pool was constructed above from the pre-database token
+			// list; reconcile it with the database's authoritative membership
+			// (SetConfig reuses entries by token value and builds fresh ones
+			// for database-only tokens — tokens added via the dashboard in a
+			// previous run must be acquirable now, no file writes involved).
+			p.SetConfig(&cfg)
+			// Wire the per-token state store and re-apply persisted admin
+			// locks / terminal quarantines so a locked or dead account stays
+			// locked/quarantined across restarts (anti-ban contract).
+			p.SetTokenStateStore(tokenDB)
+			p.RestoreTokenState()
 		}
 		serverOpts = append(serverOpts, server.WithTokenDB(tokenDB))
 	}

@@ -8,7 +8,7 @@ Multi-token front door for chat requests. Owns token selection order, session ad
 
 ## Public API (stable surface)
 
-- Construction: `New(cfg, clients, sessions, reg) (*Pool, error)`, `SetConfig(*config.Config)`, `SetSessionStore(*session.Store)`, `SetNotifier(*notify.Sender)`, `Start(ctx)`, `Shutdown(ctx)`.
+- Construction: `New(cfg, clients, sessions, reg) (*Pool, error)`, `SetConfig(*config.Config)`, `SetSessionStore(*session.Store)`, `SetNotifier(*notify.Sender)`, `SetTokenStateStore(TokenStateStore)`, `RestoreTokenState()`, `Start(ctx)`, `Shutdown(ctx)`.
 - Serving: `Acquire(ctx, model) (*Lease, error)`, `AcquireBridge(ctx, clientToken, model) (*Lease, error)`, `Chat(ctx, lease, opts, body) (io.ReadCloser, error)`.
 - Lease lifecycle (all nil-safe): `LeaseRelease`, `LeaseAbandon`, `RecordRunStep`, `MarkRunFailed`, `RecordSpend`.
 - Invalidation: `InvalidateSession(WithReason)`, `InvalidateRun`, `InvalidateLeaseSession(WithReason)`, `InvalidateLeaseRun`, `InvalidateBridgeSession(WithReason)`, `InvalidateBridgeRun`.
@@ -38,6 +38,7 @@ Multi-token front door for chat requests. Owns token selection order, session ad
 - `roster.Load()` once per call — never cache the pointer across calls.
 - Maturity (pool/maturity.go): `MATURITY_ENABLED` default ON (global kill-switch), dry-run default (probe-only, zero session slots claimed), unmetered touch models only (premium-short gated by `MATURITY_ALLOW_PREMIUM` + per-token opt-in), jittered daily slot in the account's own timezone, restart-safe 6h throttle, stops firing after 3 consecutive non-advancing days, never touches quarantined/banned/cooling/country-blocked accounts. Touch must fail closed on priced models (`skip:touch-priced`).
 - Spend ledger records events only — the $ ceiling is enforced elsewhere (server-enforced).
+- Token-state persistence (Phase 1, `state_store.go`): admin `LockToken`/`UnlockLockToken`/`UnlockToken` and terminal `quarantineToken`/`clearLiftedQuarantine` transitions write the entry's durable state (lock + quarantine reason/detail/liftAt) to the injected `TokenStateStore` as an opaque JSON blob; failures only log and never reject the mutation. `RestoreTokenState()` re-applies persisted locks/quarantines at startup, keyed by token VALUE (never index). Persisting state rows for a re-added token is INTENTIONAL: the same account is still dead, so the quarantine must survive a remove → re-add. Cooldown windows (runs) and spend/quota ledgers are later phases.
 
 ## Tests that protect it
 
