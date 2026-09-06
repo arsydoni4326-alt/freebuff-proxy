@@ -66,10 +66,10 @@ type Client struct {
 	// is itself a JA4 ALPN mismatch (#51). false forces HTTP/1.1.
 	http2Upstream bool
 
-	// risk is the passive ban-risk engine fed from session/probe responses
-	// (#64). Production always uses stealth.DefaultRiskEngine; nil disables
-	// feeding (test seam).
-	risk *stealth.RiskEngine
+	// mock is the optional simulated upstream for dummy/mock tokens (test
+	// fixtures, issue #271). nil means real network calls. Request methods
+	// branch on this narrow interface, never on the token prefix.
+	mock MockUpstream
 
 	// Counters surfaced via the pool snapshot for /metrics.
 	transientRetries     atomic.Int64 // transient transport failures retried
@@ -166,11 +166,28 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 		debugDump:             cfg.DebugDump,
 		transientRetriesLimit: cfg.TransientRetries,
 		http2Upstream:         cfg.HTTP2Upstream,
-		risk:                  stealth.DefaultRiskEngine,
 		rateLimitEvents:       make(map[string]*atomic.Int64),
 	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Low-latency pooling for SG→US high-BDP link (240ms): keep many idle
+	// conns warm to avoid 30ms TLS re-handshakes on every chat. Defaults
+	// (MaxIdleConns 100, PerHost 2, Idle 90s) are too thin for 2 pooled
+	// tokens sharing one upstream host.
+	transport.MaxIdleConns = 200
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 120 * time.Second
+	transport.MaxConnsPerHost = 64 // cap bursts; 0=unlimited would spike 64 TLS handshakes on cold start (h1 path). h2 multiplexes within this cap.
+	transport.WriteBufferSize = 32 * 1024
+	transport.ReadBufferSize = 32 * 1024
+	// REQUEST_TIMEOUT guards only the wait for response HEADERS (TTFB) —
+	// never the streamed body. The old request-context deadline cut healthy
+	// long streams at the default 15m: a turn-heavy agent session died
+	// mid-stream with the connection still feeding data. The body now runs
+	// until upstream EOF or the caller's context cancels (client
+	// disconnect). Control calls are unaffected: they keep their own ctx
+	// deadlines (SessionCallTimeout), which stay tighter than this bound.
+	transport.ResponseHeaderTimeout = c.requestTimeout
 	var baseDial func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	var stealthProf *stealth.Profile
@@ -189,7 +206,6 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 	// HTTP_PROXY/HTTPS_PROXY env var never routes upstream traffic through a
 	// proxy either (full egress control).
 	transport.Proxy = nil
-
 	if stealthProf != nil {
 		// Resolve the profile per request (instead of capturing it) so a
 		// transient retry can swap the pinned fingerprint without rebuilding
@@ -266,6 +282,14 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 		transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	}
 	c.stealthProfile = stealthProf
+	// Wire the mock upstream for dummy/mock tokens (issue #271). NewMockWire
+	// is populated by the testmock package (via init), so the simulation lives
+	// outside the production wire client; a nil hook leaves the client on the
+	// real network path. The request methods branch on the narrow MockUpstream
+	// interface, never on the token prefix.
+	if NewMockWire != nil {
+		c.mock = NewMockWire(token)
+	}
 	c.http = &http.Client{
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {

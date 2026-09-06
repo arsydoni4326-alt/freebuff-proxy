@@ -17,7 +17,6 @@ import (
 
 	"freebuff-proxy/backend/internal/convert"
 	"freebuff-proxy/backend/internal/phasetiming"
-	"freebuff-proxy/backend/internal/reasoningcache"
 )
 
 // --- streaming translation ---
@@ -69,20 +68,15 @@ type anthropicStreamState struct {
 // text/tool_use), thinking_delta, text_delta, input_json_delta,
 // signature_delta, content_block_stop, message_delta, message_stop.
 func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time, requestedModel string, inputTokens int) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
+	flusher, keepalive, lines, lastWrite, ok := newStreamRelay(ctx, w, r)
 	if !ok {
 		s.logger.Warn("response writer does not support flushing")
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, ": connecting\n\n")
-	flusher.Flush()
+	defer keepalive.Stop()
 
 	// Issue #164: the message_start event names the proxy's served model
-	// (lease.Model, fallbacks included), not the raw requested id â€” clients
+	// (lease.Model, fallbacks included), not the raw requested id — clients
 	// must see what actually served the request. Falls back to the requested
 	// model when the relay is driven without a lease (direct unit tests).
 	servedModel := stats.servedModel
@@ -115,15 +109,6 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 	}
 	sendAnthropicMessageStart(send, st)
 
-	keepalive := time.NewTicker(keepaliveInterval)
-	defer keepalive.Stop()
-	lines := make(chan lineChunk)
-	go relayReadLoop(ctx, r, lines)
-	// lastWrite tracks the last frame actually written to the CLIENT; the
-	// keepalive condition keys on it so a liveness signal is emitted after
-	// any client-write silence, regardless of upstream comment/junk dribble
-	// (those are dropped and never relayed â€” #161).
-	lastWrite := time.Now()
 	first := true
 
 	for {
@@ -131,15 +116,11 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			if time.Since(lastWrite) >= keepaliveInterval {
-				_, _ = io.WriteString(w, "event: ping\ndata: {\"type\": \"ping\"}\n\n")
-				lastWrite = time.Now()
-				flusher.Flush()
-			}
+			maybeKeepalive(w, flusher, lastWrite, "event: ping\ndata: {\"type\": \"ping\"}\n\n")
 		case lc := <-lines:
 			if lc.err != nil {
 				if ctx.Err() == nil {
-					s.logger.Warn("anthropic upstream stream error", "err", lc.err)
+					s.logger.Warn("anthropic upstream stream error", streamErrorAttrs(ctx, chatStart, stats, lc.err)...)
 					s.flushAnthropicXMLToolCalls(send, st, xmlExtractor, &xmlCallIndex)
 					send(map[string]any{
 						"type": "error",
@@ -156,11 +137,11 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 				s.finalizeAnthropicStream(send, st)
 				return
 			}
-			clean, drop := convert.SanitizeChunk(lc.line)
+			clean, drop := convert.SanitizeChunkOpts(lc.line, s.convertOptions())
 			if drop {
 				// Dropped upstream lines are never relayed and must not
 				// advance the keepalive timer (client sees only real
-				// frames â€” #161).
+				// frames — #161).
 				continue
 			}
 			var chunk map[string]any
@@ -203,7 +184,7 @@ func (s *Server) relayAnthropicStream(ctx context.Context, w http.ResponseWriter
 				first = false
 				phasetiming.FromContext(ctx).Since(phasetiming.UpstreamTTFBMS, chatStart)
 			}
-			lastWrite = time.Now()
+			*lastWrite = time.Now()
 			stats.chunks++
 			stats.bytes += len(clean)
 			if stats.servedModel == "" {
@@ -329,7 +310,7 @@ func (s *Server) accumulateAnthropicChunk(send func(map[string]any), st *anthrop
 	// Tool-call fragments â†’ tool_use blocks.
 	if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
 		// Sequential block lifecycle: an open thinking block must be closed
-		// before a tool_use content_block_start fires â€” leaving it open until
+		// before a tool_use content_block_start fires — leaving it open until
 		// finalize would straddle the tool_use block (both calls idempotent).
 		st.closeThinking(send)
 		st.closeText(send)
@@ -481,25 +462,20 @@ func (s *Server) finalizeAnthropicStream(send func(map[string]any), st *anthropi
 // can echo back. Calls whose id never arrived are skipped, matching the
 // toolIDs list that is put alongside the key.
 func canonicalAnthropicToolKey(st *anthropicStreamState) string {
-	indexes := make([]int, 0, len(st.toolCalls))
-	for i := range st.toolCalls {
-		indexes = append(indexes, i)
-	}
-	sort.Ints(indexes)
-	triples := make([][3]string, 0, len(indexes))
-	for _, i := range indexes {
-		ts := st.toolCalls[i]
-		if ts == nil || ts.id == "" {
-			continue
+	return buildCanonicalToolKey(st.toolCalls, func(ts *anthropicToolState) (string, string, string) {
+		if ts == nil {
+			return "", "", ""
 		}
-		triples = append(triples, [3]string{sanitizeToolID(ts.id), ts.name, ts.args.String()})
-	}
-	return reasoningcache.CanonicalToolKey(triples)
+		// id is the SANITIZED one: that is the identity the client saw on the
+		// wire (content_block_start carries sanitizeToolID(ts.id)) and the
+		// only one it can echo back.
+		return sanitizeToolID(ts.id), ts.name, ts.args.String()
+	})
 }
 
 // ensureThinking opens the thinking content block on first reasoning delta.
 // Reasoning arriving AFTER a text block opened (which closed the thinking
-// block via ensureText) reopens a FRESH thinking block at a new index â€”
+// block via ensureText) reopens a FRESH thinking block at a new index —
 // mirror of ensureText's reopen pattern. Emitting a delta against the closed
 // index would violate the sequential block lifecycle.
 func (st *anthropicStreamState) ensureThinking(send func(map[string]any)) {
@@ -529,7 +505,7 @@ func (st *anthropicStreamState) ensureThinking(send func(map[string]any)) {
 }
 
 // closeThinking closes the thinking block with a signature_delta (empty
-// signature â€” the upstream never emits signatures).
+// signature — the upstream never emits signatures).
 func (st *anthropicStreamState) closeThinking(send func(map[string]any)) {
 	if !st.thinkingStarted || st.thinkingClosed {
 		return
@@ -637,7 +613,7 @@ func (st *anthropicStreamState) setStopReason(reason string) {
 	case "tool_calls", "function_call":
 		// sawToolCall is deliberately NOT set here: it must reflect actual
 		// relayed tool fragments (accumulateAnthropicChunk), not the terminal
-		// chunk's claim â€” an end_turn-only stream whose finish_reason is
+		// chunk's claim — an end_turn-only stream whose finish_reason is
 		// "tool_calls" must still finalize as "end_turn".
 		st.finishReason = "tool_use"
 	case "stop", "":

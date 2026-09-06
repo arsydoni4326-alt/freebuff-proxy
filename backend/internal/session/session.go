@@ -71,6 +71,20 @@ const (
 	stormThreshold = 3
 )
 
+// graceEndFromState prefers the server-defined grace end carried by the
+// upstream response and falls back to the fixed expiresAt+graceWindow
+// formula. Both admission refresh and poll use it so a server-defined
+// grace window is never replaced by the proxy deadline (issue #240).
+func graceEndFromState(expiresAt, wireGraceEnd time.Time) time.Time {
+	if !wireGraceEnd.IsZero() {
+		return wireGraceEnd
+	}
+	if expiresAt.IsZero() {
+		return time.Time{}
+	}
+	return expiresAt.Add(graceWindow)
+}
+
 // WaitingRoomError is returned when the session is queued and pollAt has not
 // passed. Callers should surface it as 503 with Retry-After.
 type WaitingRoomError struct {
@@ -138,22 +152,11 @@ type Manager struct {
 	// model (issue #158); entry.until = min(next window opening, now+TTL).
 	unavailableTTL   time.Duration
 	modelUnavailable map[string]modelUnavailableEntry
-	// savedQuota preserves the most recent non-nil quota map across
-	// invalidation/re-admission cycles (issue #146).  When commit(nil)
-	// drops the cached state, the quota map is stashed here; a later
-	// commit(non-nil) without fresh quota restores it so the dashboard
-	// quota table stays visible between quota-carrying responses.
-	savedQuota map[string]upstream.ModelQuota
-	// savedRemainingMs / savedReferral mirror the quota/glmPromo stash (issue
-	// #146/#178): they survive invalidation so the dashboard keeps showing the
-	// session countdown and referral banner between quota-carrying responses.
-	savedRemainingMs int64
-	savedReferral    *upstream.SessionReferral
-	// savedGlmPromo preserves the last glmPromo block across
-	// invalidation/re-admission cycles, mirroring savedQuota (issue #178):
-	// the GLM promo quota row must stay visible while the session is
-	// between quota-carrying responses.
-	savedGlmPromo string
+	// snap holds the manager's dashboard-resilience / observability state
+	// (issue #267): the saved fields that keep the dashboard quota table
+	// between quota-carrying responses, and the rolling recorders that feed
+	// the re-admit storm log. Guarded by mu like the rest of the manager.
+	snap snapshotState
 
 	// adopt is the issue #97 CLI-session adoption mode (ADOPT_CLI_SESSION):
 	// nil (default) = create sessions normally. When set, the manager adopts
@@ -161,23 +164,9 @@ type Manager struct {
 	// while the CLI process is alive.
 	adopt *CLIAdoption
 
-	// scarce tracks which models are scarce (issue #155): a scarce model
-	// session is kept on Shutdown instead of DELETEing upstream so the slot
-	// survives a restart via pollPersisted. Guarded by mu.
-	scarce map[string]bool
-
 	// now returns the current time; injectable in tests to drive the
 	// re-admit storm detector deterministically. Defaults to time.Now.
 	now func() time.Time
-
-	// invalidationEvents is the rolling stormWindow of terminal session
-	// events (timestamps + reason) feeding the re-admit storm detector
-	// reAdmitTriggers records pre-emptive re-admit trigger times so
-	// a storm summary can report how many daily slots the burst burned;
-	// lastStormAt suppresses repeat summaries until a quiet window passes.
-	invalidationEvents []invalidationEvent
-	reAdmitTriggers    []time.Time
-	lastStormAt        time.Time
 
 	// modelLocked tallies model-lock release events keyed by from → to
 	// model pair (issue #160): every model_locked admission releases the
@@ -186,6 +175,31 @@ type Manager struct {
 	// other lock while recording).
 	modelLockedMu sync.Mutex
 	modelLocked   map[string]map[string]int64
+}
+
+// snapshotState is the Manager's dashboard-resilience / observability state
+// (issue #267): the saved fields that keep the dashboard quota table between
+// quota-carrying responses, and the rolling recorders that feed the re-admit
+// storm log. It is owned by the Manager and guarded by mu, but separated
+// from the core cachedState + single-flight lifecycle so every new dashboard
+// field has a single home.
+type snapshotState struct {
+	savedQuota map[string]upstream.ModelQuota
+	// savedQuotaStale marks quota restored from the on-disk entry after a
+	// restart (no live admission yet this process); savedQuotaAt is when
+	// that entry was last polled. Cleared by the first live quota commit.
+	savedQuotaStale    bool
+	savedQuotaAt       time.Time
+	savedRemainingMs   int64
+	savedReferral      *upstream.SessionReferral
+	savedGlmPromo      string
+	savedAccessTier    string
+	savedFreebucks     *upstream.FreebucksInfo
+	savedFreeWindows   *upstream.FreeWindowsInfo
+	savedSubscription  *upstream.SubscriptionInfo
+	invalidationEvents []invalidationEvent
+	reAdmitTriggers    []time.Time
+	lastStormAt        time.Time
 }
 
 // invalidationEvent is one terminal session event in the re-admit storm
@@ -199,6 +213,7 @@ type cachedState struct {
 	status             string
 	instanceID         string
 	model              string
+	accessTier         string
 	expiresAt          time.Time
 	gracePeriodEndsAt  time.Time
 	position           int
@@ -230,6 +245,17 @@ type cachedState struct {
 	// referral is the upstream referral block (FreebuffReferralInfo); nil
 	// until an admission/poll that carried it.
 	referral *upstream.SessionReferral
+	// freebucks is the upstream Freebucks allowance block (issue #232); nil
+	// until an admission/poll that carried it.
+	freebucks *upstream.FreebucksInfo
+	// freeWindows is the upstream free-tier pool windows block (issue #319);
+	// nil until an admission/poll that carried it.
+	freeWindows *upstream.FreeWindowsInfo
+	// subscription is the upstream subscription usage block (issue #319);
+	// nil until an admission/poll that carried it.
+	subscription  *upstream.SubscriptionInfo
+	upgradeHint   *upstream.SessionUpgradeHint
+	serverMessage string
 }
 
 // NewManager builds a session manager for the given upstream client.
@@ -284,44 +310,76 @@ func (m *Manager) commit(cs *cachedState) {
 		// Stash the quota map before dropping state so it survives
 		// invalidation (commit(nil)) and later re-admission (issue #146).
 		if m.state.quotaByModel != nil {
-			m.savedQuota = m.state.quotaByModel
+			m.snap.savedQuota = m.state.quotaByModel
 		}
 		// Stash the glmPromo block the same way (issue #178): it survives
 		// invalidation so the GLM promo row stays on the dashboard between
 		// quota-carrying responses.
 		if m.state.glmPromo != "" {
-			m.savedGlmPromo = m.state.glmPromo
+			m.snap.savedGlmPromo = m.state.glmPromo
 		}
 		// Stash the server-authoritative countdown and referral block the same
 		// way, so the dashboard keeps them across quota-carrying cycles.
 		if m.state.remainingMs > 0 {
-			m.savedRemainingMs = m.state.remainingMs
+			m.snap.savedRemainingMs = m.state.remainingMs
 		}
 		if m.state.referral != nil {
-			m.savedReferral = m.state.referral
+			m.snap.savedReferral = m.state.referral
+		}
+		if m.state.accessTier != "" {
+			m.snap.savedAccessTier = m.state.accessTier
+		}
+		if m.state.freebucks != nil {
+			m.snap.savedFreebucks = m.state.freebucks
+		}
+		if m.state.freeWindows != nil {
+			m.snap.savedFreeWindows = m.state.freeWindows
+		}
+		if m.state.subscription != nil {
+			m.snap.savedSubscription = m.state.subscription
 		}
 	}
+	// Freshness for the stale-mark clear below: captured BEFORE the
+	// restore, so a re-applied saved map does not pose as fresh quota.
+	freshQuota := cs != nil && cs.quotaByModel != nil
 	// Restore the previously-seen quota map when the new state omits
-	// rateLimitsByModel (the upstream intermittently drops the field on
 	// re-admission or compact polls — issue #146).  This keeps the
 	// dashboard quota table visible between quota-carrying responses.
-	if cs != nil && cs.quotaByModel == nil && m.savedQuota != nil {
-		cs.quotaByModel = m.savedQuota
+	if cs != nil && cs.quotaByModel == nil && m.snap.savedQuota != nil {
+		cs.quotaByModel = m.snap.savedQuota
 	}
 	// Restore the previously-seen glmPromo block when the new state omits
 	// it (issue #178), mirroring the quota-map restore above.
-	if cs != nil && cs.glmPromo == "" && m.savedGlmPromo != "" {
-		cs.glmPromo = m.savedGlmPromo
+	if cs != nil && cs.glmPromo == "" && m.snap.savedGlmPromo != "" {
+		cs.glmPromo = m.snap.savedGlmPromo
 	}
 	// Restore the countdown and referral the same way when the new state
 	// omits them.
-	if cs != nil && cs.remainingMs == 0 && m.savedRemainingMs > 0 {
-		cs.remainingMs = m.savedRemainingMs
+	if cs != nil && cs.accessTier == "" && m.snap.savedAccessTier != "" {
+		cs.accessTier = m.snap.savedAccessTier
 	}
-	if cs != nil && cs.referral == nil && m.savedReferral != nil {
-		cs.referral = m.savedReferral
+	if cs != nil && cs.remainingMs == 0 && m.snap.savedRemainingMs > 0 {
+		cs.remainingMs = m.snap.savedRemainingMs
+	}
+	if cs != nil && cs.referral == nil && m.snap.savedReferral != nil {
+		cs.referral = m.snap.savedReferral
+	}
+	if cs != nil && cs.freebucks == nil && m.snap.savedFreebucks != nil {
+		cs.freebucks = m.snap.savedFreebucks
+	}
+	if cs != nil && cs.freeWindows == nil && m.snap.savedFreeWindows != nil {
+		cs.freeWindows = m.snap.savedFreeWindows
+	}
+	if cs != nil && cs.subscription == nil && m.snap.savedSubscription != nil {
+		cs.subscription = m.snap.savedSubscription
 	}
 	m.state = cs
+	// Fresh quota-carrying state clears the restart-restored stale mark;
+	// the tracker is live again (freshQuota was captured before the
+	// saved-map restore, so a re-applied map stays marked).
+	if freshQuota {
+		m.snap.savedQuotaStale = false
+	}
 	if m.store != nil && m.key != "" {
 		if cs == nil {
 			m.persistRemoveLocked(oldInstance)
@@ -425,7 +483,8 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 					return instance, nil
 				}
 				// Usability exhausted (past grace) or model mismatch — fall
-				// through to refresh.
+				// through to refresh; refresh releases the old slot before
+				// the new admission (see releaseHeldSlotForTarget).
 			case "disabled":
 				m.mu.Unlock()
 				return "", nil
@@ -538,16 +597,48 @@ func (m *Manager) EnsureSessionForModel(ctx context.Context, model string) (stri
 	return "", errors.New("session: not ready after repeated refreshes")
 }
 
+// restorePersistedQuotaLocked seeds the saved quota from the on-disk entry
+// when this process has never seen live quota (restart with lazy session
+// resume). Caller must hold m.mu. Store.Load is in-memory after the first
+// read, so the per-poll Snapshot cost is one map lookup until live data
+// arrives and the live commit clears the stale mark.
+func (m *Manager) restorePersistedQuotaLocked() {
+	if m.store == nil || m.key == "" || len(m.snap.savedQuota) > 0 {
+		return
+	}
+	cs := m.store.Load(m.key)
+	if cs == nil {
+		return
+	}
+	// quotaByModel/pollAt/glmPromo are unexported but reachable: same package.
+	if len(cs.quotaByModel) == 0 {
+		return
+	}
+	m.snap.savedQuota = cs.quotaByModel
+	if cs.glmPromo != "" && m.snap.savedGlmPromo == "" {
+		m.snap.savedGlmPromo = cs.glmPromo
+	}
+	m.snap.savedQuotaStale = true
+	m.snap.savedQuotaAt = cs.pollAt
+	if m.snap.savedQuotaAt.IsZero() {
+		m.snap.savedQuotaAt = time.Now()
+	}
+}
+
 // Snapshot returns a best-effort view of the cached session state. All
 // fields may be zero when no session has been created yet. Added for
 func (m *Manager) Snapshot() SessionSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.state == nil {
+		// Restart with lazy session resume: no admission yet this process,
+		// so seed the last-seen quota from the on-disk entry (quota tracker
+		// stays populated instead of empty until the next request re-polls).
+		m.restorePersistedQuotaLocked()
 		var quota map[string]QuotaSnapshot
-		if len(m.savedQuota) > 0 {
-			quota = make(map[string]QuotaSnapshot, len(m.savedQuota))
-			for modelID, q := range m.savedQuota {
+		if len(m.snap.savedQuota) > 0 {
+			quota = make(map[string]QuotaSnapshot, len(m.snap.savedQuota))
+			for modelID, q := range m.snap.savedQuota {
 				quota[modelID] = QuotaSnapshot{
 					Model:       q.Model,
 					Limit:       q.Limit,
@@ -563,9 +654,15 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		return SessionSnapshot{
 			Refreshing:   m.refreshing,
 			QuotaByModel: quota,
-			GlmPromo:     m.savedGlmPromo,
-			RemainingMs:  m.savedRemainingMs,
-			Referral:     m.savedReferral,
+			QuotaStale:   m.snap.savedQuotaStale && len(quota) > 0,
+			QuotaSavedAt: m.snap.savedQuotaAt,
+			GlmPromo:     m.snap.savedGlmPromo,
+			RemainingMs:  m.snap.savedRemainingMs,
+			Referral:     m.snap.savedReferral,
+			AccessTier:   m.snap.savedAccessTier,
+			Freebucks:    m.snap.savedFreebucks,
+			FreeWindows:  m.snap.savedFreeWindows,
+			Subscription: m.snap.savedSubscription,
 		}
 	}
 	quota := make(map[string]QuotaSnapshot, len(m.state.quotaByModel))
@@ -590,6 +687,7 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		Status:             m.state.status,
 		InstanceID:         m.state.instanceID,
 		Model:              m.state.model,
+		AccessTier:         m.state.accessTier,
 		QueuePosition:      m.state.position,
 		QueueDepth:         m.state.queueDepth,
 		Refreshing:         m.refreshing,
@@ -601,10 +699,20 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		ExpiresAt:          m.state.expiresAt,
 		GracePeriodEndsAt:  m.state.gracePeriodEndsAt,
 		QuotaByModel:       quota,
-		GlmPromo:           m.state.glmPromo,
-		Standing:           m.state.standing,
-		RemainingMs:        m.state.remainingMs,
-		Referral:           m.state.referral,
+		// A quota-less compact commit re-applies the saved map (issue
+		// #146): when that map is restart-restored, it stays marked until
+		// genuinely fresh quota lands.
+		QuotaStale:    m.snap.savedQuotaStale && len(quota) > 0,
+		QuotaSavedAt:  m.snap.savedQuotaAt,
+		GlmPromo:      m.state.glmPromo,
+		Standing:      m.state.standing,
+		RemainingMs:   m.state.remainingMs,
+		Referral:      m.state.referral,
+		Freebucks:     m.state.freebucks,
+		FreeWindows:   m.state.freeWindows,
+		Subscription:  m.state.subscription,
+		UpgradeHint:   m.state.upgradeHint,
+		ServerMessage: m.state.serverMessage,
 	}
 }
 
@@ -617,8 +725,8 @@ func (m *Manager) HasGlmEntitlement() bool {
 }
 
 func (m *Manager) hasGlmEntitlementLocked() bool {
-	quota := m.savedQuota
-	promo := m.savedGlmPromo
+	quota := m.snap.savedQuota
+	promo := m.snap.savedGlmPromo
 	if m.state != nil {
 		if m.state.quotaByModel != nil {
 			quota = m.state.quotaByModel
@@ -665,33 +773,58 @@ func (m *Manager) UpdateQuotaFromProbe(st *upstream.SessionState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if st.GlmPromo != "" {
-		m.savedGlmPromo = st.GlmPromo
+		m.snap.savedGlmPromo = st.GlmPromo
 		if m.state != nil {
 			m.state.glmPromo = st.GlmPromo
 		}
 	}
 	if len(st.RateLimitsByModel) > 0 {
-		m.savedQuota = st.RateLimitsByModel
+		m.snap.savedQuota = st.RateLimitsByModel
+		// Live probe contact clears the restart-restored stale mark.
+		m.snap.savedQuotaStale = false
 		if m.state != nil {
 			m.state.quotaByModel = st.RateLimitsByModel
 		}
 	}
 	if st.RemainingMs > 0 {
-		m.savedRemainingMs = st.RemainingMs
+		m.snap.savedRemainingMs = st.RemainingMs
 		if m.state != nil {
 			m.state.remainingMs = st.RemainingMs
 		}
 	}
 	if st.Referral != nil {
-		m.savedReferral = st.Referral
+		m.snap.savedReferral = st.Referral
 		if m.state != nil {
 			m.state.referral = st.Referral
 		}
 	}
+	if st.AccessTier != "" {
+		m.snap.savedAccessTier = st.AccessTier
+		if m.state != nil {
+			m.state.accessTier = st.AccessTier
+		}
+	}
+	if st.Freebucks != nil {
+		m.snap.savedFreebucks = st.Freebucks
+		if m.state != nil {
+			m.state.freebucks = st.Freebucks
+		}
+	}
+	if st.FreeWindows != nil {
+		m.snap.savedFreeWindows = st.FreeWindows
+		if m.state != nil {
+			m.state.freeWindows = st.FreeWindows
+		}
+	}
+	if st.Subscription != nil {
+		m.snap.savedSubscription = st.Subscription
+		if m.state != nil {
+			m.state.subscription = st.Subscription
+		}
+	}
 }
 
-// Invalidate drops the cached session so the next EnsureSession re-creates
-// it. Used when a chat request reports a session-level error. The
+// Invalidate drops the cached session. Used when a chat request reports a session-level error. The
 // invalidation is recorded with the canonical 409 reason (the session-invalid
 // chat family); callers that can name a more specific cause use
 // InvalidateWithReason.
@@ -774,6 +907,20 @@ func (m *Manager) SetSessionStateForTest(status, instanceID, model string, expir
 		status:            status,
 		instanceID:        instanceID,
 		model:             model,
+		expiresAt:         expiresAt,
+		gracePeriodEndsAt: graceEndsAt,
+	})
+}
+
+// SetSessionStateWithTierForTest sets cached session state with an access tier for tests.
+func (m *Manager) SetSessionStateWithTierForTest(status, instanceID, model, accessTier string, expiresAt, graceEndsAt time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.commit(&cachedState{
+		status:            status,
+		instanceID:        instanceID,
+		model:             model,
+		accessTier:        accessTier,
 		expiresAt:         expiresAt,
 		gracePeriodEndsAt: graceEndsAt,
 	})

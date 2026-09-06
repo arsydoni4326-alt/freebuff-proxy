@@ -714,3 +714,45 @@ func TestChatRunFanoutSurfaced429(t *testing.T) {
 		t.Errorf("upstream chat calls = %d, want 1 (never re-POST into a fanout refusal)", got)
 	}
 }
+
+// turn_spend_limit kills a runaway turn (per-turn spend ceiling, usually a
+// stuck agent loop): it must surface as 429 turn_spend_limited with the
+// upstream loop warning intact and WITHOUT the daily-quota advisory — and,
+// critically, WITHOUT a Retry-After header. Upstream's retryAfterMs on this
+// breaker does not clear it (live 2026-09-05: instant re-trips on every 60s
+// retry for 20+ minutes), so a Retry-After would hand the harness a futile
+// retry drumbeat. Never re-POST into it (same anti-sweep discipline as
+// fanout refusals): exactly one upstream chat call, no pool cooldown, so a
+// genuinely new turn flows immediately.
+func TestChatTurnSpendLimitedSurfaced429(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var chatCalls atomic.Int32
+	mock.ChatHandler = func(w http.ResponseWriter, r *http.Request) {
+		chatCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":"turn_spend_limit","message":"Something went wrong with this turn.","retryAfterMs":60000}`)
+	}
+	ts, _ := newTestServerCfg(t, nil, nil, mock)
+
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429: %s", resp.StatusCode, data)
+	}
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		t.Errorf("Retry-After = %q, want none (a Retry-After would loop the poisoned turn)", ra)
+	}
+	if !strings.Contains(string(data), `"code":"turn_spend_limited"`) {
+		t.Errorf("body missing turn_spend_limited code: %s", data)
+	}
+	if !strings.Contains(string(data), "Something went wrong with this turn") {
+		t.Errorf("body missing the upstream loop warning: %s", data)
+	}
+	if strings.Contains(string(data), "Daily session quota") {
+		t.Errorf("body wrongly carries the daily-quota advisory: %s", data)
+	}
+	if got := chatCalls.Load(); got != 1 {
+		t.Errorf("upstream chat calls = %d, want 1 (never re-POST into a turn-spend refusal)", got)
+	}
+}

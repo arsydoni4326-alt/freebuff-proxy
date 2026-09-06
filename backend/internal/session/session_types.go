@@ -20,7 +20,10 @@ type SessionSnapshot struct {
 	RemainingMs int64
 	// Refreshing reports whether a session admission or pre-emptive re-admit
 	// is currently in flight for this manager.
-	Refreshing         bool
+	Refreshing bool
+	// AccessTier is the upstream access tier ("full", "limited", "free") from
+	// the last session admission; "" until reported.
+	AccessTier         string
 	CountryCode        string
 	CountryBlockReason string
 	// ActiveUsersForIP is the last known distinct-user count on the token's
@@ -40,6 +43,11 @@ type SessionSnapshot struct {
 	// upstream wire nests entitlement inside each rate-limit entry.
 	QuotaByModel map[string]QuotaSnapshot
 	Entitlement  map[string]float64
+	// QuotaStale reports the quota map was restored from the on-disk entry
+	// after a restart (no live admission yet this process); QuotaSavedAt is
+	// when that entry was last polled. The dashboard labels it last-seen.
+	QuotaStale   bool
+	QuotaSavedAt time.Time
 	// GlmPromo carries the raw upstream glmPromo block ({dailySessions,
 	// endsAt}) from the last admission/poll (issue #178); "" when absent.
 	// Kept as a string so callers render the shape without the upstream
@@ -51,6 +59,24 @@ type SessionSnapshot struct {
 	// Referral is the upstream referral block (FreebuffReferralInfo); nil
 	// until an admission/poll that carried it.
 	Referral *upstream.SessionReferral
+	// Freebucks is the upstream Freebucks allowance block (issue #232);
+	// nil when the response omits it. Carries balance, daily/weekly/monthly
+	// windows, bindingWindow, and per-model prices.
+	Freebucks *upstream.FreebucksInfo `json:"freebucks,omitempty"`
+	// FreeWindows is the upstream free-tier pool windows block
+	// (day/week/month; issue #319). Display-only; nil when the response
+	// omits it (quota-exempt, limited access, or older servers).
+	FreeWindows *upstream.FreeWindowsInfo `json:"free_windows,omitempty"`
+	// Subscription is the upstream subscription usage block (day / fiveDay
+	// / month + provider spend USD; issue #319). Rollout-audience only;
+	// nil otherwise.
+	Subscription *upstream.SubscriptionInfo `json:"subscription,omitempty"`
+	// UpgradeHint carries the upstream promotional or upgrade broadcast
+	// hint ({url, message}) if provided by the session server; nil otherwise.
+	UpgradeHint *upstream.SessionUpgradeHint `json:"upgrade_hint,omitempty"`
+	// ServerMessage is any live broadcast or error message sent by the
+	// session server; "" when absent.
+	ServerMessage string `json:"server_message,omitempty"`
 }
 
 // QuotaSnapshot is one model's live session quota for healthz/metrics

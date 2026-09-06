@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"freebuff-proxy/backend/internal/clicreds"
 )
 
 func TestDotenv(t *testing.T) {
@@ -157,9 +159,9 @@ func TestEnvEmptyAuthTokensBridgeMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg, err := Load("")
+	cfg, err := LoadOpts("", LoadOptions{DiscoverCLIToken: clicreds.DiscoverToken})
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadOpts: %v", err)
 	}
 	if len(cfg.AuthTokens) != 0 {
 		t.Errorf("AuthTokens = %v, want empty (explicit bridge mode, not refilled by discovery)", cfg.AuthTokens)
@@ -232,9 +234,9 @@ func TestEnvEmptyAuthTokensClearsDotenv(t *testing.T) {
 	}
 	t.Setenv("AUTH_TOKENS", "")
 
-	cfg, err := Load("")
+	cfg, err := LoadOpts("", LoadOptions{DiscoverCLIToken: clicreds.DiscoverToken})
 	if err != nil {
-		t.Fatalf("Load: %v", err)
+		t.Fatalf("LoadOpts: %v", err)
 	}
 	if len(cfg.AuthTokens) != 0 {
 		t.Errorf("AuthTokens = %v, want empty (empty env AUTH_TOKENS clears .env tokens)", cfg.AuthTokens)
@@ -478,21 +480,27 @@ func TestCORSAllowedOrigin(t *testing.T) {
 }
 
 // TestSessionPersist pins the SESSION_PERSIST env parsing: an unrecognized
-// boolean value is silently ignored (the default stays false — no error),
-// and "true" enables persistence with the configured state file path. The
-// SESSION_PERSIST=true + empty SESSION_STATE_FILE validation error is only
-// reachable through the JSON/struct path (an env value of "" is treated as
-// unset and leaves the default), so it is pinned in TestValidate.
+// boolean value is silently ignored (the default stays true — no error),
+// "false" disables persistence, and "true" explicitly enables it.
 func TestSessionPersist(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_TOKENS", "tok-1")
 
-	// garbage value is silently ignored, default (false) stands
+	// garbage value is silently ignored, default (true) stands
 	t.Setenv("SESSION_PERSIST", "garbage")
 	if cfg, err := Load(""); err != nil {
 		t.Fatalf("Load (garbage): %v", err)
+	} else if !cfg.SessionPersist {
+		t.Error("SessionPersist = false for SESSION_PERSIST=garbage, want true (unrecognized value ignored)")
+	}
+	t.Setenv("SESSION_PERSIST", "")
+
+	// recognized false value disables persistence
+	t.Setenv("SESSION_PERSIST", "false")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (false): %v", err)
 	} else if cfg.SessionPersist {
-		t.Error("SessionPersist = true for SESSION_PERSIST=garbage, want false (unrecognized value ignored)")
+		t.Error("SessionPersist = true for SESSION_PERSIST=false, want false")
 	}
 	t.Setenv("SESSION_PERSIST", "")
 
@@ -629,6 +637,77 @@ func TestMaxMessagesPerDay(t *testing.T) {
 	}
 }
 
+// TestRequestLimits pins the per-token RPD/RPM knobs (user-mandated
+// 2026-09-05, anti-abuse): defaults 1500/day + 30/min when unset, env
+// overrides, unparseable env ignored (file value kept), and JSON file
+// values. 0 = unlimited (explicit).
+func TestRequestLimits(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("AUTH_TOKENS", "tok")
+
+	// Defaults when unset: 1500 requests/day, 30 requests/min.
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if cfg.MaxRequestsPerDay != defaultMaxRequestsPerDay {
+		t.Errorf("MaxRequestsPerDay = %d, want %d (default)", cfg.MaxRequestsPerDay, defaultMaxRequestsPerDay)
+	} else if cfg.MaxRequestsPerMinute != defaultMaxRequestsPerMinute {
+		t.Errorf("MaxRequestsPerMinute = %d, want %d (default)", cfg.MaxRequestsPerMinute, defaultMaxRequestsPerMinute)
+	}
+
+	// Env override.
+	t.Setenv("MAX_REQUESTS_PER_DAY", "500")
+	t.Setenv("MAX_REQUESTS_PER_MINUTE", "10")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (env): %v", err)
+	} else if cfg.MaxRequestsPerDay != 500 || cfg.MaxRequestsPerMinute != 10 {
+		t.Errorf("env overrides = %d/%d, want 500/10", cfg.MaxRequestsPerDay, cfg.MaxRequestsPerMinute)
+	}
+
+	// Explicit zero = unlimited.
+	t.Setenv("MAX_REQUESTS_PER_DAY", "0")
+	t.Setenv("MAX_REQUESTS_PER_MINUTE", "0")
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (zero): %v", err)
+	} else if cfg.MaxRequestsPerDay != 0 || cfg.MaxRequestsPerMinute != 0 {
+		t.Errorf("explicit zero = %d/%d, want 0/0 (unlimited)", cfg.MaxRequestsPerDay, cfg.MaxRequestsPerMinute)
+	}
+
+	// Unparseable env values are ignored (file values kept).
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"MAX_REQUESTS_PER_DAY": 42, "MAX_REQUESTS_PER_MINUTE": 7}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAX_REQUESTS_PER_DAY", "soon")
+	t.Setenv("MAX_REQUESTS_PER_MINUTE", "never")
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load (bad env + file): %v", err)
+	} else if cfg.MaxRequestsPerDay != 42 || cfg.MaxRequestsPerMinute != 7 {
+		t.Errorf("bad env ignored = %d/%d, want file 42/7", cfg.MaxRequestsPerDay, cfg.MaxRequestsPerMinute)
+	}
+
+	// JSON file value with env unset.
+	t.Setenv("MAX_REQUESTS_PER_DAY", "")
+	t.Setenv("MAX_REQUESTS_PER_MINUTE", "")
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load (file): %v", err)
+	} else if cfg.MaxRequestsPerDay != 42 || cfg.MaxRequestsPerMinute != 7 {
+		t.Errorf("file = %d/%d, want 42/7", cfg.MaxRequestsPerDay, cfg.MaxRequestsPerMinute)
+	}
+
+	// .env file value (clearEnv chdirs to a fresh temp dir, so ./.env is the
+	// file ResolveEnvFile reads).
+	t.Setenv("MAX_REQUESTS_PER_DAY", "")
+	t.Setenv("MAX_REQUESTS_PER_MINUTE", "")
+	if err := os.WriteFile(".env", []byte("AUTH_TOKENS=tok\nMAX_REQUESTS_PER_DAY=1000\nMAX_REQUESTS_PER_MINUTE=15\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := Load(""); err != nil {
+		t.Fatalf("Load (.env): %v", err)
+	} else if cfg.MaxRequestsPerDay != 1000 || cfg.MaxRequestsPerMinute != 15 {
+		t.Errorf(".env values = %d/%d, want 1000/15", cfg.MaxRequestsPerDay, cfg.MaxRequestsPerMinute)
+	}
+}
+
 // TestMaxSpendPerDay pins the advisory spend-ceiling knob (issue #122):
 // default 0 (unlimited), env override, unparseable env ignored, JSON file
 // value, and .env value. The knob is advisory-only — the upstream $ ceilings
@@ -724,5 +803,42 @@ func TestModelAliasesConfig(t *testing.T) {
 	}
 	if cfg.ModelAliases["gpt-4o"] != "deepseek/deepseek-v4-flash" {
 		t.Errorf("ModelAliases[gpt-4o] = %q, want deepseek/deepseek-v4-flash", cfg.ModelAliases["gpt-4o"])
+	}
+}
+
+// TestHTTPReadTimeoutEnv pins issue #331: the HTTP server read timeout
+// defaults to 60s and is raisable via env (far-away clients uploading
+// large bodies); 0 disables it, negatives reject the load.
+func TestHTTPReadTimeoutEnv(t *testing.T) {
+	clearEnv(t)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HTTPReadTimeout != 60*time.Second {
+		t.Errorf("HTTPReadTimeout = %v, want 60s default", cfg.HTTPReadTimeout)
+	}
+
+	t.Setenv("HTTP_READ_TIMEOUT", "3m")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HTTPReadTimeout != 3*time.Minute {
+		t.Errorf("HTTPReadTimeout = %v, want 3m", cfg.HTTPReadTimeout)
+	}
+
+	t.Setenv("HTTP_READ_TIMEOUT", "0")
+	cfg, err = Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HTTPReadTimeout != 0 {
+		t.Errorf("HTTPReadTimeout = %v, want 0 (disabled)", cfg.HTTPReadTimeout)
+	}
+
+	t.Setenv("HTTP_READ_TIMEOUT", "-5s")
+	if _, err = Load(""); err == nil {
+		t.Error("Load with negative HTTP_READ_TIMEOUT succeeded, want error")
 	}
 }

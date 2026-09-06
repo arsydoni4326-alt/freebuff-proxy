@@ -82,7 +82,7 @@ const tokenHealthProbeTimeout = 20 * time.Second
 func CheckTokenHealth(ctx context.Context, c *Client) (TokenHealth, error) {
 	row := TokenHealth{Index: c.tokenIndex, Risk: EmailRiskClean}
 
-	if isDummyToken(c.token) {
+	if IsDummyToken(c.token) {
 		// Package convention: dummy/mock tokens are never probed against the
 		// network (see ProbeAccount/GetSession); report them as OK so pooled
 		// mock fixtures keep working.
@@ -226,14 +226,14 @@ func (c *Client) probeMe(ctx context.Context) (*meAccount, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	resp, cancel, err := c.do(req, c.sessionCallTimeout)
-	if err != nil {
-		return nil, 0, err
+	resp, cancel, classErr := c.do(req, c.sessionCallTimeout)
+	if classErr != nil && resp == nil {
+		return nil, 0, classErr
 	}
 	defer releaseCancel(cancel)
 	defer func() { _ = resp.Body.Close() }()
 	body := drainBody(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	if classErr != nil || resp.StatusCode != http.StatusOK {
 		// A non-200 response is the path's VERDICT, not a probe failure:
 		// 401/403 carry the terminal classification and 5xx is a "me
 		// unavailable" signal — the caller switches on the status code.
@@ -253,6 +253,21 @@ type meAccount struct {
 	ID        string `json:"id"`
 	Email     string `json:"email"`
 	DiscordID string `json:"discord_id"`
+}
+
+// FetchAccountInfo queries GET /api/v1/me to retrieve the account email and id.
+func (c *Client) FetchAccountInfo(ctx context.Context) (email, id string, err error) {
+	if IsDummyToken(c.token) {
+		return "", "", nil
+	}
+	acct, status, err := c.probeMe(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	if status != http.StatusOK || acct == nil {
+		return "", "", fmt.Errorf("upstream returned status %d", status)
+	}
+	return acct.Email, acct.ID, nil
 }
 
 // probeSession reuses the Client's zero-cost token probe (GET
@@ -322,6 +337,8 @@ func (c *Client) probeSession(ctx context.Context) (TokenHealthState, string) {
 		return TokenOK, "account at concurrent-session limit (409; not a token problem)"
 	case errors.Is(err, ErrModelIPLimited):
 		return TokenRateLimited, "model limited on this egress IP (session fine, soft)"
+	case errors.Is(err, ErrTurnSpendLimited):
+		return TokenRateLimited, "turn spend breaker tripped upstream (runaway turn killed; soft — start a fresh turn, not a token problem)"
 	case errors.Is(err, ErrWaitingRoom), errors.Is(err, ErrWaitingRoomRequired):
 		return TokenUnknown, "upstream waiting room (transient; retry later)"
 	case errors.Is(err, ErrFreeModeCLIRequired):

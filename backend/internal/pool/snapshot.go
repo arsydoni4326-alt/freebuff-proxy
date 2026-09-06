@@ -18,12 +18,27 @@ type BridgeTokenSnapshot struct {
 	CooldownUntil time.Time                        `json:"cooldown_until"`
 	SessionActive bool                             `json:"session_active"`
 	Model         string                           `json:"model"`
+	AccessTier    string                           `json:"access_tier,omitempty"`
 	QuotaByModel  map[string]session.QuotaSnapshot `json:"quota_by_model,omitempty"`
 	// PremiumQuota mirrors TokenSnapshot's premium view (quota_tracker.go).
 	// Nil when the bridge entry has no premium quota.
 	PremiumQuota *PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
-	SpendDay     float64               `json:"spend_day"`
-	SpendPct     int                   `json:"spend_pct"`
+	// Freebucks is the upstream Freebucks allowance block (issue #232); nil
+	// when the bridge entry has no Freebucks quota.
+	Freebucks *upstream.FreebucksInfo `json:"freebucks,omitempty"`
+	// FreeWindows is the upstream free-tier pool windows block
+	// (issue #319); nil when absent.
+	FreeWindows *upstream.FreeWindowsInfo `json:"free_windows,omitempty"`
+	// Subscription is the upstream subscription usage block (issue #319);
+	// rollout-audience only; nil otherwise.
+	Subscription *upstream.SubscriptionInfo `json:"subscription,omitempty"`
+	SpendDay     float64                    `json:"spend_day"`
+	SpendPct     int                        `json:"spend_pct"`
+	// RequestsPerMinute / RequestsPerDay mirror TokenSnapshot's local
+	// request counters (MAX_REQUESTS_PER_MINUTE rolling 60s admitted;
+	// MAX_REQUESTS_PER_DAY successful chats in the current Pacific day).
+	RequestsPerMinute int `json:"requests_per_minute"`
+	RequestsPerDay    int `json:"requests_per_day"`
 	// BanType / BannedUntil mirror TokenSnapshot's active-ban view
 	// (issues #198/#199): "temporary" (auto-lifts at BannedUntil) vs
 	// "hard" (never self-heals); zero values when no ban is active.
@@ -58,11 +73,17 @@ func banView(ban *upstream.BanError, until time.Time) (string, time.Time) {
 
 // Snapshot returns the per-token healthz view.
 func (p *Pool) Snapshot() []TokenSnapshot {
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	out := make([]TokenSnapshot, 0, len(*toks))
 	cfg := p.cfg.Load()
 	dailyLimit := cfg.MaxMessagesPerDay
 	spendLimit := cfg.MaxSpendPerDay
+	// Model-allowlist view (MODEL_LOCKS, issue #325): per-slot lists for
+	// the dashboard + metrics. Read once per snapshot; hot-reload safe.
+	var modelLocks map[int][]string
+	if c := p.cfg.Load(); c != nil {
+		modelLocks = c.ModelLocks
+	}
 	for i, tok := range *toks {
 		rs := tok.runs.Snapshot()
 		ss := tok.session.Snapshot()
@@ -116,15 +137,36 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 
 		spend := p.spendSnapshot(i)
 
+		// Countdown: prefer the server-authored absolute expiry over wire
+		// remainingMs. The expiry is monotonic and survives compact polls
+		// (which omit remainingMs — savedRemainingMs would otherwise freeze
+		// the countdown at the admission value). RemainingMs is only trusted
+		// when the server never sent an expiry (legacy state): when
+		// ExpiresAt is set and already past, the session is dead — falling
+		// back to the frozen admission RemainingMs would resurrect a
+		// zombie "3600s remaining" row (the exact stale-state report behind
+		// the 0m 0s-remaining drawer on an expired session).
 		sessionRemaining := int64(0)
-		if ss.RemainingMs > 0 {
-			// Server-authoritative countdown (wire remainingMs) — prefer over
-			// the local expiresAt approximation to avoid clock-skew drift.
-			sessionRemaining = ss.RemainingMs / 1000
-		} else if ss.Status == "active" && !ss.ExpiresAt.IsZero() {
+		sessionStatus := ss.Status
+		if ss.Status == "active" && !ss.ExpiresAt.IsZero() {
 			if rem := time.Until(ss.ExpiresAt); rem > 0 {
 				sessionRemaining = int64(rem.Seconds())
+			} else if !ss.GracePeriodEndsAt.IsZero() && time.Now().Before(ss.GracePeriodEndsAt) {
+				// Expiry crossed but the grace drain is still open: the
+				// row serves in-flight runs until graceEndsAt. Report the
+				// drain honestly rather than a live window.
+				sessionStatus = "grace"
+			} else {
+				// Expiry and grace both passed with the cache still
+				// "active": report the honest terminal state instead of a
+				// live row. The pool re-admits on the next request
+				// (sessionUsable → false) or the next liveness poll
+				// observes it once polls resume.
+				sessionStatus = "expired"
 			}
+		}
+		if sessionRemaining == 0 && ss.ExpiresAt.IsZero() && ss.RemainingMs > 0 {
+			sessionRemaining = ss.RemainingMs / 1000
 		}
 
 		// Advisory spend ceiling (issue #122): the Pacific-day bucket vs
@@ -153,6 +195,19 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 				quarantineReason = q.reason
 			}
 		}
+		// Streak is a pure cache read here: backfills run on the maintain
+		// loop, never on the Snapshot path (which must not issue upstream
+		// traffic). Nil streak simply renders no streak card.
+		var streak int
+		var todayUsed bool
+		var lastUsage string
+		var streakUpdated time.Time
+		if st := tok.Streak(); st != nil {
+			streak = st.Streak
+			todayUsed = st.TodayUsed
+			lastUsage = st.LastUsageDate
+			streakUpdated = st.UpdatedAt
+		}
 
 		// Phase 5.1: token health score — composite 0–100 from quota,
 		// cooldown, spend, error rate, and session freshness.
@@ -170,31 +225,54 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		out = append(out, TokenSnapshot{
 			Token:                   i,
 			TokenValue:              cfg.AuthTokens[i],
+			Email:                   tok.Email(),
+			AccountID:               tok.AccountID(),
 			CooldownUntil:           rs.CooldownUntil,
 			ActiveRuns:              rs.ActiveRuns,
 			Requests:                rs.Requests,
 			Messages24h:             msgs,
 			DailyLimit:              dailyLimit,
 			UsagePct:                usagePct,
+			RequestsPerMinute:       p.rpmCount(i),
+			RequestsPerDay:          p.dayRequestCount(i),
+			RequestsPerMinuteLimit:  p.cfg.Load().MaxRequestsPerMinute,
+			RequestsPerDayLimit:     p.cfg.Load().MaxRequestsPerDay,
+			RequestsPerDayResetIn:   p.roster.dayRequestResetIn(i),
 			RiskLevel:               riskLevel,
-			SessionStatus:           ss.Status,
+			SessionStatus:           sessionStatus,
 			SessionInstanceID:       ss.InstanceID,
 			SessionQueuePosition:    ss.QueuePosition,
 			SessionQueueDepth:       ss.QueueDepth,
 			SessionModel:            ss.Model,
 			SessionRemainingSeconds: sessionRemaining,
+			SessionExpiresAt:        ss.ExpiresAt,
 			CountryCode:             countryCode,
 			CountryBlockReason:      countryReason,
+			AccessTier:              ss.AccessTier,
 			SessionActiveUsersForIP: ss.ActiveUsersForIP,
 			QuotaByModel:            ss.QuotaByModel,
+			QuotaStale:              ss.QuotaStale,
+			QuotaSavedAt:            ss.QuotaSavedAt,
 			PremiumQuota:            premium,
 			Entitlement:             ss.Entitlement,
 			GlmPromo:                ss.GlmPromo,
 			Standing:                ss.Standing,
 			Referral:                ss.Referral,
+			Freebucks:               ss.Freebucks,
+			FreeWindows:             ss.FreeWindows,
+			Subscription:            ss.Subscription,
+			Streak:                  streak,
+			TodayUsed:               todayUsed,
+			LastUsageDate:           lastUsage,
+			StreakUpdatedAt:         streakUpdated,
+			Maturity:                p.maturitySnapshot(tok, streak),
+			UpgradeHint:             ss.UpgradeHint,
+			ServerMessage:           ss.ServerMessage,
 			Locked:                  tok.locked.Load(),
 			Quarantined:             q != nil,
 			QuarantineReason:        quarantineReason,
+			AllowedModels:           append([]string(nil), modelLocks[i]...),
+			AllowlistSkips:          tok.allowlistSkips.Load(),
 			TransientRetries:        tok.client.TransientRetries(),
 			FingerprintRotations:    tok.client.FingerprintRotations(),
 			RateLimitEvents:         tok.client.RateLimitEvents(),
@@ -242,7 +320,7 @@ type PoolSnapshot struct {
 // PoolSnapshot returns the pool-wide snapshot with aggregate counters.
 func (p *Pool) PoolSnapshot() PoolSnapshot {
 	ps := PoolSnapshot{Tokens: p.Snapshot(), RequestsServed: p.requestsServed.Load()}
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	for _, tok := range *toks {
 		ps.TransientRetries += tok.client.TransientRetries()
 		ps.FingerprintRotations += tok.client.FingerprintRotations()

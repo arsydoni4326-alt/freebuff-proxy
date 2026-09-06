@@ -7,9 +7,9 @@ package server
 // completed Responses object.
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -48,6 +48,9 @@ type responsesStreamState struct {
 	// mapped tools to official signature names upstream, so function_call
 	// items must carry the CLIENT's dispatch name.
 	toolMap convert.ToolMapper
+	// echo carries the client's request parameters for the response
+	// skeleton (set from stats.responsesEcho at relay start).
+	echo map[string]any
 }
 
 // relayResponsesStream translates upstream chat SSE chunks into Responses
@@ -55,17 +58,12 @@ type responsesStreamState struct {
 // with the error attached and stops (the client gets a terminal, parseable
 // signal instead of a chat-shaped error frame).
 func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time, model, respID string) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
+	flusher, keepalive, lines, lastWrite, ok := newStreamRelay(ctx, w, r)
 	if !ok {
 		s.logger.Warn("response writer does not support flushing")
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, ": connecting\n\n")
-	flusher.Flush()
+	defer keepalive.Stop()
 
 	createdAt := time.Now().Unix()
 	// Issue #164 parity: the response object names the proxy's served model
@@ -75,27 +73,20 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	if servedModel == "" {
 		servedModel = model
 	}
-	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: servedModel, toolMap: stats.toolMap}
-	send := func(ev map[string]any) {
+	st := &responsesStreamState{toolByUpIdx: make(map[int]*responsesItem), model: servedModel, toolMap: stats.toolMap, echo: stats.responsesEcho}
+	// send writes one SSE frame. The event name is a separate literal
+	// argument (never taken from the payload map) so the event: line is
+	// always constant; the payload map keeps its "type" key — OpenAI
+	// Responses data frames carry it (conformance contract).
+	send := func(event string, ev map[string]any) {
 		b, _ := json.Marshal(ev)
-		// SSE frames carry the documented event: field (like the Anthropic
-		// relay) so non-JSON-parsing clients can dispatch on the event type.
-		_, _ = io.WriteString(w, "event: "+stringValue(ev["type"])+"\n")
+		_, _ = io.WriteString(w, "event: "+event+"\n")
 		_, _ = w.Write(convert.EncodeSSE(b))
 		flusher.Flush()
 	}
-	send(map[string]any{"type": "response.created", "response": responsesBase(model, respID, createdAt, "in_progress")})
-	send(map[string]any{"type": "response.in_progress", "response": responsesBase(model, respID, createdAt, "in_progress")})
+	send("response.created", map[string]any{"type": "response.created", "response": responsesBase(model, respID, createdAt, "in_progress", stats.responsesEcho)})
+	send("response.in_progress", map[string]any{"type": "response.in_progress", "response": responsesBase(model, respID, createdAt, "in_progress", stats.responsesEcho)})
 
-	keepalive := time.NewTicker(keepaliveInterval)
-	defer keepalive.Stop()
-	lines := make(chan lineChunk)
-	go relayReadLoop(ctx, r, lines)
-	// lastWrite tracks the last frame actually written to the CLIENT; the
-	// keepalive condition keys on it so a liveness signal is emitted after
-	// any client-write silence, regardless of upstream comment/junk dribble
-	// (those are dropped and never relayed — #161).
-	lastWrite := time.Now()
 	first := true
 	endTurnCallIndexes := make(map[int]bool)
 	// XML tool-call extractor: models such as MiMo/Hermes/Qwen emit tool
@@ -110,28 +101,18 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 	// extracted calls become native tool_calls fragments (with sequential
 	// synthetic indexes) and any scrubbed text is relayed as a content
 	// delta, so accumulateResponsesChunk creates the items and the terminal
-	// frame carries complete output.
+	// frame carries complete output (shared core, issue #245).
 	flushXMLCalls := func() {
-		ft, fc := xmlExtractor.Flush()
-		if ft == "" && len(fc) == 0 {
+		ft, frags := drainXMLToolCalls(xmlExtractor, &xmlCallIndex)
+		if ft == "" && len(frags) == 0 {
 			return
 		}
 		delta := make(map[string]any, 2)
 		if ft != "" {
 			delta["content"] = ft
 		}
-		if len(fc) > 0 {
-			frags := make([]any, 0, len(fc))
-			for _, call := range fc {
-				if call.Function.Name == "end_turn" {
-					continue // strip-parity: never relay the proxy-injected pseudo-tool
-				}
-				frags = append(frags, convert.ToolCallDeltaFragment(xmlCallIndex, call))
-				xmlCallIndex++
-			}
-			if len(frags) > 0 {
-				delta["tool_calls"] = frags
-			}
+		if len(frags) > 0 {
+			delta["tool_calls"] = frags
 		}
 		id := "chatcmpl-flush"
 		if lastID != "" {
@@ -156,15 +137,11 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 		case <-ctx.Done():
 			return
 		case <-keepalive.C:
-			if time.Since(lastWrite) >= keepaliveInterval {
-				_, _ = io.WriteString(w, ": keepalive\n\n")
-				lastWrite = time.Now()
-				flusher.Flush()
-			}
+			maybeKeepalive(w, flusher, lastWrite, "event: ping\ndata: {\"type\": \"ping\"}\n\n")
 		case lc := <-lines:
 			if lc.err != nil {
 				if ctx.Err() == nil {
-					s.logger.Warn("responses upstream stream error", "err", lc.err)
+					s.logger.Warn("responses upstream stream error", streamErrorAttrs(ctx, chatStart, stats, lc.err)...)
 					flushXMLCalls()
 					s.endResponsesStream(w, send, st, model, respID, createdAt, true, map[string]any{
 						"type":    "upstream_stream_error",
@@ -178,7 +155,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 				s.endResponsesStream(w, send, st, model, respID, createdAt, false, nil)
 				return
 			}
-			clean, drop := convert.SanitizeChunk(lc.line)
+			clean, drop := convert.SanitizeChunkOpts(lc.line, s.convertOptions())
 			if drop {
 				// Dropped upstream lines are never relayed and must not
 				// advance the keepalive timer (client sees only real
@@ -194,76 +171,14 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 			// is relayed as-is, extracted calls become native tool_calls
 			// fragments with sequential synthetic indexes (existing native
 			// indexes stay untouched). The rest of the pipeline
-			// (StripEndTurnToolCalls + accumulateResponsesChunk) translates
-			// the mutated chunk as usual.
-			if rawChoices, ok := chunk["choices"].([]any); ok && len(rawChoices) > 0 {
-				choice, _ := rawChoices[0].(map[string]any)
-				delta, _ := choice["delta"].(map[string]any)
-				if content, ok := delta["content"].(string); ok && content != "" {
-					text, calls := xmlExtractor.Feed(content)
-					if text != content {
-						if text == "" {
-							delete(delta, "content")
-						} else {
-							delta["content"] = text
-						}
-					}
-					if len(calls) > 0 {
-						tcs, _ := delta["tool_calls"].([]any)
-						if tcs == nil {
-							tcs = make([]any, 0, len(calls))
-						}
-						bumpXMLCallIndex(tcs, &xmlCallIndex)
-						for _, call := range calls {
-							if call.Function.Name == "end_turn" {
-								continue // strip-parity: never relay the proxy-injected pseudo-tool
-							}
-							tcs = append(tcs, convert.ToolCallDeltaFragment(xmlCallIndex, call))
-							xmlCallIndex++
-						}
-						if len(tcs) > 0 {
-							delta["tool_calls"] = tcs
-						}
-					}
-				}
-			}
+			// (processEndTurnCalls + accumulateResponsesChunk) translates
+			// the mutated chunk as usual (shared core, issue #245).
+			feedXMLToolCalls(xmlExtractor, chunk, &xmlCallIndex)
 			// --- end_turn pseudo-tool-call filtering ---
-			// Record end_turn indexes before stripping to catch continuation fragments.
-			foundEndTurn := false
-			if rawChoices, ok := chunk["choices"].([]any); ok {
-				for _, c := range rawChoices {
-					choice, _ := c.(map[string]any)
-					if choice == nil {
-						continue
-					}
-					delta, _ := choice["delta"].(map[string]any)
-					if rawTCs, ok := delta["tool_calls"].([]any); ok {
-						for _, raw := range rawTCs {
-							tc, _ := raw.(map[string]any)
-							if tc == nil {
-								continue
-							}
-							fn, _ := tc["function"].(map[string]any)
-							if name, _ := fn["name"].(string); name == "end_turn" {
-								foundEndTurn = true
-								if idx, ok := tc["index"].(float64); ok {
-									endTurnCallIndexes[int(idx)] = true
-								}
-							}
-						}
-					}
-				}
-			}
-			toolCallsRemaining, _ := convert.StripEndTurnToolCalls(chunk)
-			// Drop continuation fragments for stripped end_turn indexes
-			// (shared map-level helper): a later arguments-only fragment
-			// for a stripped index carries an empty name, so only its
-			// index identifies it. A drop that empties a choice's
-			// tool_calls list means no real calls remain (feeds the flip
-			// below).
-			if _, emptied := dropEndTurnContinuationsInChunk(chunk, endTurnCallIndexes); emptied {
-				toolCallsRemaining = false
-			}
+			// Shared pipeline core (issue #246): record end_turn indexes
+			// before stripping, strip, drop continuation fragments — the
+			// same semantics the OpenAI relay orbits.
+			foundEndTurn, toolCallsRemaining, _, _ := processEndTurnCalls(chunk, endTurnCallIndexes, nil, true)
 			// Flip finish_reason only when end_turn calls were actually found
 			// in this chunk and no real tool calls remain. Without the
 			// foundEndTurn gate, the terminal chunk (finish_reason: "tool_calls",
@@ -328,7 +243,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 				s.endResponsesStream(w, send, st, model, respID, createdAt, true, map[string]any{"message": msg, "type": typ})
 				return
 			}
-			lastWrite = time.Now()
+			*lastWrite = time.Now()
 			stats.chunks++
 			stats.bytes += len(clean)
 			if stats.servedModel == "" {
@@ -356,7 +271,7 @@ func (s *Server) relayResponsesStream(ctx context.Context, w http.ResponseWriter
 // done events are emitted — the items stay in_progress and the terminal
 // response.failed carries the error (a failed response must not claim
 // completed items).
-func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]any), st *responsesStreamState, model, respID string, createdAt int64, failed bool, errObj map[string]any) {
+func (s *Server) endResponsesStream(w http.ResponseWriter, send func(string, map[string]any), st *responsesStreamState, model, respID string, createdAt int64, failed bool, errObj map[string]any) {
 	if !failed {
 		// Ensure at least one output item so output is never empty.
 		if len(st.items) == 0 {
@@ -371,25 +286,25 @@ func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]
 					sendResponsesItemAdded(send, item)
 				}
 				part := map[string]any{"type": "output_text", "text": item.text, "annotations": []any{}}
-				send(map[string]any{"type": "response.output_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
-				send(map[string]any{"type": "response.content_part.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": part})
-				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part}}})
+				send("response.output_text.done", map[string]any{"type": "response.output_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
+				send("response.content_part.done", map[string]any{"type": "response.content_part.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": part})
+				send("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "completed", "role": "assistant", "content": []any{part}}})
 			case "reasoning":
-				send(map[string]any{"type": "response.reasoning_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
-				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "reasoning", "status": "completed", "summary": []any{}, "content": []any{map[string]any{"type": "reasoning_text", "text": item.text}}}})
+				send("response.reasoning_text.done", map[string]any{"type": "response.reasoning_text.done", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "text": item.text})
+				send("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "reasoning", "status": "completed", "summary": []any{}, "content": []any{map[string]any{"type": "reasoning_text", "text": item.text}}}})
 			case "function_call":
 				// The spec's Responses stream sequence for a function call
 				// item is: function_call_arguments.delta*,
 				// function_call_arguments.done, then output_item.done.
 				// The custom_tool_call_input.* pair carries the same
 				// fragments under the newer event name (codex consumes it).
-				send(map[string]any{"type": "response.function_call_arguments.done", "item_id": item.id, "output_index": item.outputIndex, "call_id": item.callID, "name": item.name, "arguments": item.args.String()})
-				send(map[string]any{"type": "response.custom_tool_call_input.done", "item_id": item.id, "output_index": item.outputIndex, "input": item.args.String()})
-				send(map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "completed", "call_id": item.callID, "name": item.name, "arguments": item.args.String()}})
+				send("response.function_call_arguments.done", map[string]any{"type": "response.function_call_arguments.done", "item_id": item.id, "output_index": item.outputIndex, "call_id": item.callID, "name": item.name, "arguments": item.args.String()})
+				send("response.custom_tool_call_input.done", map[string]any{"type": "response.custom_tool_call_input.done", "item_id": item.id, "output_index": item.outputIndex, "input": item.args.String()})
+				send("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "completed", "call_id": item.callID, "name": item.name, "arguments": item.args.String()}})
 			}
 		}
 	}
-	resp := responsesBase(model, respID, createdAt, "completed")
+	resp := responsesBase(model, respID, createdAt, "completed", st.echo)
 	resp["model"] = st.model
 	out := make([]any, 0, len(st.items))
 	for _, item := range st.items {
@@ -428,23 +343,23 @@ func (s *Server) endResponsesStream(w http.ResponseWriter, send func(map[string]
 		if errObj != nil {
 			resp["error"] = errObj
 		}
-		send(map[string]any{"type": "response.failed", "response": resp})
+		send("response.failed", map[string]any{"type": "response.failed", "response": resp})
 		return
 	}
-	send(map[string]any{"type": "response.completed", "response": resp})
+	send("response.completed", map[string]any{"type": "response.completed", "response": resp})
 }
 
 // sendResponsesItemAdded emits the output_item.added + content_part.added
 // pair for a message item.
-func sendResponsesItemAdded(send func(map[string]any), item *responsesItem) {
-	send(map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
-	send(map[string]any{"type": "response.content_part.added", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}})
+func sendResponsesItemAdded(send func(string, map[string]any), item *responsesItem) {
+	send("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
+	send("response.content_part.added", map[string]any{"type": "response.content_part.added", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}})
 }
 
 // accumulateResponsesChunk translates one upstream chat chunk into
 // Responses events: text, reasoning and tool-call argument deltas, creating
 // output items on first use.
-func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[string]any, send func(map[string]any)) {
+func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[string]any, send func(string, map[string]any)) {
 	choices, _ := chunk["choices"].([]any)
 	if len(choices) == 0 {
 		return
@@ -479,7 +394,7 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 				st.nextIndex++
 				st.toolByUpIdx[upIdx] = item
 				st.items = append(st.items, item)
-				send(map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "in_progress", "call_id": "", "name": "", "arguments": ""}})
+				send("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "function_call", "status": "in_progress", "call_id": "", "name": "", "arguments": ""}})
 			}
 			if fn, ok := tc["function"].(map[string]any); ok {
 				if name, ok := fn["name"].(string); ok && name != "" && item.name == "" {
@@ -487,11 +402,11 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 				}
 				if args, ok := fn["arguments"].(string); ok && args != "" {
 					item.args.WriteString(args)
-					send(map[string]any{"type": "response.function_call_arguments.delta", "item_id": item.id, "output_index": item.outputIndex, "delta": args})
+					send("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "item_id": item.id, "output_index": item.outputIndex, "delta": args})
 					// The spec's newer event name for the same fragment: codex
 					// consumes custom_tool_call_input.*, legacy clients consume
 					// function_call_arguments.* — emit both.
-					send(map[string]any{"type": "response.custom_tool_call_input.delta", "item_id": item.id, "output_index": item.outputIndex, "delta": args})
+					send("response.custom_tool_call_input.delta", map[string]any{"type": "response.custom_tool_call_input.delta", "item_id": item.id, "output_index": item.outputIndex, "delta": args})
 				}
 			}
 			if id, ok := tc["id"].(string); ok && id != "" && item.callID == "" {
@@ -519,10 +434,10 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 		}
 		if !item.started {
 			item.started = true
-			send(map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "reasoning", "status": "in_progress", "summary": []any{}}})
+			send("response.output_item.added", map[string]any{"type": "response.output_item.added", "output_index": item.outputIndex, "item": map[string]any{"id": item.id, "type": "reasoning", "status": "in_progress", "summary": []any{}}})
 		}
 		item.text += reasoning
-		send(map[string]any{"type": "response.reasoning_text.delta", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "delta": reasoning})
+		send("response.reasoning_text.delta", map[string]any{"type": "response.reasoning_text.delta", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "delta": reasoning})
 	}
 	// Text deltas.
 	if content, ok := delta["content"].(string); ok && content != "" {
@@ -543,36 +458,21 @@ func (s *Server) accumulateResponsesChunk(st *responsesStreamState, chunk map[st
 			sendResponsesItemAdded(send, item)
 		}
 		item.text += content
-		send(map[string]any{"type": "response.output_text.delta", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "delta": content})
+		send("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": item.id, "output_index": item.outputIndex, "content_index": item.contentIdx, "delta": content})
 	}
 }
 
 // relayResponsesJSON drains the upstream stream and writes one completed
 // Responses object. On any decode/stream error a 502 is returned.
 func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, r io.Reader, stats *relayStats, chatStart time.Time, model, respID string) {
-	acc := convert.NewAccumulator()
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), maxStreamLine)
-	first := true
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return
-		}
-		if first {
-			first = false
-			phasetiming.FromContext(ctx).Since(phasetiming.UpstreamTTFBMS, chatStart)
-		}
-		if err := acc.Add(scanner.Bytes()); err != nil {
+	acc := convert.NewAccumulatorOpts(s.convertOptions())
+	if err := drainUpstream(ctx, r, acc, stats, chatStart); err != nil {
+		if errors.Is(err, errDrainUpstreamDecode) {
 			s.writeJSONError(w, http.StatusBadGateway,
-				"failed to decode upstream stream: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
-			return
-		}
-		stats.chunks++
-	}
-	if err := scanner.Err(); err != nil {
-		if ctx.Err() == nil {
+				"failed to decode upstream stream: "+errDrainCause(err), "upstream_error", "upstream_unavailable", 0)
+		} else {
 			s.writeJSONError(w, http.StatusBadGateway,
-				"upstream stream error: "+err.Error(), "upstream_error", "upstream_unavailable", 0)
+				"upstream stream error: "+errDrainCause(err), "upstream_error", "upstream_unavailable", 0)
 		}
 		return
 	}
@@ -587,7 +487,7 @@ func (s *Server) relayResponsesJSON(ctx context.Context, w http.ResponseWriter, 
 	// Restore client tool names (issue #140): the completion's tool_calls
 	// carry official signature names; the client dispatches on its own.
 	stats.toolMap.FromUpstreamChunk(completion)
-	resp := responsesBase(model, respID, time.Now().Unix(), "completed")
+	resp := responsesBase(model, respID, time.Now().Unix(), "completed", stats.responsesEcho)
 	if stats.servedModel != "" {
 		// Issue #164: the response names the model the lease actually
 		// served (fallbacks included), never the upstream echo.

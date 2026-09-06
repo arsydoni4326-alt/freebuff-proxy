@@ -55,18 +55,20 @@ FreeBuff assigns an access tier at the Cloudflare edge based on your TCP source 
 
 ### Current Upstream Model Status & Quotas
 
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot `87ef664` · npm `0.0.158`):
-> *"Solar Pro 4 joins as a limited-time premium trial row sharing the normal premium pool; DeepSeek V4 Flash is back to always-available (peak pricing still applies). Every model runs on your normal daily sessions — no per-model caps, and MiMo stays unmetered. —Freebuff Team"*
-> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; `GLM 5.3 Flash` shares the premium pool — no per-model cap.)
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `b14414d59` · npm `0.0.168` `2026-09-05`):
+> *"Every model runs on your normal daily sessions — no per-model caps; your shared premium allowance still charges partial time, rounded up to a tenth. MiMo, DeepSeek V4 Flash and GLM 5.3 Flash are unmetered. —❤️ Freebuff Team"*
+> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; shared by `GPT-5.6 Luna` + `Muse Spark 1.3`. `GLM 5.3 Flash`, `DeepSeek V4 Flash`, `MiMo 2.5` and `Solar Pro 4` are **unmetered** — no per-model cap; solar graduated from trial `2026-09-04`.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
 | **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool. |
-| **Premium** | **Solar Pro 4** `NEW` | `upstage/solar-pro4` | **Limited-time trial**, experimental, OpenRouter BYOK (Upstage), text-only, context `500_000`. Shares `5/day` premium pool. |
-| **Premium** | **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. Shares `5/day` premium pool. |
-| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; off-peak-only serving window removed 2026-08-28). |
+| **Premium** | **Muse Spark 1.3** `NEW` | `meta/muse-spark-1.3-contributor` | **Queues, then falls back** — rate-limited shared ceiling (15s queue, then answers on DeepSeek V4 Flash). Meta trains on prompts/completions (Contributor discount). Context `1_000_000`. Shares `5/day` premium pool. |
+| **Unlimited**| **Solar Pro 4** | `upstage/solar-pro4` | Graduated from trial `2026-09-04` (no longer experimental). OpenRouter BYOK (Upstage), text-only, context `500_000`. **Unmetered** — always available, no per-model cap. |
+| **Unlimited**| **GLM 5.3 Flash** | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. **Unmetered** — always available, no per-model cap (left the premium pool `2026-08-28`; default pick again since `2026-09-05`). |
+| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; default pick `2026-09-02`→`2026-09-05`). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers** (sole active model on limited tier). |
-| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (+1/day promo pool), 1-hour sessions. |
+| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` promo pool), 1-hour sessions. |
+| **Pro-only** | **Gemini 3.8 Flash** | `google/gemini-3.8-flash` | Returned `2026-09-04` behind the Pro paywall, Web-only. The proxy has no Pro surface, so this row is **not served**. |
 | **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
 | **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |
 | **Disabled** | **Ox Alpha** | `stealth/ox-alpha` | **Withdrawn** upstream (2026-08-27, free promotion ended). |
@@ -88,7 +90,7 @@ Stay on limited tier but maximize throughput. Set `AUTH_TOKENS=token1,token2,tok
 > two or more tokens are configured. For full-trust isolation, route distinct
 > accounts through distinct residential exits (Option A per machine).
 
-See the [Getting Started — Access Tiers](#access-tiers--workarounds) section for per-model quota pools and effort ladders.
+See the [Getting Started — Access Tiers](#access-tiers-models--upstream-quotas) section for per-model quota pools and effort ladders.
 
 **Do NOT use any of these — they trigger the restricted cohort or an outright ban:**
 - Commercial VPN (NordVPN, ExpressVPN, Surfshark, etc.)
@@ -140,21 +142,25 @@ irm https://raw.githubusercontent.com/trefeon/freebuff-proxy/main/scripts/instal
 ### Option C: Docker Compose
 
 ```bash
-cp .env.example .env   # dev clone: seed the template next to the compose file
-# Edit .env and set AUTH_TOKENS=your_token
+cp .env.example .env && chmod 777 .    # container (uid 100) rewrites .env via atomic rename
+# Leave AUTH_TOKENS empty to add accounts via the dashboard device-login
+# wizard (Admin UI → Tokens → Device login), or paste a token directly.
 git fetch --tags 2>/dev/null || true
 VERSION=$(git describe --tags 2>/dev/null || echo dev) docker compose up -d --build
 ```
 
-> **State is ephemeral in Docker:** without a mounted volume, a container recreate
-> (`docker compose up -d --build`) discards the on-disk session state file
-> (`SESSION_PERSIST`) — see the Docker note in `.env.example`.
+> **Dashboard state persists:** the compose file mounts the project directory
+> at the process cwd (`/app/state`), so tokens added via the dashboard (device
+> login or add-token), the changed admin password, and the session state file
+> all survive container recreates. The directory chmod is required — the
+> container commits config changes with an atomic rename inside its working
+> directory, which needs write permission on the directory itself.
 
 ---
 
 ## Step 2: Verify It Works
 
-Run the diagnostic tool or curl:
+Dashboard first: on a running proxy, open `http://127.0.0.1:3457/admin` — the Overview smoke test plus **Tokens → Test All** (`POST /admin/tokens/test-all`) run the same zero-cost per-token validity probe as the CLI, and the Overview diagnostics card (`POST /admin/diag`) covers the same checks as `-doctor`. CLI second, for headless or pre-serve checks:
 
 ```bash
 # Diagnostic doctor check: config, port, DNS/TLS, registry, plus a
@@ -188,9 +194,11 @@ curl http://localhost:3457/v1/models
 Point your AI tool to:
 - **Base URL:** `http://localhost:3457/v1`
 - **API Key:** `not-needed` (or your token in bridge mode)
-- **Model:** `deepseek/deepseek-v4-flash` (full-tier only — limited-tier IPs are coerced to `mimo/mimo-v2.5`; see [Access Tiers](#access-tiers--workarounds))
+- **Model:** `deepseek/deepseek-v4-flash` (full-tier only — limited-tier IPs are coerced to `mimo/mimo-v2.5`; see [Access Tiers](#access-tiers-models--upstream-quotas))
 
-Fastest path: run `./freebuff-proxy -setup` to write the client config automatically.
+Dashboard first: the **Setup** page (`http://127.0.0.1:3457/admin/setup`) shows per-model copy blocks for every harness — copy, no file writes.
+
+CLI second: run `./freebuff-proxy -setup` to write the client config files automatically.
 
 See the [Client Integration Guide](client-integration.md) for copy-paste config for OpenCode, pi, 9router, LiteLLM, and more.
 
@@ -214,14 +222,16 @@ git checkout <previous-tag>
 docker compose up -d --build
 ```
 
+Dashboard twin: the Overview page shows an update badge with the release link when a newer release exists — the dashboard never swaps the binary, so perform the swap with the commands above, then restart the proxy.
+
 ## Troubleshooting
 
-Run `./freebuff-proxy -doctor` to diagnose problems automatically.
+Dashboard first: the Overview diagnostics card (`POST /admin/diag`) runs the same checks on a live server. CLI second: run `./freebuff-proxy -doctor` to diagnose problems automatically (also works pre-serve).
 
 | Error / Symptom | Cause & Fix |
 |---|---|
 | `403` + `free_mode_cli_required` | The request was missing the CLI system prompt marker or envelope. The proxy injects this automatically. Update to the latest version. |
-| `502` + `upstream_auth_rejected` | Token in `.env` is expired or invalid. Catch it before the first chat: `./freebuff-proxy -test-token` (or `-doctor`) probes the token with a zero-cost GET request and fails with a clear message. Then re-run `freebuff` to log in and update `AUTH_TOKENS`, or swap the token live on the dashboard Tokens page (no restart). |
+| `502` + `upstream_auth_rejected` | Token in `.env` is expired or invalid. Catch it before the first chat: dashboard first — **Tokens → Test All** (`POST /admin/tokens/test-all`); CLI second — `./freebuff-proxy -test-token` (or `-doctor`) probes the token with a zero-cost GET request and fails with a clear message. Then re-run `freebuff` to log in and update `AUTH_TOKENS`, or swap the token live on the dashboard Tokens page (no restart). |
 | Connection refused | Proxy is not running, or in Docker without `LISTEN_ADDR=:3457`. |
 | `403 account_banned` | Account suspended upstream. Token is dead; use a new established account. |
 | `502` + `free_mode_legacy_luna_agent` | The conversation uses a retired Luna agent. Start a new conversation. The proxy automatically retries with a fresh session. |

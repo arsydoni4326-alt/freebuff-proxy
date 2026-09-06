@@ -1,6 +1,6 @@
 // about the FreeBuff free catalog. One row per model in upstream
 // SUPPORTED_FREEBUFF_MODELS (reference/freebuff/common/src/constants/
-// freebuff-models.ts, pinned snapshot 89ce3f5, vendor 0.0.160).
+// freebuff-models.ts, pinned snapshot f25d405, vendor 0.0.167).
 //
 // Every package that needs a per-model fact — registry (served/paused gate,
 // withdrawn-model copy), convert (effort ladders), pool (premium pool and
@@ -48,6 +48,12 @@ type ModelInfo struct {
 	// Efforts is the upstream reasoning-effort ladder (nil = route accepts
 	// and ignores reasoning_effort, so conversion uses the default ladder).
 	Efforts []string
+	// Tagline is the upstream catalog description (used in picker & catalog).
+	Tagline string
+	// Notice is the upstream warning or special offer (e.g. AI training, promo).
+	Notice string
+	// Badges are the capability/freshness chips (e.g. Reasoning: max*, Images, NEW).
+	Badges []string
 }
 
 // Catalog is the full free-catalog table, in upstream SUPPORTED_FREEBUFF_MODELS
@@ -64,18 +70,52 @@ var Catalog = []ModelInfo{
 		PausedReplacement: "z-ai/glm-5.3-flash", ContextWindow: 524_288,
 		Efforts: []string{"high"}},
 	{ID: "openai/gpt-5.6-luna", DisplayName: "GPT-5.6 Luna",
+		Tagline: "Strong all-around", Badges: []string{"Reasoning: high", "Images"},
 		Served: true, Premium: true, ContextWindow: 1_000_000,
 		Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
 	{ID: "upstage/solar-pro4", DisplayName: "Solar Pro 4",
-		Served: true, Premium: true, ContextWindow: 500_000},
-	{ID: "z-ai/glm-5.2", DisplayName: "GLM 5.2", Served: true},
+		Tagline: "Fast & Direct", Notice: "Labor Day weekend (through Sep 7 PT)",
+		Served: true, ContextWindow: 500_000},
+	// google/gemini-3.8-flash returned 2026-09-04 behind the Pro paywall,
+	// Web-only (upstream FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS): removed from
+	// FREEBUFF_PAUSED_FREE_MODEL_IDS, but NOT back in FREEBUFF_MODELS, so no
+	// CLI/Desktop surface may serve it. The proxy has no Pro surface, so the
+	// row stays recognized-but-never-served: no PausedReplacement (upstream
+	// no longer pauses it), no Served. No context entry upstream; the $0.50
+	// per-session spend ceiling is upstream-enforced, so unmodeled.
+	{ID: "google/gemini-3.8-flash", DisplayName: "Gemini 3.8 Flash",
+		Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
+	// meta/muse-spark-1.3-contributor joined every surface 2026-09-04
+	// (upstream SUPPORTED_FREEBUFF_MODELS + FREEBUFF_MODELS, last on
+	// purpose — the one row that may answer on a different model when its
+	// shared ceiling is full). Premium shared-pool row; rate-limited with a
+	// 15s queue window, then answers on DeepSeek V4 Flash. Contributor
+	// terms: Meta trains on prompts and completions (dataUse 'training'),
+	// and upstream keeps no traces for it. Full ladder, defaultEffort
+	// xhigh. Meta publishes 1,048,576 for every Muse Spark variant, entered
+	// as 1,000,000 like Luna (upstream only keys the retired 1.2 id, so the
+	// parity context check has no 1.3 entry to compare — this is the
+	// documented upstream figure, not a guess).
+	{ID: "meta/muse-spark-1.3-contributor", DisplayName: "Muse Spark 1.3",
+		Tagline: "Queues, then falls back", Badges: []string{"Reasoning: xhigh", "NEW"},
+		Notice: "May use data for AI training",
+		Served: true, Premium: true, ContextWindow: 1_000_000,
+		Efforts: []string{"minimal", "low", "medium", "high", "xhigh"}},
+	{ID: "z-ai/glm-5.2", DisplayName: "GLM 5.2",
+		Tagline: "Referral reward", Badges: []string{"Referral only"},
+		Notice:            "Unlocked via referral code",
+		PausedReplacement: "z-ai/glm-5.3-flash"},
 	{ID: "z-ai/glm-5.3-flash", DisplayName: "GLM 5.3 Flash",
+		Tagline: "Deep reasoning", Badges: []string{"Reasoning: max*", "Images", "NEW"},
 		Served: true, ContextWindow: 1_000_000,
 		Efforts: []string{"low", "high", "max"}},
-	{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash",
+	{ID: "deepseek/deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash 07/31",
+		Tagline: "Smart & Fast", Badges: []string{"Reasoning: high", "NEW"},
+		Notice: "May use data for AI training",
 		Served: true, ContextWindow: 1_048_576,
 		Efforts: []string{"low", "high", "max"}},
 	{ID: "mimo/mimo-v2.5", DisplayName: "MiMo 2.5",
+		Tagline: "Balanced", Badges: []string{"Images"},
 		Served: true, Efforts: []string{"high"}},
 	// anthropic/claude-fable-5 stays in the catalog (upstream SUPPORTED list,
 	// parity test) but is NOT served: it is a paid-API model metered by its
@@ -86,18 +126,28 @@ var Catalog = []ModelInfo{
 }
 
 // DefaultModelID mirrors upstream DEFAULT_FREEBUFF_MODEL_ID, pinned to
-// FREEBUFF_MODELS[0] (GLM 5.3 Flash leads the picker since 2026-08-30). It is
-// what the upstream CLI resolves a blank model pick to. The move is explicit
-// vendor policy: the default must be open at every hour and joinable with an
-// empty wallet, and this row is unmetered and always available.
+// FREEBUFF_MODELS[0] (GLM 5.3 Flash leads the picker again as of 2026-09-05,
+// retaking the lead from DeepSeek V4 Flash 09-02→09-05; see upstream
+// freebuff-models.ts's note on the move). It is what the upstream CLI
+// resolves a blank model pick to, and what paused-model refusals recommend.
 const DefaultModelID = "z-ai/glm-5.3-flash"
 
 // FallbackModelID mirrors upstream FALLBACK_FREEBUFF_MODEL_ID: the model
 // guaranteed available on EVERY tier that unavailable picks are coerced to.
-// mimo is region-universal — premium-pool models (luna, solar-pro4) only
+// mimo is region-universal — premium-pool models (luna) only
 // resolve on full-tier accounts, so any proxy-side "no model" default must
 // be mimo, never the premium picker lead.
 const FallbackModelID = "mimo/mimo-v2.5"
+
+// LimitedModelID mirrors upstream LIMITED_FREEBUFF_MODEL_ID: the model
+// guaranteed available on the limited tier.
+const LimitedModelID = "mimo/mimo-v2.5"
+
+// IsLimitedTierAllowed reports whether the model is available on the limited tier
+// without requiring special referral grants.
+func IsLimitedTierAllowed(id string) bool {
+	return id == LimitedModelID
+}
 
 // Glm52ModelID is the referral-reward model, metered by its own promo pool
 // rather than the shared premium pool.
@@ -114,9 +164,11 @@ const Glm52ModelID = "z-ai/glm-5.2"
 // FREEBUFF_STANDARD_MODEL_IDS derivation disagree if not).
 const Glm53ModelID = "z-ai/glm-5.3-flash"
 
-// SolarPro4ModelID mirrors FREEBUFF_SOLAR_PRO_4_MODEL_ID: the Upstage
-// experimental premium row, metered by the shared premium pool (no
-// per-model cap lane, OpenRouter BYOK route).
+// SolarPro4ModelID mirrors FREEBUFF_SOLAR_PRO_4_MODEL_ID: the Upstage row,
+// UNMETERED since 2026-09-04 (entitlement fullAccess.premium=false;
+// "unmetered at full access" per the availability copy). Previously shared
+// premium pool; the per-model count cap closed 2026-09-01 (upstream
+// 051fd4d9) and pool metering followed it out.
 const SolarPro4ModelID = "upstage/solar-pro4"
 
 // PremiumSessionLimit mirrors upstream FREEBUFF_PREMIUM_SESSION_LIMIT: the
@@ -155,6 +207,30 @@ func DisplayName(id string) string {
 	return id
 }
 
+// Tagline returns the upstream catalog description for id.
+func Tagline(id string) string {
+	if m := byID(id); m != nil {
+		return m.Tagline
+	}
+	return ""
+}
+
+// Notice returns the upstream warning or special offer for id.
+func Notice(id string) string {
+	if m := byID(id); m != nil {
+		return m.Notice
+	}
+	return ""
+}
+
+// Badges returns the capability/freshness chips for id.
+func Badges(id string) []string {
+	if m := byID(id); m != nil {
+		return slices.Clone(m.Badges)
+	}
+	return nil
+}
+
 // IsServed reports whether id passes the ServedModels gate.
 func IsServed(id string) bool {
 	if m := byID(id); m != nil {
@@ -181,6 +257,19 @@ func PausedReplacement(id string) string {
 	return ""
 }
 
+// WithdrawnModelMessage mirrors upstream freebuffWithdrawnModelMessage
+// (freebuff-models.ts:1685-1697): names the model asked for and what to use
+// instead — the client that sends this id is a released binary whose picker
+// still lists it, so "unavailable" alone leaves the user staring at a row
+// that looks fine and does not work.
+func WithdrawnModelMessage(id string) string {
+	replacement := PausedReplacement(id)
+	if replacement == "" {
+		return DisplayName(id) + " is no longer available in Freebuff."
+	}
+	return DisplayName(id) + " is no longer available in Freebuff. We recommend using " + DisplayName(replacement) + " instead."
+}
+
 // IsPremium reports whether id is in the shared daily premium pool
 // (FREEBUFF_PREMIUM_MODEL_IDS)
 func IsPremium(id string) bool {
@@ -191,11 +280,13 @@ func IsPremium(id string) bool {
 }
 
 // SharedPremiumModels returns the ids metered by the shared daily premium
-// pool (FREEBUFF_PREMIUM_MODEL_IDS). Luna and Solar Pro 4 (GLM 5.3 Flash is unmetered).
+// pool: Luna + Muse Spark 1.3 since 2026-09-04 (solar left the pool when its
+// entitlement went unmetered; gemini is Pro-paywalled).
+// GLM 5.3 Flash is unmetered.
 func SharedPremiumModels() []string {
 	var out []string
 	for i := range Catalog {
-		if Catalog[i].Premium && Catalog[i].Cap == 0 {
+		if Catalog[i].Premium {
 			out = append(out, Catalog[i].ID)
 		}
 	}

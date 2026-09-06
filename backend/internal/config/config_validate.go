@@ -25,6 +25,8 @@ func (c Config) Validate() error {
 		return errors.New("REQUEST_TIMEOUT must be greater than zero")
 	case c.SessionCallTimeout <= 0:
 		return errors.New("SESSION_CALL_TIMEOUT must be greater than zero")
+	case c.HTTPReadTimeout < 0:
+		return errors.New("HTTP_READ_TIMEOUT cannot be negative (0 disables the read timeout)")
 	case c.RegistryRefresh <= 0:
 		return errors.New("REGISTRY_REFRESH must be greater than zero")
 	case c.RequestJitter < 0:
@@ -41,6 +43,10 @@ func (c Config) Validate() error {
 		return errors.New(`COST_MODE must be "free" or unset -- any other value (e.g. a typo) routes requests as PAID and fresh free accounts get 402 "Out of credits"`)
 	case c.MaxMessagesPerDay < 0:
 		return errors.New("MAX_MESSAGES_PER_DAY cannot be negative")
+	case c.MaxRequestsPerDay < 0:
+		return errors.New("MAX_REQUESTS_PER_DAY cannot be negative")
+	case c.MaxRequestsPerMinute < 0:
+		return errors.New("MAX_REQUESTS_PER_MINUTE cannot be negative")
 	case c.BridgeDailyLimit < 0:
 		return errors.New("BRIDGE_DAILY_LIMIT cannot be negative")
 	case c.MaxSpendPerDay < 0:
@@ -65,11 +71,8 @@ func (c Config) Validate() error {
 		return errors.New("RISK_THRESHOLD_HIGH must be between 1 and 100")
 	case c.RiskMediumThreshold != 0 && c.RiskHighThreshold != 0 && c.RiskMediumThreshold >= c.RiskHighThreshold:
 		return errors.New("RISK_THRESHOLD_MEDIUM must be strictly less than RISK_THRESHOLD_HIGH")
-	}
-	for _, m := range c.ScarceSessionModels {
-		if strings.TrimSpace(m) == "" {
-			return errors.New("SCARCE_SESSION_MODELS cannot contain empty model IDs")
-		}
+	case c.MaturityTargetDays < 0 || c.MaturityTargetDays > 28:
+		return errors.New("MATURITY_TARGET_DAYS must be between 1 and 28 (one full streak interval is 7)")
 	}
 	for src, target := range c.QuotaFallbackModels {
 		if strings.TrimSpace(src) == "" || strings.TrimSpace(target) == "" {
@@ -142,6 +145,15 @@ func (c Config) Validate() error {
 		}
 	}
 
+	// The maturity touch model must look like a catalog id
+	// (provider/model). Whether it is actually served and unmetered
+	// (never burns premium quota) is enforced where modelcat is visible —
+	// the pool skips misconfigured touches with a warn log and the admin
+	// maturity endpoint rejects them (config is a bottom-layer package
+	// and must not import modelcat).
+	if c.MaturityTouchModel != "" && !strings.Contains(c.MaturityTouchModel, "/") {
+		return fmt.Errorf("MATURITY_TOUCH_MODEL %q must be a provider/model id (e.g. deepseek/deepseek-v4-flash)", c.MaturityTouchModel)
+	}
 	if c.LogLevel != "" {
 		if _, ok := ParseLevel(c.LogLevel); !ok {
 			return fmt.Errorf("LOG_LEVEL %q must be one of: debug, info, warn, error, trace", c.LogLevel)

@@ -16,22 +16,25 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Config is the fully-resolved, validated runtime configuration.
 type Config struct {
-	ListenAddr         string
-	UpstreamBaseURL    string
-	AuthTokens         []string
-	RotationInterval   time.Duration
-	RequestTimeout     time.Duration
-	SessionCallTimeout time.Duration
-	APIKeys            []string
-	AdminToken         string // bearer token required for POST /admin/reload (defaults to "123456" when unset/empty)
-	HTTP2Upstream      bool   // true = negotiate HTTP/2 with the upstream so the ALPN matches real browsers (HTTP2_UPSTREAM); false forces HTTP/1.1 (#51)
-	CostMode           string // "" (omit) or "free"; A/B pending, PRD §8
+	ListenAddr            string
+	UpstreamBaseURL       string
+	AuthTokens            []string
+	RotationInterval      time.Duration
+	RequestTimeout        time.Duration
+	SessionCallTimeout    time.Duration
+	HTTPReadTimeout       time.Duration
+	APIKeys               []string
+	AdminToken            string // bearer token required for POST /admin/reload (defaults to "123456" when unset/empty)
+	DashboardRequireLogin bool   // true = dashboard requires password authentication (DASHBOARD_REQUIRE_LOGIN); defaults to true
+	HTTP2Upstream         bool   // true = negotiate HTTP/2 with the upstream so the ALPN matches real browsers (HTTP2_UPSTREAM); false forces HTTP/1.1 (#51)
+	CostMode              string // "" (omit) or "free"; A/B pending, PRD §8
 	// ActingUserID is the optional FreeBuff account id sent as
 	// x-freebuff-acting-user-id (ACTING_USER_ID; empty = header omitted).
 	// BAN RISK: the official CLI sends the account's OWN id here, derived
@@ -55,6 +58,18 @@ type Config struct {
 	// dashboard log viewer (LOG_RING_SIZE; default 500, validated 50..5000).
 	LogRingSize       int
 	MaxMessagesPerDay int // 0 = unlimited: per-token cap on successful chats per 24h
+	// MaxRequestsPerDay is the per-token cap on successful chat requests in
+	// the current Pacific day (MAX_REQUESTS_PER_DAY; default 1500, 0 =
+	// unlimited). Enforced in acquire like the daily message cap; resets at
+	// Pacific midnight — the same instant upstream rolls its daily quota
+	// windows — so a locked token unlocks in sync with the official reset.
+	MaxRequestsPerDay int
+	// MaxRequestsPerMinute is the per-token cap on ADMITTED chat requests in
+	// a rolling 60s window (MAX_REQUESTS_PER_MINUTE; default 30, 0 =
+	// unlimited). Admission counting (not success-only) throttles the exact
+	// request rate upstream observes — including retries that later fail —
+	// keeping each account under abuse-detection burst patterns.
+	MaxRequestsPerMinute int
 	// BridgeDailyLimit is the global daily chat cap across ALL bridge-mode
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
 	// before the per-entry check so a flood of distinct client tokens cannot
@@ -84,7 +99,7 @@ type Config struct {
 	// (BRIDGE_CIRCUIT_BREAKER_COOLDOWN default 10s). Disabled when
 	// BridgeCircuitBreakerFailures is 0.
 	BridgeCircuitBreakerCooldown time.Duration
-	MaxSpendPerDay               int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $0.50 restricted, compose by minimum, server-enforced) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
+	MaxSpendPerDay               int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $1 elevated [SG/CN since 2026-09, was $5] / $0.50 restricted, plus $7 full / $3 limited paid floor for flagged email/egress reasons since 6341ef3, compose by minimum, server-enforced; restricted reasons take a 2x HARD mid-session cut at FREEBUFF_SPEND_CEILING_HARD_MULTIPLIER) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
 	IdleRotationTimeout          time.Duration // 0 = disabled: pause rotation/refresh after this idle period
 	SessionIdleEnd               time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
 	SafeMode                     bool          // true = apply recommended anti-ban safe defaults
@@ -108,7 +123,7 @@ type Config struct {
 	// BridgeIdleEvict is how long a bridge entry may sit unused before the
 	// maintain loop FINISHes its runs, ends its upstream session, and drops it
 	// from the cache (BRIDGE_IDLE_EVICT; default 72h, sliding TTL).
-	BridgeIdleEvict       time.Duration
+	BridgeIdleEvict time.Duration
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
@@ -116,14 +131,21 @@ type Config struct {
 	// rejected with 404 model_not_found ("model not allowed by
 	// MODELS_ALLOW"). Empty = no restriction.
 	ModelsAllow       []string
-	CORSAllowedOrigin string            // Access-Control-Allow-Origin for /v1/* responses (CORS_ALLOWED_ORIGIN; default "*")
-	RequestJitter     time.Duration     // random delay range [0, RequestJitter) before upstream chat calls
-	CLIVersion        string            // upstream CLI version string (default: 0.10.7)
-	TokenRotation     string            // "drain" (default) | "round_robin" | "least_used" | "random"
-	ModelAliases      map[string]string // map model alias -> real model ID (#25)
-	TransientRetries  int               // max additional attempts after a transient transport failure (0 = disabled; default 1)
-	SessionPersist    bool              // true = persist session state to disk so restart resumes unexpired sessions (SESSION_PERSIST)
-	SessionStateFile  string            // path to the session state file (SESSION_STATE_FILE; default .freebuff-session-state.json)
+	CORSAllowedOrigin string        // Access-Control-Allow-Origin for /v1/* responses (CORS_ALLOWED_ORIGIN; default "*")
+	RequestJitter     time.Duration // random delay range [0, RequestJitter) before upstream chat calls
+	CLIVersion        string        // upstream CLI version string (default: 0.10.7)
+	TokenRotation     string        // "drain" (default) | "round_robin" | "least_used" | "random"
+	RateLimitFailover bool          // true = automatically lease another token when an in-flight request encounters 429 rate limit (RATE_LIMIT_FAILOVER; default true)
+	// ModelLocks pins pool slots to models (MODEL_LOCKS, issue #325):
+	// map from AUTH_TOKENS slot index to the model ids that slot may
+	// serve, e.g. {0: ["z-ai/glm-5.2"]}. Slots without an entry are
+	// unlocked (today's behavior). Parsed at Load; malformed values
+	// reject the config.
+	ModelLocks       map[int][]string
+	ModelAliases     map[string]string // map model alias -> real model ID (#25)
+	TransientRetries int               // max additional attempts after a transient transport failure (0 = disabled; default 1)
+	SessionPersist   bool              // true = persist session state to disk so restart resumes unexpired sessions (SESSION_PERSIST)
+	SessionStateFile string            // path to the session state file (SESSION_STATE_FILE; default .freebuff-session-state.json)
 	// SessionCreateMaxParallelGlobal / SessionCreateMaxParallelPerModel cap
 	// concurrent in-flight session admissions (issue #86): the pool's create
 	// gate returns 503 when a cap is hit instead of hammering upstream.
@@ -186,10 +208,6 @@ type Config struct {
 	// muse→deepseek-v4-pro target mirrors the upstream
 	// MUSE_SPARK_FALLBACK_MODEL_ID.
 	FallbackModels map[string]string
-	// ScarceSessionModels lists the irreplaceable 1-session/day models the proxy
-	// keeps alive for their full hour (SCARCE_SESSION_MODELS; comma-separated).
-	// Default: ["deepseek/deepseek-v4-pro", "openai/gpt-5.6-luna"].
-	ScarceSessionModels []string
 	// QuotaFallbackModels maps a model to its fallback model when its session
 	// quota is exhausted or unentitled (QUOTA_FALLBACK_MODELS; comma-separated k=v pairs).
 	// Default: {"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5", "z-ai/glm-5.2": "deepseek/deepseek-v4-flash", "openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash"}.
@@ -203,6 +221,30 @@ type Config struct {
 	// refresh); while the CLI process is alive a competing session is
 	// never created (issue #97).
 	AdoptCLISession bool
+	// MaturityEnabled is the global kill-switch for streak-maturity automation
+	// (MATURITY_ENABLED; default true). When false, no per-token maturity
+	// touch ever fires regardless of per-token toggles. Default ON with
+	// MATURITY_DRY_RUN=true so dry-run probes run by default while live
+	// slot-claiming touches remain opt-in via dry-run toggle (docs/maturity-plan.md §4).
+	MaturityEnabled bool
+	// MaturityDryRun validates scheduler mechanics with zero side effects
+	// (MATURITY_DRY_RUN; default true): touches run only the zero-cost
+	// session probe and never claim a session slot. Turn it off only after
+	// the dry-run log lines prove slots, skips and throttles behave.
+	MaturityDryRun bool
+	// MaturityTouchModel is the unmetered model the maturity touch admits
+	// (MATURITY_TOUCH_MODEL; default deepseek/deepseek-v4-flash). Must be a
+	// served, non-premium, uncapped catalog row so the touch never burns
+	// premium quota for farming.
+	MaturityTouchModel string
+	// MaturityTargetDays is the default streak target for newly-enabled
+	// tokens (MATURITY_TARGET_DAYS; default 7, valid 1..28). A token whose
+	// streak reaches its target auto-releases its administrative lock.
+	MaturityTargetDays int
+	// MaturityAllowPremium gates the per-token premium-short touch mode
+	// (MATURITY_ALLOW_PREMIUM; default false). When false, mode
+	// "premium-short" is rejected and only unmetered touches run.
+	MaturityAllowPremium bool
 	// WaitingRoomChain, when enabled (WAITING_ROOM_CHAIN=false default),
 	// fires the reference ad-chain + streak requests before the next
 	// session create after an upstream 428 waiting_room_required (issue
@@ -251,6 +293,18 @@ type Config struct {
 	EnvFile          string
 	DiscoveredSource string // auto-discovered credentials file path (if any)
 	DiscoveredEmail  string // auto-discovered account email (if any)
+	// CompressPrompt enables optional prompt & context compression in the
+	// request normalizer (COMPRESS_PROMPT; default off). Resolved once here
+	// and passed to convert.Options so the per-chunk hot path never reads
+	// the environment (issue #277).
+	CompressPrompt bool
+	// CacheControlInjection enables DeepSeek prompt-cache cache_control
+	// injection (CACHE_CONTROL_INJECTION; default on). See CompressPrompt.
+	CacheControlInjection bool
+	// ReasoningInContent is the think-tag label used to fold reasoning into
+	// message content for clients that do not render a reasoning channel
+	// (REASONING_IN_CONTENT; default "" = off). See CompressPrompt.
+	ReasoningInContent string
 }
 
 // DefaultAdminToken is the default dashboard admin password ("123456") used when ADMIN_TOKEN is unconfigured or empty.
@@ -259,6 +313,12 @@ const DefaultAdminToken = "123456"
 // IsDefaultAdminToken reports whether AdminToken matches the factory default credentials ("123456").
 func (c *Config) IsDefaultAdminToken() bool {
 	return c != nil && c.AdminToken == DefaultAdminToken
+}
+
+// RequireLogin reports whether the admin dashboard enforces login authentication.
+// It is true when DashboardRequireLogin is true and AdminToken is non-empty.
+func (c *Config) RequireLogin() bool {
+	return c != nil && c.DashboardRequireLogin && c.AdminToken != ""
 }
 
 // BridgeMode reports whether the proxy runs without any AUTH_TOKENS: every
@@ -303,32 +363,35 @@ type rawConfig struct {
 	RotationInterval   string   `json:"ROTATION_INTERVAL"`
 	RequestTimeout     string   `json:"REQUEST_TIMEOUT"`
 	SessionCallTimeout string   `json:"SESSION_CALL_TIMEOUT"`
+	HTTPReadTimeout    string   `json:"HTTP_READ_TIMEOUT"`
 	APIKeys            []string `json:"API_KEYS"`
 	AdminToken         string   `json:"ADMIN_TOKEN"`
 	CostMode           string   `json:"COST_MODE"`
 	ActingUserID       string   `json:"ACTING_USER_ID"`
 	// LegacyActingUserID is the pre-rename JSON key (USER_ID) — merged at
 	// the end of Load when no ACTING_USER_ID source set a value (#126).
-	LegacyActingUserID string `json:"USER_ID"`
-	TLSFingerprint     string `json:"TLS_FINGERPRINT"`
-	RegistryRefresh    string `json:"REGISTRY_REFRESH"`
-	DebugDump          bool   `json:"DEBUG_DUMP"`
-	DevToolsEnabled    bool   `json:"DEVTOOLS_ENABLED"`
-	LogFile            string `json:"LOG_FILE"`
-	LogLevel           string `json:"LOG_LEVEL"`
-	LogFormat          string `json:"LOG_FORMAT"`
-	LogAccess          bool   `json:"LOG_ACCESS"`
-	LogRingSize        *int   `json:"LOG_RING_SIZE"`
-	MaxMessagesPerDay  *int   `json:"MAX_MESSAGES_PER_DAY"`
+	LegacyActingUserID   string `json:"USER_ID"`
+	TLSFingerprint       string `json:"TLS_FINGERPRINT"`
+	RegistryRefresh      string `json:"REGISTRY_REFRESH"`
+	DebugDump            bool   `json:"DEBUG_DUMP"`
+	DevToolsEnabled      bool   `json:"DEVTOOLS_ENABLED"`
+	LogFile              string `json:"LOG_FILE"`
+	LogLevel             string `json:"LOG_LEVEL"`
+	LogFormat            string `json:"LOG_FORMAT"`
+	LogAccess            bool   `json:"LOG_ACCESS"`
+	LogRingSize          *int   `json:"LOG_RING_SIZE"`
+	MaxMessagesPerDay    *int   `json:"MAX_MESSAGES_PER_DAY"`
+	MaxRequestsPerDay    *int   `json:"MAX_REQUESTS_PER_DAY"`
+	MaxRequestsPerMinute *int   `json:"MAX_REQUESTS_PER_MINUTE"`
 	// BridgeDailyLimit is the global daily chat cap across all bridge
 	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited).
 	BridgeDailyLimit *int `json:"BRIDGE_DAILY_LIMIT"`
 	// BridgeRateLimitPerToken is the per-client-token rate limit in req/s
 	// (BRIDGE_RATE_LIMIT_PER_TOKEN; 0 = unlimited).
-	BridgeRateLimitPerToken          *float64                `json:"BRIDGE_RATE_LIMIT_PER_TOKEN"`
-	BridgeCircuitBreakerFailures     *int                    `json:"BRIDGE_CIRCUIT_BREAKER_FAILURES"`
-	BridgeCircuitBreakerWindow       string                  `json:"BRIDGE_CIRCUIT_BREAKER_WINDOW"`
-	BridgeCircuitBreakerCooldown     string                  `json:"BRIDGE_CIRCUIT_BREAKER_COOLDOWN"`
+	BridgeRateLimitPerToken      *float64 `json:"BRIDGE_RATE_LIMIT_PER_TOKEN"`
+	BridgeCircuitBreakerFailures *int     `json:"BRIDGE_CIRCUIT_BREAKER_FAILURES"`
+	BridgeCircuitBreakerWindow   string   `json:"BRIDGE_CIRCUIT_BREAKER_WINDOW"`
+	BridgeCircuitBreakerCooldown string   `json:"BRIDGE_CIRCUIT_BREAKER_COOLDOWN"`
 	// BridgeEnabled records BRIDGE_ENABLED (default true via
 	// defaultRawConfig): whether bridge-mode traffic is accepted alongside
 	// the AUTH_TOKENS pool (hybrid mode).
@@ -359,24 +422,34 @@ type rawConfig struct {
 	SessionReAdmitLead               string                  `json:"SESSION_RE_ADMIT_LEAD"`
 	SessionProbeCacheTTL             string                  `json:"SESSION_PROBE_CACHE_TTL"`
 	ModelUnavailableCacheTTL         string                  `json:"MODEL_UNAVAILABLE_CACHE_TTL"`
-	ScarceSessionModels              scarceSessionModelsList `json:"SCARCE_SESSION_MODELS"`
 	QuotaFallbackModels              quotaFallbackModelsList `json:"QUOTA_FALLBACK_MODELS"`
 	WebhookURL                       string                  `json:"WEBHOOK_URL"`
 	FallbackAfter                    string                  `json:"FALLBACK_AFTER_MS"`
 	FallbackModels                   string                  `json:"FALLBACK_MODEL"`
 	AdoptCLISession                  bool                    `json:"ADOPT_CLI_SESSION"`
+	MaturityEnabled                  bool                    `json:"MATURITY_ENABLED"`
+	MaturityDryRun                   bool                    `json:"MATURITY_DRY_RUN"`
+	MaturityTouchModel               string                  `json:"MATURITY_TOUCH_MODEL"`
+	MaturityTargetDays               *int                    `json:"MATURITY_TARGET_DAYS"`
+	MaturityAllowPremium             bool                    `json:"MATURITY_ALLOW_PREMIUM"`
 	WaitingRoomChain                 bool                    `json:"WAITING_ROOM_CHAIN"`
 	RateLimitPerIP                   *float64                `json:"RATE_LIMIT_PER_IP"`
 	RateLimitBurst                   *int                    `json:"RATE_LIMIT_BURST"`
 	RiskMediumThreshold              *int                    `json:"RISK_THRESHOLD_MEDIUM"`
 	RiskHighThreshold                *int                    `json:"RISK_THRESHOLD_HIGH"`
 	TokenRotation                    string                  `json:"TOKEN_ROTATION"`
+	RateLimitFailover                *bool                   `json:"RATE_LIMIT_FAILOVER"`
+	ModelLocks                       string                  `json:"MODEL_LOCKS"`
 	DashboardEnabled                 bool                    `json:"DASHBOARD_ENABLED"`
 	AutoRotateOnExhaustion           bool                    `json:"AUTO_ROTATE_ON_EXHAUSTION"`
 	ExhaustionWarningThreshold       string                  `json:"EXHAUSTION_WARNING_THRESHOLD"`
 	HealthScoreEnabled               bool                    `json:"HEALTH_SCORE_ENABLED"`
 	TokenHealthProbes                bool                    `json:"TOKEN_HEALTH_PROBES"`
 	TokenProbeInterval               string                  `json:"TOKEN_PROBE_INTERVAL"`
+	DashboardRequireLogin            bool                    `json:"DASHBOARD_REQUIRE_LOGIN"`
+	CompressPrompt                   string                  `json:"COMPRESS_PROMPT"`
+	CacheControlInjection            string                  `json:"CACHE_CONTROL_INJECTION"`
+	ReasoningInContent               string                  `json:"REASONING_IN_CONTENT"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list
@@ -399,24 +472,6 @@ func (m *modelsAllowList) UnmarshalJSON(data []byte) error {
 	}
 	*m = modelsAllowList(strings.Join(arr, ","))
 	return nil
-}
-
-// scarceSessionModelsList is the raw SCARCE_SESSION_MODELS value (issue #155):
-// env is a comma-separated list, JSON may be a string or an array of strings.
-type scarceSessionModelsList string
-
-func (s *scarceSessionModelsList) UnmarshalJSON(data []byte) error {
-	var v string
-	if err := json.Unmarshal(data, &v); err == nil {
-		*s = scarceSessionModelsList(v)
-		return nil
-	}
-	var arr []string
-	if err := json.Unmarshal(data, &arr); err == nil {
-		*s = scarceSessionModelsList(strings.Join(arr, ","))
-		return nil
-	}
-	return fmt.Errorf("SCARCE_SESSION_MODELS must be a comma-separated string or an array of strings, got: %s", data)
 }
 
 // quotaFallbackModelsList is the raw QUOTA_FALLBACK_MODELS value (issue #155):
@@ -448,8 +503,10 @@ func defaultRawConfig() rawConfig {
 		UpstreamBaseURL:                  "https://codebuff.com", // normalized to www.
 		RotationInterval:                 "6h",
 		RequestTimeout:                   "15m",
+		HTTPReadTimeout:                  "60s",
 		SessionCallTimeout:               "30s",
 		TokenRotation:                    "drain",
+		RateLimitFailover:                new(true),
 		CostMode:                         "free",
 		RegistryRefresh:                  "6h",
 		MaxSpendPerDay:                   nil,   // 0 = unlimited advisory spend ceiling (never enforced)
@@ -459,27 +516,31 @@ func defaultRawConfig() rawConfig {
 		SafeMode:                         true,  // anti-ban presets on by default; set SAFE_MODE=false to disable
 		SessionIdleEnd:                   "",    // "" = disabled (opt-in: ending a session forces a fresh admission when the user returns)
 		DashboardEnabled:                 true,  // dashboard on by default; set DASHBOARD_ENABLED=false to disable
+		DashboardRequireLogin:            true,  // require login on by default; set DASHBOARD_REQUIRE_LOGIN=false to disable
 		LogAccess:                        true,
 		DevToolsEnabled:                  false,       // per-request access lines on by default; LOG_ACCESS=false disables them
 		LogRingSize:                      ptrInt(500), // dashboard log viewer ring capacity (T19)
 		CORSAllowedOrigin:                "*",         // browser clients reach /v1/* cross-origin by default
 		RequestJitter:                    "",          // "" = disabled (unset → SAFE_MODE preset may fill)
 		CLIVersion:                       "0.10.7",
-		TransientRetries:                 nil,   // nil = 1 (one retry after a transient transport failure; 0 disables)
-		SessionPersist:                   false, // opt-in: persist session state across restarts
+		TransientRetries:                 nil,  // nil = 1 (one retry after a transient transport failure; 0 disables)
+		SessionPersist:                   true, // session persistence on by default: restart resumes unexpired sessions
 		SessionStateFile:                 ".freebuff-session-state.json",
-		HTTP2Upstream:                    true,        // h2 ALPN matches real browsers (reference proxy-freebuff USE_HTTP2 default '1'); HTTP2_UPSTREAM=false forces h1 (#51)
-		SessionCreateMaxParallelGlobal:   ptrInt(128), // #86: concurrent session admissions cap
-		SessionCreateMaxParallelPerModel: ptrInt(32),  // #86: per-model concurrent admissions cap
-		RunFinishQueueSize:               ptrInt(64),  // #90: bounded deferred-FINISH queue
-		RunFinishInlineTimeout:           "250ms",     // #90: inline FINISH fallback bound
-		RunsDrainQueueCap:                ptrInt(64),  // #55: draining-runs list cap
-		RunsDrainTTL:                     "10m",       // #55: draining-runs TTL eviction
-		SessionReAdmitLead:               "60s",       // #99: pre-emptive re-admit lead
-		SessionProbeCacheTTL:             "15s",       // #60: admission probe cache TTL
-		FallbackAfter:                    "10000",     // #100: queue-wait fallback threshold (ms)
-		RiskMediumThreshold:              ptrInt(30),  // #3.5: risk engine medium boundary (score 0-100)
-		RiskHighThreshold:                ptrInt(40),  // #3.5: risk engine high boundary (must be > medium)
+		HTTP2Upstream:                    true,                         // h2 ALPN matches real browsers (reference proxy-freebuff USE_HTTP2 default '1'); HTTP2_UPSTREAM=false forces h1 (#51)
+		SessionCreateMaxParallelGlobal:   ptrInt(128),                  // #86: concurrent session admissions cap
+		SessionCreateMaxParallelPerModel: ptrInt(32),                   // #86: per-model concurrent admissions cap
+		RunFinishQueueSize:               ptrInt(64),                   // #90: bounded deferred-FINISH queue
+		RunFinishInlineTimeout:           "250ms",                      // #90: inline FINISH fallback bound
+		RunsDrainQueueCap:                ptrInt(64),                   // #55: draining-runs list cap
+		RunsDrainTTL:                     "10m",                        // #55: draining-runs TTL eviction
+		SessionReAdmitLead:               "60s",                        // #99: pre-emptive re-admit lead
+		SessionProbeCacheTTL:             "15s",                        // #60: admission probe cache TTL
+		FallbackAfter:                    "0",                             // #100: queue-wait fallback threshold (ms); 0 = disabled by default
+		RiskMediumThreshold:              ptrInt(30),                   // #3.5: risk engine medium boundary (score 0-100)
+		RiskHighThreshold:                ptrInt(40),                   // #3.5: risk engine high boundary (must be > medium)
+		MaturityEnabled:                  true,                         // streak-maturity automation on by default; dry-run probes prove schedule before live touches
+		MaturityDryRun:                   true,                         // maturity touches probe only until the operator proves the schedule
+		MaturityTouchModel:               "deepseek/deepseek-v4-flash", // unmetered default: never burns premium quota
 	}
 }
 
@@ -487,37 +548,15 @@ func defaultRawConfig() rawConfig {
 func ptrInt(n int) *int { return &n }
 
 // defaultFallbackModels returns the FALLBACK_MODEL defaults (issue #100):
-// the premium free-catalog row (gpt-5.6-luna) falls back to the always-
-// available flash model once its queue wait passes FALLBACK_AFTER_MS
-// (issue #189). Trigger is queue-wait ≥ FALLBACK_AFTER_MS only — never 429s.
+// empty by default — no automatic model fallback on queue wait.
 func defaultFallbackModels() map[string]string {
-	return map[string]string{
-		"openai/gpt-5.6-luna": "deepseek/deepseek-v4-flash",
-	}
+	return nil
 }
 
 // defaultQuotaFallbackModels returns the QUOTA_FALLBACK_MODELS defaults (issue #155, #183):
-// when a model's session quota is exhausted (all 4 premium sessions used for
-// luna, or unentitled referral-only GLM 5.2), the proxy falls back to an
-// available model (flash for GLM/luna, mimo for flash). Luna fallback (#203)
-// reduces retry pressure on an exhausted scarce model that upstream flags as
-// abuse when hammered.
+// empty by default — no automatic model fallback on quota exhaustion.
 func defaultQuotaFallbackModels() map[string]string {
-	return map[string]string{
-		"deepseek/deepseek-v4-flash": "mimo/mimo-v2.5",
-		"z-ai/glm-5.2":               "deepseek/deepseek-v4-flash",
-		"openai/gpt-5.6-luna":        "deepseek/deepseek-v4-flash",
-	}
-}
-
-// defaultScarceSessionModels returns the SCARCE_SESSION_MODELS defaults (issue #155):
-// the 4-session/day premium model kept alive for its full session.
-// deepseek-v4-pro left this list with its pause (2026-08-26): a paused model
-// is refused before a lease is acquired, so keeping its slot warm is dead work.
-func defaultScarceSessionModels() []string {
-	return []string{
-		"openai/gpt-5.6-luna",
-	}
+	return nil
 }
 
 // EnvFileCandidates returns the ordered candidate paths for the .env file
@@ -655,6 +694,42 @@ func parseMap(value string) map[string]string {
 		}
 	}
 	return out
+}
+
+// parseModelLocks parses MODEL_LOCKS (issue #325): semicolon/newline
+// separated slot entries, each "<slot-index>:<model>[,<model>...]", e.g.
+// "0:z-ai/glm-5.2;1:deepseek/deepseek-v4-flash,mimo/mimo-v2.5". Slot indexes
+// address AUTH_TOKENS positions. Empty input yields nil (feature off).
+// Malformed entries (missing colon, bad index, empty model list) are an
+// error: a silently-ignored lock would route quota to the wrong account.
+func parseModelLocks(value string) (map[int][]string, error) {
+	locks := make(map[int][]string)
+	entries := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ';' || r == '\n' || r == '\r'
+	})
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		parts := strings.SplitN(e, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid MODEL_LOCKS entry %q (want <slot>:<model>[,<model>...])", e)
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || idx < 0 {
+			return nil, fmt.Errorf("invalid MODEL_LOCKS slot %q (want non-negative index)", strings.TrimSpace(parts[0]))
+		}
+		models := dedupeStrings(strings.Split(parts[1], ","))
+		if len(models) == 0 {
+			return nil, fmt.Errorf("invalid MODEL_LOCKS entry %q (no models listed)", e)
+		}
+		locks[idx] = models
+	}
+	if len(locks) == 0 {
+		return nil, nil
+	}
+	return locks, nil
 }
 
 func compactStrings(values []string) []string {

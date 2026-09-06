@@ -1,7 +1,11 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -20,24 +24,29 @@ var dotenvKeys = map[string]bool{
 	"AUTH_TOKENS": true, "LISTEN_ADDR": true, "UPSTREAM_BASE_URL": true,
 	"ROTATION_INTERVAL": true, "REQUEST_TIMEOUT": true, "SESSION_CALL_TIMEOUT": true,
 	"API_KEYS": true, "ADMIN_TOKEN": true, "COST_MODE": true,
-	"ACTING_USER_ID": true, "TLS_FINGERPRINT": true, "REGISTRY_REFRESH": true,
+	"HTTP_READ_TIMEOUT": true,
+	"ACTING_USER_ID":    true, "TLS_FINGERPRINT": true, "REGISTRY_REFRESH": true,
 	"DEBUG_DUMP": true, "DEVTOOLS_ENABLED": true, "LOG_FILE": true,
 	"LOG_LEVEL": true, "LOG_FORMAT": true, "LOG_ACCESS": true,
 	"LOG_RING_SIZE": true, "MAX_MESSAGES_PER_DAY": true, "BRIDGE_DAILY_LIMIT": true,
+	"MAX_REQUESTS_PER_DAY": true, "MAX_REQUESTS_PER_MINUTE": true,
 	"MAX_SPEND_PER_DAY": true, "BRIDGE_ENABLED": true, "BRIDGE_IDLE_EVICT": true,
 	"IDLE_ROTATION_TIMEOUT": true, "SESSION_IDLE_END": true, "SAFE_MODE": true,
 	"MODELS_HIDE_UNAVAILABLE": true, "MODELS_ALLOW": true, "CORS_ALLOWED_ORIGIN": true,
-	"REQUEST_JITTER": true, "CLI_VERSION": true, "MODEL_ALIASES": true,
+	"REQUEST_JITTER": true, "CLI_VERSION": true, "MODEL_ALIASES": true, "MODEL_LOCKS": true,
 	"TRANSIENT_RETRIES": true, "SESSION_PERSIST": true, "SESSION_STATE_FILE": true,
 	"HTTP2_UPSTREAM": true, "SESSION_CREATE_MAX_PARALLEL_GLOBAL": true,
 	"SESSION_CREATE_MAX_PARALLEL_PER_MODEL": true, "RUN_FINISH_QUEUE_SIZE": true,
 	"RUN_FINISH_INLINE_TIMEOUT": true, "RUNS_DRAIN_QUEUE_CAP": true,
 	"RUNS_DRAIN_TTL": true, "SESSION_RE_ADMIT_LEAD": true, "SESSION_PROBE_CACHE_TTL": true,
-	"MODEL_UNAVAILABLE_CACHE_TTL": true, "SCARCE_SESSION_MODELS": true,
-	"QUOTA_FALLBACK_MODELS": true, "WEBHOOK_URL": true, "FALLBACK_AFTER_MS": true,
+	"MODEL_UNAVAILABLE_CACHE_TTL": true,
+	"QUOTA_FALLBACK_MODELS":       true, "WEBHOOK_URL": true, "FALLBACK_AFTER_MS": true,
 	"FALLBACK_MODEL": true, "ADOPT_CLI_SESSION": true, "WAITING_ROOM_CHAIN": true,
-	"RATE_LIMIT_PER_IP": true, "RATE_LIMIT_BURST": true, "TOKEN_ROTATION": true,
-	"DASHBOARD_ENABLED": true,
+	"MATURITY_ENABLED": true, "MATURITY_DRY_RUN": true, "MATURITY_TOUCH_MODEL": true,
+	"MATURITY_TARGET_DAYS": true, "MATURITY_ALLOW_PREMIUM": true,
+	"RATE_LIMIT_PER_IP": true, "RATE_LIMIT_BURST": true, "TOKEN_ROTATION": true, "RATE_LIMIT_FAILOVER": true,
+	"DASHBOARD_ENABLED": true, "DASHBOARD_REQUIRE_LOGIN": true,
+	"COMPRESS_PROMPT": true, "CACHE_CONTROL_INJECTION": true, "REASONING_IN_CONTENT": true,
 }
 
 // catalogExtras are documented keys the catalog may hold beyond the
@@ -181,6 +190,39 @@ func TestCatalogSecretFlags(t *testing.T) {
 		if !secretKeys[key] {
 			t.Errorf("key %s is flagged secret but is not in the expected secret set", key)
 		}
+	}
+}
+
+// TestConfigMetaFixtureParity asserts that the frontend e2e mock fixture
+// frontend/e2e/fixtures/config-meta.json stays byte-exact in sync with
+// Catalog(). Run with FP_REGEN_FIXTURE=1 to regenerate the fixture.
+func TestConfigMetaFixtureParity(t *testing.T) {
+	data, err := json.MarshalIndent(Catalog(), "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	fixturePath := filepath.Join("..", "..", "..", "frontend", "e2e", "fixtures", "config-meta.json")
+
+	if os.Getenv("FP_REGEN_FIXTURE") != "" {
+		if err := os.WriteFile(fixturePath, data, 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		t.Logf("regenerated %s", fixturePath)
+		return
+	}
+
+	existing, err := os.ReadFile(fixturePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("fixture does not exist; skipping parity check")
+		}
+		t.Fatal(err)
+	}
+	normExisting := strings.ReplaceAll(string(existing), "\r\n", "\n")
+	normData := string(data)
+	if normExisting != normData {
+		t.Errorf("frontend e2e fixture %s is out of date with Catalog(); re-run with FP_REGEN_FIXTURE=1 to regenerate", fixturePath)
 	}
 }
 

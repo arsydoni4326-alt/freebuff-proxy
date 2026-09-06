@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,48 +22,15 @@ import (
 	"freebuff-proxy/backend/internal/config"
 	"freebuff-proxy/backend/internal/logring"
 	"freebuff-proxy/backend/internal/pool"
-	"freebuff-proxy/backend/internal/registry"
 	"freebuff-proxy/backend/internal/server"
-	"freebuff-proxy/backend/internal/session"
 	"freebuff-proxy/backend/internal/testutil"
-	"freebuff-proxy/backend/internal/upstream"
 )
 
 // newTestServerWithLogger builds the full stack like newTestServer but with
 // a custom logger (logring-wrapped) so tests can assert on trace entries.
 func newTestServerWithLogger(t *testing.T, apiKeys []string, logger *slog.Logger, ring *logring.Handler, mocks ...*testutil.MockUpstream) (*httptest.Server, *pool.Pool) {
 	t.Helper()
-	cfg := &config.Config{
-		AuthTokens:         make([]string, len(mocks)),
-		RotationInterval:   time.Hour,
-		RequestTimeout:     15 * time.Minute,
-		SessionCallTimeout: 5 * time.Second,
-		RegistryRefresh:    6 * time.Hour,
-		UpstreamBaseURL:    "https://www.codebuff.com",
-		APIKeys:            apiKeys,
-		LogAccess:          true,
-		DashboardEnabled:   true,
-	}
-	clients := make([]*upstream.Client, 0, len(mocks))
-	sessions := make([]*session.Manager, 0, len(mocks))
-	for i, mock := range mocks {
-		cfg.AuthTokens[i] = fmt.Sprintf("tok-%d", i)
-		clientCfg := *cfg
-		clientCfg.UpstreamBaseURL = mock.URL()
-		client, err := upstream.New(cfg.AuthTokens[i], &clientCfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		clients = append(clients, client)
-		sessions = append(sessions, session.NewManager(client))
-	}
-	reg := registry.New(cfg, nil)
-	reg.LoadFallback()
-	p, err := pool.New(cfg, clients, sessions, reg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := server.New(cfg, p, reg, logger, ring, "")
+	srv, p := server.NewTestServerStack(t, apiKeys, mocks, func(c *config.Config) { c.AdminToken = config.DefaultAdminToken }, logger, ring)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, p
@@ -96,8 +62,8 @@ func TestCORSPreflight204(t *testing.T) {
 			t.Errorf("Access-Control-Allow-Methods missing %q", want)
 		}
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0 (preflight answered before routing)", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0 (preflight answered before routing)", mock.RequestsSnapshot())
 	}
 }
 
@@ -176,8 +142,8 @@ func TestEmbeddingsUnsupported(t *testing.T) {
 	if !strings.Contains(body.Error.Message, modelA) {
 		t.Errorf("message missing model list (want %q): %q", modelA, body.Error.Message)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0 (rejected before pool)", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0 (rejected before pool)", mock.RequestsSnapshot())
 	}
 }
 
@@ -732,8 +698,8 @@ func TestMessagesCountTokens(t *testing.T) {
 	if out.InputTokens != 9 {
 		t.Errorf("input_tokens = %d, want 9", out.InputTokens)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0 (local estimate only)", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0 (local estimate only)", mock.RequestsSnapshot())
 	}
 }
 
@@ -768,8 +734,8 @@ func TestMessagesCountTokensComplexRequest(t *testing.T) {
 	if out.InputTokens != 93 {
 		t.Errorf("input_tokens = %d, want 93 (golden reference)", out.InputTokens)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -800,8 +766,8 @@ func TestMessagesCountTokensDeterministic(t *testing.T) {
 			t.Fatalf("iteration %d input_tokens = %d, want %d (deterministic)", i, out.InputTokens, first)
 		}
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -827,8 +793,8 @@ func TestMessagesCountTokensMissingModel(t *testing.T) {
 	if out.Error.Type != "invalid_request_error" || out.Error.Code != "model_not_found" {
 		t.Errorf("type/code = %q/%q, want invalid_request_error/model_not_found", out.Error.Type, out.Error.Code)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -854,8 +820,8 @@ func TestMessagesCountTokensUnknownModel(t *testing.T) {
 	if out.Error.Type != "invalid_request_error" {
 		t.Errorf("type = %q, want invalid_request_error", out.Error.Type)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -881,8 +847,8 @@ func TestMessagesCountTokensInvalidJSON(t *testing.T) {
 			t.Errorf("body %q code = %q, want invalid_json", body, out.Error.Code)
 		}
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -902,8 +868,8 @@ func TestMessagesCountTokensOversizedBody(t *testing.T) {
 	if !strings.Contains(string(data), "content_too_large") {
 		t.Errorf("body missing content_too_large: %s", truncate(string(data), 200))
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0 (oversized body rejected before counting)", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0 (oversized body rejected before counting)", mock.RequestsSnapshot())
 	}
 }
 
@@ -932,8 +898,8 @@ func TestMessagesCountTokensDocumentRejected(t *testing.T) {
 	if out.Error.Code != "unsupported_content" {
 		t.Errorf("code = %q, want unsupported_content (valid JSON, so invalid_json would mislead)", out.Error.Code)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -959,8 +925,8 @@ func TestMessagesCountTokensSystemImageFlat(t *testing.T) {
 	if out.InputTokens != 1600+8+1 { // system image + message overhead + "hi"
 		t.Errorf("input_tokens = %d, want %d (flat 1600, base64 never tokenized)", out.InputTokens, 1600+8+1)
 	}
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -991,8 +957,8 @@ func TestMessagesCountTokensAuth(t *testing.T) {
 		t.Fatalf("Bearer status = %d, want 200: %s", resp.StatusCode, truncate(string(data), 200))
 	}
 
-	if mock.Requests != 0 {
-		t.Errorf("upstream requests = %d, want 0", mock.Requests)
+	if mock.RequestsSnapshot() != 0 {
+		t.Errorf("upstream requests = %d, want 0", mock.RequestsSnapshot())
 	}
 }
 
@@ -1116,11 +1082,11 @@ func TestRequestCorrelationIDs(t *testing.T) {
 	for i := range entries {
 		e := &entries[i]
 		switch e.Message {
-		case "access", "chat routing", "chat done", "chat trace":
+		case "access", "chat request", "chat routing", "chat done", "chat trace":
 			byMsg[e.Message] = e
 		}
 	}
-	for _, want := range []string{"access", "chat routing", "chat done", "chat trace"} {
+	for _, want := range []string{"access", "chat request", "chat routing", "chat done", "chat trace"} {
 		if byMsg[want] == nil {
 			t.Fatalf("missing %q entry in the log ring", want)
 		}
@@ -1133,10 +1099,17 @@ func TestRequestCorrelationIDs(t *testing.T) {
 	if !uuidRe.MatchString(reqID) {
 		t.Errorf("access req_id = %q, want UUIDv4 shape", reqID)
 	}
-	for _, m := range []string{"chat routing", "chat done", "chat trace"} {
+	for _, m := range []string{"chat request", "chat routing", "chat done", "chat trace"} {
 		if got := entryField(*byMsg[m], "req_id"); got != reqID {
 			t.Errorf("%s req_id = %q, want the access req_id %q", m, got, reqID)
 		}
+	}
+	// Console "N MSG · M TOOL" segments: chatBody carries 1 message, no tools.
+	if got := entryField(*byMsg["chat request"], "msgs"); got != "1" {
+		t.Errorf("chat request msgs = %q, want 1", got)
+	}
+	if got := entryField(*byMsg["chat request"], "tools"); got != "0" {
+		t.Errorf("chat request tools = %q, want 0", got)
 	}
 	for _, m := range []string{"access", "chat trace"} {
 		if got := entryField(*byMsg[m], "client_request_id"); got != "abc" {
@@ -1232,6 +1205,13 @@ func TestTransientRetrySkippedOnCanceledContext(t *testing.T) {
 		}
 		return false
 	})
+	// The cancel drop carries req_id: without it a client-abandoned request
+	// is uncorrelated (the access line keeps its 200 default).
+	for _, e := range ring.Recent(400) {
+		if e.Message == "request canceled by client" && entryField(e, "req_id") == "" {
+			t.Error(`"request canceled by client" missing req_id`)
+		}
+	}
 	for _, e := range ring.Recent(400) {
 		if strings.Contains(e.Message, "transient chat error") {
 			t.Errorf("canceled request logged a retry announcement: %s", e.Message)
