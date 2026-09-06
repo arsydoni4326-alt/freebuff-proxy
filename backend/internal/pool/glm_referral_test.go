@@ -42,7 +42,9 @@ func TestUnentitledPoolTokenGlmQuotaFallback(t *testing.T) {
 		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-flash-123","model":"deepseek/deepseek-v4-flash","expiresAt":"`+expiresAt+`"}`)
 	}
 
-	p := newTestPool(t, mock)
+	p := newTestPoolCfg(t, func(c *config.Config) {
+		c.QuotaFallbackModels = map[string]string{"z-ai/glm-5.2": "deepseek/deepseek-v4-flash"}
+	}, mock)
 
 	lease, err := p.Acquire(context.Background(), "z-ai/glm-5.2")
 	if err != nil {
@@ -122,7 +124,7 @@ func TestEntitledPoolTokenWithGlmPromo(t *testing.T) {
 	p := newTestPool(t, mock)
 
 	// Seed token 0 with active GlmPromo
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	(*toks)[0].session.Invalidate()
 	// Run a probe that populates GlmPromo
 	mock.GlmPromo = map[string]any{

@@ -10,14 +10,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-	"sync"
-	"time"
 	"unicode"
 
 	"freebuff-proxy/backend/internal/phasetiming"
 	"freebuff-proxy/backend/internal/runs"
+	"freebuff-proxy/backend/internal/session"
 	"freebuff-proxy/backend/internal/upstream"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // maxClientTokenLen is the maximum allowed length of a client-supplied
@@ -55,6 +57,80 @@ func validateClientToken(tok string) error {
 	}
 	return nil
 }
+
+// bridgeEntry is one lazily-created client-token slot in bridge mode: the
+// upstream client, session manager, and run manager for a single client-
+// supplied token, created on first use and reused across that client's
+// later requests. lastUsed and the ledger are guarded by Pool.bridgeMu.
+// It lives here (with the bridge cache twins) so the bridge subsystem is not
+// entangled with the pool core through shared state (issue #261).
+type bridgeEntry struct {
+	token    string
+	client   *upstream.Client
+	session  *session.Manager
+	runs     *runs.RunManager
+	lastUsed time.Time
+	// ledger is the entry's usage + spend state (issue #263); guarded by
+	// Pool.bridgeMu like lastUsed.
+	ledger *AccountLedger
+	// usage is the rolling 24h successful-chat timestamps
+	// (MAX_MESSAGES_PER_DAY); guarded by Pool.bridgeMu like lastUsed.
+	usage []time.Time
+	// spend is the per-client-token spend ledger (issue #87); guarded by
+	// Pool.bridgeMu like usage.
+	spend *spendLedger
+	// nextPollAt / pollFailures carry the session-liveness poll schedule;
+	// touched only by the maintain goroutine (bridgeSessionPollTick).
+	nextPollAt   time.Time
+	pollFailures int
+	// locked is an administrative lock that prevents AcquireBridge from
+	// leasing runs to this entry (#187). Set/cleared by LockBridgeEntry/
+	// UnlockBridgeEntry; in-flight leases are unaffected.
+	locked atomic.Bool
+
+	// rateLimitTokens / rateLimitLastRefill implement a simple per-entry
+	// token-bucket rate limiter (BRIDGE_RATE_LIMIT_PER_TOKEN config).
+	// Guarded by mu. rateLimitTokens holds the current token balance;
+	// rateLimitLastRefill is the last refill timestamp. rateLimitRate
+	// is the configured tokens/sec (0 = unlimited, set once at creation).
+	rateLimitTokens     float64
+	rateLimitLastRefill time.Time
+	rateLimitRate       float64
+
+	// rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
+	// rateLimitHits counts allowed requests; rateLimitMisses counts denied requests.
+	rateLimitHits   atomic.Int64
+	rateLimitMisses atomic.Int64
+
+	// admissionGate serializes session creation per entry: the first
+	// request creates the session; concurrent requests block on the
+	// channel until it completes or fails. sync.Once ensures the session
+	// is created exactly once per entry lifecycle. Guarded by mu.
+	mu            sync.Mutex
+	admissionGate chan struct{}
+	admissionOnce sync.Once
+	admissionErr  error // result of leader's session creation
+}
+
+// tokenAccount is the entry-adapter interface shared by tokenEntry and
+// bridgeEntry so the quota/ledger helpers can serve both front doors through
+// one set of accessors instead of per-mode twins (issues #261/#263).
+type tokenAccount interface {
+	sessionMgr() *session.Manager
+	runMgr() *runs.RunManager
+	clientMgr() *upstream.Client
+	accountLedger() *AccountLedger
+}
+
+func (e *bridgeEntry) sessionMgr() *session.Manager  { return e.session }
+func (e *bridgeEntry) runMgr() *runs.RunManager      { return e.runs }
+func (e *bridgeEntry) clientMgr() *upstream.Client   { return e.client }
+func (e *bridgeEntry) accountLedger() *AccountLedger { return e.ledger }
+
+func (e *tokenEntry) sessionMgr() *session.Manager  { return e.session }
+func (e *tokenEntry) runMgr() *runs.RunManager      { return e.runs }
+func (e *tokenEntry) clientMgr() *upstream.Client   { return e.client }
+func (e *tokenEntry) accountLedger() *AccountLedger { return e.ledger }
 
 // AcquireBridge acquires a lease for one client-supplied token in bridge
 // mode (no AUTH_TOKENS configured). The entry — upstream client, session
@@ -186,15 +262,24 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		p.logger.Debug("pool: bridge entry daily message limit", "limit", cfg.MaxMessagesPerDay)
 		return nil, p.bridgeDailyLimitError(entry)
 	}
-	// Issue #155: scarce-model session protection in bridge mode.
-	scarceSet := scarceModelSet(cfg.ScarceSessionModels)
-	if snap := entry.session.Snapshot(); scarceHeld(snap, model, scarceSet) {
-		return nil, &ScarceSessionError{Model: snap.Model, ExpiresAt: snap.ExpiresAt}
+	// Per-minute request cap (MAX_REQUESTS_PER_MINUTE), per client token.
+	if cfg.MaxRequestsPerMinute > 0 && p.bridgeRpmCount(entry) >= cfg.MaxRequestsPerMinute {
+		p.logger.Debug("pool: bridge entry per-minute request limit", "limit", cfg.MaxRequestsPerMinute)
+		return nil, p.bridgeRpmLimitError(entry)
 	}
-
-	// Issue #155: quota-exhaustion fallback in bridge mode.
+	// Daily request cap (MAX_REQUESTS_PER_DAY), per client token: unlocks at
+	// the next Pacific midnight (the official daily reset instant).
+	if cfg.MaxRequestsPerDay > 0 && p.bridgeDayRequestCount(entry) >= cfg.MaxRequestsPerDay {
+		p.logger.Debug("pool: bridge entry daily request limit", "limit", cfg.MaxRequestsPerDay)
+		return nil, p.bridgeDayRequestLimitError(entry)
+	}
 	fellBack := false
-	if bridgeQuotaCapped(entry, model) {
+	// Issue #155: quota-exhaustion fallback in bridge mode. A capped
+	// entry holding a live session for the requested model is EXEMPT
+	// (hotReusableForModel): the single-flight gate below reuses the
+	// live instance with zero admission POST, so falling back (or 429ing)
+	// would strand a session that can still serve.
+	if _, _, quotaCapped := quotaRemaining(entry, model); quotaCapped && !hotReusableForModel(entry, model) {
 		if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
 			p.logger.Info("pool: bridge token quota exhausted, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
 			fbAgent, err := p.reg.AgentForModel(fb)
@@ -205,7 +290,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 			agentID = fbAgent
 			fellBack = true // issue #164: report the switch to the client
 		} else {
-			return nil, bridgeQuotaLimitError(entry, model)
+			return nil, quotaLimitError(entry, model)
 		}
 	}
 
@@ -293,14 +378,13 @@ admitRetry:
 		entry.admissionErr = nil
 		entry.mu.Unlock()
 		err = errCopy
-		if errors.Is(err, upstream.ErrAuthRejected) {
-			entry.runs.Cooldown(runs.DefaultCooldown)
+		c := p.classifyAndCooldown(entry.runs, err)
+		if c.authRejected {
 			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
 			p.bridgeEvictToken(clientToken)
 		}
-		if rle := asRateLimit(err); rle != nil {
-			entry.runs.CooldownRateLimit(rle)
-			if rle.Status == "spend_limited" {
+		if rle := c.rateLimited; rle != nil {
+			if c.spendLimited {
 				p.bridgeMu.Lock()
 				p.bridgeRecordSpendLimited(entry)
 				p.bridgeMu.Unlock()
@@ -316,10 +400,7 @@ admitRetry:
 				}
 			}
 		}
-		if ice := asIpCapped(err); ice != nil {
-			entry.runs.CooldownIpCapped(ice)
-		}
-		if lie := asLimitedIp(err); lie != nil {
+		if lie := c.limitedIp; lie != nil {
 			// Issue #74: the shared egress cannot serve this model
 			// (limited_ip) — mark it unfit so pooled requests refuse fast
 			// instead of re-admitting and burning a daily session slot on
@@ -329,8 +410,7 @@ admitRetry:
 			lie.Model = model
 			p.MarkModelUnfit(model, lie)
 		}
-		if be := asBan(err); be != nil {
-			entry.runs.CooldownBan(be)
+		if be := c.banned; be != nil {
 			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
 		if cbe := asCountryBlocked(err); cbe != nil {
@@ -407,26 +487,22 @@ sessionReady:
 	run, err := entry.runs.Acquire(ctx, effectiveAgentID)
 	phasetiming.FromContext(ctx).Since(phasetiming.RunAcquireMS, runStart)
 	if err != nil {
-		if errors.Is(err, upstream.ErrAuthRejected) {
-			entry.runs.Cooldown(runs.DefaultCooldown)
+		c := p.classifyAndCooldown(entry.runs, err)
+		if c.authRejected {
 			p.logger.Debug("pool: bridge entry cooling down", "duration", runs.DefaultCooldown.String())
 			// immediate eviction — the token is dead.
 			p.bridgeEvictToken(clientToken)
 		}
-		if rle := asRateLimit(err); rle != nil {
-			entry.runs.CooldownRateLimit(rle)
+		if rle := c.rateLimited; rle != nil {
 			// Issue #122: count run-start spend_limited refusals on the
 			// bridge entry's ledger (same counter as the chat-path refusal).
-			if rle.Status == "spend_limited" {
+			if c.spendLimited {
 				p.bridgeMu.Lock()
 				p.bridgeRecordSpendLimited(entry)
 				p.bridgeMu.Unlock()
 			}
 		}
-		if ice := asIpCapped(err); ice != nil {
-			entry.runs.CooldownIpCapped(ice)
-		}
-		if lie := asLimitedIp(err); lie != nil {
+		if lie := c.limitedIp; lie != nil {
 			// Issue #74: the shared egress cannot serve this model
 			// (limited_ip) — mark it unfit so pooled requests refuse fast
 			// instead of re-admitting and burning a daily session slot on
@@ -436,8 +512,7 @@ sessionReady:
 			lie.Model = model
 			p.MarkModelUnfit(model, lie)
 		}
-		if be := asBan(err); be != nil {
-			entry.runs.CooldownBan(be)
+		if be := c.banned; be != nil {
 			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
 		if cbe := asCountryBlocked(err); cbe != nil {
@@ -451,6 +526,16 @@ sessionReady:
 
 	p.logger.Debug("pool: bridge lease acquired", "model", effectiveModel, "agent", effectiveAgentID, "instance_id", ss.InstanceID,
 		"country", ss.CountryCode)
+	// MAX_REQUESTS_PER_MINUTE admission enforced atomically at grant time,
+	// mirroring Acquire: the pre-filter above only reads the window, and a
+	// concurrent burst must not pass the cap before any record lands.
+	// Admission is always recorded (even with cap 0 = unlimited) so the
+	// bridge snapshot counters stay meaningful.
+	if !p.bridgeTryAdmitRequest(entry) {
+		p.LeaseRelease(&Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: ss.InstanceID,
+			Bridge: entry, AcquiredAt: time.Now()})
+		return nil, p.bridgeRpmLimitError(entry)
+	}
 	// Track the activity and end any idle-maintenance pause, mirroring
 	// Acquire: without this, IDLE_ROTATION_TIMEOUT was dead config in
 	// bridge mode — lastActive stayed zero forever, so the pool never
@@ -487,7 +572,7 @@ func (p *Pool) ProbeNewToken(ctx context.Context, token string) (*upstream.Sessi
 	// may still hold the production default. A probe built from the wrong
 	// URL would validate against a different host than the one the token
 	// will actually use — silently false results.
-	if toks := p.toks.Load(); len(*toks) > 0 {
+	if toks := p.roster.Load(); len(*toks) > 0 {
 		if base := (*toks)[0].client.BaseURL(); base != "" {
 			cfg.UpstreamBaseURL = base
 		}
@@ -505,7 +590,7 @@ func (p *Pool) ProbeNewToken(ctx context.Context, token string) (*upstream.Sessi
 // ErrNoActiveSession when the token has no active session (still a valid
 // token), or the classified auth/network error otherwise.
 func (p *Pool) ProbeToken(ctx context.Context, token int) (*upstream.SessionState, error) {
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	if token < 0 || token >= len(*toks) {
 		return nil, fmt.Errorf("pool: token %d out of range", token)
 	}

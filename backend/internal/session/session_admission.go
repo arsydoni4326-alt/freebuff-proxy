@@ -67,35 +67,6 @@ func (m *Manager) SetCLIAdoption(a CLIAdoption) {
 	m.mu.Unlock()
 }
 
-// SetScarceModels configures the scarce-model set (issue #155): models whose
-// active sessions are kept on Shutdown instead of being DELETE'd upstream.
-// Wired by the pool from SCARCE_SESSION_MODELS; safe to call at runtime.
-// A nil or empty slice clears the set.
-func (m *Manager) SetScarceModels(models []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(models) == 0 {
-		m.scarce = nil
-		return
-	}
-	m.scarce = make(map[string]bool, len(models))
-	for _, mod := range models {
-		if mod != "" {
-			m.scarce[mod] = true
-		}
-	}
-	if len(m.scarce) == 0 {
-		m.scarce = nil
-	}
-}
-
-// IsScarce reports whether model is in the scarce set (issue #155).
-func (m *Manager) IsScarce(model string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.scarce[model]
-}
-
 // adoptOwner re-reads the CLI owner file fresh (issue #97(c)): the CLI
 // rewrites freebuff-instance-owner.json when its session changes, so a startup snapshot alone would go stale after a CLI restart.
 func (m *Manager) adoptOwner() (CLIOwner, bool) {
@@ -204,13 +175,13 @@ func (m *Manager) createSessionForModel(ctx context.Context, model string) (*ups
 				if probeState, err := m.client.ProbeAccount(ctx); err == nil && probeState != nil {
 					m.mu.Lock()
 					if probeState.GlmPromo != "" {
-						m.savedGlmPromo = probeState.GlmPromo
+						m.snap.savedGlmPromo = probeState.GlmPromo
 						if m.state != nil {
 							m.state.glmPromo = probeState.GlmPromo
 						}
 					}
 					if len(probeState.RateLimitsByModel) > 0 {
-						m.savedQuota = probeState.RateLimitsByModel
+						m.snap.savedQuota = probeState.RateLimitsByModel
 						if m.state != nil {
 							m.state.quotaByModel = probeState.RateLimitsByModel
 						}
@@ -278,14 +249,14 @@ func (m *Manager) recordReAdmitTrigger() {
 	m.mu.Lock()
 	now := m.now()
 	cutoff := now.Add(-stormWindow)
-	m.reAdmitTriggers = append(m.reAdmitTriggers, now)
-	triggers := m.reAdmitTriggers[:0]
-	for _, t := range m.reAdmitTriggers {
+	m.snap.reAdmitTriggers = append(m.snap.reAdmitTriggers, now)
+	triggers := m.snap.reAdmitTriggers[:0]
+	for _, t := range m.snap.reAdmitTriggers {
 		if t.After(cutoff) {
 			triggers = append(triggers, t)
 		}
 	}
-	m.reAdmitTriggers = triggers
+	m.snap.reAdmitTriggers = triggers
 	m.mu.Unlock()
 }
 
@@ -298,35 +269,35 @@ func (m *Manager) recordReAdmitTrigger() {
 func (m *Manager) recordInvalidation(reason string) {
 	m.mu.Lock()
 	now := m.now()
-	m.invalidationEvents = append(m.invalidationEvents, invalidationEvent{at: now, reason: reason})
+	m.snap.invalidationEvents = append(m.snap.invalidationEvents, invalidationEvent{at: now, reason: reason})
 	cutoff := now.Add(-stormWindow)
-	events := m.invalidationEvents[:0]
-	for _, ev := range m.invalidationEvents {
+	events := m.snap.invalidationEvents[:0]
+	for _, ev := range m.snap.invalidationEvents {
 		if ev.at.After(cutoff) {
 			events = append(events, ev)
 		}
 	}
-	m.invalidationEvents = events
-	triggers := m.reAdmitTriggers[:0]
-	for _, t := range m.reAdmitTriggers {
+	m.snap.invalidationEvents = events
+	triggers := m.snap.reAdmitTriggers[:0]
+	for _, t := range m.snap.reAdmitTriggers {
 		if t.After(cutoff) {
 			triggers = append(triggers, t)
 		}
 	}
-	m.reAdmitTriggers = triggers
+	m.snap.reAdmitTriggers = triggers
 
 	// Storm only when strictly more than the threshold invalidations sit in
 	// the window, and only once per suppression window (60s of quiet re-arms
 	// the detector).
-	if len(m.invalidationEvents) <= stormThreshold || (!m.lastStormAt.IsZero() && now.Sub(m.lastStormAt) < stormWindow) {
+	if len(m.snap.invalidationEvents) <= stormThreshold || (!m.snap.lastStormAt.IsZero() && now.Sub(m.snap.lastStormAt) < stormWindow) {
 		m.mu.Unlock()
 		return
 	}
-	m.lastStormAt = now
-	count := len(m.invalidationEvents)
-	duration := m.invalidationEvents[len(m.invalidationEvents)-1].at.Sub(m.invalidationEvents[0].at).Milliseconds()
+	m.snap.lastStormAt = now
+	count := len(m.snap.invalidationEvents)
+	duration := m.snap.invalidationEvents[len(m.snap.invalidationEvents)-1].at.Sub(m.snap.invalidationEvents[0].at).Milliseconds()
 	superseded := 0
-	for _, ev := range m.invalidationEvents {
+	for _, ev := range m.snap.invalidationEvents {
 		if ev.reason == reasonSuperseded {
 			superseded++
 		}
@@ -335,7 +306,7 @@ func (m *Manager) recordInvalidation(reason string) {
 	// each one whose session the storm then invalidated burned a daily slot.
 	// The trigger list is pruned to the window above, so its length is the
 	// count.
-	burned := len(m.reAdmitTriggers)
+	burned := len(m.snap.reAdmitTriggers)
 	m.mu.Unlock()
 
 	slog.Info("session re-admit storm",
@@ -343,6 +314,39 @@ func (m *Manager) recordInvalidation(reason string) {
 		"duration_ms", duration,
 		"superseded", superseded,
 		"burned_slots", burned)
+}
+
+// releaseHeldSlotForTarget ends the cached session when it is bound to a
+// different model than the target the refresh will admit (session redesign):
+// a live switch must DELETE the old slot before POSTing the new one,
+// otherwise the old row holds the account's session until expiry.
+// No-op when target == held, the cache is empty, or the session is not
+// usable. Best-effort: a failed DELETE is logged, not fatal (upstream may
+// already consider it gone).
+func (m *Manager) releaseHeldSlotForTarget(ctx context.Context, targetModel string) {
+	m.mu.Lock()
+	held := m.state
+	if held == nil || held.instanceID == "" || held.model == "" || held.model == targetModel || held.status != "active" || !sessionUsable(held) {
+		m.mu.Unlock()
+		return
+	}
+	oldID := held.instanceID
+	heldModel := held.model
+	m.mu.Unlock()
+	// DELETE first; only clear the cache when it actually succeeded — a
+	// failed release (401/transport) must keep the cached state so the
+	// caller's error path (dead-token/cleanup) can still end the session.
+	if err := m.client.EndSession(ctx); err != nil {
+		slog.Warn("session: EndSession failed on model switch (state kept)", "instance_id", oldID, "held_model", heldModel, "err", err)
+		return
+	}
+	m.mu.Lock()
+	// Re-check: another path may have changed the state since we unlocked.
+	if m.state != nil && m.state.instanceID == oldID {
+		m.commit(nil)
+	}
+	m.mu.Unlock()
+	slog.Info("session: slot released on model switch", "instance_id", oldID, "held_model", heldModel, "requested_model", targetModel)
 }
 
 // refresh runs the create/poll status loop, updating cached state, until the
@@ -386,6 +390,13 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			// the store. Re-adopting a persisted slot here would pin the
 			// previous model's session on every refresh; always create for
 			// the requested model (baseline behavior).
+			// Session redesign: release the held slot when it is bound to a
+			// DIFFERENT final target — a live switch must not leak the old
+			// session row upstream (it would block new-model admissions
+			// until expiry). The check runs with the RESOLVED targetModel
+			// (model_unavailable already fell back), so a fallback that
+			// lands on the held model does not churn a release+recreate.
+			m.releaseHeldSlotForTarget(ctx, targetModel)
 			st, err = m.adoptOrCreate(ctx, targetModel)
 		}
 		if err != nil {
@@ -423,7 +434,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 				instanceID:         st.InstanceID,
 				model:              model,
 				expiresAt:          st.ExpiresAt,
-				gracePeriodEndsAt:  st.ExpiresAt.Add(graceWindow),
+				gracePeriodEndsAt:  graceEndFromState(st.ExpiresAt, st.GracePeriodEndsAt),
 				countryCode:        st.CountryCode,
 				countryBlockReason: st.CountryBlockReason,
 				activeUsersForIP:   st.ActiveUsersForIP,
@@ -432,6 +443,14 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 				quotaByModel:       st.RateLimitsByModel,
 				glmPromo:           st.GlmPromo,
 				standing:           st.Standing,
+				accessTier:         st.AccessTier,
+				remainingMs:        st.RemainingMs,
+				referral:           st.Referral,
+				freebucks:          st.Freebucks,
+				freeWindows:        st.FreeWindows,
+				subscription:       st.Subscription,
+				upgradeHint:        st.UpgradeHint,
+				serverMessage:      st.Message,
 			})
 			// Issue #60: the successful admission refreshes the probe cache
 			// window — subsequent session poll GETs within the TTL are
@@ -471,18 +490,20 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 				pollAt = time.Now().Add(wait)
 			}
 			model := st.Model
-			if model == "" {
-				model = targetModel
-			}
 			m.mu.Lock()
 			m.commit(&cachedState{
-				status:     "queued",
-				instanceID: st.InstanceID,
-				model:      model,
-				position:   st.Position,
-				queueDepth: st.QueueDepth,
-				pollAt:     pollAt,
-				glmPromo:   st.GlmPromo,
+				status:       "queued",
+				instanceID:   st.InstanceID,
+				model:        model,
+				position:     st.Position,
+				queueDepth:   st.QueueDepth,
+				pollAt:       pollAt,
+				glmPromo:     st.GlmPromo,
+				accessTier:   st.AccessTier,
+				referral:     st.Referral,
+				freebucks:    st.Freebucks,
+				freeWindows:  st.FreeWindows,
+				subscription: st.Subscription,
 			})
 			m.mu.Unlock()
 			slog.Debug("session queued", "instance_id", st.InstanceID, "model", model,
@@ -565,9 +586,6 @@ func (m *Manager) EndSession(ctx context.Context) error {
 // lose the entry) and the entry survives the DELETE: a restart resumes via
 // pollPersisted, which re-adopts the slot when the DELETE did not take
 // effect upstream, or drops the dead entry and re-POSTs fresh when it did.
-// Issue #155: when persistence is enabled and the cached session is active
-// on a scarce model with remaining time >0, Shutdown SKIPS the upstream
-// DELETE and keeps the store entry for restart resume via pollPersisted.
 // Runs are FINISHed separately by the run manager.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	if m.store == nil {
@@ -577,14 +595,9 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	instanceID := ""
-	scarceKeep := false
 	var snap *cachedState
 	if m.state != nil && m.state.instanceID != "" {
 		instanceID = m.state.instanceID
-		// Issue #155: keep scarce active sessions with remaining lifetime.
-		if m.state.status == "active" && m.scarce[m.state.model] && !m.state.expiresAt.IsZero() && time.Until(m.state.expiresAt) > 0 {
-			scarceKeep = true
-		}
 		// Snapshot under the lock; the flush + verification re-read below
 		// run outside it (review 2026-08-31 P3): both are disk I/O and
 		// must not block concurrent manager users.
@@ -611,8 +624,12 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	if instanceID == "" {
 		return nil
 	}
-	if scarceKeep {
-		slog.Debug("session kept on shutdown (scarce)", "instance_id", shortInstance(instanceID))
+	// Session redesign: with persistence enabled (SESSION_PERSIST, now the
+	// default), keep an ACTIVE session alive across shutdown — the flushed
+	// store entry lets pollPersisted resume it on restart instead of burning
+	// a fresh premium slot. Only DELETE when persistence is off.
+	if snap != nil && snap.status == "active" && sessionUsable(snap) {
+		slog.Info("session kept on shutdown (persistence, restart resumes)", "instance_id", shortInstance(instanceID), "model", snap.model)
 		return nil
 	}
 	// Release the upstream slot directly (not EndSession): EndSession's CAS

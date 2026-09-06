@@ -19,16 +19,27 @@ type tokensData struct {
 	TokenCount       int               `json:"token_count"`
 	Tokens           []tokenDetail     `json:"tokens"`
 	HasTokens        bool              `json:"has_tokens"`
+	// UnmeteredModels is the modelcat-derived unlimited-session rows
+	// (issue #342); the SPA falls back to its static list when absent.
+	UnmeteredModels   []unmeteredRow `json:"unmetered_models,omitempty"`
+	TokenRotation     string         `json:"token_rotation,omitempty"`
+	RateLimitFailover bool           `json:"rate_limit_failover"`
+	MaturityEnabled   bool           `json:"maturity_enabled"`
 }
 
 type tokenDetail struct {
 	tokenCard
-	SessionInstance         string                     `json:"session_instance"`
-	SessionModel            string                     `json:"session_model"`
-	SessionRemainingSeconds int64                      `json:"session_remaining_seconds"`
-	Quota                   []quotaRow                 `json:"quota"`
-	HasQuota                bool                       `json:"has_quota"`
-	PremiumQuota            *pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
+	SessionInstance         string     `json:"session_instance"`
+	SessionModel            string     `json:"session_model"`
+	SessionRemainingSeconds int64      `json:"session_remaining_seconds"`
+	SessionExpiresAt        string     `json:"session_expires_at,omitempty"`
+	Quota                   []quotaRow `json:"quota"`
+	HasQuota                bool       `json:"has_quota"`
+	// QuotaStale labels quota restored from the on-disk session entry
+	// after a restart; QuotaSavedAt is when it was last polled.
+	QuotaStale   bool                       `json:"quota_stale,omitempty"`
+	QuotaSavedAt string                     `json:"quota_saved_at,omitempty"`
+	PremiumQuota *pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
 }
 
 type quotaRow struct {
@@ -58,21 +69,37 @@ func utcAttr(t time.Time) string {
 
 func (d *Dashboard) tokensData() tokensData {
 	cfg := d.cfg()
-	td := tokensData{BridgeTokens: d.pool.BridgeCount(), TokenCount: d.pool.TokenCount(), Mode: cfg.EffectiveMode()}
-	td.InBridge = td.Mode == "bridge"
-	// Hybrid mode shows BOTH surfaces: the pooled table and the live bridge
+	mode := cfg.EffectiveMode()
+	td := tokensData{
+		BridgeTokens:      d.pool.BridgeCount(),
+		TokenCount:        d.pool.TokenCount(),
+		Mode:              mode,
+		InBridge:          mode == "bridge",
+		TokenRotation:     cfg.TokenRotation,
+		RateLimitFailover: cfg.RateLimitFailover,
+		MaturityEnabled:   cfg.MaturityEnabled,
+	}
 	// client cards. Pure bridge hides the (empty) pooled table; pure pooled
 	// has no bridge cards.
 	td.ShowBridge = td.Mode == "bridge" || td.Mode == "hybrid"
 	for _, t := range d.pool.Snapshot() {
 		detail := tokenDetail{
 			tokenCard:               cardFromSnapshot(t),
-			SessionInstance:         shortID(t.SessionInstanceID),
+			SessionInstance:         t.SessionInstanceID,
 			SessionModel:            t.SessionModel,
 			SessionRemainingSeconds: t.SessionRemainingSeconds,
+			SessionExpiresAt:        utcAttr(t.SessionExpiresAt),
+			QuotaStale:              t.QuotaStale,
+			QuotaSavedAt:            utcAttr(t.QuotaSavedAt),
 			PremiumQuota:            t.PremiumQuota,
 		}
 		for model, q := range t.QuotaByModel {
+			if !modelcat.IsServed(model) {
+				// Only reverse-engineer and display models the official CLI
+				// truly serves. Unserved web models in upstream's ledger
+				// (kimi-k3-eco, muse-spark, luna-es) are ignored.
+				continue
+			}
 			rem := float64(0)
 			if q.Limit > 0 {
 				rem = q.Limit - q.RecentCount
@@ -110,8 +137,9 @@ func (d *Dashboard) tokensData() tokensData {
 			}
 			detail.Quota = append(detail.Quota, row)
 		}
+
 		// Scarcity/promo isolation (issue #178): the upstream glmPromo block
-		// ({dailySessions, endsAt}) grants a referral quota on scarce models
+		// ({dailySessions, endsAt}) grants a referral quota on limited models
 		// like GLM/Luna/Pro. Synthesize a dashboard row for z-ai/glm-5.2 so
 		// the promo is visible even though no per-model quota was admitted;
 		// a real rateLimitsByModel entry for the model wins over the promo.
@@ -156,6 +184,7 @@ func (d *Dashboard) tokensData() tokensData {
 		td.Tokens = append(td.Tokens, detail)
 	}
 	td.HasTokens = len(td.Tokens) > 0
+	td.UnmeteredModels = unmeteredModels(d.reg)
 	// Bridge token cards (#187): live snapshots of bridge-mode entries.
 	if td.ShowBridge {
 		spendLimit := cfg.MaxSpendPerDay
@@ -164,4 +193,95 @@ func (d *Dashboard) tokensData() tokensData {
 		}
 	}
 	return td
+}
+
+// tokenLiveDetail is the hot-poll subset of tokenDetail (issue #322): the
+// live card plus session and quota rows. Account-stable card fields
+// (email, account_id, daily_limit, standing_*, referral_*) ride the
+// once-per-mount full fetch; the SPA merges them back by index.
+type tokenLiveDetail struct {
+	tokenLiveCard
+	SessionInstance         string                     `json:"session_instance"`
+	SessionModel            string                     `json:"session_model"`
+	SessionRemainingSeconds int64                      `json:"session_remaining_seconds"`
+	SessionExpiresAt        string                     `json:"session_expires_at,omitempty"`
+	Quota                   []quotaRow                 `json:"quota"`
+	HasQuota                bool                       `json:"has_quota"`
+	QuotaStale              bool                       `json:"quota_stale,omitempty"`
+	QuotaSavedAt            string                     `json:"quota_saved_at,omitempty"`
+	PremiumQuota            *pool.PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
+}
+
+// tokensLiveData is the hot-poll subset of tokensData: live numbers only.
+type tokensLiveData struct {
+	BridgeTokens      int               `json:"bridge_tokens"`
+	BridgeTokenCards  []bridgeTokenCard `json:"bridge_token_cards,omitempty"`
+	TokenCount        int               `json:"token_count"`
+	Tokens            []tokenLiveDetail `json:"tokens"`
+	HasTokens         bool              `json:"has_tokens"`
+	TokenRotation     string            `json:"token_rotation,omitempty"`
+	RateLimitFailover bool              `json:"rate_limit_failover"`
+	MaturityEnabled   bool              `json:"maturity_enabled"`
+}
+
+// tokensLiveData builds the 10s hot-poll payload by stripping the
+// account-stable card fields off the full snapshot. Quota-row synthesis
+// stays single-sourced in tokensData; this only projects.
+func (d *Dashboard) tokensLiveData() tokensLiveData {
+	full := d.tokensData()
+	live := tokensLiveData{
+		BridgeTokens:      full.BridgeTokens,
+		BridgeTokenCards:  full.BridgeTokenCards,
+		TokenCount:        full.TokenCount,
+		HasTokens:         full.HasTokens,
+		TokenRotation:     full.TokenRotation,
+		RateLimitFailover: full.RateLimitFailover,
+		MaturityEnabled:   full.MaturityEnabled,
+	}
+	for _, tok := range full.Tokens {
+		c := tok.tokenCard
+		live.Tokens = append(live.Tokens, tokenLiveDetail{
+			tokenLiveCard: tokenLiveCard{
+				Index:                  c.Index,
+				SessionStatus:          c.SessionStatus,
+				QueuePosition:          c.QueuePosition,
+				QueueDepth:             c.QueueDepth,
+				ActiveRuns:             c.ActiveRuns,
+				Requests:               c.Requests,
+				Messages24h:            c.Messages24h,
+				UsagePct:               c.UsagePct,
+				RequestsPerMinute:      c.RequestsPerMinute,
+				RequestsPerDay:         c.RequestsPerDay,
+				RequestsPerMinuteLimit: c.RequestsPerMinuteLimit,
+				RequestsPerDayLimit:    c.RequestsPerDayLimit,
+				RequestsPerDayResetIn:  c.RequestsPerDayResetIn,
+				RiskLevel:              c.RiskLevel,
+				CooldownActive:         c.CooldownActive,
+				CooldownUntil:          c.CooldownUntil,
+				Locked:                 c.Locked,
+				BanType:                c.BanType,
+				BannedUntil:            c.BannedUntil,
+				TransientRetries:       c.TransientRetries,
+				AllowlistSkips:         c.AllowlistSkips,
+				Streak:                 c.Streak,
+				TodayUsed:              c.TodayUsed,
+				LastUsage:              c.LastUsage,
+				StreakUpdatedAt:        c.StreakUpdatedAt,
+				Freebucks:              c.Freebucks,
+				FreeWindows:            c.FreeWindows,
+				Subscription:           c.Subscription,
+				Maturity:               c.Maturity,
+			},
+			SessionInstance:         tok.SessionInstance,
+			SessionModel:            tok.SessionModel,
+			SessionRemainingSeconds: tok.SessionRemainingSeconds,
+			SessionExpiresAt:        tok.SessionExpiresAt,
+			Quota:                   tok.Quota,
+			HasQuota:                tok.HasQuota,
+			QuotaStale:              tok.QuotaStale,
+			QuotaSavedAt:            tok.QuotaSavedAt,
+			PremiumQuota:            tok.PremiumQuota,
+		})
+	}
+	return live
 }

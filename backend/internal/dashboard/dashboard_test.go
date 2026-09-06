@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -122,8 +123,8 @@ func TestLoginPageRendersError(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &data); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
-	if data["error"] != "Invalid admin token." {
-		t.Errorf("error = %v, want 'Invalid admin token.'", data["error"])
+	if data["message"] != "Invalid admin token." {
+		t.Errorf("message = %v, want 'Invalid admin token.'", data["message"])
 	}
 }
 
@@ -307,8 +308,8 @@ func TestRestrictedPageRenders(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &data); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
-	if data["error"] != "blocked" {
-		t.Errorf("error = %v, want 'blocked'", data["error"])
+	if data["message"] != "blocked" {
+		t.Errorf("message = %v, want 'blocked'", data["message"])
 	}
 }
 
@@ -371,9 +372,6 @@ func TestTracesPageRenders(t *testing.T) {
 // /admin/index.html request resolves the real file (no /admin double-nesting
 // 404), and any other /admin/* path falls back to index.html.
 func TestServeSPAFallsBackToIndex(t *testing.T) {
-	if !dashboard.HasEmbeddedSPA {
-		t.Skip("SPA not compiled in — build with -tags dashboard")
-	}
 	d := &dashboard.Dashboard{}
 
 	// /admin/index.html must serve the SPA HTML, not a FileServer 404 caused
@@ -395,6 +393,53 @@ func TestServeSPAFallsBackToIndex(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "<html") && !strings.Contains(rec.Body.String(), "<!doctype html") {
 		t.Errorf("GET /admin/overview body is not SPA HTML: %.120q", rec.Body.String())
+	}
+}
+
+// TestServeSPACSPHeader pins the security header on every SPA response:
+// both real dist assets and the index.html fallback must carry the CSP
+// (frame-ancestors 'none' blocks clickjacking of the admin panel).
+func TestServeSPACSPHeader(t *testing.T) {
+	d := &dashboard.Dashboard{}
+
+	for _, p := range []string{"/admin/index.html", "/admin/overview"} {
+		rec := httptest.NewRecorder()
+		d.ServeSPA(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		csp := rec.Header().Get("Content-Security-Policy")
+		if csp == "" {
+			t.Fatalf("GET %s: missing Content-Security-Policy header", p)
+		}
+		for _, want := range []string{"default-src 'self'", "frame-ancestors 'none'", "script-src 'self'", "connect-src 'self'"} {
+			if !strings.Contains(csp, want) {
+				t.Errorf("GET %s CSP %q missing %q", p, csp, want)
+			}
+		}
+	}
+}
+
+// TestServeSPACacheControl pins the cache policy: index.html (direct and
+// fallback) revalidates (no-cache), while Vite content-hashed files under
+// assets/ are served as immutable (#312).
+func TestServeSPACacheControl(t *testing.T) {
+	d := &dashboard.Dashboard{}
+
+	for _, p := range []string{"/admin/index.html", "/admin/overview"} {
+		rec := httptest.NewRecorder()
+		d.ServeSPA(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+			t.Errorf("GET %s Cache-Control = %q, want no-cache", p, cc)
+		}
+	}
+
+	assets, err := fs.Glob(dashboard.DistFS(), "assets/*.js")
+	if err != nil || len(assets) == 0 {
+		t.Fatalf("no hashed JS asset in embedded dist: %v (%d matches)", err, len(assets))
+	}
+	rec := httptest.NewRecorder()
+	d.ServeSPA(rec, httptest.NewRequest(http.MethodGet, "/admin/"+assets[0], nil))
+	cc := rec.Header().Get("Cache-Control")
+	if !strings.Contains(cc, "immutable") || !strings.Contains(cc, "max-age=31536000") {
+		t.Errorf("hashed asset Cache-Control = %q, want public, max-age=31536000, immutable", cc)
 	}
 }
 
@@ -564,7 +609,7 @@ func TestTokensPageQuotaRows(t *testing.T) {
 
 // TestTokensDataGlmPromoSynthesis pins the synthesized z-ai/glm-5.2 promo
 // quota row (issue #178): the upstream glmPromo block ({dailySessions,
-// endsAt}) grants a referral quota on scarce models like GLM, so the
+// endsAt}) grants a referral quota on limited models like GLM, so the
 // dashboard renders it even when no rateLimitsByModel entry was admitted.
 func TestTokensDataGlmPromoSynthesis(t *testing.T) {
 	ts := quotaPageServer(t, func(m *testutil.MockUpstream) {

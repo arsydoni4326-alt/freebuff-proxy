@@ -1,40 +1,98 @@
 <script>
-  import { onDestroy } from 'svelte';
+  import { onMount } from "svelte";
+  import { LogIn, Plus, ExternalLink, RefreshCw, Lock, Unlock } from "@lucide/svelte";
+  import Button from "../components/Button.svelte";
+  import Card from "../components/Card.svelte";
+  import Alert from "../components/Alert.svelte";
+  import CopyButton from "../components/CopyButton.svelte";
+  import PageHeader from "../components/PageHeader.svelte";
+  import StatusBadge from "../components/StatusBadge.svelte";
+  import EmptyState from "../components/EmptyState.svelte";
+  import BridgeTokenCard from "../components/BridgeTokenCard.svelte";
+  import ReferralBanner from "../components/ReferralBanner.svelte";
+  import TokenTable from "./tokens/TokenTable.svelte";
+  import ToggleSwitch from "../components/ToggleSwitch.svelte";
+  import { fetchAPI, postAPI, postForm, csrfHeader } from "../api/client.js";
+  import { adminApi, adminActions, tokenActions } from "../api/paths.js";
+  import { isDevToolsEnabled } from "../utils/devtools.js";
   import {
-    ChevronDown,
-    ChevronRight,
-    LogIn,
-    Lock,
-    Plus,
-    ExternalLink,
-    RefreshCw,
-    Trash2,
-    Unlock,
-  } from '@lucide/svelte';
-  import Button from '../components/Button.svelte';
-  import Card from '../components/Card.svelte';
-  import Field from '../components/Field.svelte';
-  import Alert from '../components/Alert.svelte';
-  import EmptyState from '../components/EmptyState.svelte';
-  import CopyButton from '../components/CopyButton.svelte';
-  import PageHeader from '../components/PageHeader.svelte';
-  import StatusBadge from '../components/StatusBadge.svelte';
-  import BridgeTokenCard from '../components/BridgeTokenCard.svelte';
-  import { fetchAPI, postAPI, csrfHeader } from '../api/client.js';
-  import { adminApi, adminActions } from '../api/paths.js';
-  import { usePolling } from '../utils/polling.js';
-  import { formatLocalDate } from '../utils/format.js';
-  import { tr } from '../i18n.js';
-
+    tokensData as tokensStore,
+    tokensError as tokensErrorStore,
+    ensureTokensStore,
+    refreshTokens,
+  } from "../stores/tokens.js";
+  import { getEnvValue, setEnvValue } from "../utils/env.js";
+  import { tr } from "../i18n.js";
+  import { spawnIntent, intentAskLine } from "../utils/freebucks.js";
+  import { confirmAction } from "../stores/confirm.js";
   let data = $state(null);
   let loading = $state(true);
-  let error = $state('');
+  let error = $state("");
+  let unsubStore = null;
+  let unsubErr = null;
 
   // Add-token form
-  let newToken = $state('');
+  let newToken = $state("");
   let adding = $state(false);
-  let actionMessage = $state('');
+  let actionMessage = $state("");
   let actionOK = $state(true);
+  // Dev Tools surfaces (per-token session spawn toolbar) are hidden unless
+  // the operator enables DEVTOOLS_ENABLED=true in .env (same gate as the
+  // sidebar's Dev Tools tab and the server-side DevTools route).
+  let devToolsEnabled = $state(false);
+  // Token rotation strategy (TOKEN_ROTATION in .env)
+  let tokenRotation = $state("drain");
+  let savingRotation = $state(false);
+  // Auto failover to another token on rate limit (RATE_LIMIT_FAILOVER in .env)
+  let rateLimitFailover = $state(true);
+  let savingFailover = $state(false);
+  async function setTokenRotation(newMode) {
+    if (savingRotation || tokenRotation === newMode) return;
+    savingRotation = true;
+    try {
+      const cfgRes = await fetchAPI(adminApi.config);
+      const envContent = cfgRes?.env_content || "";
+      const newContent = setEnvValue(envContent, "TOKEN_ROTATION", newMode);
+      const save = await postForm(adminActions.configSave, {
+        content: newContent,
+      });
+      if (save.ok) {
+        tokenRotation = newMode;
+        refreshTokens();
+      }
+    } catch (e) {
+      console.warn("Failed to update token rotation", e);
+    } finally {
+      savingRotation = false;
+    }
+  }
+
+  async function toggleRateLimitFailover(next) {
+    if (savingFailover) return;
+    savingFailover = true;
+    const nextVal = typeof next === "boolean" ? next : !rateLimitFailover;
+    try {
+      const cfgRes = await fetchAPI(adminApi.config);
+      const envContent = cfgRes?.env_content || "";
+      const newContent = setEnvValue(
+        envContent,
+        "RATE_LIMIT_FAILOVER",
+        String(nextVal),
+      );
+      const save = await postForm(adminActions.configSave, {
+        content: newContent,
+      });
+      if (save.ok) {
+        rateLimitFailover = nextVal;
+        refreshTokens();
+      }
+    } catch (e) {
+      console.warn("Failed to update rate limit failover", e);
+    } finally {
+      savingFailover = false;
+    }
+  }
+
   // Device login flow
   let oauthStarting = $state(false);
   let oauthStatus = $state(null);
@@ -53,6 +111,7 @@
   let expandedToken = $state(null);
   let actionPending = $state(false);
   let now = $state(Date.now());
+  let spawnModels = $state({});
   let quotaModelFilter = $state('');
 
   // Derive unique quota models across all tokens for the filter dropdown
@@ -78,61 +137,30 @@
   }
 
   const tokenValid = $derived(
-    newToken.trim() === ''
+    newToken.trim() === ""
       ? null
-      : /^cb_[A-Za-z0-9_-]{20,}$/.test(newToken.trim())
+      : !newToken.trim().toLowerCase().startsWith("bearer ") &&
+          !/[,\s]/.test(newToken.trim()) &&
+          newToken.trim().length >= 10,
   );
 
-  function banBadge(token) {
-    if (token.ban_type === 'hard') {
-      return { label: $tr('banned — appeal required'), tone: 'critical', pulse: true };
+  function applyTokens(v) {
+    if (!v) return;
+    data = v;
+    if (v.token_rotation) {
+      tokenRotation = v.token_rotation;
     }
-    if (token.ban_type === 'temporary') {
-      const until = formatLocalDate(token.banned_until);
-      return { label: until ? $tr('banned until {time}', { time: until }) : $tr('banned (temporary)'), tone: 'bad' };
+    if (v.rate_limit_failover !== undefined) {
+      rateLimitFailover = v.rate_limit_failover;
     }
-    return null;
-  }
-
-  function statusFor(token) {
-    const ban = banBadge(token);
-    if (ban) return ban;
-    if (token.locked) return { label: $tr('locked'), tone: 'warn' };
-    if (token.cooldown_active) return { label: $tr('cooldown'), tone: 'warn' };
-    const status = token.session_status || '';
-    if (status === 'active') return { label: $tr('leased'), tone: 'good', pulse: true };
-    if (status === 'queued') return { label: $tr('queued'), tone: 'info' };
-    if (status === 'banned') return { label: $tr('banned'), tone: 'bad' };
-    return { label: $tr('idle'), tone: 'idle' };
-  }
-
-  function cooldownLabel(token) {
-    if (!token.cooldown_active || !token.cooldown_until) return '—';
-    const milliseconds = new Date(token.cooldown_until).getTime() - now;
-    if (milliseconds <= 0) return 'expiring';
-    const seconds = Math.floor(milliseconds / 1000);
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-    return `${seconds}s`;
-  }
-
-  function cooldownTone(token) {
-    if (!token.cooldown_until) return 'default';
-    const milliseconds = new Date(token.cooldown_until).getTime() - now;
-    return milliseconds >= 0 && milliseconds < 5 * 60_000 ? 'warn' : 'default';
-  }
-
-  async function fetchData() {
-    try {
-      data = await fetchAPI(adminApi.tokens);
-      error = '';
-    } catch (e) {
-      error = e.message || $tr('Failed to fetch tokens');
-    } finally {
-      loading = false;
-    }
+    // Seed the per-token spawn-model map so no TokenCard binding ever sees
+    // with a fallback (props_invalid_value) and unmounts the table.
+    (v?.tokens ?? []).forEach((t, i) => {
+      const idx = t.index ?? i;
+      if (!(idx in spawnModels)) spawnModels[idx] = "";
+    });
+    error = "";
+    loading = false;
   }
 
   async function addToken(e) {
@@ -140,72 +168,214 @@
     if (!newToken.trim() || tokenValid === false || adding) return;
     adding = true;
     try {
-      const result = await postAPI(adminActions.tokenAdd, { token: newToken.trim() });
+      const result = await postAPI(adminActions.tokenAdd, {
+        token: newToken.trim(),
+      });
       actionOK = result.ok !== false;
-      actionMessage = result.message || (actionOK ? $tr('Token added successfully') : $tr('Failed to add token'));
+      actionMessage =
+        result.message ||
+        (actionOK
+          ? $tr("Token added successfully")
+          : $tr("Failed to add token"));
       if (actionOK) {
-        newToken = '';
-        fetchData();
+        newToken = "";
+        refreshTokens();
       }
     } catch (e) {
       actionOK = false;
-      actionMessage = e.message || $tr('Network error adding token');
+      actionMessage = e.message || $tr("Network error adding token");
     } finally {
       adding = false;
     }
   }
 
-  async function triggerAction(url, body, confirmMsg) {
-    if (confirmMsg && !confirm(confirmMsg)) return;
+  async function triggerAction(
+    url,
+    body,
+    confirmMsg,
+    title,
+    tone = "warn",
+    confirmText = "",
+  ) {
+    if (confirmMsg) {
+      const ok = await confirmAction({
+        title: title || $tr("Confirm Action"),
+        message: confirmMsg,
+        confirmText: confirmText || $tr("Confirm"),
+        tone,
+      });
+      if (!ok) return;
+    }
     actionPending = true;
     try {
       const result = await postAPI(url, body || undefined);
       actionOK = result.ok !== false;
-      actionMessage = result.message || (actionOK ? $tr('Action completed') : $tr('Action failed'));
-      fetchData();
+      actionMessage =
+        result.message ||
+        (actionOK ? $tr("Action completed") : $tr("Action failed"));
+      refreshTokens();
     } catch (e) {
       actionOK = false;
-      actionMessage = e.message || $tr('Network error executing action');
+      actionMessage = e.message || $tr("Network error executing action");
     } finally {
       actionPending = false;
     }
   }
 
+  function handleTokenAction(token, idx, action) {
+    switch (action) {
+      case "clear":
+        return triggerAction(
+          tokenActions.unlock(idx),
+          {},
+          $tr(
+            "Clear cooldown for account {idx}? Only do this if the lock is stale.",
+            { idx: idx + 1 },
+          ),
+          $tr("Clear Cooldown"),
+          "warn",
+          $tr("Clear"),
+        );
+      case "unlock":
+        return triggerAction(
+          tokenActions.unlockLock(idx),
+          {},
+          $tr("Unlock account {idx}? It will rejoin the active rotation.", {
+            idx: idx + 1,
+          }),
+          $tr("Unlock Token"),
+          "neutral",
+          $tr("Unlock"),
+        );
+      case "lock":
+        return triggerAction(
+          tokenActions.lock(idx),
+          {},
+          $tr(
+            "Lock account {idx}? It will be excluded from rotation until unlocked.",
+            { idx: idx + 1 },
+          ),
+          $tr("Lock Token"),
+          "warn",
+          $tr("Lock"),
+        );
+      case "remove":
+        return triggerAction(
+          adminActions.tokenRemoveSpecific,
+          { token: token.token_value ?? idx },
+          $tr(
+            "Remove account {idx} from the pool and .env? The account must be re-added to use it again.",
+            { idx: idx + 1 },
+          ),
+          $tr("Remove Token"),
+          "danger",
+          $tr("Remove"),
+        );
+      default:
+        return;
+    }
+  }
+  function handleSpawn(idx, model) {
+    const m = model || "mimo/mimo-v2.5";
+    // Confirm-intent line (issue #350 — mirrors askLineFor): warn when the
+    // pick spends wallet Freebucks or ends the live session.
+    const token = data?.tokens?.find?.((t) => t.index === idx);
+    const intent = spawnIntent(token, m);
+    const askLine = intentAskLine(intent, token?.session_model);
+    triggerAction(
+      tokenActions.session(idx),
+      { model: m },
+      $tr("Create upstream session for account #{idx} on {model}?", {
+        idx: idx + 1,
+        model: m,
+      }) + (askLine ? " " + askLine : ""),
+    );
+  }
+
+  function handleRefresh(idx, action) {
+    if (action === "probe") {
+      return triggerAction(
+        tokenActions.test(idx),
+        {},
+        $tr("Probe account #{idx} against upstream?", { idx: idx + 1 }),
+      );
+    }
+    return triggerAction(
+      tokenActions.finish(idx),
+      {},
+      $tr("Finish active runs on account #{idx}?", { idx: idx + 1 }),
+    );
+  }
+  function handleDropSession(idx) {
+    return triggerAction(
+      tokenActions.dropSession(idx),
+      {},
+      $tr(
+        "Drop active session on account #{idx}? This ends the current session upstream (e.g. luna) so the next request admits fresh for the model you want. Use this when you need to switch models immediately.",
+        { idx: idx + 1 },
+      ),
+    );
+  }
+
+  function handleSwap(from, to) {
+    triggerAction(adminActions.tokenSwap, { from, to });
+  }
+
+  function handleMove(from, to) {
+    if (from === to) return;
+    triggerAction(adminActions.tokenSwap, { from, to, action: "move" });
+  }
+
   async function startOAuthLogin() {
     oauthStarting = true;
-    oauthStatus = { message: $tr('Starting headless login flow…'), type: 'info' };
+    oauthStatus = {
+      message: $tr("Starting headless login flow…"),
+      type: "info",
+    };
 
     try {
-      const res = await fetch(adminActions.loginStart, { method: 'POST', headers: csrfHeader('POST') });
+      const res = await fetch(adminActions.loginStart, {
+        method: "POST",
+        headers: csrfHeader("POST"),
+      });
       const result = await res.json();
 
       if (result.fingerprint && result.login_url) {
         oauthStatus = {
           loginUrl: result.login_url,
           fingerprint: result.fingerprint,
-          message: $tr('Open this URL in your browser to sign in:'),
-          type: 'pending',
+          message: $tr("Open this URL in your browser to sign in:"),
+          type: "pending",
         };
 
         clearInterval(oauthTimer);
         oauthTimer = setInterval(async () => {
           try {
-            const pollRes = await fetch(`${adminApi.loginStatus}?fingerprint=${encodeURIComponent(result.fingerprint)}`);
+            const pollRes = await fetch(
+              `${adminApi.loginStatus}?fingerprint=${encodeURIComponent(result.fingerprint)}`,
+            );
             const pollData = await pollRes.json();
 
-            if (pollData.status === 'completed') {
+            if (pollData.status === "completed") {
               clearInterval(oauthTimer);
               oauthStatus = {
-                message: $tr('Token #{idx} added to pool and saved to .env.', { idx: pollData.token_index }),
-                type: 'success',
+                message: $tr(
+                  "Account #{idx} added to pool and saved to .env.",
+                  {
+                    idx: pollData.token_index + 1,
+                  },
+                ),
+                type: "success",
               };
               oauthStarting = false;
-              fetchData();
-            } else if (pollData.status === 'error') {
+              refreshTokens();
+            } else if (pollData.status === "error") {
               clearInterval(oauthTimer);
               oauthStatus = {
-                message: $tr('Login failed: {message}', { message: pollData.message || $tr('unknown error') }),
-                type: 'error',
+                message: $tr("Login failed: {message}", {
+                  message: pollData.message || $tr("unknown error"),
+                }),
+                type: "error",
               };
               oauthStarting = false;
             }
@@ -215,13 +385,16 @@
         }, 3000);
       } else {
         oauthStatus = {
-          message: result.message || $tr('Failed to start login wizard.'),
-          type: 'error',
+          message: result.message || $tr("Failed to start login wizard."),
+          type: "error",
         };
         oauthStarting = false;
       }
     } catch (e) {
-      oauthStatus = { message: $tr('Network error: {message}', { message: e.message }), type: 'error' };
+      oauthStatus = {
+        message: $tr("Network error: {message}", { message: e.message }),
+        type: "error",
+      };
       oauthStarting = false;
     }
   }
@@ -230,11 +403,61 @@
     expandedToken = expandedToken === idx ? null : idx;
   }
 
-  usePolling(fetchData, 10000);
-  const tick = setInterval(() => { now = Date.now(); }, 1000);
-  onDestroy(() => {
-    clearInterval(oauthTimer);
-    clearInterval(tick);
+  onMount(() => {
+    // One shared tokens store owns the /admin/api/tokens poll + SSE (issue
+    // #292); this page renders from the cached snapshot and refreshes the
+    // store after every mutation.
+    const release = ensureTokensStore();
+    unsubStore = tokensStore.subscribe(applyTokens);
+    unsubErr = tokensErrorStore.subscribe((err) => {
+      if (err) {
+        error = err;
+        loading = false;
+      }
+    });
+    const tick = setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    function onConfigSaved() {
+      refreshTokens();
+    }
+    window.addEventListener("fp-config-saved", onConfigSaved);
+    (async () => {
+      try {
+        const cfgRes = await fetchAPI(adminApi.config);
+        const envContent = cfgRes?.env_content || "";
+        devToolsEnabled = isDevToolsEnabled(envContent);
+
+        const rotVal = (
+          getEnvValue(envContent, "TOKEN_ROTATION") || "drain"
+        ).toLowerCase();
+        tokenRotation = [
+          "drain",
+          "round_robin",
+          "least_used",
+          "random",
+        ].includes(rotVal)
+          ? rotVal
+          : "drain";
+
+        const failoverVal = getEnvValue(envContent, "RATE_LIMIT_FAILOVER");
+        rateLimitFailover = failoverVal
+          ? failoverVal.toLowerCase() !== "false"
+          : true;
+      } catch {
+        devToolsEnabled = false;
+        tokenRotation = "drain";
+        rateLimitFailover = true;
+      }
+    })();
+    return () => {
+      release();
+      unsubStore?.();
+      unsubErr?.();
+      clearInterval(tick);
+      clearInterval(oauthTimer);
+      window.removeEventListener("fp-config-saved", onConfigSaved);
+    };
   });
 </script>
 
@@ -243,38 +466,56 @@
     <PageHeader title={$tr('Tokens')} description={$tr('Upstream credentials, device login, and per-token session quotas')} />
 
     {#if actionMessage}
-      <Alert tone={actionOK ? 'success' : 'error'} title={actionMessage} />
+      <Alert tone={actionOK ? "success" : "error"} title={actionMessage} />
     {/if}
     {#if error}
       <Alert tone="error" title={error}>
-        <Button variant="ghost" size="sm" onclick={() => { error = ''; fetchData(); }}>
-          {$tr('Retry')}
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={() => {
+            error = "";
+            refreshTokens();
+          }}
+        >
+          {$tr("Retry")}
         </Button>
       </Alert>
     {/if}
 
     {#if oauthStatus}
       <Alert
-        tone={oauthStatus.type === 'success' ? 'success' : oauthStatus.type === 'error' ? 'error' : 'info'}
+        tone={oauthStatus.type === "success"
+          ? "success"
+          : oauthStatus.type === "error"
+            ? "error"
+            : "info"}
         title={oauthStatus.message}
       >
         {#if oauthStatus.loginUrl}
           <div class="flex flex-col gap-2 mt-2">
             <div class="flex flex-wrap items-center gap-2">
-              <code class="fp-num text-xs break-all max-w-full">{oauthStatus.loginUrl}</code>
-              <CopyButton text={oauthStatus.loginUrl} label={$tr('Copy link')} />
+              <code class="fp-num text-xs break-all max-w-full"
+                >{oauthStatus.loginUrl}</code
+              >
+              <CopyButton
+                text={oauthStatus.loginUrl}
+                label={$tr("Copy link")}
+              />
               <a
                 href={oauthStatus.loginUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 class="inline-flex items-center gap-1 text-xs text-[var(--fp-accent)] hover:underline font-medium"
               >
-                {$tr('Open in New Tab')}
+                {$tr("Open in New Tab")}
                 <ExternalLink size={12} />
               </a>
             </div>
             <p class="text-xs text-[var(--fp-dim)]">
-              {$tr('Tip: To add a different FreeBuff account, open this link in an Incognito / Private window so your browser does not reuse an existing GitHub session.')}
+              {$tr(
+                "Tip: To add a different FreeBuff account, open this link in an Incognito / Private window so your browser does not reuse an existing GitHub session.",
+              )}
             </p>
           </div>
         {/if}
@@ -283,53 +524,70 @@
 
     <!-- Add token form -->
     <Card
-      title={$tr('Add Token to Pool')}
-      description={$tr('Paste a FreeBuff auth token (cb_…) to add it to the shared pool and save it to .env. Adding burns no quota.')}
+      title={$tr("Add Token to Pool")}
+      description={$tr(
+        "Paste a FreeBuff auth token (from credentials.json or CLI) to add it to the shared pool and save it to .env. Adding burns no quota.",
+      )}
     >
       {#snippet actions()}
         <Button
           variant="secondary"
-          size="sm"
           onclick={startOAuthLogin}
           disabled={oauthStarting}
         >
           {#if oauthStarting}
-            <RefreshCw size={14} class="animate-spin" />
-            <span>{$tr('Authorizing…')}</span>
+            <RefreshCw size={15} class="animate-spin" />
+            <span>{$tr("Authorizing…")}</span>
           {:else}
-            <LogIn size={14} />
-            <span>{$tr('Device Login')}</span>
+            <LogIn size={15} />
+            <span>{$tr("Device Login")}</span>
           {/if}
         </Button>
       {/snippet}
-      <form onsubmit={addToken} class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-        <div class="flex-1 w-full">
-          <Field
-            label={$tr('Token')}
-            hint={tokenValid === true ? $tr('Valid format') : tokenValid === false ? $tr('Invalid format') : $tr('Format: cb_…')}
-            error={tokenValid === false ? $tr('Token must match cb_… with at least 20 characters') : ''}
-            id="add-token-input"
-          >
-            <input
-              id="add-token-input"
-              type="text"
-              bind:value={newToken}
-              placeholder="cb_…"
-              autocomplete="off"
-              spellcheck="false"
-              class="fp-input fp-num w-full"
-            />
-          </Field>
-        </div>
-        <Button
-          type="submit"
-          variant="primary"
-          disabled={adding || !newToken.trim() || tokenValid === false}
-          loading={adding}
+      <form onsubmit={addToken} class="flex flex-col gap-1.5">
+        <label
+          for="add-token-input"
+          class="text-xs font-medium text-[var(--fp-muted)]"
+          >{$tr("Token")}</label
         >
-          <Plus size={16} />
-          <span>{$tr('Add Token')}</span>
-        </Button>
+        <div
+          class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5"
+        >
+          <input
+            id="add-token-input"
+            type="text"
+            bind:value={newToken}
+            placeholder="e.g. a94d808e-8a86-455b-80fb-a9df4422bfcb"
+            autocomplete="off"
+            spellcheck="false"
+            class="fp-input fp-num flex-1"
+          />
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={adding || !newToken.trim() || tokenValid === false}
+            loading={adding}
+            class="shrink-0"
+          >
+            <Plus size={15} />
+            <span>{$tr("Add Token")}</span>
+          </Button>
+        </div>
+        {#if tokenValid === false}
+          <p class="text-[11px] text-[var(--fp-error)]" role="alert">
+            {$tr(
+              "Token must be at least 10 characters and must not contain spaces, commas, or Bearer prefix",
+            )}
+          </p>
+        {:else}
+          <p class="text-[11px] text-[var(--fp-dim)]">
+            {tokenValid === true
+              ? $tr("Valid format")
+              : $tr(
+                  "UUID or session token from ~/.config/codebuff/credentials.json",
+                )}
+          </p>
+        {/if}
       </form>
     </Card>
 
@@ -475,275 +733,186 @@
 
     <!-- Token table -->
     <Card
-      title={$tr('Pool Tokens')}
-      description={data ? $tr('{count} pooled token(s)', { count: data.token_count || 0 }) : ''}
-      pad="none"
+      title={$tr("Token Rotation & Handling Policy")}
+      description={$tr(
+        "Strategy used by the gateway to select upstream accounts for model requests.",
+      )}
     >
-      {#if loading}
-        <div class="p-4 flex flex-col gap-3">
-          <div class="skeleton skeleton-text w-1/3"></div>
-          <div class="skeleton skeleton-line"></div>
-          <div class="skeleton skeleton-line"></div>
-          <div class="skeleton skeleton-line"></div>
-          <div class="skeleton skeleton-line"></div>
-        </div>
-      {:else if error}
-        <EmptyState
-          title={$tr('Could not load tokens')}
-          description={error}
+      {#snippet actions()}
+        <span
+          class="inline-flex items-center gap-1.5 font-mono text-xs text-[var(--fp-muted)]"
         >
-          {#snippet action()}
-            <Button variant="secondary" onclick={() => { error = ''; fetchData(); }}>
-              {$tr('Retry')}
-            </Button>
-          {/snippet}
-        </EmptyState>
-      {:else if !data?.tokens || data.tokens.length === 0}
-        <EmptyState
-          title={$tr('No tokens in pool')}
-          description={$tr('Add one above or use Device Login to generate credentials via browser.')}
-        />
-      {:else}
-        <table class="fp-table w-full">
-          <thead>
-            <tr>
-              <th class="w-8"></th>
-              <th>{$tr('Token')}</th>
-              <th>{$tr('Status')}</th>
-              <th>{$tr('Instance')}</th>
-              <th class="num">{$tr('Cooldown')}</th>
-              <th class="text-right">{$tr('Actions')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each data.tokens as token, i (token.index ?? i)}
-              {@const idx = token.index ?? i}
-              {@const st = statusFor(token)}
-              {@const isExpanded = expandedToken === idx}
-              <tr>
-                <td class="w-8">
-                  <button
-                    type="button"
-                    onclick={() => toggleExpand(idx)}
-                    aria-expanded={isExpanded}
-                    aria-label={isExpanded ? `Collapse quotas for token ${idx}` : `Expand quotas for token ${idx}`}
-                    class="inline-flex items-center justify-center w-6 h-6 text-[var(--fp-dim)] hover:text-[var(--fp-text)]"
-                  >
-                    {#if isExpanded}
-                      <ChevronDown size={16} />
-                    {:else}
-                      <ChevronRight size={16} />
-                    {/if}
-                  </button>
-                </td>
-                <td>
-                  <span class="fp-num text-xs text-[var(--fp-text)]">#{idx}</span>
-                </td>
-                <td>
-                  <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
-                </td>
-                <td>
-                  {#if token.session_instance}
-                    <span class="inline-flex items-center gap-2">
-                      <code class="fp-num text-xs text-[var(--fp-muted)]">{token.session_instance}</code>
-                      <CopyButton text={token.session_instance} label="Copy" />
-                    </span>
-                  {:else}
-                    <span class="text-xs text-[var(--fp-dim)]">—</span>
-                  {/if}
-                </td>
-                <td class="num">
-                  {#if token.cooldown_active}
-                    <span class="fp-num text-xs {cooldownTone(token) === 'warn' ? 'text-[var(--fp-warning)]' : 'text-[var(--fp-text)]'}">
-                      {cooldownLabel(token)}
-                    </span>
-                  {:else}
-                    <span class="fp-num text-xs text-[var(--fp-dim)]">—</span>
-                  {/if}
-                </td>
-                <td class="text-right">
-                  <div class="inline-flex items-center gap-1.5 justify-end">
-                    {#if token.cooldown_active}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={actionPending}
-                        onclick={() => triggerAction(`/admin/tokens/${idx}/unlock`, {}, $tr('Clear cooldown for token {idx}? Only do this if the lock is stale.', { idx }))}
-                      >
-                        <Unlock size={13} />
-                        <span>{$tr('Clear')}</span>
-                      </Button>
-                    {/if}
-                    {#if token.locked}
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={actionPending}
-                        onclick={() => triggerAction(`/admin/tokens/${idx}/unlock-lock`, {}, $tr('Unlock token {idx}?', { idx }))}
-                      >
-                        <Unlock size={13} />
-                        <span>{$tr('Unlock')}</span>
-                      </Button>
-                    {:else}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        disabled={actionPending}
-                        onclick={() => triggerAction(`/admin/tokens/${idx}/lock`, {}, $tr('Lock token {idx}?', { idx }))}
-                      >
-                        <Lock size={13} />
-                        <span>{$tr('Lock')}</span>
-                      </Button>
-                    {/if}
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      disabled={actionPending}
-                      onclick={() => triggerAction('/admin/tokens/remove-specific', { token: token.token_value || '' }, $tr('Remove token {idx} from the pool and database?', { idx }))}
-                    >
-                      <Trash2 size={13} />
-                      <span>{$tr('Remove')}</span>
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-              {#if isExpanded}
-                <tr>
-                  <td colspan="6" class="!p-0">
-                    <div class="fp-inset m-2 rounded p-3">
-                      {#if token.session_remaining_seconds > 0 && token.session_model}
-                        <div class="mb-2 px-2 py-1 rounded bg-[var(--fp-accent)]/10 text-xs text-[var(--fp-accent)] flex items-center justify-between">
-                          <span>{$tr('Active Session:')} <code class="fp-num">{token.session_model}</code></span>
-                          <span class="fp-num">{Math.floor(token.session_remaining_seconds / 60)}m {token.session_remaining_seconds % 60}s remaining</span>
-                        </div>
-                      {/if}
-                      {#if token.has_standing}
-                        <!-- Standing / trust block (issue #140 P3d): level,
-                             score progress toward the next level, the cap
-                             holding the account (capped_by), and upstream's
-                             suggested earn-back actions. -->
-                        <div class="mb-2 px-2 py-1.5 rounded bg-[var(--fp-bg)]/40">
-                          <div class="flex items-center justify-between gap-2 mb-1">
-                            <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Account standing')}</p>
-                            <span class="text-xs text-[var(--fp-text)] font-semibold">{token.standing_label || token.standing_level}</span>
-                          </div>
-                          {#if token.standing_score != null && token.standing_next_level}
-                            <div class="flex items-center gap-2">
-                              <div class="h-1.5 flex-1 rounded bg-[var(--fp-bg)] overflow-hidden">
-                                <div
-                                  class="h-full rounded bg-[var(--fp-accent)]"
-                                  style={`width: ${Math.min(100, Math.max(0, token.standing_score))}%`}
-                                ></div>
-                              </div>
-                              <span class="fp-num text-xs text-[var(--fp-muted)] shrink-0">
-                                {$tr('score {score} → next: {level}', { score: token.standing_score, level: token.standing_next_level })}
-                              </span>
-                            </div>
-                          {:else if token.standing_score != null}
-                            <span class="fp-num text-xs text-[var(--fp-muted)]">{$tr('score {score}', { score: token.standing_score })}</span>
-                          {/if}
-                          {#if token.standing_blurb}
-                            <p class="text-xs text-[var(--fp-dim)] mt-1">{token.standing_blurb}</p>
-                          {/if}
-                          {#if token.standing_capped_by}
-                            <p class="text-xs mt-1 text-[var(--fp-warning)]">
-                              {$tr('Capped by')} <code class="fp-num">{token.standing_capped_by}</code>{#if token.standing_capped_reason}: {token.standing_capped_reason}{/if}
-                            </p>
-                          {/if}
-                          {#if token.standing_next_steps?.length > 0}
-                            <ul class="mt-1.5 flex flex-col gap-1">
-                              {#each token.standing_next_steps as step}
-                                <li class="text-xs text-[var(--fp-text)] flex items-start gap-1.5">
-                                  <span class="fp-num text-[var(--fp-accent)] shrink-0">+{step.points}</span>
-                                  <span>
-                                    {step.label}{#if step.detail} — <span class="text-[var(--fp-dim)]">{step.detail}</span>{/if}
-                                    {#if step.href}
-                                      <a href={step.href} target="_blank" rel="noopener noreferrer" class="ml-1 text-[var(--fp-accent)] hover:underline inline-flex items-center gap-0.5">
-                                        <ExternalLink size={10} />
-                                      </a>
-                                    {/if}
-                                  </span>
-                                </li>
-                              {/each}
-                            </ul>
-                          {/if}
-                        </div>
-                      {/if}
-                      {#if token.has_quota && token.quota?.length > 0}
-                        <div class="flex flex-col gap-2">
-                          <div class="flex items-center justify-between">
-                            <p class="text-xs text-[var(--fp-muted)] uppercase tracking-wider font-semibold">{$tr('Session quotas')}</p>
-                            {#if allQuotaModels.length > 1}
-                              <select
-                                bind:value={quotaModelFilter}
-                                class="text-[11px] font-mono bg-[var(--fp-bg)] border border-[var(--fp-border)] rounded px-2 py-1 text-[var(--fp-muted)]"
-                              >
-                                <option value="">{$tr('All models')}</option>
-                                {#each allQuotaModels as m}
-                                  <option value={m}>{m}</option>
-                                {/each}
-                              </select>
-                            {/if}
-                          </div>
-                          {#each (quotaModelFilter ? token.quota.filter(q => q.model === quotaModelFilter) : token.quota) as q}
-                            {@const pct = quotaPercent(q.recent, q.limit)}
-                            {@const tone = quotaUsageTone(pct)}
-                            <div class="flex flex-col gap-1 px-2 py-2 rounded bg-[var(--fp-bg)]/40">
-                              <div class="flex items-center gap-2 sm:gap-4 text-xs">
-                                <code class="fp-num text-[var(--fp-text)] sm:w-48 shrink-0 truncate">{q.model}</code>
-                                <span class="fp-num text-[var(--fp-muted)]">
-                                  <span class="text-[var(--fp-text)]">{q.recent}</span> / {q.limit}
-                                  {#if q.limit !== '0' && q.limit !== ''}
-                                    <span class="text-[var(--fp-dim)]">
-                                      ({$tr('remaining {count}', { count: Math.max(0, parseFloat(q.limit) - parseFloat(q.recent)) })})
-                                    </span>
-                                  {/if}
-                                </span>
-                                <span class="fp-num text-[var(--fp-dim)] sm:ml-auto">
-                                  {q.period}{#if q.has_entitlement} · {$tr('entitled')} {q.entitled}{/if}
-                                </span>
-                                <span class="fp-num text-[var(--fp-dim)]">
-                                  {#if q.resets_in}{$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at} ({q.resets_in}){:else}{$tr('reset')} {formatLocalDate(q.reset_at_utc) || q.reset_at}{/if}
-                                </span>
-                              </div>
-                              <!-- Visual usage bar -->
-                              {#if q.limit !== '0' && q.limit !== ''}
-                                <div class="relative h-1.5 rounded-full bg-[var(--fp-border)]/40 overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin="0" aria-valuemax="100" aria-label={`${q.model} usage ${pct}%`}>
-                                  <div
-                                    class="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
-                                    class:bg-[var(--fp-success)]={tone === 'good'}
-                                    class:bg-[var(--fp-warning)]={tone === 'warn'}
-                                    class:bg-[var(--fp-error)]={tone === 'critical'}
-                                    style="width: {pct}%"
-                                  ></div>
-                                </div>
-                                <span class="text-[10px] font-mono {tone === 'critical' ? 'text-[var(--fp-error)]' : tone === 'warn' ? 'text-[var(--fp-warning)]' : 'text-[var(--fp-dim)]'}">
-                                  {pct}% {$tr('used')}
-                                </span>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {:else}
-                        <p class="text-xs text-[var(--fp-dim)] italic">{$tr('No quota data available for this session.')}</p>
-                      {/if}
-                    </div>
-                  </td>
-                </tr>
-              {/if}
-            {/each}
-          </tbody>
-        </table>
-      {/if}
-    </Card>
+          <span
+            class="led {tokenRotation === 'drain' ? 'led-good' : 'led-idle'}"
+          ></span>
+          <span
+            class="uppercase tracking-wider font-semibold text-[var(--fp-accent)]"
+            >{tokenRotation}</span
+          >
+        </span>
+      {/snippet}
+
+      <div class="space-y-3">
+        <div
+          class="flex flex-wrap items-center gap-2"
+          role="radiogroup"
+          aria-label={$tr("Token Rotation Policy")}
+        >
+          <button
+            type="button"
+            role="radio"
+            aria-checked={tokenRotation === "drain"}
+            disabled={savingRotation}
+            onclick={() => setTokenRotation("drain")}
+            class="fp-btn {tokenRotation === 'drain'
+              ? 'fp-btn-primary'
+              : 'fp-btn-ghost'} fp-btn-sm text-xs"
+          >
+            {$tr("Drain (Safest)")}
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={tokenRotation === "round_robin"}
+            disabled={savingRotation}
+            onclick={() => setTokenRotation("round_robin")}
+            class="fp-btn {tokenRotation === 'round_robin'
+              ? 'fp-btn-primary'
+              : 'fp-btn-ghost'} fp-btn-sm text-xs"
+          >
+            {$tr("Round Robin (1:1)")}
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={tokenRotation === "least_used"}
+            disabled={savingRotation}
+            onclick={() => setTokenRotation("least_used")}
+            class="fp-btn {tokenRotation === 'least_used'
+              ? 'fp-btn-primary'
+              : 'fp-btn-ghost'} fp-btn-sm text-xs"
+          >
+            {$tr("Least Used (Max Quota)")}
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={tokenRotation === "random"}
+            disabled={savingRotation}
+            onclick={() => setTokenRotation("random")}
+            class="fp-btn {tokenRotation === 'random'
+              ? 'fp-btn-primary'
+              : 'fp-btn-ghost'} fp-btn-sm text-xs"
+          >
+            {$tr("Random (Stochastic)")}
+          </button>
+        </div>
+
+        <div
+          class="fp-inset p-3 rounded-lg text-xs text-[var(--fp-muted)] flex items-start gap-2"
+        >
+          {#if tokenRotation === "drain"}
+            <p class="leading-relaxed">
+              <strong class="text-[var(--fp-text)]"
+                >{$tr("Drain Mode (Default & Recommended):")}</strong
+              >
+              {$tr(
+                "Exhausts one account completely (e.g. 5/5 Luna sessions) before rotating to the next token. Mimics authentic single-user behavior and provides the strongest anti-ban protection.",
+              )}
+            </p>
+          {:else if tokenRotation === "round_robin"}
+            <p class="leading-relaxed">
+              <strong class="text-[var(--fp-text)]"
+                >{$tr("Round-Robin Mode:")}</strong
+              >
+              {$tr(
+                "Rotates to the next token on every single session (1:1). Note: rapid alternating requests across healthy accounts may raise upstream anomaly-detection signals.",
+              )}
+            </p>
+          {:else if tokenRotation === "least_used"}
+            <p class="leading-relaxed">
+              <strong class="text-[var(--fp-text)]"
+                >{$tr("Least-Used Mode:")}</strong
+              >
+              {$tr(
+                "Routes requests to the token with the lowest daily usage or active run count. Maximizes concurrency and distributes quota consumption evenly.",
+              )}
+            </p>
+          {:else if tokenRotation === "random"}
+            <p class="leading-relaxed">
+              <strong class="text-[var(--fp-text)]"
+                >{$tr("Random Mode:")}</strong
+              >
+              {$tr(
+                "Selects an available healthy token at random per request. Provides stochastic load balancing.",
+              )}
+            </p>
+          {/if}
+        </div>
+
+        <!-- Rate Limit Auto-Failover Toggle -->
+        <div
+          class="pt-3 border-t border-[var(--fp-border)] flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+        >
+          <div class="space-y-0.5">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold text-[var(--fp-text)]">
+                {$tr("Auto Failover on Rate Limit (429)")}
+              </span>
+              <span class="led {rateLimitFailover ? 'led-good' : 'led-dim'}"
+              ></span>
+            </div>
+            <p class="text-[11px] text-[var(--fp-muted)] leading-relaxed">
+              {$tr(
+                "When enabled, an in-flight request encountering a 429 rate limit or account throttle immediately leases another healthy pool token and retries seamlessly without failing the request.",
+              )}
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={rateLimitFailover}
+            disabled={savingFailover}
+            saving={savingFailover}
+            ariaLabel="Auto Failover on Rate Limit (429)"
+            onchange={(v) => toggleRateLimitFailover(v)}
+          />
+        </div>
+      </div></Card
+    >
+    <ReferralBanner tokens={data?.tokens ?? []} />
+
+    <TokenTable
+      tokens={data?.tokens ?? []}
+      tokenCount={data?.token_count ?? 0}
+      {loading}
+      {error}
+      {expandedToken}
+      {actionPending}
+      {now}
+      {devToolsEnabled}
+      bind:spawnModels
+      onToggle={toggleExpand}
+      onAction={handleTokenAction}
+      onSpawn={handleSpawn}
+      onRefresh={handleRefresh}
+      onDropSession={handleDropSession}
+      onSwap={handleSwap}
+      onMove={handleMove}
+      onRetry={() => {
+        error = "";
+        refreshTokens();
+      }}
+    />
     {#if data?.show_bridge && data?.bridge_token_cards?.length > 0}
       <Card
-        title={$tr('Bridge Clients')}
-        description={$tr('{count} active bridge client(s) relaying their own FreeBuff tokens', { count: data.bridge_token_cards.length })}
+        title={$tr("Bridge Clients")}
+        description={$tr(
+          "{count} active bridge client(s) relaying their own FreeBuff tokens",
+          { count: data.bridge_token_cards.length },
+        )}
         pad="none"
       >
         <div class="flex flex-col gap-3 p-4">
-          {#each data.bridge_token_cards as bc}
+          {#each data.bridge_token_cards as bc (bc.key)}
             <BridgeTokenCard card={bc} {now} />
           {/each}
         </div>

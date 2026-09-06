@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable } from "svelte/store";
 
 /**
  * Global session-expiry state shared by the API client, the polling helper,
@@ -16,6 +16,18 @@ import { writable } from 'svelte/store';
  * Drives the "Session expired" banner in App.svelte.
  */
 export const sessionExpired = writable(false);
+/**
+ * Shared admin auth state for default admin token and require login.
+ */
+export const authState = writable({
+  isDefaultAdminToken: false,
+  requireLogin: true,
+  hasPassword: true,
+});
+
+export function updateAuthState(partial) {
+  authState.update((s) => ({ ...s, ...partial }));
+}
 
 // Module-level latch: once a 401 / auth redirect is observed, background
 // polling halts for the life of the page. Dismissing the banner hides it but
@@ -38,6 +50,11 @@ export function dismissSessionExpired() {
   sessionExpired.set(false);
 }
 
+/** Reset the session latch after a successful login. */
+export function resetSessionState() {
+  sessionDead = false;
+  sessionExpired.set(false);
+}
 /**
  * Reload-loop guard for any remaining automatic (non-user-initiated)
  * navigation to the login page: at most ONE attempt per 30s window; afterwards

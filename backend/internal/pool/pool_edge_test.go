@@ -69,7 +69,7 @@ func TestLiveFailoverMatrix(t *testing.T) {
 			if snap := p.Snapshot()[0]; snap.CooldownUntil.Before(time.Now()) {
 				t.Errorf("failing token not cooled down: %v", snap.CooldownUntil)
 			}
-			reqs := failing.Requests
+			reqs := failing.RequestsSnapshot()
 			if reqs == 0 {
 				t.Errorf("failing token never hit (live admission expected)")
 			}
@@ -84,7 +84,7 @@ func TestLiveFailoverMatrix(t *testing.T) {
 				t.Errorf("second lease token = %d, want 1 (cooled token skipped)", lease.Token)
 			}
 			p.LeaseRelease(lease)
-			if got := failing.Requests; got != reqs {
+			if got := failing.RequestsSnapshot(); got != reqs {
 				t.Errorf("failing token re-hit: requests = %d, want %d", got, reqs)
 			}
 			if got := healthy.SessionCreatesSnapshot(); got != 1 {
@@ -119,7 +119,7 @@ func TestLiveFailoverAllBanned(t *testing.T) {
 	// before the session counter, so observe via total requests) and cooled
 	// for the ban window; the remembered error keeps surfacing without
 	// re-hitting.
-	reqs := mock0.Requests + mock1.Requests
+	reqs := mock0.RequestsSnapshot() + mock1.RequestsSnapshot()
 	if reqs == 0 {
 		t.Error("banned tokens never hit (live admission expected)")
 	}
@@ -132,7 +132,7 @@ func TestLiveFailoverAllBanned(t *testing.T) {
 	if !errors.Is(err, upstream.ErrBanned) {
 		t.Errorf("second acquire = %v, want remembered ErrBanned", err)
 	}
-	if got := mock0.Requests + mock1.Requests; got != reqs {
+	if got := mock0.RequestsSnapshot() + mock1.RequestsSnapshot(); got != reqs {
 		t.Errorf("requests after cooldown = %d, want %d (no re-hit)", got, reqs)
 	}
 }
@@ -328,10 +328,10 @@ func TestBridgeIdlePause(t *testing.T) {
 
 	// Idle passes must not touch the upstream (no session poll / queued
 	// advance / rotation) and must not evict the recently-used entry.
-	reqs := mock.Requests
+	reqs := mock.RequestsSnapshot()
 	p.maintainTick(context.Background())
 	p.maintainTick(context.Background())
-	if got := mock.Requests; got != reqs {
+	if got := mock.RequestsSnapshot(); got != reqs {
 		t.Errorf("upstream requests during idle passes = %d, want %d (no maintain activity)", got, reqs)
 	}
 	if got := p.bridgeLen(); got != 1 {
@@ -745,7 +745,7 @@ func TestRemoveLastTokenRaceHammer(t *testing.T) {
 	p.retiredMu.Unlock()
 
 	// Current tokens hold no leaked inflight either.
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	for i, tok := range *toks {
 		if got := tok.runs.InflightCount(); got != 0 {
 			t.Errorf("current token %d leaked inflight = %d", i, got)
@@ -927,9 +927,9 @@ func TestDailyCapExactRetryAfter(t *testing.T) {
 
 	// Seed usage with a KNOWN oldest timestamp.
 	oldest := time.Now().Add(-2 * time.Hour)
-	p.usageMu.Lock()
-	p.msgsPerToken[0] = []time.Time{oldest}
-	p.usageMu.Unlock()
+	p.roster.mu.Lock()
+	(*p.roster.Load())[0].ledger.usage = []time.Time{oldest}
+	p.roster.mu.Unlock()
 
 	want := time.Until(oldest.Add(usageWindow))
 	got := p.usageResetIn(0)

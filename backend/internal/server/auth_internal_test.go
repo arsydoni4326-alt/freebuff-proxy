@@ -95,19 +95,38 @@ func TestAdminAuthFailsMapCapped(t *testing.T) {
 	}
 }
 
-func TestAdminCookieSecureFlag(t *testing.T) {
+func TestAdminCookieDynamicProtocol(t *testing.T) {
 	a := newAdminAuth()
-	rec := httptest.NewRecorder()
-	a.setCookie(rec, true)
-	c := rec.Result().Cookies()[0]
-	if !c.Secure {
-		t.Error("cookie Secure flag not set when requested")
+	reqHTTP := httptest.NewRequest(http.MethodGet, "http://192.168.1.100:3457/admin", nil)
+	reqHTTPS := httptest.NewRequest(http.MethodGet, "http://192.168.1.100:3457/admin", nil)
+	reqHTTPS.Header.Set("X-Forwarded-Proto", "https")
+
+	// 1. Plain HTTP -> Secure is false (zero friction for self-hosted cloud VPS users).
+	rec1 := httptest.NewRecorder()
+	a.setCookie(rec1, reqHTTP)
+	if rec1.Result().Cookies()[0].Secure {
+		t.Error("plain-HTTP cookie must have Secure: false by default")
 	}
-	rec = httptest.NewRecorder()
-	a.setCookie(rec, false)
-	c = rec.Result().Cookies()[0]
-	if c.Secure {
-		t.Error("cookie Secure flag set for plain-HTTP loopback")
+	if csrfCookie("csrf1", reqHTTP).Secure {
+		t.Error("plain-HTTP csrfCookie must have Secure: false by default")
+	}
+
+	// 2. HTTPS (via X-Forwarded-Proto or TLS) -> Secure is true.
+	rec2 := httptest.NewRecorder()
+	a.setCookie(rec2, reqHTTPS)
+	if !rec2.Result().Cookies()[0].Secure {
+		t.Error("HTTPS cookie must have Secure: true")
+	}
+	if !csrfCookie("csrf2", reqHTTPS).Secure {
+		t.Error("HTTPS csrfCookie must have Secure: true")
+	}
+
+	// 3. Explicit force via ADMIN_FORCE_SECURE_COOKIES=true -> Secure is true even on plain HTTP.
+	t.Setenv("ADMIN_FORCE_SECURE_COOKIES", "true")
+	rec3 := httptest.NewRecorder()
+	a.setCookie(rec3, reqHTTP)
+	if !rec3.Result().Cookies()[0].Secure {
+		t.Error("ADMIN_FORCE_SECURE_COOKIES=true must enforce Secure: true even on plain HTTP")
 	}
 }
 
@@ -118,7 +137,12 @@ func TestAdminCookieSecureFlag(t *testing.T) {
 func TestAdminCookieExpiredRedirects(t *testing.T) {
 	s := &Server{adminAuth: newAdminAuth(), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	s.cfg.Store(&config.Config{AdminToken: "secret"})
-	h := s.dashboardAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s.admin = &adminHandlers{
+		adminAuth: s.adminAuth,
+		cfgLoad:   s.cfg.Load,
+		logfunc:   func() *slog.Logger { return s.logger },
+	}
+	h := s.admin.dashboardAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -345,7 +369,7 @@ func TestUpdateEnvKeys(t *testing.T) {
 	if err := os.WriteFile(".env", []byte("SAFE_MODE=true\r\nAUTH_TOKENS=tok-a\r\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := updateEnvKeys([]envUpdate{
+	if _, err := updateEnvKeys([]config.EnvUpdate{
 		{Key: "AUTH_TOKENS", Value: ""},
 		{Key: "SAFE_MODE", Value: "false"},
 	}); err != nil {
@@ -362,7 +386,7 @@ func TestUpdateEnvKeys(t *testing.T) {
 	assertNoTmpFiles(t, ".", ".env")
 
 	// Flip SAFE_MODE back to true: in-place replace, no duplicate line.
-	if _, err := updateEnvKeys([]envUpdate{{Key: "SAFE_MODE", Value: "true"}}); err != nil {
+	if _, err := updateEnvKeys([]config.EnvUpdate{{Key: "SAFE_MODE", Value: "true"}}); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(".env")
@@ -372,58 +396,6 @@ func TestUpdateEnvKeys(t *testing.T) {
 	if strings.Count(string(got), "SAFE_MODE=") != 1 || !strings.Contains(string(got), "SAFE_MODE=true") {
 		t.Errorf(".env after flip = %q, want single SAFE_MODE=true line", got)
 	}
-}
-
-// writeFileAtomic must atomically replace an existing file and clean up its
-// temp file, on every platform (no unconditional pre-remove on Windows).
-func TestWriteFileAtomicReplacesAndCleansUp(t *testing.T) {
-	dir := t.TempDir()
-	// Drain before TempDir's own RemoveAll: Windows AV locks can leave a
-	// stray .bak/.tmp behind that would fail the cleanup (see poll.go).
-	testutil.DrainStrayTempFiles(t, dir)
-	path := filepath.Join(dir, ".env")
-	if err := os.WriteFile(path, []byte("OLD\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFileAtomic(path, []byte("NEW\n")); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "NEW\n" {
-		t.Errorf("content after write = %q, want %q", got, "NEW\n")
-	}
-	assertNoTmpFiles(t, dir, ".env")
-}
-
-// On failure the target must be left exactly as it was and the temp file
-// cleaned up. A non-empty directory cannot be replaced by a rename on any
-// platform, so it doubles as a deterministic failure injection.
-func TestWriteFileAtomicFailurePreservesTarget(t *testing.T) {
-	dir := t.TempDir()
-	// Drain before TempDir's own RemoveAll: Windows AV locks can leave a
-	// stray .bak/.tmp behind that would fail the cleanup (see poll.go).
-	testutil.DrainStrayTempFiles(t, dir)
-	path := filepath.Join(dir, ".env")
-	if err := os.Mkdir(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	kept := filepath.Join(path, "keep.txt")
-	if err := os.WriteFile(kept, []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeFileAtomic(path, []byte("NEW\n")); err == nil {
-		t.Fatal("writeFileAtomic over a non-empty directory succeeded, want error")
-	}
-	if st, err := os.Stat(path); err != nil || !st.IsDir() {
-		t.Errorf("target dir missing or not a dir after failed write: %v", err)
-	}
-	if _, err := os.Stat(kept); err != nil {
-		t.Errorf("target content lost after failed write: %v", err)
-	}
-	assertNoTmpFiles(t, dir, ".env")
 }
 
 // ── Wave 1 issue tests (#81, #82, #76) ───────────────────────────────────

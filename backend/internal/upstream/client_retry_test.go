@@ -597,8 +597,8 @@ func TestRateLimitNeverRetried(t *testing.T) {
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
-	if mock.Requests != 1 {
-		t.Errorf("upstream requests = %d, want exactly 1 (429 must never be retried)", mock.Requests)
+	if mock.RequestsSnapshot() != 1 {
+		t.Errorf("upstream requests = %d, want exactly 1 (429 must never be retried)", mock.RequestsSnapshot())
 	}
 	if got := client.TransientRetries(); got != 0 {
 		t.Errorf("TransientRetries = %d, want 0", got)
@@ -621,8 +621,8 @@ func TestBanNeverRetried(t *testing.T) {
 	if !errors.Is(err, ErrBanned) {
 		t.Fatalf("err = %v, want ErrBanned", err)
 	}
-	if mock.Requests != 1 {
-		t.Errorf("upstream requests = %d, want exactly 1 (403 banned must never be retried)", mock.Requests)
+	if mock.RequestsSnapshot() != 1 {
+		t.Errorf("upstream requests = %d, want exactly 1 (403 banned must never be retried)", mock.RequestsSnapshot())
 	}
 	if got := client.TransientRetries(); got != 0 {
 		t.Errorf("TransientRetries = %d, want 0", got)
@@ -1491,6 +1491,53 @@ func TestClassifyLoadSheddingAndPeakHours(t *testing.T) {
 	}
 	if rleDaily.RetryAfter <= 0 {
 		t.Error("daily-cap 429 RetryAfter <= 0")
+	}
+}
+
+// TestClassifyMonthlyCapQuotaShaped pins wire drift 2026-09-04 (#330): a
+// pacific_month quota period with the counter at/over the limit classifies
+// as quota exhaustion (Pacific-midnight lock), exactly like daily/weekly —
+// never as an opaque transient.
+func TestClassifyMonthlyCapQuotaShaped(t *testing.T) {
+	errMonthly := classifyError(http.StatusTooManyRequests, `{"status":"rate_limited","period":"pacific_month","limit":100,"recentCount":100}`, http.Header{})
+	var rleMonthly *RateLimitError
+	if !errors.As(errMonthly, &rleMonthly) {
+		t.Fatalf("monthly-cap 429 = %T %v, want *RateLimitError", errMonthly, errMonthly)
+	}
+	if rleMonthly.RetryAfter <= 0 {
+		t.Error("monthly-cap 429 RetryAfter <= 0")
+	}
+	if !IsDailyCapReset(rleMonthly) {
+		t.Error("IsDailyCapReset(monthly) = false, want true")
+	}
+}
+
+// TestClassifyTurnSpendLimited pins the per-turn spend ceiling: a
+// turn_spend_limit refusal is loop protection, not quota exhaustion — a
+// TERMINAL TurnSpendLimitError (never a RateLimitError, never the
+// Pacific-midnight lock). Upstream's retryAfterMs on this breaker does not
+// clear it: live 2026-09-05 every 60s client retry re-tripped instantly for
+// 20+ minutes, so handing the client a Retry-After would be a futile
+// retry drumbeat. The type carries no RetryAfter; callers surface it
+// immediately and schedule no cooldown.
+func TestClassifyTurnSpendLimited(t *testing.T) {
+	errSpend := classifyError(http.StatusTooManyRequests, `{"error":"turn_spend_limit","message":"Something went wrong with this turn.","retryAfterMs":60000}`, http.Header{})
+	var tsle *TurnSpendLimitError
+	if !errors.As(errSpend, &tsle) {
+		t.Fatalf("turn-spend 429 = %T %v, want *TurnSpendLimitError", errSpend, errSpend)
+	}
+	if !errors.Is(errSpend, ErrTurnSpendLimited) {
+		t.Error("turn-spend 429 does not unwrap to ErrTurnSpendLimited")
+	}
+	if tsle.Status != http.StatusTooManyRequests {
+		t.Errorf("Status = %d, want 429", tsle.Status)
+	}
+	if !strings.Contains(tsle.Body, "Something went wrong with this turn") {
+		t.Errorf("Body = %q, want the upstream loop warning intact", tsle.Body)
+	}
+	var rleSpend *RateLimitError
+	if errors.As(errSpend, &rleSpend) {
+		t.Errorf("turn-spend 429 = RateLimitError (%v), want the terminal type (no cooldown/backoff)", rleSpend)
 	}
 }
 

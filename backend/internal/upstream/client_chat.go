@@ -24,9 +24,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andybalholm/brotli"
-	"github.com/klauspost/compress/zstd"
-
 	"freebuff-proxy/backend/internal/stealth"
 	"freebuff-proxy/backend/internal/telemetry"
 )
@@ -138,6 +135,18 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 	if req.GetBody != nil {
 		replayBody = req.GetBody
 	}
+	// Wire correlation at debug: every upstream attempt below logs its
+	// response ("upstream response"/"upstream ok"/"upstream error"), but
+	// without a start line a death that never answers (hang until the
+	// caller gives up) leaves no trace of which call was in flight.
+	// Headers stay out — the token must never reach the logs.
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		attrs := []any{"method", req.Method, "path", req.URL.Path}
+		if reqID := ReqID(ctx); reqID != "" {
+			attrs = append(attrs, "req_id", reqID)
+		}
+		slog.Debug("upstream request", attrs...)
+	}
 
 	for attempt := 1; ; attempt++ {
 		resp, err := c.http.Do(req)
@@ -152,13 +161,15 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 			if resp.StatusCode >= 400 {
 				// Wire transparency: error responses are read (2KB cap),
 				// logged as `upstream response` (redacted, ≤500 runes), and
-				// re-wrapped so the caller's classification parses the same
-				// body. Never logged as `upstream ok` — a transport-level
-				// 200 and an upstream 429 are different classes of event.
+				// classified ONCE here — the wrapper records the 428
+				// waiting-room flag and the rate-limit ledger — then the typed
+				// error is carried forward so callers never re-classify the
+				// same body (issue #305).
 				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyRead))
 				_ = resp.Body.Close()
 				bodyText := telemetry.RedactSecrets(string(bodyBytes))
-				class := errClassName(classifyError(resp.StatusCode, bodyText, resp.Header))
+				classErr := c.classify(resp.StatusCode, bodyText, resp.Header)
+				class := errClassName(classErr)
 				attrs := []any{
 					"method", req.Method, "path", req.URL.Path,
 					"status", resp.StatusCode, "ms", time.Since(start).Milliseconds(),
@@ -170,7 +181,9 @@ func (c *Client) do(req *http.Request, timeout time.Duration) (*http.Response, c
 				}
 				slog.Debug("upstream response", attrs...)
 				resp.Body = io.NopCloser(strings.NewReader(bodyText))
-				return resp, cancel, nil
+				// resp != nil with a non-nil classErr marks a classified
+				// >=400 response (vs a transport failure, where resp is nil).
+				return resp, cancel, classErr
 			}
 			slog.Debug("upstream ok", "method", req.Method, "path", req.URL.Path,
 				"status", resp.StatusCode, "ms", time.Since(start).Milliseconds(),
@@ -341,12 +354,10 @@ func (c *Client) retryDelay() time.Duration {
 }
 
 // wrapDecompress replaces resp.Body with a transparent decompressing reader
-// when the upstream compresses the response. This is REQUIRED with the
-// stealth profile: the browser Accept-Encoding ("gzip, deflate, br") makes
-// Go's transport skip its automatic gzip handling (that only kicks in when
-// Go itself set the header), so compressed bodies would arrive as garbage.
-// The plain transport sends no Accept-Encoding and is unaffected (Go
-// decompresses its own gzip transparently and strips the header).
+// when the upstream compresses the response (gzip/deflate only — stdlib).
+// newRequest intentionally sends no browser Accept-Encoding (CLI fidelity),
+// so live upstream wire is Go-default gzip handled here; an uninvited
+// br/zstd/lz4 errors as unsupported Content-Encoding, same as before.
 func wrapDecompress(resp *http.Response) error {
 	enc := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
@@ -380,19 +391,6 @@ func wrapDecompress(resp *http.Response) error {
 		} else {
 			resp.Body = &decompressCloser{Reader: flate.NewReader(br), underlying: underlying}
 		}
-	case "br":
-		resp.Body = &decompressCloser{Reader: brotli.NewReader(underlying), underlying: underlying}
-	case "zstd":
-		// The stealth profiles advertise zstd in Accept-Encoding, so the
-		// upstream may legitimately respond with it.
-		zr, err := zstd.NewReader(underlying, zstd.WithDecoderConcurrency(1))
-		if err != nil {
-			return fmt.Errorf("zstd: %w", err)
-		}
-		// zstd decoders are stateful (per-response buffers), unlike
-		// gzip/brotli: Close must release the decoder's resources, not just
-		// the underlying socket.
-		resp.Body = &decompressCloser{Reader: zr, underlying: underlying, closeFn: func() error { zr.Close(); return nil }}
 	default:
 		return fmt.Errorf("unsupported Content-Encoding %q", enc)
 	}
@@ -402,19 +400,14 @@ func wrapDecompress(resp *http.Response) error {
 }
 
 // decompressCloser bridges a decompressing reader back to the underlying
-// response body so Close always reaches the socket. closeFn optionally
-// releases decoder-local resources (e.g. a zstd decoder's buffers) that are
-// distinct from the underlying stream.
+// response body so Close always reaches the socket. The stdlib decoders
+// (gzip/zlib/flate) need no per-response cleanup beyond that.
 type decompressCloser struct {
 	io.Reader
 	underlying io.ReadCloser
-	closeFn    func() error
 }
 
 func (d *decompressCloser) Close() error {
-	if d.closeFn != nil {
-		_ = d.closeFn()
-	}
 	return d.underlying.Close()
 }
 

@@ -69,18 +69,19 @@ If you are a beginner, you don't need to write code or compile anything:
 
 **Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base** — 4 at the floor when trust levels are enforced). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
 
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot `89ce3f5` · npm `0.0.161` `2026-08-30`):
+> **📢 Official Freebuff Upstream Notice** (vendor snapshot `b14414d59` · npm `0.0.168` `2026-09-05`):
 > *"Every model runs on your normal daily sessions — no per-model caps; your shared premium allowance still charges partial time, rounded up to a tenth. MiMo, DeepSeek V4 Flash and GLM 5.3 Flash are unmetered. —❤️ Freebuff Team"*
-> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; shared by `GPT-5.6 Luna` and `Solar Pro 4`. `GLM 5.3 Flash` is unmetered — no per-model cap.)
+> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; shared by `GPT-5.6 Luna` and `Muse Spark 1.3`. `GLM 5.3 Flash`, `DeepSeek V4 Flash`, `MiMo 2.5` and `Solar Pro 4` are unmetered — no per-model cap.)
 
 | Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
 |---|---|---|---|
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool (`PREMIUM 0/5`). |
-| **Premium** | **Solar Pro 4** `NEW` | `upstage/solar-pro4` | **Limited-time trial**, experimental, OpenRouter BYOK (Upstage), text-only, context `500_000`. Shares `5/day` premium pool. |
-| **Unlimited**| **GLM 5.3 Flash** `NEW` | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. **Unmetered** — always available, no per-model cap (left the premium pool 2026-08-28; now the default pick, per vendor `0.0.161`). |
-| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; off-peak-only serving window removed 2026-08-28). |
+| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool. |
+| **Premium** | **Muse Spark 1.3** `NEW` | `meta/muse-spark-1.3-contributor` | **Queues, then falls back** — rate-limited shared ceiling (15s queue, then answers on DeepSeek V4 Flash). Meta trains on prompts/completions (Contributor discount). Context `1_000_000`. Shares `5/day` premium pool. |
+| **Unlimited**| **Solar Pro 4** | `upstage/solar-pro4` | Graduated from trial `2026-09-04` (no longer experimental). OpenRouter BYOK (Upstage), text-only, context `500_000`. **Unmetered** — always available, no per-model cap. |
+| **Unlimited**| **GLM 5.3 Flash** | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. **Unmetered** — always available, no per-model cap (left the premium pool `2026-08-28`; default pick again since `2026-09-05`, per vendor `0.0.168`). |
+| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; default pick `2026-09-02`→`2026-09-05`). |
 | **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
-| **Referral** | **GLM 5.2** | `z-ai/glm-5.2` | **Top open-source agentic model**. Referral-gated (`+1/day` per referral), 1-hour sessions. |
+| **Pro-only** | **Gemini 3.8 Flash** | `google/gemini-3.8-flash` | Returned `2026-09-04` behind the Pro paywall, Web-only. The proxy has no Pro surface, so this row is **not served**. |
 | **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
 | **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |
 | **Disabled** | **Ox Alpha** | `stealth/ox-alpha` | **Withdrawn** upstream (2026-08-27, free promotion ended). |
@@ -105,7 +106,7 @@ For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 min
 ## Features
 
 - **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `POST /v1/responses`, `POST /v1/messages` (Anthropic shape) + `/v1/messages/count_tokens`, `POST /v1/embeddings` (unsupported → `400 unsupported_endpoint`), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`, and hot config reload via `POST /admin/reload`.
-- **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application built with self-hosted **IBM Plex Sans & IBM Plex Mono** typography and an "instrument panel" operational design. Features a live overview with 6 KPIs and token risk cards, runtime token pool & quota management with in-browser OAuth device login, served models catalog, hot-reloading `.env` Configuration Studio, in-memory structured log viewer with level filtering, and universal 1-click client setup snippets. Zero external CDN or runtime Node.js dependency.
+- **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application built with self-hosted **IBM Plex Sans & IBM Plex Mono** typography and an "instrument panel" operational design. Features a live overview with 6 KPIs, runtime token pool management (`Account #1, #2, …` rows with at-risk cards, reorder, lock/remove, rotation radios) with in-browser OAuth device login, quota tracker, served models catalog, hot-reloading intent-driven Settings cards, in-memory structured log viewer (console + table), and universal 1-click client setup snippets. Zero external CDN or runtime Node.js dependency.
 - **Dynamic Reasoning Effort**: OpenAI `reasoning_effort` (`low`/`medium`/`high`/`max`) and Codex/Anthropic `reasoning.effort` are normalized and mapped to upstream reasoning engines.
 - **Honest Feature Translation**: Every request param of the three surfaces is mapped to what the upstream chat endpoint accepts, or answered with an explicit `400` when it cannot be honored (OpenAI `n > 1`, `audio`, `web_search_options`, `moderation`; Responses `previous_response_id`, `conversation`, `background`, built-in `web_search`/`file_search`/`code_interpreter`/`computer_use` tools — only function tools translate; Anthropic `top_k` and Responses `include`/`truncation`/`service_tier` are documented-ignored). `/v1/messages` requests that omit `max_tokens` (spec-required) default to 8192.
 - **Session & Run Lifecycle**: Upstream session handshakes, model-lock recovery (`DELETE` → re-`POST`), grace draining, and idle-run finishing, all automatic.
@@ -115,7 +116,7 @@ For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 min
 - **CLI Impersonation**: egress presents as the official FreeBuff CLI — `Freebuff-CLI/1.0.0` ads-API User-Agent with a **Chrome/124 body UA**, `ai-sdk/openai-compatible/1.0.0/codebuff` chat UA, Bun/1.3.14 on session/auth endpoints, and your real device timezone/locale.
 - **Subagent-Ready Concurrency**: Single-flight session refresh prevents race conditions during high-volume tool-calling loops.
 - **Safe Mode**: On by default: anti-ban presets (TLS stealth, header sanitization, jitter, idle rotation).
-- **Operational Tooling**: `-doctor` diagnostics (config, port, DNS/TLS, registry; zero-cost per-token validity probes run by default), `-test-token` (zero-cost probe on the first token, prints live quota, exit 0/1 for installers and scripts), `-setup` interactive client configuration, and a SHA-256-verified `-update` self-updater.
+- **Management (dashboard first)**: daily work happens in `/admin` (tokens, config, logs, metrics, quota, setup copy blocks, update notice). The same checks stay scriptable headless: `-doctor` diagnostics (config, port, DNS/TLS, registry; zero-cost per-token validity probes run by default), `-test-token` and `-validate-tokens` (zero-cost probes with exit codes for installers and scripts), `-setup` interactive client configuration, and a SHA-256-verified `-update` self-updater. `-help` groups every flag with its dashboard twin.
 - **Quota Transparency**: Live per-model quota (from the upstream `rateLimitsByModel` admission payload) is surfaced in `GET /healthz` (per-token `quota` map) and `GET /metrics` (`freebuff_proxy_quota_recent` / `freebuff_proxy_quota_limit` gauges).
 
 ## How It Works
@@ -252,21 +253,24 @@ curl http://127.0.0.1:3457/healthz
 
 ## Command-Line Interface
 
-| Flag | Description |
-|---|---|
-| *(none)* | Run the proxy |
-| `-config <path>` | Load an optional JSON config file (keys mirror env names) |
-| `-v` | Verbose (debug) logging |
-| `-version` | Print version and exit |
-| `-doctor` | Run configuration and environment diagnostics: config, port, DNS/TLS reachability, model registry, plus a zero-cost validity probe per token |
-| `-test-token` | Probe the first configured token with a zero-cost upstream GET probe (no session claimed); prints `token OK` and live quota, exits `0`, or exits `1` (for installers/scripts) |
-| `-update` | Self-update from the latest GitHub release (SHA-256 verified against `checksums.txt`) |
-| `-setup` | Interactive client setup (detects installed clients) |
-| `-yes` | Auto-confirm `-setup` prompts |
-| `-refresh-token N` | Re-authenticate token #N in `.env` via the headless GitHub login flow and exit. Interactive: prints a login URL and polls. With `-yes` and `GITHUB_USER` / `GITHUB_PASSWORD` / `GITHUB_TOTP` set: protocol login |
-| `-install-service` | Register the current binary as a background service and start it: Task Scheduler on Windows (per-user, no admin), systemd `--user` unit on Linux, launchd LaunchAgent on macOS. Resolves `.env` from your platform config directory (a `./.env` in the working directory still wins), and auto-starts on logon/boot |
-| `-uninstall-service` | Stop and unregister the background service (idempotent) |
-| `-service-status` | Check whether the service is registered and running; exits `0` when registered, `1` when not (scriptable) |
+Daily management lives in the dashboard (`/admin`; see [Admin Dashboard](#admin-dashboard) and the [Dashboard Guide](docs/dashboard.md)). The CLI stays fully working as the headless and bootstrap path: no flag was removed or renamed, and every exit code still scripts the same way. `-help` prints the same Serve / Advanced grouping shown here.
+
+| Flag | Dashboard twin | Description |
+|---|---|---|
+| *(none)* | Overview, Tokens, Settings, Logs, Setup | Run the proxy; manage it from `/admin` |
+| `-config <path>` | Settings page, raw `.env` editor, `POST /admin/reload` | Load an optional JSON config file (keys mirror env names) |
+| `-v` | Logs viewer, Settings log level | Verbose (debug) logging |
+| `-version` | Overview status line | Print version and exit |
+| `-doctor` | `POST /admin/diag` (needs a running server) | Run configuration and environment diagnostics: config, port, DNS/TLS reachability, model registry, plus a zero-cost validity probe per token |
+| `-test-token` | Tokens page per-token Test, `POST /admin/tokens/test-all` | Probe the first configured token with a zero-cost upstream GET probe (no session claimed); prints `token OK` and live quota, exits `0`, or exits `1` (for installers/scripts) |
+| `-validate-tokens[=tok1,tok2]` | `POST /admin/tokens/test-all` (needs a running server) | Validate every configured token with non-mutating upstream probes, print a health report, and exit `0` (healthy) / `1` (banned, invalid, or disposable mailbox) / `2` (config error); a comma-separated list overrides `AUTH_TOKENS` |
+| `-refresh-token N` | Tokens page login wizard (adds a pool token; it does not re-auth slot N in place) | Re-authenticate token #N in `.env` via the headless login flow and exit. Interactive: prints a login URL and polls. With `-yes` and `GITHUB_USER` / `GITHUB_PASSWORD` / `GITHUB_TOTP` set: protocol login |
+| `-setup` | Setup page copy blocks (no file writes) | Interactive client setup (detects installed clients) |
+| `-yes` | None (headless modifier for `-setup` and `-refresh-token`) | Auto-confirm prompts |
+| `-update` | Overview update badge (release link plus restart; the dashboard never swaps the binary) | Self-update from the latest GitHub release (SHA-256 verified against `checksums.txt`) |
+| `-install-service` | None (a browser tab cannot register OS services) | Register the current binary as a background service and start it: Task Scheduler on Windows (per-user, no admin), systemd `--user` unit on Linux, launchd LaunchAgent on macOS. Resolves `.env` from your platform config directory (a `./.env` in the working directory still wins), and auto-starts on logon/boot |
+| `-uninstall-service` | None (a browser tab cannot remove OS services) | Stop and unregister the background service (idempotent) |
+| `-service-status` | None (headless check for scripts) | Check whether the service is registered and running; exits `0` when registered, `1` when not (scriptable) |
 
 ---
 
@@ -294,8 +298,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `REGISTRY_REFRESH` | `6h` | Model catalog refresh interval |
 | `COST_MODE` | `free` | `free` (default) or unset; any other value fails startup validation |
 | `ACTING_USER_ID` | `""` | Optional FreeBuff account id; sent on every chat call as `x-freebuff-acting-user-id`. BAN RISK: only the token's own account id is safe (the CLI derives it from `GET /api/v1/me`; the server honors the header only for the FreeBuff Web service account) — any other value impersonates another user. Pre-rename name `USER_ID` still works. Empty = header omitted |
-| `TLS_FINGERPRINT` | `auto` | `auto`, `chrome120`, `chrome126`, `safari17`, `safari18`, `firefox120`, `firefox128`, `edge126`, `random` |
-| `DEBUG_DUMP` | `false` | Persist redacted traffic dumps to `./dump/` (mode 0600) |
+| `TLS_FINGERPRINT` | `""` | `""` (plain Go/Bun baseline, CLI-faithful), or `auto`, `chrome120`, `chrome126`, `safari17`, `safari18`, `firefox120`, `firefox128`, `edge126`, `random` for browser JA3 evasion |
 | `DASHBOARD_ENABLED` | `true` | Serve the embedded admin dashboard at `/admin` (`false` disables all `/admin` routes with 404) |
 | `DEVTOOLS_ENABLED` | `false` | Show the Dev Tools page (batch chat, session spawner) in the admin dashboard. Default **off** — it is a manual testing surface that hammers `/v1/*` and is not for public dashboards. |
 | `LOG_FILE` | `""` | Append log lines to a file (e.g. `./logs/proxy.log`) |
@@ -310,7 +313,7 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `SCARCE_SESSION_MODELS` | `openai/gpt-5.6-luna` | 1-session/day models to keep alive for their full session (never idle-evict or DELETE on shutdown while active) |
 | `QUOTA_FALLBACK_MODELS` | `flash→mimo, glm→flash, luna→flash` | Map model → fallback when its session quota is exhausted/unentitled. Defaults: `deepseek/deepseek-v4-flash=mimo/mimo-v2.5`, `z-ai/glm-5.2=deepseek/deepseek-v4-flash`, `openai/gpt-5.6-luna=deepseek/deepseek-v4-flash` (luna degrades the scarce premium session locally instead of hammering quota 429s; #203) |
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
-| `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 2s when unset) |
+| `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 200ms when unset; set `0` for instant TTFB) |
 | `CLI_VERSION` | `0.10.7` | Informational only: parsed and shown on the admin dashboard (Configuration Studio). No wire impact — the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff`, the ads UA to `Freebuff-CLI/1.0.0`, and session/auth endpoints default to `Bun/1.3.14` |
 | `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:openai/gpt-5.6-luna`. There are no built-in aliases (the old `deepseek-chat`/`gpt-4o`/`claude-3-5-sonnet` map was removed when `deepseek-v4-pro` was paused); clients must map aliases explicitly. |
 | `TRANSIENT_RETRIES` | `1` | Max additional attempts after a transient transport failure; `0` disables |
@@ -361,9 +364,12 @@ The raw token is never written, and the file is created with mode
 `SAFE_MODE=true` is the **default** for all setups (set `SAFE_MODE=false` to
 opt out). It enables essential anti-ban protections and presets:
 
-- **JA3 TLS Stealth**: Mimics real browser handshakes (Chrome 120/126, Safari 17/18, Firefox 120/128, Edge 126) via `uTLS` to prevent WAF / CDN bot detection.
+- **TLS: CLI-faithful** — plain Go/Bun baseline, no browser JA3 spoofing. What
+  CLI serves (`Bun/1.3.14` for session, `ai-sdk` for chat) we serve. Set
+  `TLS_FINGERPRINT=auto` (or `chrome126`/`safari18`...) only for browser JA3
+  evasion on datacenter IPs (e.g. SG).
 - **Proxy Header Sanitization**: Strips 25 proxy-identifying headers (`X-Forwarded-For`, `Via`, `CF-Connecting-IP`, etc.).
-- **Request Jitter**: Injects randomized 0-2s delay jitter to break robotic, machine-like cadence.
+- **Request Jitter**: Injects randomized 0-200ms delay jitter to break robotic, machine-like cadence (set `REQUEST_JITTER=0` for instant, or `REQUEST_JITTER=100ms` for minimal jitter).
 - **Idle Rotation**: Finishes runs after 30 minutes of inactivity.
 - **Daily Cap** (optional): `MAX_MESSAGES_PER_DAY` defaults to `0` (unlimited). The upstream `429` lock is the real enforcement; see below.
 
@@ -439,15 +445,15 @@ opt out). It enables essential anti-ban protections and presets:
 The proxy ships with a built-in modern SPA web dashboard: single binary, no external dependencies, and zero runtime Node.js requirement (the Svelte 5 production build is compiled and embedded into the binary at build time). Open `http://127.0.0.1:3457/admin` (or your `LISTEN_ADDR`).
 
 - **Login**: enter your `ADMIN_TOKEN` on the login page. It is the same value as the bearer token for `POST /admin/reload`. It defaults to the factory password `123456` — until you change it, sensitive routes (config editor, logs, token management, reload) require a loopback client even when logged in (a startup warning and a persistent dashboard banner prompt the rotation; `/admin/api/change-password` works from anywhere since it requires the current password). Failed logins are rate-limited per IP (5 fails → 1 minute lockout), and the session cookie is `HttpOnly` + `SameSite=Strict` (+ `Secure` when TLS or `X-Forwarded-Proto: https` is present).
-- **Overview**: live relay state (pooled/bridge/**hybrid** mode, model count, uptime, safe mode) with per-token cards: session status, risk score, usage vs `MAX_MESSAGES_PER_DAY`, transient-retry counters, a **bridge relay** summary (active client count), plus a **smoke test** that sends one real chat through the pool (status, latency, preview).
-- **Tokens & Quotas**: **two sections side by side in hybrid mode** — the pooled token table **and** live bridge-client cards (masked key, status, model, requests, spend, premium/GLM quota, ban state) so both surfaces are trackable from one page. Per-token **Unlock**, **Finish runs**, and **Test**; runtime **Add Token to Pool**; a **3-mode switcher** (`Pooled`, `Hybrid`, `Bridge`) — changes automatically persisted to `.env`.
-- **Models**: live catalog with upstream agent mappings, default model badges, and `MODEL_ALIASES`.
-- **Traces**: recent chat requests and their routing outcome (token, model, status, duration, error class), the observability view for ban-avoidance debugging.
-- **Playground**: interactive prompt console with real-time SSE chat streaming, model selector, and collapsible thinking/reasoning blocks.
-- **Configuration Studio**: hot-reloading `.env` editor equipped with **3 One-Click Presets** (*Stealth Anti-Ban*, *Maximum Speed*, *Deep Debugging*), **interactive quick knobs** (boolean switches, enum pills, duration sliders) with real-time bidirectional sync, and **hover quick info cards** explaining every setting and default.
-- **Setup & Tool Integration**: universal 1-click copy cards (Base URL, API Key, Default Model), copy-paste snippets for 5 major AI coding tools (OpenCode, Continue/Cline, aider, 9router, cURL), headless OAuth login wizard, and diagnostic suite.
-- **Logs**: real-time in-memory log stream with level filtering (`INFO`, `DEBUG`, `WARN`, `ERROR`), search filtering, and structured field tags.
+- **Overview**: live relay state (pooled/bridge/**hybrid** mode, model count, uptime, safe mode), 6 KPI counters, and client-integration base URL with copy button.
+- **Tokens**: pooled credentials as `Account #1, #2, …` (1-based pool order) with live cooldown countdowns, at-risk account cards, per-account **Move Up/Down** reorder, **Clear**/**Lock**/**Unlock**/**Remove**, expandable session drawer (**Drop Session**, model-lock pinning), rotation-policy radios, 429 auto-failover switch, **Add Token to Pool**, and the headless OAuth login wizard.
+- **Quota Tracker**: per-account premium-pool bars and session-quota tables with reset countdowns (day granularity past 24h).
+- **Models**: live served-model catalog with upstream agent mappings and 1-click model ID copy.
+- **Logs**: console (live `/v1` traffic, 1s auto-refresh) plus a table view of the newest 200 ring entries with level select, message search, and pagination.
 - **Metrics**: tabular stat cards with SVG sparklines and direct link to the raw `/metrics` Prometheus feed.
+- **Traces**: recent chat requests and their routing outcome (token, model, status, duration, error class), the observability view for ban-avoidance debugging.
+- **Settings**: intent-driven cards (Security password change, General, Pool, Upstream) that apply live on save, plus the collapsible raw `.env` editor with server-side validation and rollback.
+- **Setup**: universal Base URL, client API key field with **Generate**/**Reset**, per-model copy buttons, and copy-paste snippets for major AI coding tools (OpenCode, Continue/Cline, aider, 9router, cURL).
 
 See [Dashboard Guide](docs/dashboard.md) for access, Docker caveats, and hardening.
 

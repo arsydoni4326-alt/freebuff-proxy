@@ -108,9 +108,9 @@ func TestRemoveLastTokenDropsMismatchWindow(t *testing.T) {
 
 	rle := &upstream.RateLimitError{Status: "free_mode_invalid_agent_model"}
 	p.recordMismatchEscalation(2, rle)
-	p.mismatchMu.Lock()
-	_, present := p.mismatch[2]
-	p.mismatchMu.Unlock()
+	p.roster.mu.Lock()
+	_, present := p.roster.mismatch[2]
+	p.roster.mu.Unlock()
 	if !present {
 		t.Fatal("seed mismatch window for slot 2 missing")
 	}
@@ -118,9 +118,9 @@ func TestRemoveLastTokenDropsMismatchWindow(t *testing.T) {
 	if err := p.RemoveLastToken(); err != nil {
 		t.Fatalf("RemoveLastToken: %v", err)
 	}
-	p.mismatchMu.Lock()
-	_, present = p.mismatch[2]
-	p.mismatchMu.Unlock()
+	p.roster.mu.Lock()
+	_, present = p.roster.mismatch[2]
+	p.roster.mu.Unlock()
 	if present {
 		t.Error("mismatch window for removed token still present")
 	}
@@ -139,9 +139,9 @@ func TestRemoveAllTokensDropsMismatchWindows(t *testing.T) {
 	p.recordMismatchEscalation(2, rle)
 
 	p.RemoveAllTokens(context.Background())
-	p.mismatchMu.Lock()
-	left := len(p.mismatch)
-	p.mismatchMu.Unlock()
+	p.roster.mu.Lock()
+	left := len(p.roster.mismatch)
+	p.roster.mu.Unlock()
 	if left != 0 {
 		t.Errorf("mismatch windows after RemoveAllTokens = %d, want 0", left)
 	}
@@ -251,7 +251,7 @@ func TestBridgeQuotaMirrorsPooled(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.LeaseRelease(lease)
-	pKn, pRem, pCap := quotaRemaining((*p.toks.Load())[0], modelA)
+	pKn, pRem, pCap := quotaRemaining((*p.roster.Load())[0], modelA)
 
 	pb := newBridgePool(t, mock)
 	blease, err := pb.AcquireBridge(context.Background(), "parity-client", modelA)
@@ -259,7 +259,7 @@ func TestBridgeQuotaMirrorsPooled(t *testing.T) {
 		t.Fatal(err)
 	}
 	pb.LeaseRelease(blease)
-	bKn, bRem, bCap := bridgeQuotaRemaining(blease.Bridge, modelA)
+	bKn, bRem, bCap := quotaRemaining(blease.Bridge, modelA)
 
 	if pKn != bKn || pRem != bRem || pCap != bCap {
 		t.Errorf("pooled vs bridge quota = (%v,%v,%v) vs (%v,%v,%v), want equal",
@@ -364,15 +364,13 @@ func TestRemoveTokenAtThenAddKeepsUsageSpendAligned(t *testing.T) {
 	p := sizedPool(t, mock)
 	addTokens(t, p, "cb_one", "cb_two", "cb_three") // indices 0..3
 
-	// Distinct usage/spend history per index.
-	p.usageMu.Lock()
-	p.msgsPerToken[0] = []time.Time{time.Now()}                    // token 0: 1 msg
-	p.msgsPerToken[3] = []time.Time{time.Now(), time.Now().Add(1)} // token 3: 2 msgs
-	p.usageMu.Unlock()
-	p.spendMu.Lock()
-	p.spendPerToken[0].add(100, time.Now())
-	p.spendPerToken[3].add(200, time.Now())
-	p.spendMu.Unlock()
+	// Distinct usage/spend history per index (travels with each entry).
+	p.roster.mu.Lock()
+	(*p.roster.Load())[0].ledger.usage = []time.Time{time.Now()}                    // token 0: 1 msg
+	(*p.roster.Load())[3].ledger.usage = []time.Time{time.Now(), time.Now().Add(1)} // token 3: 2 msgs
+	(*p.roster.Load())[0].ledger.spend.add(100, time.Now())
+	(*p.roster.Load())[3].ledger.spend.add(200, time.Now())
+	p.roster.mu.Unlock()
 
 	if err := p.RemoveTokenAt(1); err != nil {
 		t.Fatalf("RemoveTokenAt(1): %v", err)
@@ -381,17 +379,16 @@ func TestRemoveTokenAtThenAddKeepsUsageSpendAligned(t *testing.T) {
 		t.Fatalf("AddToken: %v", err)
 	}
 
-	p.usageMu.Lock()
-	us, u0 := len(p.msgsPerToken), len(p.msgsPerToken[0])
-	u2 := len(p.msgsPerToken[2])
-	p.usageMu.Unlock()
-	p.spendMu.Lock()
-	sp := len(p.spendPerToken)
-	d0 := p.spendPerToken[0].rolling24h(time.Now())
-	d2 := p.spendPerToken[2].rolling24h(time.Now())
-	p.spendMu.Unlock()
+	p.roster.mu.Lock()
+	us := len(*p.roster.Load())
+	u0 := len((*p.roster.Load())[0].ledger.usage)
+	u2 := len((*p.roster.Load())[2].ledger.usage)
+	sp := len(*p.roster.Load())
+	d0 := (*p.roster.Load())[0].ledger.spend.rolling24h(time.Now())
+	d2 := (*p.roster.Load())[2].ledger.spend.rolling24h(time.Now())
+	p.roster.mu.Unlock()
 
-	if got := len(*p.toks.Load()); got != 4 {
+	if got := len(*p.roster.Load()); got != 4 {
 		t.Fatalf("token count = %d, want 4", got)
 	}
 	if us != 4 || sp != 4 {
@@ -409,5 +406,124 @@ func TestRemoveTokenAtThenAddKeepsUsageSpendAligned(t *testing.T) {
 	}
 	if d2 != 200 {
 		t.Errorf("spend[2] day = %d, want 200 (old token-3 spend shifted)", d2)
+	}
+}
+
+// TestFreebucksCappedRetryWalletShape pins the issue #321 Freebucks wire
+// shape: the capped retry derives from the daily pool refill and the plan
+// wallet bonus — the pre-drift weekly/monthly binding windows are gone.
+// Balance (server-computed spendable = daily.remaining + wallet.balance)
+// below price caps the token; earliest future refill wins; no signal → 0.
+func TestFreebucksCappedRetryWalletShape(t *testing.T) {
+	mkSnap := func(fb *upstream.FreebucksInfo) session.SessionSnapshot {
+		return session.SessionSnapshot{Freebucks: fb}
+	}
+	fb := func(balance float64, dailyReset, bonusAt time.Time) *upstream.FreebucksInfo {
+		return &upstream.FreebucksInfo{
+			Balance: balance,
+			Daily:   upstream.FreebucksWindow{Limit: 20, Spent: 19, Remaining: 1, ResetAt: dailyReset},
+			Wallet:  upstream.FreebucksWallet{Balance: 0, MonthlyBonus: 10, NextBonusAt: bonusAt},
+			Prices:  map[string]float64{"openai/gpt-5.6-luna": 2},
+		}
+	}
+	// Balance covers the price → not capped.
+	capped, _ := freebucksCappedForSnapshot(mkSnap(fb(5, time.Now().Add(time.Hour), time.Time{})), "openai/gpt-5.6-luna")
+	if capped {
+		t.Error("capped with balance 5 >= price 2, want not capped")
+	}
+	// Capped: daily refill in 1h, bonus in 24h → retry ≈ daily reset.
+	reset := time.Now().Add(time.Hour).Truncate(time.Second)
+	capped, retry := freebucksCappedForSnapshot(mkSnap(fb(0.5, reset, reset.Add(23*time.Hour))), "openai/gpt-5.6-luna")
+	if !capped {
+		t.Fatal("not capped with balance 0.5 < price 2")
+	}
+	if retry < 59*time.Minute || retry > time.Hour+time.Minute {
+		t.Errorf("retry = %v, want ≈1h (daily refill, not the 24h bonus)", retry)
+	}
+	// Capped with the daily reset already past: plan bonus is the signal.
+	capped, retry = freebucksCappedForSnapshot(mkSnap(fb(0.5, time.Now().Add(-time.Hour), reset.Add(24*time.Hour))), "openai/gpt-5.6-luna")
+	if !capped {
+		t.Fatal("not capped with past daily reset")
+	}
+	if retry <= 0 {
+		t.Errorf("retry = %v, want the plan bonus instant", retry)
+	}
+	// No model price → never capped.
+	capped, _ = freebucksCappedForSnapshot(mkSnap(fb(0, reset, time.Time{})), "unknown/model")
+	if capped {
+		t.Error("capped for unpriced model, want not capped")
+	}
+}
+
+// TestFreebucksCappedMonthlyAllowance pins wire drift 2026-09-04 (#330):
+// when the monthly dollar allowance is spent, fresh sessions stop upstream
+// regardless of the daily balance. Absent monthly (older servers) changes
+// nothing.
+func TestFreebucksCappedMonthlyAllowance(t *testing.T) {
+	mkSnap := func(fb *upstream.FreebucksInfo) session.SessionSnapshot {
+		return session.SessionSnapshot{Freebucks: fb}
+	}
+	withMonthly := func(balance, remainingUsd float64, dailyReset, monthReset time.Time) *upstream.FreebucksInfo {
+		return &upstream.FreebucksInfo{
+			Balance: balance,
+			Daily:   upstream.FreebucksWindow{Limit: 20, Spent: 1, Remaining: 19, ResetAt: dailyReset},
+			Wallet:  upstream.FreebucksWallet{},
+			Monthly: &upstream.FreebucksMonthlyAllowance{LimitUsd: 10, SpentUsd: 10 - remainingUsd, RemainingUsd: remainingUsd, ResetAt: monthReset},
+			Prices:  map[string]float64{"openai/gpt-5.6-luna": 2},
+		}
+	}
+	now := time.Now()
+	// Balance covers the price AND monthly has room → not capped.
+	capped, _ := freebucksCappedForSnapshot(mkSnap(withMonthly(5, 4, now.Add(time.Hour), now.Add(30*24*time.Hour))), "openai/gpt-5.6-luna")
+	if capped {
+		t.Error("capped with balance and monthly room, want not capped")
+	}
+	// Balance covers the price but the monthly period is spent → capped
+	// anyway (daily refill is the earlier signal here).
+	capped, retry := freebucksCappedForSnapshot(mkSnap(withMonthly(5, 0, now.Add(time.Hour), now.Add(30*24*time.Hour))), "openai/gpt-5.6-luna")
+	if !capped {
+		t.Fatal("not capped with spent monthly allowance")
+	}
+	if retry < 59*time.Minute || retry > time.Hour+time.Minute {
+		t.Errorf("retry = %v, want ≈1h (earliest of daily/monthly)", retry)
+	}
+	// Daily refill past and no bonus: the monthly reset is the only
+	// signal — proves the monthly window feeds the retry.
+	capped, retry = freebucksCappedForSnapshot(mkSnap(withMonthly(5, 0, now.Add(-time.Hour), now.Add(30*24*time.Hour))), "openai/gpt-5.6-luna")
+	if !capped {
+		t.Fatal("not capped with spent monthly and past daily reset")
+	}
+	if retry < 29*24*time.Hour || retry > 31*24*time.Hour {
+		t.Errorf("retry = %v, want ≈30d (monthly reset)", retry)
+	}
+	// All recovery instants past: the numbers are self-declared stale —
+	// unknown, not capped, so one admission revalidates live truth.
+	capped, _ = freebucksCappedForSnapshot(mkSnap(withMonthly(0, 0, now.Add(-time.Hour), now.Add(-time.Hour))), "openai/gpt-5.6-luna")
+	if capped {
+		t.Error("capped on fully-past windows, want unknown (revalidate)")
+	}
+}
+
+// TestFreebucksCappedQuotaExempt pins issue #350: a server-authorized quota
+// exemption bypasses the balance<price cap (the meter's canStart is exempt
+// || balance >= price) but never the monthly-allowance gate.
+func TestFreebucksCappedQuotaExempt(t *testing.T) {
+	mkSnap := func(fb *upstream.FreebucksInfo) session.SessionSnapshot {
+		return session.SessionSnapshot{Freebucks: fb}
+	}
+	exempt := &upstream.FreebucksInfo{
+		Balance:     0,
+		Daily:       upstream.FreebucksWindow{Limit: 20, Spent: 20, Remaining: 0, ResetAt: time.Now().Add(time.Hour)},
+		Wallet:      upstream.FreebucksWallet{},
+		QuotaExempt: true,
+		Prices:      map[string]float64{"openai/gpt-5.6-luna": 2},
+	}
+	if capped, _ := freebucksCappedForSnapshot(mkSnap(exempt), "openai/gpt-5.6-luna"); capped {
+		t.Error("capped with QuotaExempt at zero balance, want not capped")
+	}
+	// Monthly spent still gates even when exempt.
+	exempt.Monthly = &upstream.FreebucksMonthlyAllowance{LimitUsd: 10, SpentUsd: 10, RemainingUsd: 0, ResetAt: time.Now().Add(24 * time.Hour)}
+	if capped, _ := freebucksCappedForSnapshot(mkSnap(exempt), "openai/gpt-5.6-luna"); !capped {
+		t.Error("not capped with spent monthly allowance, want capped despite exempt")
 	}
 }

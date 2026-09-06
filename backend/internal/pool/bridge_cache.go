@@ -151,14 +151,13 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	}
 
 	cfg := p.cfg.Load()
-	entry := &bridgeEntry{token: clientToken, client: client, spend: newSpendLedger(), admissionGate: make(chan struct{}),
+	entry := &bridgeEntry{token: clientToken, client: client, ledger: newAccountLedger(), spend: newSpendLedger(), admissionGate: make(chan struct{}),
 		rateLimitRate: cfg.BridgeRateLimitPerToken,
 	}
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 	entry.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-	entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	entry.runs = runs.NewRunManagerOpts(client, entry.session, runOptions(cfg))
 	entry.lastUsed = time.Now()
 
@@ -248,7 +247,7 @@ func (p *Pool) bridgeRecordSurvivorLocked(entry *bridgeEntry, now time.Time) {
 	}
 	count := 0
 	cutoff := now.Add(-usageWindow)
-	for _, at := range entry.usage {
+	for _, at := range entry.ledger.usage {
 		if !at.Before(cutoff) {
 			count++
 		}
@@ -283,7 +282,6 @@ func (p *Pool) bridgeEvictLocked(keep *bridgeEntry) []*bridgeEntry {
 		// the idle sweep (bridgeMaintain) once their leases drain; when
 		// every entry is busy, nothing is evicted this pass.
 		evicted := false
-		scarceSet := scarceModelSet(p.cfg.Load().ScarceSessionModels)
 		for i := 0; i < len(p.bridgeOrder); {
 			oldest := p.bridgeOrder[i]
 			entry, ok := p.bridge[oldest]
@@ -295,11 +293,6 @@ func (p *Pool) bridgeEvictLocked(keep *bridgeEntry) []*bridgeEntry {
 				i++
 				continue
 			}
-			// Prefer evicting non-scarce entries first.
-			if scarceActive(entry.session.Snapshot(), scarceSet) {
-				i++
-				continue
-			}
 			victims = append(victims, entry)
 			p.bridgeRecordSurvivorLocked(entry, time.Now())
 			delete(p.bridge, oldest)
@@ -307,28 +300,6 @@ func (p *Pool) bridgeEvictLocked(keep *bridgeEntry) []*bridgeEntry {
 			p.logger.Debug("pool: bridge entry evicted (cache full)", "bridge_entries", len(p.bridge))
 			evicted = true
 			break
-		}
-		if !evicted {
-			// Fallback: if every idle entry is scarce-active, evict the oldest anyway.
-			for i := 0; i < len(p.bridgeOrder); {
-				oldest := p.bridgeOrder[i]
-				entry, ok := p.bridge[oldest]
-				if !ok {
-					p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, oldest)
-					continue
-				}
-				if entry == keep || entry.runs.InflightCount() > 0 {
-					i++
-					continue
-				}
-				victims = append(victims, entry)
-				p.bridgeRecordSurvivorLocked(entry, time.Now())
-				delete(p.bridge, oldest)
-				p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, oldest)
-				p.logger.Debug("pool: bridge entry evicted (cache full, scarce fallback)", "bridge_entries", len(p.bridge))
-				evicted = true
-				break
-			}
 		}
 		if !evicted {
 			break
@@ -441,7 +412,10 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		entry    *bridgeEntry
 		lastUsed time.Time
 		spend    spendView
+		rpm      int
+		rpd      int
 	}
+	now := time.Now()
 	entries := make([]keyEntry, 0, len(p.bridge))
 	for k, e := range p.bridge {
 		// Copy lastUsed AND the spend view while the lock is held:
@@ -449,7 +423,8 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		// spend ledger under bridgeMu, so unlocked reads here would race
 		// (torn values under -race). ledgerView rolls the ledger window —
 		// a write — so it must run under bridgeMu like the recorders do.
-		entries = append(entries, keyEntry{key: k, entry: e, lastUsed: e.lastUsed, spend: ledgerView(e.spend)})
+		// Same for rpmCount/dayRequestCount: both prune/roll in place.
+		entries = append(entries, keyEntry{key: k, entry: e, lastUsed: e.lastUsed, spend: e.ledger.spendSnapshot(), rpm: e.ledger.rpmCount(now), rpd: e.ledger.dayRequestCount(now)})
 	}
 	p.bridgeMu.Unlock()
 
@@ -495,24 +470,30 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		banType, bannedUntil := banView(eRuns.BanError, eRuns.BannedUntil)
 		premium := premiumSnapshotFromQuotaMap(quotaByModel)
 		snaps = append(snaps, BridgeTokenSnapshot{
-			Key:           ke.key,
-			LastUsed:      ke.lastUsed,
-			ActiveRuns:    eRuns.ActiveRuns,
-			Requests:      eRuns.Requests,
-			Locked:        e.locked.Load(),
-			CooldownUntil: cooldownUntil,
-			SessionActive: sess.Status == "active",
-			Model:         model,
-			QuotaByModel:  quotaByModel,
-			SpendDay:      float64(spend.Day),
-			SpendPct:      spendPct,
-			PremiumQuota:  premium,
-			BanType:         banType,
-			BannedUntil:     bannedUntil,
-			DeadToken:       banType == "hard",
-			RateLimitHits:   e.rateLimitHits.Load(),
-			RateLimitMisses: e.rateLimitMisses.Load(),
-			RateLimitRate:   e.rateLimitRate,
+			Key:               ke.key,
+			LastUsed:          ke.lastUsed,
+			ActiveRuns:        eRuns.ActiveRuns,
+			Requests:          eRuns.Requests,
+			Locked:            e.locked.Load(),
+			CooldownUntil:     cooldownUntil,
+			SessionActive:     sess.Status == "active",
+			AccessTier:        sess.AccessTier,
+			Model:             model,
+			QuotaByModel:      quotaByModel,
+			SpendDay:          float64(spend.Day),
+			SpendPct:          spendPct,
+			RequestsPerMinute: ke.rpm,
+			RequestsPerDay:    ke.rpd,
+			PremiumQuota:      premium,
+			Freebucks:         sess.Freebucks,
+			FreeWindows:       sess.FreeWindows,
+			Subscription:      sess.Subscription,
+			BanType:           banType,
+			BannedUntil:       bannedUntil,
+			DeadToken:         banType == "hard",
+			RateLimitHits:     e.rateLimitHits.Load(),
+			RateLimitMisses:   e.rateLimitMisses.Load(),
+			RateLimitRate:     e.rateLimitRate,
 		})
 	}
 	return snaps
@@ -531,7 +512,7 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 	p.bridgeMu.Unlock()
 
 	for _, entry := range entries {
-		if time.Now().Before(entry.runs.CooldownUntil()) || entry.runs.BanError() != nil {
+		if !entry.runs.MaintenanceEligible() {
 			// Cooldown or live ban: no session poll (same rule as the
 			// fixed-token loop) — a ban must not keep re-contacting
 			// upstream at the poll cadence.
@@ -544,20 +525,12 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 		if !entry.nextPollAt.IsZero() && now.Before(entry.nextPollAt) {
 			continue
 		}
-		mCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
-		err := entry.session.Poll(mCtx)
-		cancel()
-		var delay time.Duration
+		failures, delay, err := pollSession(ctx, entry.session, cfg, entry.pollFailures)
 		if err != nil {
-			entry.pollFailures++
-			delay = sessionPollBackoffDelay(entry.pollFailures, sessionPollRetryAfter(err))
 			p.logger.Debug("pool: bridge session poll failed", "err", err, "retry_in", delay)
-		} else {
-			entry.pollFailures = 0
-			snap := entry.session.Snapshot()
-			delay = sessionPollSuccessDelay(snap)
 		}
-		entry.nextPollAt = time.Now().Add(delay)
+		entry.pollFailures = failures
+		entry.nextPollAt = now.Add(delay)
 	}
 }
 
@@ -594,14 +567,6 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			continue
 		}
 		if now.Sub(entry.lastUsed) > idleEvict {
-			// Issue #155: do not evict bridge entries that still hold an active
-			// scarce-model session with remaining lifetime (> 0).
-			scarceSet := scarceModelSet(cfg.ScarceSessionModels)
-			if scarceActive(entry.session.Snapshot(), scarceSet) {
-				toMaintain = append(toMaintain, entry)
-				p.logger.Debug("pool: bridge entry idle eviction skipped (active scarce session)", "token_label", bridgeTokenLabel(entry))
-				continue
-			}
 			toEvict = append(toEvict, entry)
 			p.bridgeRecordSurvivorLocked(entry, now)
 			delete(p.bridge, token)
@@ -621,13 +586,13 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 	total := 0
 	for _, entry := range p.bridge {
 		cutoff := now.Add(-usageWindow)
-		history := entry.usage
+		history := entry.ledger.usage
 		first := 0
 		for first < len(history) && history[first].Before(cutoff) {
 			first++
 		}
-		entry.usage = history[first:]
-		total += len(entry.usage)
+		entry.ledger.usage = history[first:]
+		total += len(entry.ledger.usage)
 	}
 	// Fold in unexpired survivors and prune the expired ones in the same
 	// pass (each survivor ages out one usage window after its eviction).
@@ -664,37 +629,7 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			// tokens; only the idle-eviction sweep above runs.
 			continue
 		}
-		// Same cooldown skip as the fixed-token loop: no queued-session
-		// EnsureSession, no rotation while cooling down — and the same
-		// live-ban skip so a hard-banned entry stops Maintain/rotate traffic
-		// (its cooldown deadline is zero until an operator acts).
-		if time.Now().Before(entry.runs.CooldownUntil()) || entry.runs.BanError() != nil {
-			continue
-		}
-		mCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
-		entry.runs.Maintain(mCtx)
-		// Same in-flight gate as the fixed-token loop: skip the queued-
-		// session GET while a chat is in flight so it cannot kick the active
-		// session (reference/freebuff-proxy-hengxin session-manager.js:37-49,
-		// 259-260). Active-session liveness polls run on the jittered
-		// bridgeSessionPollTick schedule instead.
-		if entry.runs.InflightCount() == 0 {
-			snap := entry.session.Snapshot()
-			if snap.Status == "queued" {
-				if _, err := entry.session.EnsureSession(mCtx); err != nil {
-					p.logger.Debug("pool: bridge maintain session not ready", "err", err)
-				} else {
-					// Issue #90a: pre-create the run for the session's model
-					// agent so the first request on this session does not pay
-					// the START latency (mirrors the fixed-token path).
-					after := entry.session.Snapshot()
-					if agentID, err := p.reg.AgentForModel(after.Model); err == nil && agentID != "" {
-						_ = entry.runs.Precreate(mCtx, agentID)
-					}
-				}
-			}
-		}
-		cancel()
+		maintainToken(ctx, entry.session, entry.runs, p.reg, cfg, bridgeTokenLabel(entry), p.logger)
 	}
 }
 

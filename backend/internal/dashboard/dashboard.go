@@ -25,6 +25,7 @@ type Dashboard struct {
 	cfg     func() *config.Config // returns the current (hot-reloadable) config
 	pool    *pool.Pool
 	reg     *registry.Registry
+	events  *eventStreamHub
 	logger  *slog.Logger
 	logs    *logring.Handler // dashboard log viewer source (nil = disabled)
 	started time.Time
@@ -65,7 +66,7 @@ func New(cfg func() *config.Config, p *pool.Pool, reg *registry.Registry, logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	d := &Dashboard{cfg: cfg, pool: p, reg: reg, logger: logger, started: time.Now(), logs: logs}
+	d := &Dashboard{cfg: cfg, pool: p, reg: reg, logger: logger, started: time.Now(), logs: logs, events: newEventStreamHub()}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -125,22 +126,42 @@ func (d *Dashboard) APIVersion(w http.ResponseWriter, r *http.Request) {
 		"update_url":      releaseURL,
 	}
 	if d.version != "" && d.updates != nil && r.Context() != nil {
-		if latest, err := d.updates.Latest(r.Context()); err == nil && latest != "" && updatecheck.UpdateAvailable(d.version, latest) {
-			resp["has_update"] = true
+		if r.URL != nil && r.URL.Query().Get("force") == "true" {
+			d.updates.Invalidate()
+		}
+		if latest, err := d.updates.Latest(r.Context()); err == nil && latest != "" {
 			resp["latest_version"] = latest
+			if updatecheck.UpdateAvailable(d.version, latest) {
+				resp["has_update"] = true
+			}
 		}
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// isLiveView reports whether the request asks for the hot-poll subset
+// (issue #322): ?view=live omits restart/deploy-only and account-stable
+// fields. The SPA fetches the full shape once per mount and merges the
+// live subset over it on every poll. Absent or any other value returns the
+// full shape, so old clients and existing tests are unaffected.
+func isLiveView(r *http.Request) bool {
+	return r != nil && r.URL != nil && r.URL.Query().Get("view") == "live"
 }
 
 // dataFor resolves the page data for a named content template.
 func (d *Dashboard) dataFor(name string, r *http.Request) any {
 	switch name {
 	case "overview":
+		if isLiveView(r) {
+			return d.overviewLiveData()
+		}
 		return d.overviewData(r)
 	case "config":
 		return d.configData()
 	case "tokens":
+		if isLiveView(r) {
+			return d.tokensLiveData()
+		}
 		return d.tokensData()
 	case "models":
 		return d.modelsData()
@@ -154,6 +175,8 @@ func (d *Dashboard) dataFor(name string, r *http.Request) any {
 		return d.metricsData()
 	case "upstream":
 		return d.upstreamData()
+	case "notices":
+		return d.noticesData()
 	default:
 		return nil
 	}
