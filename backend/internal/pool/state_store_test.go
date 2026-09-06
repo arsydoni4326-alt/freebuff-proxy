@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"freebuff-proxy/backend/internal/runs"
 	"freebuff-proxy/backend/internal/testutil"
 	"freebuff-proxy/backend/internal/upstream"
 )
@@ -172,5 +173,73 @@ func TestStateStoreDisabledIsNoop(t *testing.T) {
 	e := (*p.roster.Load())[0]
 	if !e.locked.Load() {
 		t.Error("lock must still apply in-memory without a store")
+	}
+}
+
+func TestRateLimitCooldownPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	rle := &upstream.RateLimitError{Status: "rate_limited", RetryAfter: 10 * time.Minute, Limit: 5, RecentCount: 5}
+	p.CooldownTokenRateLimit(0, rle)
+	st := store.decoded(t, "tok-0")
+	if st.Cooldown.RateLimit == nil || st.Cooldown.RateLimit.RetryAfter != rle.RetryAfter {
+		t.Fatalf("rate-limit not persisted: Cooldown=%+v", st.Cooldown)
+	}
+
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	e := (*p2.roster.Load())[0]
+	if got := e.runs.RateLimitError(); got == nil || got.RetryAfter != rle.RetryAfter {
+		t.Errorf("rate-limit not restored: got %+v, want RetryAfter=%v", got, rle.RetryAfter)
+	}
+}
+
+func TestIpCappedCooldownPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	ice := &upstream.IpCappedError{ActiveUsersForIP: 3, Limit: 5, RetryAfter: 30 * time.Second}
+	p.CooldownTokenIpCapped(0, ice)
+	st := store.decoded(t, "tok-0")
+	if st.Cooldown.IpCapped == nil || st.Cooldown.IpCappedUntil.IsZero() {
+		t.Fatalf("ip-cap not persisted: Cooldown=%+v", st.Cooldown)
+	}
+
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	e := (*p2.roster.Load())[0]
+	if got := e.runs.IpCappedError(); got == nil || got.ActiveUsersForIP != 3 {
+		t.Errorf("ip-cap not restored: %+v", got)
+	}
+}
+
+func TestAuthCooldownPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	p.CooldownToken(0, runs.DefaultCooldown)
+	st := store.decoded(t, "tok-0")
+	if st.Cooldown.CooldownUntil.IsZero() {
+		t.Fatal("auth cooldown not persisted")
+	}
+
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	e := (*p2.roster.Load())[0]
+	if e.runs.CooldownUntil().IsZero() {
+		t.Error("auth cooldown not restored")
 	}
 }

@@ -3,6 +3,8 @@ package pool
 import (
 	"encoding/json"
 	"time"
+
+	"freebuff-proxy/backend/internal/runs"
 )
 
 // TokenStateStore persists per-token operational state across restarts. The
@@ -20,18 +22,19 @@ type TokenStateStore interface {
 }
 
 // tokenState is the durable slice of a tokenEntry's operational state that
-// must survive restarts for anti-ban correctness (Phase 1 of the SQLite state
-// persistence program): the administrative lock and the terminal quarantine
-// (banned / country_blocked / invalid). Cooldown windows (runs) and
-// spend/quota ledgers are persisted in later phases (see session.md) — until
-// then a restart forgets 429/cooldown windows but never re-admits a locked or
-// dead account.
+// must survive restarts. Phase 1: the administrative lock and the terminal
+// quarantine (banned / country_blocked / invalid). Phase 2: the cooldown/ban/
+// country/ip-cap windows (runs.CooldownState), so 429/403 windows survive
+// restarts too. Spend/quota ledgers follow in Phase 3.
 type tokenState struct {
 	Locked           bool
 	Quarantined      bool
 	QuarantineReason string
 	QuarantineDetail string
 	QuarantineLiftAt time.Time
+	// Cooldown carries the entry's cooldown/ban/country/ip-cap windows.
+	// Zero-valued unless a window is live at persist time.
+	Cooldown runs.CooldownState
 }
 
 // SetTokenStateStore wires the durable per-token state store. Call once at
@@ -48,7 +51,7 @@ func (p *Pool) persistTokenState(e *tokenEntry) {
 	if e == nil || e.token == "" || p.stateStore == nil {
 		return
 	}
-	st := tokenState{Locked: e.locked.Load()}
+	st := tokenState{Locked: e.locked.Load(), Cooldown: e.runs.CooldownPersistState()}
 	if q := e.quarantine.Load(); q != nil {
 		st.Quarantined = true
 		st.QuarantineReason = q.reason
@@ -106,5 +109,10 @@ func (p *Pool) RestoreTokenState() {
 			p.logger.Warn("pool: token state restored (terminal account state)",
 				"token_label", tokenEntryLabel(e), "state", st.QuarantineReason)
 		}
+		// Phase 2: restore cooldown/ban/country/ip-cap windows so 429/403
+		// deadlines survive restarts. The runs accessors self-time-out if the
+		// deadline has already passed, so an expired window silently drops.
+		// A zero-valued Cooldown (from a Phase-1-only state blob) is harmless.
+		e.runs.RestoreCooldownState(st.Cooldown)
 	}
 }

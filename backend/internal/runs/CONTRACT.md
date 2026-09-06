@@ -12,7 +12,7 @@ runs; runs own the execution bookkeeping and the honest-FINISH guarantee.
 
 - `runs.go` (run managers, lifecycle), `steps.go` (step counting),
   `drain.go` (`RUNS_DRAIN_QUEUE_CAP`, `RUNS_DRAIN_TTL`, force-drop policy),
-  `cooldown.go` (run-scoped cooldowns, hardban).
+  `cooldown.go` (run-scoped cooldowns, hardban; `CooldownPersistState`/`RestoreCooldownState` for SQLite state Phase 2),
 - FINISH path: bounded deferred-FINISH queue (`RUN_FINISH_QUEUE_SIZE`) with
   synchronous inline fallback bounded by `RUN_FINISH_INLINE_TIMEOUT` when full.
 

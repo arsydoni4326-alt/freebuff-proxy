@@ -38,7 +38,17 @@ Multi-token front door for chat requests. Owns token selection order, session ad
 - `roster.Load()` once per call — never cache the pointer across calls.
 - Maturity (pool/maturity.go): `MATURITY_ENABLED` default ON (global kill-switch), dry-run default (probe-only, zero session slots claimed), unmetered touch models only (premium-short gated by `MATURITY_ALLOW_PREMIUM` + per-token opt-in), jittered daily slot in the account's own timezone, restart-safe 6h throttle, stops firing after 3 consecutive non-advancing days, never touches quarantined/banned/cooling/country-blocked accounts. Touch must fail closed on priced models (`skip:touch-priced`).
 - Spend ledger records events only — the $ ceiling is enforced elsewhere (server-enforced).
-- Token-state persistence (Phase 1, `state_store.go`): admin `LockToken`/`UnlockLockToken`/`UnlockToken` and terminal `quarantineToken`/`clearLiftedQuarantine` transitions write the entry's durable state (lock + quarantine reason/detail/liftAt) to the injected `TokenStateStore` as an opaque JSON blob; failures only log and never reject the mutation. `RestoreTokenState()` re-applies persisted locks/quarantines at startup, keyed by token VALUE (never index). Persisting state rows for a re-added token is INTENTIONAL: the same account is still dead, so the quarantine must survive a remove → re-add. Cooldown windows (runs) and spend/quota ledgers are later phases.
+- Token-state persistence (`state_store.go`): every pool cooldown transition
+  (auth / rate-limit / ip_capped / ban / country-block, via both the `CooldownToken*`
+  and `CooldownLease*` wrappers) and every administrative lock/unlock transition
+  (Lock/UnlockLock/Unlock) writes the entry's durable state to the injected
+  `TokenStateStore` as an opaque JSON blob (lock + quarantine + the full
+  `runs.CooldownState` window snapshot); failures only log and never reject the
+  mutation. `RestoreTokenState()` re-applies persisted locks/quarantines and
+  cooldown windows at startup, keyed by token VALUE (never index). Persisting
+  state rows for a re-added token is INTENTIONAL: the same account is still
+  dead, so the quarantine must survive a remove → re-add. Spend/quota ledgers
+  are Phase 3.
 
 ## Tests that protect it
 

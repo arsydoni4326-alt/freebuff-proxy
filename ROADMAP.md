@@ -176,7 +176,7 @@ Rough backlog; feasibility often depends on (undocumented) upstream behavior.
 - [ ] Optional alert webhooks for ban detection / quota exhaustion via `internal/notify`.
 - [ ] Document systemd/launchd/Task Scheduler status deeper in Getting Started.
 - [ ] Bridge-mode quota introspection surfaced per entry in `/admin` without plaintext exposure.
-- [ ] **SQLite state persistence — Phase 2**: persist cooldown windows (rate-limit / ip_capped / country / ban deadlines + reasons) via a `runs.RunManager` persist/restore API, so 429/403 windows survive restarts.
+- [x] **SQLite state persistence — Phase 2**: persist cooldown/ban/country/ip-cap windows (`runs.CooldownState`) so 429/403 windows survive restarts.
 - [ ] **SQLite state persistence — Phase 3**: persist spend/quota ledgers (Pacific day/week/month buckets, daily message/request counters) so quota accounting survives restarts; review `MigrateFromEnv` re-seed of dashboard-removed tokens.
 - [ ] **SQLite state persistence — Phase 4**: move `SESSION_PERSIST` run/session state into the same SQLite store (full durability without JSON files).
 

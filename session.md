@@ -1,58 +1,41 @@
 # Session: SQLite Token Database + UI
 
-## Latest: Phase 1 — Tokens + Anti-Ban State in SQLite (config file never written)
+## Latest: Phase 2 — Cooldown Windows Persisted in SQLite (429/403 survive restarts)
 
-- **Direction change**: the earlier `-config` JSON write-back (commit
-  `ec4ac56`) was rejected by the operator — writing a bind-mounted
-  `/app/config.json` makes the file resource-busy (rename-over-mount EBUSY).
-  Requirement: **never write the config file; store tokens AND state in the
-  SQLite token DB**. Full scope (tokens + locks + quarantines + cooldowns +
-  spend/quota + session/quota) is a multi-phase program; Phase 1 landed now.
-- **Phase 1 (this change) — tokens + locks + terminal quarantines in SQLite**:
-  - REVERTED the config-file write-back: `admin_env.go` helper block,
-    `admin_tokens.go` `syncTokensAfterMutation` wiring + `tokenPersistTarget`,
-    success-message changes, and the two config-file test files are gone. The
-    `-config` JSON file is read-only input, never rewritten.
-  - STARTUP POOL/DB SYNC FIX (`cli.Serve`): the pool was built from the
-    pre-DB token list, so dashboard-added tokens never reached the pool on
-    restart. Now after `cfg.AuthTokens = dbTokens` the pool is reconciled with
-    `p.SetConfig(&cfg)`, then `p.SetTokenStateStore(tokenDB)` +
-    `p.RestoreTokenState()`.
-  - `tokendb`: new `token_state` table (`token` PK, opaque `state` BLOB,
-    `updated_at`) + `SaveTokenState`/`LoadTokenStates`/`ClearTokenState`.
-    `LoadTokenStates` JOINs `auth_tokens` so a removed token's state is
-    invisible (and resurfaces if the same account is re-added — intentional:
-    the account's terminal state is still true; `ClearTokenState` is the
-    operator override).
-  - `pool`: new `state_store.go` — `TokenStateStore` interface (opaque blobs,
-    so the pool imports NOTHING new), `SetTokenStateStore`,
-    `persistTokenState` (best-effort, failure only logs), `RestoreTokenState`
-    (startup, keyed by token VALUE). Hooks on `LockToken` / `UnlockLockToken`
-    / `UnlockToken` / `quarantineToken` / `clearLiftedQuarantine`.
-  - `archtest`: matrix deliberately extended — `internal/tokendb` added as a
-    leaf; `internal/dashboard → stealth` (risk engine) and
-    `internal/{server,cli} → tokendb` were PRE-EXISTING edges that the matrix
-    had missed (CI was already red on HEAD); now green.
-- **Phases remaining** (documented, NOT implemented):
-  - Phase 2 — cooldown windows (rate-limit / ip_capped / country / ban
-    deadlines + reasons) via a `runs.RunManager` persist/restore API.
+- **Phase 2** adds cooldown/ban/country/ip-cap window persistence on top of
+  Phase 1's lock + quarantine store. A rate-limit 429 applied just before a
+  restart is now still live after restart — the token stays skipped for the
+  remaining window instead of re-hitting upstream and burning another daily
+  session slot.
+- **runs** (`cooldown.go`): new `CooldownState` struct + `CooldownPersistState()` /
+  `RestoreCooldownState()`. The state struct is fully JSON round-trippable
+  (exported fields, all upstream error types are plain exported structs).
+  Restore clamps future deadlines to the 7-day cooldown ceiling so a corrupt
+  far-future `ResetAt` cannot permanently lock the token; expired deadlines
+  are restored verbatim but the accessors (`RateLimitError`, `BanError`, ...)
+  self-time-out against them, so an old window after a long restart silently
+  drops.
+- **pool** (`state_store.go` + `cooldown.go`): `tokenState` extended with
+  `Cooldown runs.CooldownState` (JSON round-trip through the same opaque
+  blob). `persistTokenState` captures the full runs cooldown snapshot on every
+  cooldown transition (auth / rate-limit / ip_capped / ban / country-block —
+  both `CooldownToken*` and `CooldownLease*` wrappers, 9 hooks total).
+  `RestoreTokenState` now calls `e.runs.RestoreCooldownState(st.Cooldown)`.
+  Phase-1-only blobs (no `Cooldown` field) produce a zero-valued
+  `CooldownState` — `RestoreCooldownState` handles zeros as a no-op.
+- **Tests**: `runs/cooldown_persist_test.go` — 8 tests: round-trip for auth /
+  rate-limit / ip-capped / ban / country-block / hard-ban, far-future clamp,
+  expired-window self-timeout. `pool/state_store_test.go` — 3 new tests:
+  rate-limit / ip-capped / auth cooldown persist → restore against a fresh
+  pool.
+- **Phases remaining** (Phase 2 done):
   - Phase 3 — spend/quota ledgers (Pacific day/week/month buckets, daily
     message/request counters).
   - Phase 4 — session/quota durability (move `SESSION_PERSIST` JSON state into
     SQLite / the same store).
-- **Tests**: `tokendb_test.go` (+state round-trip/upsert/orphan/clear),
-  `pool/state_store_test.go` (lock+quarantine persist/restore via a memory
-  store, unknown-token ignore, no-store no-op, liftAt round-trip).
-- **Validation**: `go vet` clean; hermetic
-  `env -u AUTH_TOKENS -u ADMIN_TOKEN go test` passes for tokendb, pool, cli,
-  archtest, config; server suite passes except the PRE-EXISTING
-  `TestConcurrentReloadAndChat` EOF failure (verified identical on baseline).
-- **Notes**: `.env` remains the fallback when the token DB is unavailable
-  (CGO-disabled build) — tokens then persist to `.env` as before; the DB is
-  authoritative whenever it opens. `MigrateFromEnv` re-seeds DB tokens from
-  config at every start (pre-existing design; a token removed via dashboard
-  while still listed in config.json comes back on restart — noted for Phase 3
-  review, not changed here).
+- **Validation**: `go vet` clean; hermetic tests pass for runs, pool, tokendb,
+  archtest, cli, config; server suite passes except the pre-existing
+  `TestConcurrentReloadAndChat` EOF failure.
 
 
 ## Latest: Merge of upstream/main Resolved (feature/port-upstream)
