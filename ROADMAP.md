@@ -178,7 +178,7 @@ Rough backlog; feasibility often depends on (undocumented) upstream behavior.
 - [ ] Bridge-mode quota introspection surfaced per entry in `/admin` without plaintext exposure.
 - [x] **SQLite state persistence — Phase 2**: persist cooldown/ban/country/ip-cap windows (`runs.CooldownState`) so 429/403 windows survive restarts.
 - [x] **SQLite state persistence — Phase 3**: persist spend/quota ledgers (rolling 24h window, Pacific day/week/month buckets, spend_limited counter, usage + RPM windows, Pacific-day request counter) so quota accounting survives restarts.
-- [ ] **SQLite state persistence — Phase 4**: move `SESSION_PERSIST` run/session state into the same SQLite store (full durability without JSON files).
+- [x] **SQLite state persistence — Phase 4**: `SESSION_PERSIST` run/session state stored in the SQLite token DB (`session_state` table) via a `session.StateBackend` adapter when the DB is active — full durability without JSON files.
 
 ---
 

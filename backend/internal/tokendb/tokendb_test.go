@@ -285,3 +285,61 @@ func TestClearTokenState(t *testing.T) {
 		t.Errorf("ClearTokenState(absent) = %v, want nil", err)
 	}
 }
+
+func TestSessionStateSaveLoadRemove(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+
+	// Absent key: nil, no error.
+	got, err := db.LoadSessionState("hash-a")
+	if err != nil || got != nil {
+		t.Fatalf("absent session state = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	// Save + load round-trip.
+	if err := db.SaveSessionState("hash-a", []byte(`{"session":{"instance_id":"i1"}}`)); err != nil {
+		t.Fatalf("SaveSessionState: %v", err)
+	}
+	got, err = db.LoadSessionState("hash-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"session":{"instance_id":"i1"}}` {
+		t.Errorf("loaded blob = %q", got)
+	}
+
+	// Upsert replaces.
+	if err := db.SaveSessionState("hash-a", []byte(`{"session":{"instance_id":"i2"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.LoadSessionState("hash-a")
+	if string(got) != `{"session":{"instance_id":"i2"}}` {
+		t.Errorf("after upsert blob = %q", got)
+	}
+
+	// Independent keys.
+	if err := db.SaveSessionState("hash-b", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	all, err := db.LoadAllSessionStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Errorf("LoadAllSessionStates = %d entries, want 2", len(all))
+	}
+
+	// nil blob deletes the row.
+	if err := db.SaveSessionState("hash-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.LoadSessionState("hash-a")
+	if err != nil || got != nil {
+		t.Errorf("after nil-save, state = (%v, %v), want (nil, nil)", got, err)
+	}
+	all, _ = db.LoadAllSessionStates()
+	if len(all) != 1 {
+		t.Errorf("after nil-save, LoadAll = %d entries, want 1", len(all))
+	}
+}

@@ -18,6 +18,12 @@ persist through it instead of rewriting `.env`.
   them): `SaveTokenState(token, blob)`, `LoadTokenStates() (map[string][]byte,
   error)` (JOINs `auth_tokens`, so a removed token's state is invisible),
   `ClearTokenState(token)`.
+- Session state (Phase 4 of the state-persistence program, SESSION_PERSIST):
+  `SaveSessionState(token, blob)` (nil blob deletes the row),
+  `LoadSessionState(token)` (nil when absent — the token-hash key space is
+  SEPARATE from auth_tokens, so no JOIN and a re-added token must resume its
+  session), `LoadAllSessionStates()`. Consumed through the
+  `session.StateBackend` adapter in `internal/cli/sessionbackend.go`.
 
 ## Allowed dependencies
 

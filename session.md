@@ -1,5 +1,39 @@
 # Session: SQLite Token Database + UI
 
+## Latest: Phase 4 — SESSION_PERSIST State in SQLite (full durability, no JSON files)
+
+- **Phase 4** completes the program: when the SQLite token DB is active AND
+  `SESSION_PERSIST=true`, session state and active agent runs are stored in
+  the DB's new `session_state` table (one JSON blob per token hash) instead of
+  the `SESSION_STATE_FILE` JSON file. The JSON-file path is unchanged when no
+  DB (CGO-disabled build) — same opt-in knob, better default storage.
+- **`session/backend.go` (new)**: `StateBackend` interface (opaque blobs:
+  `LoadState`/`LoadAll`/`SaveState`; nil blob = delete) + `kvBlob` (one row =
+  the token's session + per-agent runs). `Store` gains a `backend` field and
+  `NewStoreWithBackend`; `loadLocked`/`flushLocked` route through it with
+  file-parity semantics (active-without-instance-id dropped on load,
+  stale-instance removal refused, grace expiry dropped, read failure retries,
+  deleted keys cleaned up on flush). Keys are token HASHES (same key space as
+  the file store); raw tokens are never written.
+- **`tokendb`**: `session_state` table (`token` PK, opaque `state` BLOB,
+  `updated_at`) + `SaveSessionState` (nil deletes) / `LoadSessionState` /
+  `LoadAllSessionStates`. No JOIN with auth_tokens — the token-hash key space
+  is separate, so a re-added token still resumes its session (anti-slot-burn).
+- **`cli`** (`sessionbackend.go` new, `cli.go` restructured): the tokendb open
+  + MigrateFromEnv hoisted above the session-store construction so the store
+  can be built over the DB; `sqliteSessionBackend` adapter (only this package
+  may import both — archtest matrix). File-mode warning about exe-adjacent
+  state files stays file-mode-only.
+- **Tests**: `session/store_backend_test.go` — 4 tests (session round-trip
+  through a memory backend incl. quota map, run save/load/remove with empty-key
+  deletion, stale-instance removal refusal, corrupt-blob drop);
+  `tokendb_test.go` — `TestSessionStateSaveLoadRemove` (absent/upsert/
+  multi-key/nil-delete + LoadAll).
+- **Validation**: build + vet + gofmt clean; hermetic suites pass for
+  session, tokendb, cli, pool, archtest (plus runs/config from Phase 3);
+  server suite passes except the pre-existing `TestConcurrentReloadAndChat`
+  EOF failure. Phases 1-4 all complete; program CLOSED.
+
 ## Latest: Phase 3 — Spend/Usage Ledgers Persisted in SQLite (quota accounting survives restarts)
 
 - **Phase 3** extends the token_state blob with the spend ledger (rolling 24h

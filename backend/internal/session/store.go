@@ -93,6 +93,14 @@ type storeFile struct {
 type Store struct {
 	path string
 
+	// backend is the optional pluggable durable backend (Phase 4 of the
+	// SQLite state-persistence program). When non-nil, persistence goes
+	// through it instead of the JSON file — no bind-mounted-file writes.
+	// The whole in-memory view is written back per key on each flush (the
+	// token count is small, so the write amplification is negligible).
+	backend     StateBackend
+	backendKeys map[string]struct{} // keys known to the backend, for deletions
+
 	mu     sync.Mutex
 	data   map[string]persistedState
 	runs   map[string]map[string]PersistedRun // token key → agent id → run (issue #40)
@@ -120,12 +128,63 @@ func NewStore(path string) *Store {
 	return &Store{path: path, pending: make(map[string]*persistedState), runs: make(map[string]map[string]PersistedRun)}
 }
 
+// NewStoreWithBackend builds a store whose persistence is backed by the
+// given StateBackend (Phase 4: the SQLite token DB's session_state table)
+// instead of a JSON file. The path is unused (kept empty). Load semantics are
+// identical: the backend is read lazily on first Load/Save, an unreadable
+// backend retries on the next access.
+func NewStoreWithBackend(backend StateBackend) *Store {
+	return &Store{backend: backend, pending: make(map[string]*persistedState), runs: make(map[string]map[string]PersistedRun), backendKeys: make(map[string]struct{})}
+}
+
 func (s *Store) loadLocked() {
 	if s.loaded {
 		return
 	}
 	s.data = make(map[string]persistedState)
 	s.runs = make(map[string]map[string]PersistedRun)
+
+	// Backend mode (Phase 4): read every persisted blob once and decode
+	// each into the in-memory view. A read failure leaves loaded=false so
+	// the next access retries (mirrors the file path's readFailed logic).
+	if s.backend != nil {
+		blobs, err := s.backend.LoadAll()
+		if err != nil {
+			s.readFailed = true
+			slog.Warn("session store: backend read failed, will retry on next access", "err", err)
+			return
+		}
+		for key, blob := range blobs {
+			kb, err := unmarshalKvBlob(blob)
+			if err != nil {
+				slog.Warn("session store: backend blob parse failed, ignoring", "err", err)
+				continue
+			}
+			if kb.Session != nil {
+				ps := *kb.Session
+				if ps.Status == "active" && ps.InstanceID == "" {
+					continue // cannot be resumed; drop like the file path
+				}
+				s.data[key] = ps
+			}
+			if len(kb.Runs) > 0 {
+				runMap := make(map[string]PersistedRun, len(kb.Runs))
+				for agentID, pr := range kb.Runs {
+					if pr.RunID != "" {
+						runMap[agentID] = pr
+					}
+				}
+				if len(runMap) > 0 {
+					s.runs[key] = runMap
+				}
+			}
+			s.backendKeys[key] = struct{}{}
+		}
+		s.loaded = true
+		s.readFailed = false
+		s.applyPendingLocked()
+		return
+	}
 
 	// Reject oversized files before reading them into memory.
 	if fi, err := os.Stat(s.path); err == nil && fi.Size() > maxStoreFileSize {
@@ -523,6 +582,48 @@ func (s *Store) applyPendingLocked() {
 
 // flushLocked writes the current map atomically. Caller holds s.mu.
 func (s *Store) flushLocked() {
+	// Backend mode (Phase 4): write every current key's blob and delete
+	// keys that no longer exist. Failures are logged and retried on the
+	// next flush (the in-memory view stays authoritative).
+	if s.backend != nil {
+		written := make(map[string]struct{}, len(s.data)+len(s.runs))
+		for key := range s.data {
+			written[key] = struct{}{}
+		}
+		for key, agents := range s.runs {
+			written[key] = struct{}{}
+			if _, ok := s.data[key]; ok {
+				continue // the session pass below carries the runs too
+			}
+			blob, err := marshalKvBlob(kvBlob{Runs: agents})
+			if err == nil {
+				err = s.backend.SaveState(key, blob)
+			}
+			if err != nil {
+				slog.Warn("session store: backend save failed", "err", err)
+			}
+		}
+		for key, ps := range s.data {
+			kb := kvBlob{Session: &ps, Runs: s.runs[key]}
+			blob, err := marshalKvBlob(kb)
+			if err == nil {
+				err = s.backend.SaveState(key, blob)
+			}
+			if err != nil {
+				slog.Warn("session store: backend save failed", "err", err)
+			}
+		}
+		for key := range s.backendKeys {
+			if _, ok := written[key]; !ok {
+				if err := s.backend.SaveState(key, nil); err != nil {
+					slog.Warn("session store: backend delete failed", "err", err)
+					continue
+				}
+			}
+		}
+		s.backendKeys = written
+		return
+	}
 	file := storeFile{Version: storeVersion, Sessions: s.data}
 	if len(s.runs) > 0 {
 		file.Runs = s.runs
