@@ -60,8 +60,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.CostMode != "free" {
 		t.Errorf("CostMode = %q, want free (default: omission routes requests as paid -> 402)", cfg.CostMode)
 	}
-	if cfg.SessionPersist {
-		t.Error("SessionPersist = true, want false (default: persistence opt-in)")
+	if !cfg.SessionPersist {
+		t.Error("SessionPersist = false, want true (default: persistence enabled)")
 	}
 	if cfg.SessionStateFile != ".freebuff-session-state.json" {
 		t.Errorf("SessionStateFile = %q, want %q", cfg.SessionStateFile, ".freebuff-session-state.json")
@@ -85,8 +85,8 @@ func TestSafeMode(t *testing.T) {
 		if cfg.IdleRotationTimeout != 30*time.Minute {
 			t.Errorf("IdleRotationTimeout = %v, want 30m under SafeMode", cfg.IdleRotationTimeout)
 		}
-		if cfg.RequestJitter != 2*time.Second {
-			t.Errorf("RequestJitter = %v, want 2s under SafeMode", cfg.RequestJitter)
+		if cfg.RequestJitter != 200*time.Millisecond {
+			t.Errorf("RequestJitter = %v, want 200ms under SafeMode", cfg.RequestJitter)
 		}
 	})
 
@@ -104,8 +104,8 @@ func TestSafeMode(t *testing.T) {
 		if cfg.MaxMessagesPerDay != 0 {
 			t.Errorf("MaxMessagesPerDay = %d, want 0 (explicit unlimited)", cfg.MaxMessagesPerDay)
 		}
-		if cfg.RequestJitter != 2*time.Second {
-			t.Errorf("RequestJitter = %v, want 2s under SafeMode", cfg.RequestJitter)
+		if cfg.RequestJitter != 200*time.Millisecond {
+			t.Errorf("RequestJitter = %v, want 200ms under SafeMode", cfg.RequestJitter)
 		}
 	})
 
@@ -131,8 +131,8 @@ func TestSafeMode(t *testing.T) {
 		if cfg.MaxMessagesPerDay != 0 {
 			t.Errorf("MaxMessagesPerDay = %d, want 0 (unlimited default, no SafeMode preset)", cfg.MaxMessagesPerDay)
 		}
-		if cfg.TLSFingerprint != "auto" {
-			t.Errorf("TLSFingerprint = %q, want auto under SafeMode", cfg.TLSFingerprint)
+		if cfg.TLSFingerprint != "" {
+			t.Errorf("TLSFingerprint = %q, want empty (CLI-faithful, no browser JA3) under SafeMode", cfg.TLSFingerprint)
 		}
 	})
 
@@ -234,6 +234,8 @@ func TestValidate(t *testing.T) {
 		{"zero registry refresh", func(c *Config) { c.RegistryRefresh = 0 }},
 		{"bad cost mode", func(c *Config) { c.CostMode = "Free" }},
 		{"negative max messages", func(c *Config) { c.MaxMessagesPerDay = -1 }},
+		{"negative max requests per day", func(c *Config) { c.MaxRequestsPerDay = -1 }},
+		{"negative max requests per minute", func(c *Config) { c.MaxRequestsPerMinute = -1 }},
 		{"negative max spend", func(c *Config) { c.MaxSpendPerDay = -1 }},
 		{"negative rate limit per ip", func(c *Config) { c.RateLimitPerIP = -1 }},
 		{"negative rate limit burst", func(c *Config) { c.RateLimitBurst = -1 }},
@@ -600,11 +602,11 @@ func TestTLSFingerprint(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("AUTH_TOKENS", "tok")
 
-	// default: SAFE_MODE preset (auto) when unset
+	// default: CLI-faithful (empty, no browser JA3) when unset
 	if cfg, err := Load(""); err != nil {
 		t.Fatalf("Load (default): %v", err)
-	} else if cfg.TLSFingerprint != "auto" {
-		t.Errorf("TLSFingerprint = %q, want auto (SAFE_MODE default preset)", cfg.TLSFingerprint)
+	} else if cfg.TLSFingerprint != "" {
+		t.Errorf("TLSFingerprint = %q, want empty (CLI-faithful default, no browser JA3)", cfg.TLSFingerprint)
 	}
 
 	// SAFE_MODE=false leaves it empty

@@ -1,6 +1,51 @@
 # Session: SQLite Token Database + UI
 
-## Latest Fix: Dashboard-Tagged Docker Build Repair
+## Latest: Merge of upstream/main Resolved (feature/port-upstream)
+
+- Completed the in-progress merge of `upstream/main` (19ef1dd) into
+  `feature/port-upstream` without losing any custom features. All 25
+  conflicted files resolved; the merge is staged, ready for commit.
+- **Custom features preserved**: SQLite token DB (`internal/tokendb` +
+  `server.WithTokenDB` + admin-handlers `tokenDB` field + cli.go serve-mode
+  wiring), bridge circuit breaker (`pool/bridge_breaker.go`), health-score +
+  probes (`pool/health.go`, `pool/token_probe.go`), stealth risk engine
+  (`stealth/risk.go` + `risk_test.go`, restored from HEAD after upstream
+  deleted them), AUTO_ROTATE_ON_EXHAUSTION knobs, bridge per-token rate
+  limits, dashboard Bridge Quota / Risk / Circuit Breaker sections, custom
+  admin routes `/admin/tokens/remove-specific` + `/admin/tokens/list`.
+- **Upstream architecture adopted**: thin `main.go` dispatcher into
+  `internal/cli/*` (HEAD's inline main removed; the custom tokendb block was
+  ported into `cli.Serve`), manifest-driven admin routes (`admin_manifest.json`
+  + `server.go registerAdminRoutes`; deleted duplicate `admin_routes_reg.go`),
+  admin handlers as `adminHandlers` methods (`syncTokensAfterMutation` /
+  `handleModeSwitch` now `a.`-receiver with the tokenDB branch preserved),
+  roster-based pool mutations, per-IP rate limiter + access-log gates,
+  catalog-driven config rendering (`cfg.Data()`).
+- Custom admin routes were added to `admin_manifest.json`
+  (remove-specific → adminActions.tokenRemoveSpecific, list → adminApi
+  tokenList) and `frontend/src/lib/api/paths.js`, with matching cases in
+  `server.go adminHandler`. Tokens.svelte remove action posts
+  `{ token: token.token_value ?? idx }` to remove-specific (SQLite-safe).
+- **Decisions**: `FALLBACK_AFTER_MS` default follows upstream's "0" (matches
+  the `TestFallbackAfterDefault` contract test; not part of the custom work).
+  `TestMetricsFamiliesContract` extended with the custom bridge/registry
+  families (the test's documented "conscious update" path). `scarce.go` and
+  `SCARCE_SESSION_MODELS` stay removed (upstream's deliberate removal; no
+  config field remains). Unused `RiskCards.svelte`/`Footer.svelte` stay
+  deleted (nothing references them; Overview renders Risk inline).
+- **Validation**: `go build ./backend/...` and the dashboard-tagged binary
+  build pass; `go vet` on changed packages passes; frontend `vite build`
+  passes (rebuilt `backend/internal/dashboard/dist` is staged). Hermetic
+  tests pass for config, tokendb, stealth, cli, dashboard, pool, and server
+  EXCEPT pre-existing `TestConcurrentReloadAndChat` (documented below) and
+  the pre-existing `backend/internal/registry/registry_test.go:1051`
+  unclosed-`if` syntax error that blocks `go test ./backend/...` before
+  registry tests run.
+- The full server suite's previously-documented failures (404 access-log
+  suppression, /v1 rate-limit envelopes, concurrent-reload EOF) are now
+  reduced to the single `TestConcurrentReloadAndChat` EOF case.
+
+## Earlier: Dashboard-Tagged Docker Build Repair
 
 - Repaired merge artifacts in `backend/internal/dashboard/dashboard_data.go` that stopped
   the dashboard-tagged Docker build: the `pool` package had been imported twice and the

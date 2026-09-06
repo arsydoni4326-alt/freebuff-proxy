@@ -55,7 +55,7 @@ func (p *Pool) probeTokens(ctx context.Context) {
 	if cfg == nil || cfg.BridgeMode() {
 		return
 	}
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	if toks == nil || len(*toks) == 0 {
 		return
 	}

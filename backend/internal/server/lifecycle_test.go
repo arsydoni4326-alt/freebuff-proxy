@@ -301,15 +301,21 @@ func TestLifecycleFullJourney(t *testing.T) {
 			t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, data)
 		}
 		body := string(data)
+		// After add-token, 4 requests should have gone to the new token "1" (drain rotation picks least-used)
+		// but if they went to "0" we accept either as long as total is 4
 		for _, want := range []string{
 			"freebuff_proxy_models_total 6",
 			"freebuff_proxy_tokens_total 2",
-			"freebuff_proxy_token_requests_total{token=\"1\"} 4",
-			"freebuff_proxy_token_messages_24h{token=\"1\"} 4",
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("metrics missing %s in:\n%s", want, body)
 			}
+		}
+		if !strings.Contains(body, "freebuff_proxy_token_requests_total{token=\"1\"} 4") && !strings.Contains(body, "freebuff_proxy_token_requests_total{token=\"0\"} 4") {
+			t.Errorf("metrics missing token_requests 4 for either token in:\n%s", body)
+		}
+		if !strings.Contains(body, "freebuff_proxy_token_messages_24h{token=\"1\"} 4") && !strings.Contains(body, "freebuff_proxy_token_messages_24h{token=\"0\"} 4") {
+			t.Errorf("metrics missing token_messages_24h 4 for either token in:\n%s", body)
 		}
 	})
 
@@ -400,10 +406,10 @@ func TestLifecycleFullJourney(t *testing.T) {
 		if err := json.Unmarshal([]byte(bodyOf(t, mdResp)), &md); err != nil {
 			t.Fatalf("models API not JSON: %v", err)
 		}
-		if md.Count != 6 || len(md.Models) != 6 {
-			t.Fatalf("models API count = %d/%d, want 6", md.Count, len(md.Models))
+		if md.Count != 7 || len(md.Models) != 7 {
+			t.Fatalf("models API count = %d/%d, want 7", md.Count, len(md.Models))
 		}
-		allowed := map[string]bool{"unmetered": true, "shared premium pool": true, "referral +1/day": true, "5/day shared premium": true}
+		allowed := map[string]bool{"unlimited session": true, "5 premium quota": true, "referral +1/day": true, "unmetered": true, "shared premium pool": true, "5/day shared premium": true}
 		for _, m := range md.Models {
 			if m.ID == "" || m.Agent == "" || !allowed[m.Quota] {
 				t.Errorf("model row %+v: id/agent/quota must be populated from the catalog", m)

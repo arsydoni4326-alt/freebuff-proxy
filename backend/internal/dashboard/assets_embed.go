@@ -1,5 +1,3 @@
-//go:build dashboard
-
 package dashboard
 
 import (
@@ -9,9 +7,6 @@ import (
 	"net/http"
 	"strings"
 )
-
-// HasEmbeddedSPA reports whether the binary was compiled with the embedded web dashboard.
-const HasEmbeddedSPA = true
 
 //go:embed all:dist
 var files embed.FS
@@ -24,8 +19,16 @@ func DistFS() fs.FS {
 	return files
 }
 
+// serveCSP is the Content-Security-Policy applied to every embedded SPA
+// response (both real dist files and the index.html fallback). The Vite
+// bundle is external-script based (no inline JS), style-src keeps
+// 'unsafe-inline' for Svelte style: attributes, and frame-ancestors 'none'
+// blocks clickjacking of the admin panel.
+const serveCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+
 // ServeSPA serves the embedded single-page application and static assets from dist/.
 func (d *Dashboard) ServeSPA(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Security-Policy", serveCSP)
 	dist, err := fs.Sub(files, "dist")
 	if err != nil {
 		http.Error(w, "SPA not available", http.StatusInternalServerError)
@@ -43,6 +46,14 @@ func (d *Dashboard) ServeSPA(w http.ResponseWriter, r *http.Request) {
 		if f, err := dist.Open(reqPath); err == nil {
 			if stat, statErr := f.Stat(); statErr == nil && !stat.IsDir() {
 				if rs, ok := f.(io.ReadSeeker); ok {
+					// Vite content-hashes everything under assets/, so those
+					// files are immutable per build; index.html and any other
+					// root file revalidate (#312).
+					if strings.HasPrefix(reqPath, "assets/") {
+						w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+					} else {
+						w.Header().Set("Cache-Control", "no-cache")
+					}
 					http.ServeContent(w, r, reqPath, stat.ModTime(), rs)
 					_ = f.Close()
 					return
@@ -65,6 +76,9 @@ func (d *Dashboard) ServeSPA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// index.html — direct or fallback — must never stay stale across
+	// deploys: the hashed asset URLs it references change per build.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeContent(w, r, "index.html", stat.ModTime(), index.(io.ReadSeeker))
 }

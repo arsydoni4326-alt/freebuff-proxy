@@ -7,6 +7,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
+# Custom build: dashboard-tagged, CGO-enabled binary (SQLite token DB) on a
+# Debian trixie-slim runtime with TZ data for exact Pacific-midnight math.
 RUN set -eux;   \
     export BUILD_DATE="$(date +%Y-%m-%d)";   \
     CGO_ENABLED=1 \

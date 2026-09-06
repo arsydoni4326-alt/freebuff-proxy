@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"freebuff-proxy/backend/internal/pool"
@@ -55,7 +54,7 @@ func quotaSummary(st *upstream.SessionState) string {
 }
 
 // openAIError is the OpenAI error body with an optional human-readable hint (#19).
-// Per OpenAPI 3.1 specification (reference/openai-openapi/openapi.yaml), code,
+// Per OpenAPI 3.1 specification (reference/protocols/openai-openapi/openapi.yaml), code,
 // message, param, and type are standard; param is null when unset.
 type openAIError struct {
 	Message string  `json:"message"`
@@ -86,6 +85,42 @@ func (s *Server) writeJSONErrorWithHint(w http.ResponseWriter, status int, messa
 	})
 }
 
+// openAIErrorType maps an internal error code to the OpenAI error `type`
+// field at the call sites that route through writeClientError. The shared
+// handler needs a single OpenAI shape; the type is derived from the code
+// so every site keeps its historical categorization.
+func openAIErrorType(status int, code string) string {
+	switch code {
+	case "rate_limit_exceeded":
+		return "rate_limit_exceeded"
+	case "missing_bearer_token":
+		return "invalid_request_error"
+	default:
+		return "upstream_error"
+	}
+}
+
+// writeClientError writes a client-error response in the envelope the
+// request's wire expects: the OpenAI shape for /v1/chat/completions and
+// /v1/responses, the Anthropic shape for /v1/messages. The Retry-After
+// ceiling is computed once here, so every dispatch site shares one rounding
+// rule (issue #253).
+func (s *Server) writeClientError(w http.ResponseWriter, r *http.Request, status int, message, code string, retryAfter time.Duration) {
+	if retryAfter > 0 {
+		retrySec := int(math.Ceil(retryAfter.Seconds()))
+		if retrySec < 1 {
+			retrySec = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retrySec))
+	}
+	if isAnthropicRequest(r) {
+		// retryAfter is passed as 0: the header is already written above.
+		s.writeAnthropicError(w, r, status, message, code, 0)
+		return
+	}
+	s.writeJSONErrorWithHint(w, status, message, openAIErrorType(status, code), code, "", 0)
+}
+
 func defaultHintForCode(code, message string) string {
 	lowerMsg := strings.ToLower(message)
 	switch {
@@ -112,7 +147,9 @@ func defaultHintForCode(code, message string) string {
 	case code == "upstream_auth_rejected" || code == "invalid_api_key" || strings.Contains(lowerMsg, "invalid api key"):
 		return "Token invalid or expired. Get a fresh token by running scripts/gen-token.cmd (Windows) or scripts/gen-token.sh (Linux/macOS)"
 	case code == "rate_limited":
-		return "Daily session quota exhausted. Resets at 07:00 UTC (Pacific midnight). Wait for reset or add another token."
+		return "Session quota exhausted. Switch your coding harness to an unlimited model: z-ai/glm-5.3-flash or deepseek/deepseek-v4-flash, or wait for reset at Pacific midnight (07:00 UTC)."
+	case code == "model_ip_limited":
+		return "Model restricted on this egress IP/tier. Limited-tier accounts should switch to 'mimo/mimo-v2.5', or route traffic through a Tier-1 country (US/EU/SG)."
 	case code == "ip_capped":
 		return "Too many distinct users on this egress IP (admission-only). Retry after Retry-After or use a different egress."
 	case code == "load_shedding":
@@ -128,33 +165,18 @@ func defaultHintForCode(code, message string) string {
 	}
 }
 
-// rateLimitWarnDedupe gates identical (token, code, window) `request failed`
-// logs (D6): the first + every 50th occurrence fire; the per-key counter
-// always increments so a silent burst stays countable, and the client
-// response is always written. Package-level = per-process, shared by every
-// server instance.
-var rateLimitWarnDedupe = struct {
-	mu sync.Mutex
-	m  map[string]int64
-}{}
-
-// resetRateLimitWarnDedupe clears the dedupe ledger (test hook).
-func resetRateLimitWarnDedupe() {
-	rateLimitWarnDedupe.mu.Lock()
-	defer rateLimitWarnDedupe.mu.Unlock()
-	rateLimitWarnDedupe.m = make(map[string]int64)
-}
-
 // rateLimitWarnShouldLog reports whether the (token, code, window) log
 // should fire for this occurrence, always incrementing the occurrence count.
-func rateLimitWarnShouldLog(key string) bool {
-	rateLimitWarnDedupe.mu.Lock()
-	defer rateLimitWarnDedupe.mu.Unlock()
-	if rateLimitWarnDedupe.m == nil {
-		rateLimitWarnDedupe.m = make(map[string]int64)
+// The ledger is per-Server (issue #252): two Server instances in one process
+// keep separate dedupe state.
+func (s *Server) rateLimitWarnShouldLog(key string) bool {
+	s.rateLimitDedupe.mu.Lock()
+	defer s.rateLimitDedupe.mu.Unlock()
+	if s.rateLimitDedupe.m == nil {
+		s.rateLimitDedupe.m = make(map[string]int64)
 	}
-	rateLimitWarnDedupe.m[key]++
-	n := rateLimitWarnDedupe.m[key]
+	s.rateLimitDedupe.m[key]++
+	n := s.rateLimitDedupe.m[key]
 	return n == 1 || n%50 == 0
 }
 
@@ -164,12 +186,19 @@ func rateLimitWarnShouldLog(key string) bool {
 // request's effective model, lease the acquired token lease (nil when the
 // error fired before acquisition — e.g. an unfit-egress refusal).
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, model string, lease *pool.Lease) {
+	// A dropped client leaves no downstream status (the access wrapper keeps
+	// its 200 default), so req_id is the only correlation key — always log
+	// it here, or the dashboard renders a context-free "ERROR 200".
+	reqID := ""
+	if r != nil {
+		reqID = reqIDFrom(r.Context())
+	}
 	if errors.Is(err, context.Canceled) {
-		s.logger.Debug("request canceled by client", "err", err)
+		s.logger.Debug("request canceled by client", "req_id", reqID, "err", err)
 		return
 	}
 	if r != nil && r.Context().Err() != nil {
-		s.logger.Debug("client context canceled; not writing error", "err", err)
+		s.logger.Debug("client context canceled; not writing error", "req_id", reqID, "err", err)
 		return
 	}
 
@@ -185,6 +214,7 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 	var wrr *upstream.WaitingRoomRequiredError
 	var sse *upstream.SessionSupersededError
 	var ue *upstream.UpstreamError
+	var tsle *upstream.TurnSpendLimitError
 	var rle *upstream.RateLimitError
 	var ice *upstream.IpCappedError
 	var sle *upstream.SessionLimitError
@@ -193,7 +223,6 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 	var cbe *upstream.CountryBlockedError
 	var ce *upstream.CreditsError
 	var cde *upstream.CapacityDeferredError
-	var scse *pool.ScarceSessionError
 	switch {
 	case errors.As(err, &be):
 		status, code = http.StatusForbidden, "account_banned"
@@ -202,6 +231,22 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		if retryAfter < 0 {
 			retryAfter = 0
 		}
+	case errors.As(err, &tsle):
+		// turn_spend_limit: upstream killed this turn (loop protection).
+		// 429 keeps the overload-family status clients expect, code stays
+		// "turn_spend_limited", but — critically — NO Retry-After: the
+		// breaker's retryAfterMs does not clear it (live 2026-09-05: 20+
+		// min of instant 60s re-trips), and a Retry-After header would
+		// hand the harness a futile retry drumbeat. The upstream body
+		// (loop warning) goes to the client verbatim so the agent
+		// abandons this turn. No cooldown is scheduled in chatAttempt, so
+		// a genuinely new turn flows immediately.
+		status, code = http.StatusTooManyRequests, "turn_spend_limited"
+		message = tsle.Body
+		if message == "" {
+			message = "upstream turn spend limit exceeded (runaway turn — start a fresh turn, do not retry this one)"
+		}
+		retryAfter = 0
 	case errors.As(err, &rle):
 		status, code = http.StatusTooManyRequests, "rate_limited"
 		switch rle.Status {
@@ -236,6 +281,21 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		if retryAfter < 0 {
 			retryAfter = 0
 		}
+		if code == "rate_limited" {
+			targetModel := rle.Model
+			if targetModel == "" {
+				targetModel = model
+			}
+			if targetModel == "z-ai/glm-5.2" || strings.Contains(strings.ToLower(rle.Body), "referral") {
+				message = fmt.Sprintf("%s. Model '%s' requires referral entitlement on your account. Please switch your coding harness to an unlimited session model: 'z-ai/glm-5.3-flash' or 'deepseek/deepseek-v4-flash'.", message, targetModel)
+			} else {
+				resetHint := ""
+				if retryAfter > 0 {
+					resetHint = fmt.Sprintf(" Resets in %s at Pacific midnight (07:00 UTC).", formatDuration(retryAfter))
+				}
+				message = fmt.Sprintf("%s. Daily session quota exhausted for '%s'.%s Switch your coding harness to an unlimited session model: 'z-ai/glm-5.3-flash' or 'deepseek/deepseek-v4-flash'.", message, targetModel, resetHint)
+			}
+		}
 	case errors.As(err, &ice):
 		// ip_capped: admission-only (too many distinct users on the egress
 		// IP) — 429, not the quota 429, with the body's retryAfterMs only.
@@ -258,15 +318,18 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		// serve the model. The body's retryAfterMs is surfaced
 		// as Retry-After but does not set the unfit window.
 		status, code = http.StatusConflict, "model_ip_limited"
-		message, retryAfter = lie.Error(), lie.RetryAfter
+		targetModel := lie.Model
+		if targetModel == "" {
+			targetModel = model
+		}
+		message = fmt.Sprintf("%s: model '%s' is unavailable on this egress IP/tier. If your account or IP is on limited tier (non-Tier-1 region), switch your coding harness to 'mimo/mimo-v2.5' (the available model for limited tier), or route traffic via a residential connection in a Tier-1 country (US/UK/EU/SG).", lie.Error(), targetModel)
+		retryAfter = lie.RetryAfter
 		if retryAfter < 0 {
 			retryAfter = 0
 		}
 	case errors.Is(err, upstream.ErrModelIPLimited):
-		// Bare sentinel (registry entry stored without refusal detail):
-		// same 409 contract, no Retry-After to surface.
 		status, code = http.StatusConflict, "model_ip_limited"
-		message = err.Error()
+		message = fmt.Sprintf("%s: model '%s' is unavailable on this egress IP/tier. If your account or IP is on limited tier (non-Tier-1 region), switch your coding harness to 'mimo/mimo-v2.5' (the available model for limited tier), or route traffic via a residential connection in a Tier-1 country (US/UK/EU/SG).", err.Error(), model)
 		retryAfter = 0
 	case errors.As(err, &wr):
 		status, code = http.StatusServiceUnavailable, "waiting_room_queued"
@@ -295,19 +358,6 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 			message = "session superseded"
 		}
 		retryAfter = 1 // retry in 1s
-	case errors.As(err, &scse):
-		// Issue #155: scarce session in use (pro/luna). Return 503 + Retry-After
-		// matching the active session's expiry time so 9router / clients back off
-		// or retry another account instead of burning the scarce slot.
-		status, code = http.StatusServiceUnavailable, "scarce_session_in_use"
-		message = scse.Error()
-		if !scse.ExpiresAt.IsZero() {
-			resetAt = scse.ExpiresAt
-			retryAfter = time.Until(scse.ExpiresAt)
-			if retryAfter < 0 {
-				retryAfter = 0
-			}
-		}
 	case errors.As(err, &cde):
 		// #105 (server half): the client's capacity-deferred retry budget
 		// (TRANSIENT_RETRIES) is exhausted, so the free tier's transient
@@ -410,12 +460,8 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 		// every 50th; the counter always increments and the response is
 		// always written.
 		key := tokenLabel(lease) + "|" + code + "|" + window
-		if !rateLimitWarnShouldLog(key) {
-			if isAnthropicRequest(r) {
-				s.writeAnthropicError(w, r, status, message, code, retryAfter)
-			} else {
-				s.writeJSONError(w, status, message, "upstream_error", code, retryAfter)
-			}
+		if !s.rateLimitWarnShouldLog(key) {
+			s.writeClientError(w, r, status, message, code, retryAfter)
 			return
 		}
 	}
@@ -428,9 +474,32 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error, m
 	} else {
 		s.logger.Warn("request failed", attrs...)
 	}
-	if isAnthropicRequest(r) {
-		s.writeAnthropicError(w, r, status, message, code, retryAfter)
-	} else {
-		s.writeJSONError(w, status, message, "upstream_error", code, retryAfter)
+	s.writeClientError(w, r, status, message, code, retryAfter)
+}
+
+func formatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
 	}
+	d = d.Round(time.Minute)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if h >= 24 {
+		dd := h / 24
+		hr := h % 24
+		if hr > 0 {
+			return fmt.Sprintf("%dd %dh", dd, hr)
+		}
+		return fmt.Sprintf("%dd", dd)
+	}
+	if h > 0 {
+		if m > 0 {
+			return fmt.Sprintf("%dh %dm", h, m)
+		}
+		return fmt.Sprintf("%dh", h)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%ds", int(d.Seconds()))
 }

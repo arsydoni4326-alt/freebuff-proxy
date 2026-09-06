@@ -47,20 +47,83 @@ var clientToOfficial = map[string]string{
 	"todowrite": "write_todos",
 
 	// Cline / Roo Code
-	"read_file":       "read_files",
-	"write_to_file":   "write_file",
-	"replace_in_file": "str_replace",
-	"execute_command": "run_terminal_command",
-	"list_files":      "list_directory",
-	"search_files":    "code_search",
+	"read_file":           "read_files",
+	"write_to_file":       "write_file",
+	"replace_in_file":     "str_replace",
+	"execute_command":     "run_terminal_command",
+	"list_files":          "list_directory",
+	"search_files":        "code_search",
+	"apply_diff":          "apply_patch",
+	"edit_file":           "str_replace",
+	"search_replace":      "str_replace",
+	"search_and_replace":  "str_replace",
+	"codebase_search":     "code_search",
+	"update_todo_list":    "write_todos",
+	"read_command_output": "run_terminal_command",
+	"editor":              "str_replace",
+	"fetch_web":           "read_url",
+	"search":              "code_search",
 
 	// Codex / OpenAI harnesses
 	"shell":          "run_terminal_command",
 	"local_shell":    "run_terminal_command",
 	"container_exec": "run_terminal_command",
+	"exec_command":   "run_terminal_command",
+	"exec":           "run_terminal_command",
 
-	// Aider / misc
-	"command": "run_terminal_command",
+	// Aider
+	"command":       "run_terminal_command",
+	"replace_lines": "str_replace",
+
+	// Qwen-Code
+	"run_shell_command": "run_terminal_command",
+	"grep_search":       "code_search",
+	"todo_write":        "write_todos",
+	"web_fetch":         "read_url",
+	"save_memory":       "write_todos",
+
+	// Goose
+	"developer__shell":       "run_terminal_command",
+	"developer__bash":        "run_terminal_command",
+	"developer__text_editor": "str_replace",
+	"developer__read":        "read_files",
+	"developer__write":       "write_file",
+	"developer__edit":        "str_replace",
+	"computer__execute":      "run_terminal_command",
+
+	// Continue (keys are matched lowercase)
+	"readfile":             "read_files",
+	"editfile":             "str_replace",
+	"createnewfile":        "write_file",
+	"runterminalcommand":   "run_terminal_command",
+	"grepsearch":           "code_search",
+	"globsearch":           "glob",
+	"fetchurlcontent":      "read_url",
+	"searchweb":            "web_search",
+	"viewsubdirectory":     "list_directory",
+	"singlefindandreplace": "str_replace",
+	// Kimi-CLI (reference/agents/kimi-cli src/kimi_cli/tools/*)
+	"writefile":   "write_file",
+	"settodolist": "write_todos",
+	"fetchurl":    "read_url",
+	// Crush (reference/agents/crush internal/agent/tools/*.go)
+	"todos": "write_todos",
+	"rg":    "code_search",
+
+	// Pi / Oh My Pi (OMP)
+	"powershell": "run_terminal_command",
+	"find":       "find_files",
+	"edit-diff":  "apply_patch",
+
+	// Kilocode / OpenCode
+	"execute_bash": "run_terminal_command",
+	"fuzzy_search": "code_search",
+	"list_dir":     "list_directory",
+	"websearch":    "web_search",
+	"webfetch":     "read_url",
+
+	// Gemini-CLI
+	"read_many_files": "read_files",
 }
 
 // officialTools is the set of official codebuff signature tool names a
@@ -101,14 +164,26 @@ func init() {
 // client names). Zero value is valid: nothing maps, relays pass through.
 type ToolMapper struct {
 	upstreamToClient map[string]string // response path: official → original
+	msgs             int               // len(messages) (or len(input) for Responses) in the scanned body
+	tools            int               // len(tools) in the scanned body
 }
+
+// MsgCount is the client message count retained by NewToolMapper (0 when the
+// body had no messages/input array). Feeds the console "N MSG" segment.
+func (m ToolMapper) MsgCount() int { return m.msgs }
+
+// ToolCount is the client tool count retained by NewToolMapper (0 when the
+// body had no tools array). Feeds the console "N TOOL" segment.
+func (m ToolMapper) ToolCount() int { return m.tools }
 
 // NewToolMapper scans a raw request body for function-tool names and returns
 // the mapper for it. Names that are already official (or unknown) produce no
 // entry — they round-trip unchanged. body may be nil/invalid (returns empty).
 func NewToolMapper(body []byte) ToolMapper {
 	var payload struct {
-		Tools []struct {
+		Messages []json.RawMessage `json:"messages"`
+		Input    []json.RawMessage `json:"input"`
+		Tools    []struct {
 			Function struct {
 				Name string `json:"name"`
 			} `json:"function"`
@@ -118,6 +193,11 @@ func NewToolMapper(body []byte) ToolMapper {
 		return ToolMapper{}
 	}
 	m := ToolMapper{upstreamToClient: make(map[string]string)}
+	m.msgs = len(payload.Messages)
+	if m.msgs == 0 {
+		m.msgs = len(payload.Input) // Responses API carries input[], not messages[]
+	}
+	m.tools = len(payload.Tools)
 	for _, t := range payload.Tools {
 		name := t.Function.Name
 		if name == "" {

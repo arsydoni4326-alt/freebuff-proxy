@@ -81,6 +81,9 @@ type MockUpstream struct {
 	// tests can exercise region reporting end-to-end.
 	CountryCode        string
 	CountryBlockReason string
+	// AccessTier, when non-empty, is embedded in the active/probe session body
+	// ("full", "limited", "free") so tests can exercise access tier annotations.
+	AccessTier string
 
 	// Standing, when non-empty, is embedded in the session create/poll
 	// response body's "standing" key (issue #96) so dashboard e2e tests can
@@ -142,8 +145,13 @@ type MockUpstream struct {
 	SessionPolls        int
 	SessionProbes       int // token-level probes: GET session without x-freebuff-instance-id
 	SessionEnds         int
-	StartedRuns         []string
-	FinishedRuns        []FinishedRun
+	// StreakBody, when non-nil, is served verbatim by GET
+	// /api/v1/freebuff/streak (maturity tests); nil serves a default
+	// zero-streak body. StreakHits counts streak GETs.
+	StreakBody   map[string]any
+	StreakHits   int
+	StartedRuns  []string
+	FinishedRuns []FinishedRun
 	// Requests is the total number of HTTP requests the mock has served
 	// (any route). Tests assert it stays unchanged when a pass must not
 	// touch the upstream at all.
@@ -320,6 +328,16 @@ func (m *MockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeRaw(w, 200, statusBody)
+	case r.URL.Path == "/api/v1/freebuff/streak" && r.Method == http.MethodGet:
+		m.mu.Lock()
+		m.StreakHits++
+		body := m.StreakBody
+		m.mu.Unlock()
+		if len(body) == 0 {
+			body = map[string]any{"streak": 0, "todayUsed": false, "timeZone": "America/Los_Angeles"}
+		}
+		raw, _ := json.Marshal(body)
+		writeRaw(w, 200, string(raw))
 	default:
 		writeJSON(w, 404, `{"error":"not found"}`)
 	}
@@ -361,6 +379,7 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 	limits := m.RateLimitsByModel
 	glmPromo := m.GlmPromo
 	countryCode, countryBlockReason := m.CountryCode, m.CountryBlockReason
+	accessTier := m.AccessTier
 	standing := m.Standing
 	m.mu.Unlock()
 
@@ -385,6 +404,9 @@ func (m *MockUpstream) handleSession(w http.ResponseWriter, r *http.Request) {
 		}
 		if countryBlockReason != "" {
 			body["countryBlockReason"] = countryBlockReason
+		}
+		if accessTier != "" {
+			body["accessTier"] = accessTier
 		}
 		if len(standing) > 0 {
 			body["standing"] = standing
@@ -453,6 +475,7 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 	limits := m.RateLimitsByModel
 	glmPromo := m.GlmPromo
 	countryCode, countryBlockReason := m.CountryCode, m.CountryBlockReason
+	accessTier := m.AccessTier
 	m.mu.Unlock()
 	if len(limits) == 0 {
 		limits = defaultProbeQuota
@@ -473,6 +496,9 @@ func (m *MockUpstream) handleProbe(w http.ResponseWriter) {
 	}
 	if countryBlockReason != "" {
 		body["countryBlockReason"] = countryBlockReason
+	}
+	if accessTier != "" {
+		body["accessTier"] = accessTier
 	}
 	writeJSON(w, 200, body)
 }
@@ -720,6 +746,13 @@ func (m *MockUpstream) SessionProbesSnapshot() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.SessionProbes
+}
+
+// StreakHitsSnapshot returns a locked copy of the streak-GET counter.
+func (m *MockUpstream) StreakHitsSnapshot() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.StreakHits
 }
 
 // LastChatBody returns the most recently recorded chat request body, or "".

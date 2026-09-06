@@ -13,13 +13,37 @@ import (
 	"time"
 )
 
+// Default per-token request limits (anti-abuse posture, user-mandated
+// 2026-09-05): each account stays well under upstream abuse-detection
+// volume while the multi-token pool rolls capped tokens. 0 = unlimited.
+const (
+	defaultMaxRequestsPerDay    = 1500 // successful chats per Pacific day (resets with the official daily quota)
+	defaultMaxRequestsPerMinute = 30   // admitted chat requests per rolling 60s window
+)
+
+// LoadOptions configures LoadOpts. DiscoverCLIToken, when non-nil, sources
+// an empty AUTH_TOKENS pool from the official CLI login files (issue #283);
+// the cmd entrypoint wires clicreds.DiscoverToken here. A nil value keeps
+// Load product-agnostic: the config package never reads product-specific
+// credential files.
+type LoadOptions struct {
+	DiscoverCLIToken func() (token, email, path string, ok bool)
+}
+
 // Load resolves configuration from the optional JSON file at configPath
 // ("" skips the file), the optional ./.env file (when present), and
 // environment overrides, then validates it. Precedence, lowest to highest:
 // built-in defaults < JSON file (-config) < ./.env < real environment
 // (.env is an environment file, so it follows the README rule that the
-// environment overrides the JSON config).
+// environment overrides the JSON config). Load never performs CLI credential
+// auto-discovery (issue #283): use LoadOpts with DiscoverCLIToken to source
+// an empty AUTH_TOKENS pool from the official CLI login files.
 func Load(configPath string) (Config, error) {
+	return LoadOpts(configPath, LoadOptions{})
+}
+
+// LoadOpts is Load with additional load-time options (issue #283).
+func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	raw, err := loadRaw(configPath)
 	if err != nil {
 		return Config{}, err
@@ -44,6 +68,7 @@ func Load(configPath string) (Config, error) {
 	}
 	overrideString(&raw.RotationInterval, "ROTATION_INTERVAL")
 	overrideString(&raw.RequestTimeout, "REQUEST_TIMEOUT")
+	overrideString(&raw.HTTPReadTimeout, "HTTP_READ_TIMEOUT")
 	overrideString(&raw.SessionCallTimeout, "SESSION_CALL_TIMEOUT")
 	overrideCSV(&raw.APIKeys, "API_KEYS")
 	overrideString(&raw.AdminToken, "ADMIN_TOKEN")
@@ -63,6 +88,8 @@ func Load(configPath string) (Config, error) {
 	overrideBool(&raw.LogAccess, "LOG_ACCESS")
 	overrideInt(&raw.LogRingSize, "LOG_RING_SIZE")
 	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
+	overrideInt(&raw.MaxRequestsPerDay, "MAX_REQUESTS_PER_DAY")
+	overrideInt(&raw.MaxRequestsPerMinute, "MAX_REQUESTS_PER_MINUTE")
 	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
 	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
 	overrideBool(&raw.BridgeEnabled, "BRIDGE_ENABLED")
@@ -89,12 +116,16 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.SessionReAdmitLead, "SESSION_RE_ADMIT_LEAD")
 	overrideString(&raw.SessionProbeCacheTTL, "SESSION_PROBE_CACHE_TTL")
 	overrideString(&raw.ModelUnavailableCacheTTL, "MODEL_UNAVAILABLE_CACHE_TTL")
-	overrideString((*string)(&raw.ScarceSessionModels), "SCARCE_SESSION_MODELS")
 	overrideString((*string)(&raw.QuotaFallbackModels), "QUOTA_FALLBACK_MODELS")
 	overrideString(&raw.WebhookURL, "WEBHOOK_URL")
 	overrideString(&raw.FallbackAfter, "FALLBACK_AFTER_MS")
 	overrideString(&raw.FallbackModels, "FALLBACK_MODEL")
 	overrideBool(&raw.AdoptCLISession, "ADOPT_CLI_SESSION")
+	overrideBool(&raw.MaturityEnabled, "MATURITY_ENABLED")
+	overrideBool(&raw.MaturityDryRun, "MATURITY_DRY_RUN")
+	overrideString(&raw.MaturityTouchModel, "MATURITY_TOUCH_MODEL")
+	overrideInt(&raw.MaturityTargetDays, "MATURITY_TARGET_DAYS")
+	overrideBool(&raw.MaturityAllowPremium, "MATURITY_ALLOW_PREMIUM")
 	overrideBool(&raw.WaitingRoomChain, "WAITING_ROOM_CHAIN")
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
@@ -105,12 +136,22 @@ func Load(configPath string) (Config, error) {
 	overrideString(&raw.BridgeCircuitBreakerWindow, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
 	overrideString(&raw.BridgeCircuitBreakerCooldown, "BRIDGE_CIRCUIT_BREAKER_COOLDOWN")
 	overrideString(&raw.TokenRotation, "TOKEN_ROTATION")
+	overrideBoolPtr(&raw.RateLimitFailover, "RATE_LIMIT_FAILOVER")
+	overrideString(&raw.ModelLocks, "MODEL_LOCKS")
 	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
 	overrideBool(&raw.AutoRotateOnExhaustion, "AUTO_ROTATE_ON_EXHAUSTION")
 	overrideString(&raw.ExhaustionWarningThreshold, "EXHAUSTION_WARNING_THRESHOLD")
 	overrideBool(&raw.HealthScoreEnabled, "HEALTH_SCORE_ENABLED")
 	overrideBool(&raw.TokenHealthProbes, "TOKEN_HEALTH_PROBES")
 	overrideString(&raw.TokenProbeInterval, "TOKEN_PROBE_INTERVAL")
+	overrideBool(&raw.DashboardRequireLogin, "DASHBOARD_REQUIRE_LOGIN")
+	// Convert feature-translation modes (issue #277): COMPRESS_PROMPT,
+	// CACHE_CONTROL_INJECTION and REASONING_IN_CONTENT are resolved once
+	// here (so the dashboard config form and /admin/reload swaps apply) and
+	// handed to convert.Options at request time.
+	overrideString(&raw.CompressPrompt, "COMPRESS_PROMPT")
+	overrideString(&raw.CacheControlInjection, "CACHE_CONTROL_INJECTION")
+	overrideString(&raw.ReasoningInContent, "REASONING_IN_CONTENT")
 
 	parseDuration := func(raw, name string) (time.Duration, error) {
 		d, err := time.ParseDuration(strings.TrimSpace(raw))
@@ -129,6 +170,10 @@ func Load(configPath string) (Config, error) {
 		return Config{}, err
 	}
 	sessionCallTimeout, err := parseDuration(raw.SessionCallTimeout, "SESSION_CALL_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	httpReadTimeout, err := parseDuration(raw.HTTPReadTimeout, "HTTP_READ_TIMEOUT")
 	if err != nil {
 		return Config{}, err
 	}
@@ -250,6 +295,24 @@ func Load(configPath string) (Config, error) {
 	maxMessagesPerDay := 0
 	if raw.MaxMessagesPerDay != nil {
 		maxMessagesPerDay = *raw.MaxMessagesPerDay
+	}
+
+	// MAX_REQUESTS_PER_DAY defaults to 1500 (per-token, Pacific-day): sized
+	// for ~6 concurrent agent sessions over a full working day while each
+	// account stays under abuse-detection volume; the pool rolls capped
+	// tokens. 0 = unlimited; explicit values always win.
+	maxRequestsPerDay := defaultMaxRequestsPerDay
+	if raw.MaxRequestsPerDay != nil {
+		maxRequestsPerDay = *raw.MaxRequestsPerDay
+	}
+
+	// MAX_REQUESTS_PER_MINUTE defaults to 30 (per-token, rolling 60s):
+	// ~2-3x the worst realistic minute for 6 parallel subagent sessions
+	// (spawn batches of 6-8 land within seconds) yet tight enough to lock
+	// a runaway loop (>=1 req/s) within a minute. 0 = unlimited.
+	maxRequestsPerMinute := defaultMaxRequestsPerMinute
+	if raw.MaxRequestsPerMinute != nil {
+		maxRequestsPerMinute = *raw.MaxRequestsPerMinute
 	}
 
 	// BRIDGE_DAILY_LIMIT (B5): global daily chat cap across ALL bridge
@@ -413,13 +476,6 @@ func Load(configPath string) (Config, error) {
 		fallbackModels = defaultFallbackModels()
 	}
 
-	// SCARCE_SESSION_MODELS defaults (issue #155): irreplaceable 1-session/day
-	// models kept alive for their full 1 hour window.
-	scarceSessionModels := splitList(string(raw.ScarceSessionModels))
-	if len(scarceSessionModels) == 0 && string(raw.ScarceSessionModels) == "" {
-		scarceSessionModels = defaultScarceSessionModels()
-	}
-
 	// QUOTA_FALLBACK_MODELS defaults (issue #155): when a model's session
 	// quota is exhausted, fall back to an unlimited model (flash → mimo).
 	quotaFallbackModels := parseMap(string(raw.QuotaFallbackModels))
@@ -440,8 +496,12 @@ func Load(configPath string) (Config, error) {
 		logFormat = "text"
 	}
 
+	dashboardRequireLogin := raw.DashboardRequireLogin
 	adminToken := strings.TrimSpace(raw.AdminToken)
-	if adminToken == "" {
+	if !dashboardRequireLogin || strings.EqualFold(adminToken, "none") || strings.EqualFold(adminToken, "off") || strings.EqualFold(adminToken, "false") {
+		dashboardRequireLogin = false
+		adminToken = ""
+	} else if adminToken == "" {
 		adminToken = DefaultAdminToken
 	}
 
@@ -459,16 +519,34 @@ func Load(configPath string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid TOKEN_ROTATION: %q (must be drain, round_robin, least_used, or random)", raw.TokenRotation)
 	}
 
+	modelLocks, err := parseModelLocks(raw.ModelLocks)
+	if err != nil {
+		return Config{}, err
+	}
+	// MATURITY_TARGET_DAYS defaults to 7 (one full streak interval); an
+	// explicit value is range-checked in Validate (1..28).
+	maturityTargetDays := 7
+	if raw.MaturityTargetDays != nil {
+		maturityTargetDays = *raw.MaturityTargetDays
+	}
+	maturityTouchModel := strings.TrimSpace(raw.MaturityTouchModel)
+	if maturityTouchModel == "" {
+		maturityTouchModel = "deepseek/deepseek-v4-flash"
+	}
+
 	cfg := Config{
 		ListenAddr:                       strings.TrimSpace(raw.ListenAddr),
 		UpstreamBaseURL:                  upstreamBaseURL,
 		AuthTokens:                       dedupeStrings(raw.AuthTokens),
 		RotationInterval:                 rotationInterval,
 		RequestTimeout:                   requestTimeout,
+		HTTPReadTimeout:                  httpReadTimeout,
 		SessionCallTimeout:               sessionCallTimeout,
 		TokenRotation:                    tokenRotation,
+		ModelLocks:                       modelLocks,
 		APIKeys:                          dedupeStrings(raw.APIKeys),
 		AdminToken:                       adminToken,
+		DashboardRequireLogin:            dashboardRequireLogin,
 		HTTP2Upstream:                    raw.HTTP2Upstream,
 		CostMode:                         strings.TrimSpace(raw.CostMode),
 		ActingUserID:                     strings.TrimSpace(raw.ActingUserID),
@@ -482,6 +560,8 @@ func Load(configPath string) (Config, error) {
 		LogAccess:                        raw.LogAccess,
 		LogRingSize:                      logRingSize,
 		MaxMessagesPerDay:                maxMessagesPerDay,
+		MaxRequestsPerDay:                maxRequestsPerDay,
+		MaxRequestsPerMinute:             maxRequestsPerMinute,
 		BridgeDailyLimit:                 bridgeDailyLimit,
 		MaxSpendPerDay:                   maxSpendPerDay,
 		BridgeEnabled:                    raw.BridgeEnabled,
@@ -511,7 +591,11 @@ func Load(configPath string) (Config, error) {
 		FallbackAfter:                    fallbackAfter,
 		FallbackModels:                   fallbackModels,
 		AdoptCLISession:                  raw.AdoptCLISession,
-		ScarceSessionModels:              dedupeStrings(scarceSessionModels),
+		MaturityEnabled:                  raw.MaturityEnabled,
+		MaturityDryRun:                   raw.MaturityDryRun,
+		MaturityTouchModel:               maturityTouchModel,
+		MaturityTargetDays:               maturityTargetDays,
+		MaturityAllowPremium:             raw.MaturityAllowPremium,
 		QuotaFallbackModels:              quotaFallbackModels,
 		WaitingRoomChain:                 raw.WaitingRoomChain,
 		RateLimitPerIP:                   rateLimitPerIP,
@@ -529,29 +613,36 @@ func Load(configPath string) (Config, error) {
 		TokenHealthProbes:                raw.TokenHealthProbes,
 		TokenProbeInterval:               tokenProbeInterval,
 		EnvFile:                          envFileUsed,
+		CompressPrompt:                   parseCompressPrompt(raw.CompressPrompt),
+		CacheControlInjection:            parseCacheControlInjection(raw.CacheControlInjection),
+		ReasoningInContent:               parseReasoningInContent(raw.ReasoningInContent),
+		RateLimitFailover:                raw.RateLimitFailover == nil || *raw.RateLimitFailover,
 	}
 
-	// Auto-discover CLI token if no AUTH_TOKENS were explicitly configured
-	// and AUTO_DISCOVER_TOKEN is not disabled. ADOPT_CLI_SESSION (issue
-	// #97) also opts into discovery: the operator explicitly asked to run
-	// like the CLI, so AUTO_DISCOVER_TOKEN=false must not silently leave the
+	// Auto-discover CLI token if a discovery hook was wired (LoadOpts,
+	// issue #283) AND no AUTH_TOKENS were explicitly configured AND
+	// AUTO_DISCOVER_TOKEN is not disabled. ADOPT_CLI_SESSION (issue #97)
+	// also opts into discovery: the operator explicitly asked to run like
+	// the CLI, so AUTO_DISCOVER_TOKEN=false must not silently leave the
 	// pool empty.
-	autoDiscover := true
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_DISCOVER_TOKEN"))); v == "false" || v == "0" || v == "off" || v == "no" {
-		autoDiscover = false
-	}
-	if (autoDiscover || cfg.AdoptCLISession) && len(cfg.AuthTokens) == 0 && !raw.AuthTokensSet {
-		if token, email, srcPath, ok := discoverCLIToken(); ok {
-			cfg.AuthTokens = []string{token}
-			cfg.DiscoveredSource = srcPath
-			cfg.DiscoveredEmail = email
-			// An operator running without AUTH_TOKENS intends bridge mode;
-			// auto-discovery silently flipping to pooled mode is surprising,
-			// so warn loudly and name the off switch.
-			slog.Warn("auto-discovery filled empty AUTH_TOKENS from CLI login: bridge mode switched to pooled mode",
-				"file", srcPath,
-				"email", email,
-				"hint", "set AUTO_DISCOVER_TOKEN=false to disable auto-discovery")
+	if opts.DiscoverCLIToken != nil {
+		autoDiscover := true
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_DISCOVER_TOKEN"))); v == "false" || v == "0" || v == "off" || v == "no" {
+			autoDiscover = false
+		}
+		if (autoDiscover || cfg.AdoptCLISession) && len(cfg.AuthTokens) == 0 && !raw.AuthTokensSet {
+			if token, email, srcPath, ok := opts.DiscoverCLIToken(); ok {
+				cfg.AuthTokens = []string{token}
+				cfg.DiscoveredSource = srcPath
+				cfg.DiscoveredEmail = email
+				// An operator running without AUTH_TOKENS intends bridge
+				// mode; auto-discovery silently flipping to pooled mode is
+				// surprising, so warn loudly and name the off switch.
+				slog.Warn("auto-discovery filled empty AUTH_TOKENS from CLI login: bridge mode switched to pooled mode",
+					"file", srcPath,
+					"email", email,
+					"hint", "set AUTO_DISCOVER_TOKEN=false to disable auto-discovery")
+			}
 		}
 	}
 
@@ -565,11 +656,11 @@ func Load(configPath string) (Config, error) {
 			cfg.IdleRotationTimeout = 30 * time.Minute
 		}
 		if !requestJitterSet && cfg.RequestJitter == 0 {
-			cfg.RequestJitter = 2 * time.Second
+			cfg.RequestJitter = 200 * time.Millisecond
 		}
-		if cfg.TLSFingerprint == "" {
-			cfg.TLSFingerprint = "auto"
-		}
+		// TLS is CLI-faithful by default (plain Go/Bun baseline, no browser
+		// JA3 spoofing). Browser-evasion (TLS_FINGERPRINT=auto/chrome...) is
+		// opt-in for datacenter WAF evasion, not CLI parity.
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -577,49 +668,6 @@ func Load(configPath string) (Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// discoverCLIToken auto-discovers FreeBuff credentials from official CLI login files.
-func discoverCLIToken() (string, string, string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", "", "", false
-	}
-	candidates := []string{
-		filepath.Join(home, ".config", "manicode", "credentials.json"),
-		filepath.Join(home, ".config", "codebuff", "credentials.json"),
-	}
-	for _, path := range candidates {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		// Strip a leading UTF-8 BOM (Windows credential writers can add one)
-		// or json.Unmarshal fails and auto-discovery silently skips the file.
-		data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
-		var parsed map[string]any
-		if err := json.Unmarshal(data, &parsed); err != nil {
-			continue
-		}
-		acct, ok := parsed["default"].(map[string]any)
-		if !ok {
-			for _, v := range parsed {
-				if m, ok := v.(map[string]any); ok && m["authToken"] != nil {
-					acct = m
-					break
-				}
-			}
-		}
-		if acct != nil {
-			token, _ := acct["authToken"].(string)
-			email, _ := acct["email"].(string)
-			token = strings.TrimSpace(token)
-			if token != "" {
-				return token, email, path, true
-			}
-		}
-	}
-	return "", "", "", false
 }
 
 func loadRaw(configPath string) (rawConfig, error) {
@@ -677,8 +725,11 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.UpstreamBaseURL, get, "UPSTREAM_BASE_URL")
 	overrideStringFrom(&raw.RotationInterval, get, "ROTATION_INTERVAL")
 	overrideStringFrom(&raw.RequestTimeout, get, "REQUEST_TIMEOUT")
+	overrideStringFrom(&raw.HTTPReadTimeout, get, "HTTP_READ_TIMEOUT")
 	overrideStringFrom(&raw.SessionCallTimeout, get, "SESSION_CALL_TIMEOUT")
 	overrideStringFrom(&raw.TokenRotation, get, "TOKEN_ROTATION")
+	overrideBoolPtrFrom(&raw.RateLimitFailover, get, "RATE_LIMIT_FAILOVER")
+	overrideStringFrom(&raw.ModelLocks, get, "MODEL_LOCKS")
 	overrideCSVFrom(&raw.APIKeys, get, "API_KEYS")
 	overrideStringFrom(&raw.AdminToken, get, "ADMIN_TOKEN")
 	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
@@ -695,6 +746,8 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideBoolFrom(&raw.LogAccess, get, "LOG_ACCESS")
 	overrideIntFrom(&raw.LogRingSize, get, "LOG_RING_SIZE")
 	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
+	overrideIntFrom(&raw.MaxRequestsPerDay, get, "MAX_REQUESTS_PER_DAY")
+	overrideIntFrom(&raw.MaxRequestsPerMinute, get, "MAX_REQUESTS_PER_MINUTE")
 	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
 	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
 	overrideBoolFrom(&raw.BridgeEnabled, get, "BRIDGE_ENABLED")
@@ -725,26 +778,114 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.SessionProbeCacheTTL, get, "SESSION_PROBE_CACHE_TTL")
 	overrideStringFrom(&raw.ModelUnavailableCacheTTL, get, "MODEL_UNAVAILABLE_CACHE_TTL")
 	overrideStringFrom(&raw.WebhookURL, get, "WEBHOOK_URL")
-	overrideStringFrom((*string)(&raw.ScarceSessionModels), get, "SCARCE_SESSION_MODELS")
 	overrideStringFrom((*string)(&raw.QuotaFallbackModels), get, "QUOTA_FALLBACK_MODELS")
 	overrideStringFrom(&raw.FallbackAfter, get, "FALLBACK_AFTER_MS")
 	overrideStringFrom(&raw.FallbackModels, get, "FALLBACK_MODEL")
 	overrideBoolFrom(&raw.AdoptCLISession, get, "ADOPT_CLI_SESSION")
+	overrideBoolFrom(&raw.MaturityEnabled, get, "MATURITY_ENABLED")
+	overrideBoolFrom(&raw.MaturityDryRun, get, "MATURITY_DRY_RUN")
+	overrideStringFrom(&raw.MaturityTouchModel, get, "MATURITY_TOUCH_MODEL")
+	overrideIntFrom(&raw.MaturityTargetDays, get, "MATURITY_TARGET_DAYS")
+	overrideBoolFrom(&raw.MaturityAllowPremium, get, "MATURITY_ALLOW_PREMIUM")
 	overrideBoolFrom(&raw.WaitingRoomChain, get, "WAITING_ROOM_CHAIN")
 	overrideFloatFrom(&raw.RateLimitPerIP, get, "RATE_LIMIT_PER_IP")
 	overrideIntFrom(&raw.RateLimitBurst, get, "RATE_LIMIT_BURST")
 	overrideBoolFrom(&raw.DashboardEnabled, get, "DASHBOARD_ENABLED")
+	overrideBoolFrom(&raw.DashboardRequireLogin, get, "DASHBOARD_REQUIRE_LOGIN")
+	// Convert feature-translation modes (issue #277), mirroring Load.
+	overrideStringFrom(&raw.CompressPrompt, get, "COMPRESS_PROMPT")
+	overrideStringFrom(&raw.CacheControlInjection, get, "CACHE_CONTROL_INJECTION")
+	overrideStringFrom(&raw.ReasoningInContent, get, "REASONING_IN_CONTENT")
 	return nil
 }
 
+// override applies envName from get to target through parse. An unset or
+// unparseable value leaves the file/default value untouched, so a single
+// generic helper replaces the five typed override methods (issue #282).
+func override[T any](target *T, get func(string) string, envName string, parse func(string) (T, bool)) {
+	if value := strings.TrimSpace(get(envName)); value != "" {
+		if parsed, ok := parse(value); ok {
+			*target = parsed
+		}
+	}
+}
+
+// parseString returns the trimmed value unchanged (used by overrideString).
+func parseString(s string) (string, bool) { return s, true }
+
+// parseBool accepts "1"/"true"/"yes"/"on" and "0"/"false"/"no"/"off".
+func parseBool(s string) (bool, bool) {
+	switch strings.ToLower(s) {
+	case "1", "true", "yes", "on":
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
+	}
+	return false, false
+}
+
+// parseCSV splits a comma-separated value via splitList.
+func parseCSV(s string) ([]string, bool) { return splitList(s), true }
+
+// parseIntPtr parses an int; blank or unparseable values yield ok=false.
+func parseIntPtr(s string) (*int, bool) {
+	if parsed, err := strconv.Atoi(s); err == nil {
+		return &parsed, true
+	}
+	return nil, false
+}
+
+// parseFloatPtr parses a float64; blank or unparseable values yield ok=false.
+func parseFloatPtr(s string) (*float64, bool) {
+	if parsed, err := strconv.ParseFloat(s, 64); err == nil {
+		return &parsed, true
+	}
+	return nil, false
+}
+
+// parseCompressPrompt reports whether optional prompt & context compression
+// is enabled (COMPRESS_PROMPT=true, default off), matching the convert
+// package's historical env semantics (issue #277).
+func parseCompressPrompt(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// parseCacheControlInjection reports whether DeepSeek prompt-cache
+// cache_control injection is enabled (CACHE_CONTROL_INJECTION, default on;
+// false disables), matching the convert package's default-on semantics.
+func parseCacheControlInjection(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "0", "false", "off", "no", "disabled":
+		return false
+	}
+	return true
+}
+
+// parseReasoningInContent returns the think-tag label used to fold reasoning
+// into message content (REASONING_IN_CONTENT, default "" = off); an explicit
+// tag word ("thinking") is returned verbatim, lowercased.
+func parseReasoningInContent(s string) string {
+	v := strings.ToLower(strings.TrimSpace(s))
+	switch v {
+	case "", "0", "false", "off", "no", "disabled":
+		return ""
+	case "1", "true", "yes", "on":
+		return "think"
+	}
+	return v
+}
+
+// overrideString sets target from a string env var.
 func overrideString(target *string, envName string) {
-	overrideStringFrom(target, os.Getenv, envName)
+	override(target, os.Getenv, envName, parseString)
 }
 
 func overrideStringFrom(target *string, get func(string) string, envName string) {
-	if value := strings.TrimSpace(get(envName)); value != "" {
-		*target = value
-	}
+	override(target, get, envName, parseString)
 }
 
 // overrideStringAlias overrides target from source get, preferring the
@@ -764,55 +905,57 @@ func overrideStringAlias(target *string, get func(string) string, primary, alias
 	}
 }
 
+// overrideCSV sets target from a comma-separated env var.
 func overrideCSV(target *[]string, envName string) {
-	overrideCSVFrom(target, os.Getenv, envName)
+	override(target, os.Getenv, envName, parseCSV)
 }
 
 func overrideCSVFrom(target *[]string, get func(string) string, envName string) {
-	if value := strings.TrimSpace(get(envName)); value != "" {
-		*target = splitList(value)
-	}
+	override(target, get, envName, parseCSV)
 }
 
 // overrideBool sets target from DEBUG_DUMP-style env vars; unset or
 // unrecognized values leave the file/default value untouched.
 func overrideBool(target *bool, envName string) {
-	overrideBoolFrom(target, os.Getenv, envName)
+	override(target, os.Getenv, envName, parseBool)
 }
 
 func overrideBoolFrom(target *bool, get func(string) string, envName string) {
-	switch strings.ToLower(strings.TrimSpace(get(envName))) {
-	case "1", "true", "yes", "on":
-		*target = true
-	case "0", "false", "no", "off":
-		*target = false
+	override(target, get, envName, parseBool)
+}
+
+func overrideBoolPtr(target **bool, envName string) {
+	override(target, os.Getenv, envName, parseBoolPtr)
+}
+
+func overrideBoolPtrFrom(target **bool, get func(string) string, envName string) {
+	override(target, get, envName, parseBoolPtr)
+}
+
+func parseBoolPtr(s string) (*bool, bool) {
+	b, ok := parseBool(s)
+	if !ok {
+		return nil, false
 	}
+	return new(b), true
 }
 
 // overrideInt sets target from MAX_MESSAGES_PER_DAY-style env vars; unset or
 // unparseable values leave the file/default value untouched.
 func overrideInt(target **int, envName string) {
-	overrideIntFrom(target, os.Getenv, envName)
+	override(target, os.Getenv, envName, parseIntPtr)
 }
 
 func overrideIntFrom(target **int, get func(string) string, envName string) {
-	if value := strings.TrimSpace(get(envName)); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil {
-			*target = &parsed
-		}
-	}
+	override(target, get, envName, parseIntPtr)
 }
 
 // overrideFloat sets target from RATE_LIMIT_PER_IP-style env vars; unset or
 // unparseable values leave the file/default value untouched.
 func overrideFloat(target **float64, envName string) {
-	overrideFloatFrom(target, os.Getenv, envName)
+	override(target, os.Getenv, envName, parseFloatPtr)
 }
 
 func overrideFloatFrom(target **float64, get func(string) string, envName string) {
-	if value := strings.TrimSpace(get(envName)); value != "" {
-		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
-			*target = &parsed
-		}
-	}
+	override(target, get, envName, parseFloatPtr)
 }

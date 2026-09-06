@@ -43,6 +43,11 @@ import (
 // requests per 24h of usage history.
 const usageWindow = 24 * time.Hour
 
+// rpmWindow is the rolling window for the per-token per-minute request cap
+// (MAX_REQUESTS_PER_MINUTE): a token may admit at most N chat requests per
+// 60s of admission history.
+const rpmWindow = 60 * time.Second
+
 // shutdownTimeout bounds each token's Shutdown during Pool.Shutdown when the
 // caller's context carries no earlier deadline.
 const shutdownTimeout = 10 * time.Second
@@ -80,57 +85,12 @@ type Lease struct {
 	AcquiredAt time.Time
 }
 
-// bridgeEntry is one lazily-created client-token slot in bridge mode: the
-// upstream client, session manager, and run manager for a single client-
-// supplied token, created on first use and reused across that client's
-// later requests. lastUsed and usage are guarded by Pool.bridgeMu.
-type bridgeEntry struct {
-	token    string
-	client   *upstream.Client
-	session  *session.Manager
-	runs     *runs.RunManager
-	lastUsed time.Time
-	usage    []time.Time // rolling 24h successful-chat timestamps (MAX_MESSAGES_PER_DAY)
-	// spend is the per-client-token spend ledger (issue #87); guarded by
-	// Pool.bridgeMu like usage.
-	spend *spendLedger
-	// nextPollAt / pollFailures carry the session-liveness poll schedule;
-	// touched only by the maintain goroutine (bridgeSessionPollTick).
-	nextPollAt   time.Time
-	pollFailures int
-	// locked is an administrative lock that prevents AcquireBridge from
-	// leasing runs to this entry (#187). Set/cleared by LockBridgeEntry/
-	// UnlockBridgeEntry; in-flight leases are unaffected.
-	locked atomic.Bool
-
-	// rateLimitTokens / rateLimitLastRefill implement a simple per-entry
-	// token-bucket rate limiter (BRIDGE_RATE_LIMIT_PER_TOKEN config).
-	// Guarded by mu. rateLimitTokens holds the current token balance;
-	// rateLimitLastRefill is the last refill timestamp. rateLimitRate
-	// is the configured tokens/sec (0 = unlimited, set once at creation).
-	rateLimitTokens     float64
-	rateLimitLastRefill time.Time
-	rateLimitRate       float64
-
-	// rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
-	// rateLimitHits counts allowed requests; rateLimitMisses counts denied requests.
-	rateLimitHits   atomic.Int64
-	rateLimitMisses atomic.Int64
-
-	// admissionGate serializes session creation per entry: the first
-	// request creates the session; concurrent requests block on the
-	// channel until it completes or fails. sync.Once ensures the session
-	// is created exactly once per entry lifecycle. Guarded by mu.
-	mu            sync.Mutex
-	admissionGate chan struct{}
-	admissionOnce sync.Once
-	admissionErr  error // result of leader's session creation
-}
-
 // TokenSnapshot is one token's healthz view.
 type TokenSnapshot struct {
 	Token                   int
-	TokenValue              string    // the actual token value from config.AuthTokens
+	TokenValue              string // the actual token value from config.AuthTokens
+	Email                   string `json:"email,omitempty"`
+	AccountID               string `json:"account_id,omitempty"`
 	CooldownUntil           time.Time
 	SessionStatus           string
 	SessionInstanceID       string
@@ -138,12 +98,28 @@ type TokenSnapshot struct {
 	SessionQueueDepth       int
 	SessionModel            string
 	SessionRemainingSeconds int64
-	ActiveRuns              int
-	Requests                int
-	Messages24h             int    // successful chats in the last 24h (MAX_MESSAGES_PER_DAY usage)
-	DailyLimit              int    // configured MAX_MESSAGES_PER_DAY (0 = unlimited)
-	UsagePct                int    // percentage of daily limit used (0 when unlimited)
-	RiskLevel               string // "low", "moderate", "high", "critical" account safety indicator (#6)
+	// SessionExpiresAt is the server-authored absolute session expiry
+	// (wire expiresAt). Monotonic across compact polls, unlike the wire
+	// remainingMs which only rides full admissions; the dashboard countdown
+	// derives from it so a poll cycle can never re-anchor the timer.
+	SessionExpiresAt time.Time `json:"session_expires_at,omitempty"`
+	ActiveRuns       int
+	Requests         int
+	Messages24h      int // successful chats in the last 24h (MAX_MESSAGES_PER_DAY usage)
+	DailyLimit       int // configured MAX_MESSAGES_PER_DAY (0 = unlimited)
+	UsagePct         int // percentage of daily limit used (0 when unlimited)
+	// RequestsPerMinute / RequestsPerDay are the local per-token request
+	// counters (MAX_REQUESTS_PER_MINUTE: admitted chats in the rolling 60s
+	// window; MAX_REQUESTS_PER_DAY: successful chats in the current Pacific
+	// day, rolling at Pacific midnight). The ...Limit fields carry the
+	// configured caps (0 = unlimited) and RequestsPerDayResetIn the time
+	// until the next Pacific midnight (the official daily reset instant).
+	RequestsPerMinute      int           `json:"requests_per_minute"`
+	RequestsPerDay         int           `json:"requests_per_day"`
+	RequestsPerMinuteLimit int           `json:"requests_per_minute_limit"`
+	RequestsPerDayLimit    int           `json:"requests_per_day_limit"`
+	RequestsPerDayResetIn  time.Duration `json:"requests_per_day_reset_in"`
+	RiskLevel              string        // "low", "moderate", "high", "critical" account safety indicator (#6)
 	// Spend24h / SpendDay / SpendWeek / SpendMonth are the local per-token
 	// spend ledger (issue #87/#122): tokens spent in the rolling 24h window
 	// and the current Pacific day/week/month buckets (with rollover —
@@ -172,6 +148,9 @@ type TokenSnapshot struct {
 	// annotation and healthz.
 	CountryCode        string
 	CountryBlockReason string
+	// AccessTier is the upstream access tier from the last session admission
+	// ("full", "limited", "free"); "" until reported.
+	AccessTier string `json:"access_tier,omitempty"`
 	// SessionActiveUsersForIP is the last known distinct-user count on the
 	// token's egress IP (upstream activeUsersForIp); zero when the session
 	// response did not carry it.
@@ -184,12 +163,32 @@ type TokenSnapshot struct {
 	// from the token's last admission (issue #178); "" when absent. The
 	// dashboard synthesizes the z-ai/glm-5.2 promo quota row from it.
 	GlmPromo string
+	// QuotaStale marks quota restored from the on-disk session entry after
+	// a restart (no live admission yet this process); QuotaSavedAt is when
+	// that entry was last polled. The dashboard labels it last-seen.
+	QuotaStale   bool
+	QuotaSavedAt time.Time
 	// Standing is the upstream account standing block (issue #96); nil until
 	// the session reports it.
 	Standing *upstream.SessionStanding
 	// Referral is the upstream referral block (FreebuffReferralInfo); nil until
 	// the session reports it.
 	Referral *upstream.SessionReferral
+	// Freebucks is the upstream Freebucks allowance block (issue #232); nil until
+	// the session reports it.
+	Freebucks *upstream.FreebucksInfo `json:"freebucks,omitempty"`
+	// FreeWindows is the upstream free-tier pool windows block
+	// (day/week/month; issue #319). Display-only; nil until reported.
+	FreeWindows *upstream.FreeWindowsInfo `json:"free_windows,omitempty"`
+	// Subscription is the upstream subscription usage block (issue #319);
+	// rollout-audience only; nil until reported.
+	Subscription *upstream.SubscriptionInfo `json:"subscription,omitempty"`
+	// UpgradeHint is the upstream upgradeHint block ({url, message})
+	// broadcast by the session server; nil when absent.
+	UpgradeHint *upstream.SessionUpgradeHint `json:"upgrade_hint,omitempty"`
+	// ServerMessage is any live broadcast or error message sent by the
+	// session server; "" when absent.
+	ServerMessage string `json:"server_message,omitempty"`
 	// TransientRetries / FingerprintRotations are this token's upstream
 	// client counters (TRANSIENT_RETRIES): retried transport failures and
 	// pinned TLS fingerprint swaps. Surfaced per-token in /metrics.
@@ -222,6 +221,11 @@ type TokenSnapshot struct {
 	// the operator sees exactly which fixed token is dead and why.
 	Quarantined      bool   `json:"quarantined,omitempty"`
 	QuarantineReason string `json:"quarantine_reason,omitempty"`
+	// AllowedModels is the slot's MODEL_LOCKS allowlist (issue #325); nil
+	// when unlocked. AllowlistSkips counts Acquire-time skips for models
+	// outside it.
+	AllowedModels  []string `json:"allowed_models,omitempty"`
+	AllowlistSkips int64    `json:"allowlist_skips,omitempty"`
 	// PremiumQuota is the 5/day premium-pool quota (pacific_day) derived from
 	// the live QuotaByModel entry for the premium models. Nil when no premium
 	// quota has been reported.
@@ -231,8 +235,15 @@ type TokenSnapshot struct {
 	// resumes_at deadline (auto-lifts at BannedUntil) and "hard" when it
 	// does not (never self-heals; operator must appeal upstream). Both are
 	// zero values when no ban window is active.
-	BanType     string    `json:"ban_type,omitempty"`
-	BannedUntil time.Time `json:"banned_until,omitempty"`
+	BanType         string    `json:"ban_type,omitempty"`
+	BannedUntil     time.Time `json:"banned_until,omitempty"`
+	Streak          int       `json:"streak,omitempty"`
+	TodayUsed       bool      `json:"today_used,omitempty"`
+	LastUsageDate   string    `json:"last_usage,omitempty"`
+	StreakUpdatedAt time.Time `json:"streak_updated_at,omitempty"`
+	// Maturity is the streak-maturity automation view (nil until maturity
+	// is first enabled for the token).
+	Maturity *MaturitySnapshot `json:"maturity,omitempty"`
 }
 
 // Pool balances requests across the configured tokens.
@@ -242,11 +253,11 @@ type Pool struct {
 	// every reader Load()s once per call instead of caching the pointer.
 	cfg atomic.Pointer[config.Config]
 	reg *registry.Registry
-	// toks is the fixed-token list. It is an atomic pointer so the dashboard
-	// can add/remove tokens at runtime (AddToken/RemoveLastToken/
-	// RemoveAllTokens rebuild the slice); every reader Load()s once per call
-	// and bounds-checks indices, since the slice can shrink mid-flight.
-	toks atomic.Pointer[[]*tokenEntry]
+	// roster owns the fixed-token entry list plus its per-entry ledger and
+	// the mismatch escalation map behind a single mutex (issues #262/#263).
+	// Lock-free readers use roster.Load(); all mutations and ledger ops go
+	// through its methods.
+	roster tokenRoster
 
 	// retired maps token entries removed by RemoveLastToken to the time they
 	// were parked. The busy check and the toks swap are TOCTOU: an Acquire
@@ -276,22 +287,10 @@ type Pool struct {
 	// re-admission gate). Never cleared — Shutdown is terminal.
 	draining atomic.Bool
 
-	// Usage tracking for MAX_MESSAGES_PER_DAY: one timestamp per successful
-	// upstream chat, per token. Guarded by usageMu.
-	usageMu      sync.Mutex
-	msgsPerToken [][]time.Time
-
 	// createGate bounds concurrent session admissions (issue #86): per-model
 	// and global in-flight create counters with wait-or-503, wired from
 	// SESSION_CREATE_MAX_PARALLEL_GLOBAL/PER_MODEL.
 	gate *createGate
-
-	// Spend ledger (issue #87): per-token token spend, rolling 24h window
-	// plus day/week/month buckets with rollover. Guarded by spendMu;
-	// spendPerToken stays index-aligned with msgsPerToken under usageMu's
-	// publish order (AddToken/RemoveLastToken update both slices together).
-	spendMu       sync.Mutex
-	spendPerToken []*spendLedger
 
 	// Idle rotation (IDLE_ROTATION_TIMEOUT): last successful Acquire and
 	// whether the maintain loop already FINISHed all runs for the current
@@ -387,12 +386,6 @@ type Pool struct {
 	notify   *notify.Sender
 	notifyMu sync.Mutex // guards notify reads/writes (data race)
 
-	// mismatch tracks the per-token rolling window behind the #140
-	// escalation guard (see recordMismatchEscalation). Index 0 is shared by
-	// all bridge entries; pooled tokens offset by one.
-	mismatch   map[int]mismatchEscalation
-	mismatchMu sync.Mutex
-
 	// storeSessionPersist and storeStateFile record the persistence config
 	// the store was created with (captured by SetSessionStore), so SetConfig
 	// can detect a reload that changes the persistence semantics — the live
@@ -422,12 +415,16 @@ type admissionGate struct {
 	token    int
 	hasToken bool
 }
-
 type tokenEntry struct {
-	session *session.Manager
-	runs    *runs.RunManager
-	client  *upstream.Client
-	// token is the raw AUTH_TOKENS string this entry was built from. A
+	session   *session.Manager
+	runs      *runs.RunManager
+	client    *upstream.Client
+	ledger    *AccountLedger // usage + spend state, guarded by the pool roster mutex
+	email     atomic.Pointer[string]
+	accountID atomic.Pointer[string]
+	// accountFetch guards the background account-info backfill so at most
+	// one FetchAccountInfo runs per entry at a time (issue #269).
+	accountFetch atomic.Bool
 	// config reload that replaces the account at this slot REBUILDS the
 	// entry (see Pool.SetConfig): the old entry is retired and drained
 	// (runs FINISHed, session ended) and a fresh one is constructed for
@@ -453,6 +450,10 @@ type tokenEntry struct {
 	// locked is set by LockToken/UnlockLockToken to administratively
 	// exclude a token from Acquire without clearing its cooldown state.
 	locked atomic.Bool
+	// allowlistSkips counts Acquire-time model-allowlist skips for this slot
+	// (MODEL_LOCKS, issue #325): requests for models the slot is not locked
+	// to. Surfaced per-token in snapshots, cards, and metrics.
+	allowlistSkips atomic.Int64
 
 	// quarantine, when non-nil, marks this fixed pooled token permanently
 	// ineligible for leasing: its account reached a terminal state (banned,
@@ -463,7 +464,96 @@ type tokenEntry struct {
 	// refusal (CompareAndSwap) and cleared either by UnlockToken or by the
 	// entry rebuild that an AUTH_TOKENS slot change triggers (SetConfig —
 	// the whole entry is replaced, so the marker dies with it).
-	quarantine atomic.Pointer[quarantineState]
+	quarantine  atomic.Pointer[quarantineState]
+	streak      atomic.Pointer[upstream.StreakInfo]
+	streakFetch atomic.Bool
+	// maturityMu guards maturity, the streak-maturity automation state
+	// (docs/maturity-plan.md PR2). Zero value = disabled; entry rebuilds
+	// (SetConfig slot changes) drop it — re-enable after a token swap.
+	maturityMu sync.Mutex
+	maturity   maturityState
+}
+
+func (e *tokenEntry) Email() string {
+	if p := e.email.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (e *tokenEntry) SetEmail(email string) {
+	if email != "" {
+		e.email.Store(&email)
+	}
+}
+
+func (e *tokenEntry) AccountID() string {
+	if p := e.accountID.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+func (e *tokenEntry) SetAccountID(id string) {
+	if id != "" {
+		e.accountID.Store(&id)
+	}
+}
+func (e *tokenEntry) Streak() *upstream.StreakInfo {
+	return e.streak.Load()
+}
+
+func (e *tokenEntry) SetStreak(s *upstream.StreakInfo) {
+	if s != nil {
+		e.streak.Store(s)
+	}
+}
+
+func (p *Pool) asyncStreakFetch(e *tokenEntry) {
+	if s := e.streak.Load(); s != nil && time.Since(s.UpdatedAt) < time.Hour {
+		return
+	}
+	if !e.streakFetch.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.streakFetch.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		st, err := e.client.GetStreak(ctx)
+		if err == nil && st != nil {
+			e.SetStreak(st)
+		}
+	}()
+}
+
+// asyncAccountInfoFetch backfills the account email/id for one pooled token
+// entry whose email is still unknown. It never blocks the caller, and at most
+// one fetch per entry is in flight at a time (issue #269). A failed fetch
+// releases the guard so a later backfill pass retries.
+func (p *Pool) asyncAccountInfoFetch(e *tokenEntry) {
+	if e.email.Load() != nil || !e.accountFetch.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.accountFetch.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		email, id, err := e.client.FetchAccountInfo(ctx)
+		if err == nil && email != "" {
+			e.SetEmail(email)
+			e.SetAccountID(id)
+		}
+	}()
+}
+
+// SetTokenAccountInfo stamps the account email and ID onto a pooled token entry.
+func (p *Pool) SetTokenAccountInfo(index int, email, accountID string) {
+	toks := p.roster.Load()
+	if toks != nil && index >= 0 && index < len(*toks) {
+		(*toks)[index].SetEmail(email)
+		(*toks)[index].SetAccountID(accountID)
+	}
 }
 
 // quarantineState is the terminal account state that permanently removes one
@@ -483,6 +573,33 @@ type quarantineState struct {
 	liftAt time.Time
 }
 
+// leaseTarget fields the lease dispatch methods (LeaseRelease, LeaseAbandon,
+// RecordRunStep, MarkRunFailed, RecordSpend, Chat) need from a lease. It
+// collapses the old 3-way Bridge/entry/index skeleton into one accessor
+// (issue #265): production leases always carry entry (acquire.go) or Bridge
+// (bridge.go), so the historical index-fallback path is dropped — an index
+// could be reused by a concurrent RemoveLastToken+AddToken and mis-target a
+// different entry. A nil target means the lease is synthetic (no backing
+// entry or bridge); the dispatch methods no-op on it.
+type leaseTarget struct {
+	runs   *runs.RunManager
+	client *upstream.Client
+	entry  *tokenEntry
+	bridge *bridgeEntry
+}
+
+// leaseTarget resolves the lease's backing run manager, upstream client and
+// entry (pooled) or bridge entry. Returns nil for a synthetic lease.
+func (l *Lease) leaseTarget() *leaseTarget {
+	if l.entry != nil {
+		return &leaseTarget{runs: l.entry.runs, client: l.entry.client, entry: l.entry}
+	}
+	if l.Bridge != nil {
+		return &leaseTarget{runs: l.Bridge.runs, client: l.Bridge.client, bridge: l.Bridge}
+	}
+	return nil
+}
+
 // New builds the pool over the configured tokens. len(clients) and
 // len(sessions) must both equal len(cfg.AuthTokens); each pair is bound to
 // one token and one RunManager.
@@ -500,13 +617,8 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), mismatch: make(map[int]mismatchEscalation), healthTracker: newHealthState(), probeResults: newProbeState()}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState()}
 	p.cfg.Store(cfg)
-	p.msgsPerToken = make([][]time.Time, len(cfg.AuthTokens))
-	p.spendPerToken = make([]*spendLedger, len(cfg.AuthTokens))
-	for i := range p.spendPerToken {
-		p.spendPerToken[i] = newSpendLedger()
-	}
 	p.gate = newCreateGate(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
@@ -517,15 +629,16 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 		sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 		sess.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-		sess.SetScarceModels(cfg.ScarceSessionModels)
-		toks = append(toks, &tokenEntry{
+		entry := &tokenEntry{
 			session: sess,
 			runs:    runs.NewRunManagerOpts(clients[i], sess, runOptions(cfg)),
 			client:  clients[i],
 			token:   cfg.AuthTokens[i],
-		})
+			ledger:  newAccountLedger(),
+		}
+		toks = append(toks, entry)
 	}
-	p.toks.Store(&toks)
+	p.roster = *newTokenRoster(toks)
 	return p, nil
 }
 
@@ -552,19 +665,17 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 	if p.gate != nil {
 		p.gate.setLimits(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
 	}
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	for _, tok := range *toks {
 		tok.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		tok.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 		tok.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-		tok.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Lock()
 	for _, entry := range p.bridge {
 		entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 		entry.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-		entry.session.SetScarceModels(cfg.ScarceSessionModels)
 	}
 	p.bridgeMu.Unlock()
 
@@ -584,7 +695,7 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 	// (RemoveLastToken/RemoveAllTokens) owns it, so a reload with fewer
 	// tokens leaves the surplus entries in place until that path or a
 	// restart drops them.
-	base := *p.toks.Load()
+	base := *p.roster.Load()
 	rebuilt := make([]*tokenEntry, 0, len(cfg.AuthTokens))
 	type slotChange struct {
 		idx int
@@ -592,12 +703,29 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 	}
 	var changes []slotChange
 	changed := false
+
+	// Map available base entries so swapped/reordered tokens reuse their
+	// existing client/session/run-manager triple without tear-down or rebuild.
+	available := make(map[string]*tokenEntry, len(base))
+	for _, e := range base {
+		if e != nil && e.token != "" {
+			available[e.token] = e
+		}
+	}
+
 	for i := range cfg.AuthTokens {
-		if i < len(base) && base[i].token == cfg.AuthTokens[i] {
+		tokVal := cfg.AuthTokens[i]
+		if i < len(base) && base[i].token == tokVal {
 			rebuilt = append(rebuilt, base[i])
+			delete(available, tokVal)
 			continue
 		}
-		entry, err := p.buildTokenEntry(i, cfg.AuthTokens[i])
+		if existing, ok := available[tokVal]; ok {
+			rebuilt = append(rebuilt, existing)
+			delete(available, tokVal)
+			continue
+		}
+		entry, err := p.buildTokenEntry(i, tokVal)
 		if err != nil {
 			// Keep serving the previous entry for this slot; log the
 			// failure so the operator sees the reload did not fully apply.
@@ -632,27 +760,11 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 		}
 	}
 	if changed {
-		// Publish the usage/spend slices BEFORE the token snapshot (the
-		// AddToken publish rule): rebuilt slots reset their per-token
-		// history, appended slots extend the slices so index-aligned
-		// readers never go out of range.
-		p.usageMu.Lock()
-		if len(p.msgsPerToken) < len(rebuilt) {
-			p.msgsPerToken = append(p.msgsPerToken, make([][]time.Time, len(rebuilt)-len(p.msgsPerToken))...)
-		}
-		for _, c := range changes {
-			p.msgsPerToken[c.idx] = nil
-		}
-		p.usageMu.Unlock()
-		p.spendMu.Lock()
-		if len(p.spendPerToken) < len(rebuilt) {
-			p.spendPerToken = append(p.spendPerToken, make([]*spendLedger, len(rebuilt)-len(p.spendPerToken))...)
-		}
-		for _, c := range changes {
-			p.spendPerToken[c.idx] = newSpendLedger()
-		}
-		p.spendMu.Unlock()
-		p.toks.Store(&rebuilt)
+		// Replace the roster wholesale: rebuilt slots carry a fresh entry
+		// (built by buildTokenEntry with a new ledger), so a changed slot's
+		// usage/spend history resets automatically — no index-aligned slice
+		// publish order to maintain.
+		p.roster.replaceAll(rebuilt)
 
 		// Retire and drain the replaced entries. A replaced entry with
 		// in-flight leases is parked like RemoveLastToken does: the swap
@@ -714,13 +826,15 @@ func (p *Pool) buildTokenEntry(idx int, token string) (*tokenEntry, error) {
 	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 	sess.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-	sess.SetScarceModels(cfg.ScarceSessionModels)
-	return &tokenEntry{
+	entry := &tokenEntry{
 		session: sess,
 		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
 		client:  client,
 		token:   token,
-	}, nil
+		ledger:  newAccountLedger(),
+	}
+	go p.asyncAccountInfoFetch(entry)
+	return entry, nil
 }
 
 // isPooledToken reports whether raw matches one of the fixed AUTH_TOKENS
@@ -729,7 +843,7 @@ func (p *Pool) isPooledToken(raw string) bool {
 	if raw == "" {
 		return false
 	}
-	for _, tok := range *p.toks.Load() {
+	for _, tok := range *p.roster.Load() {
 		if tok.token == raw {
 			return true
 		}
@@ -742,35 +856,22 @@ func (p *Pool) isPooledToken(raw string) bool {
 // token index. The config must be updated separately (AUTH_TOKENS + reload)
 // so the change survives a restart.
 func (p *Pool) AddToken(token string) (int, error) {
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	idx := len(*toks)
 	entry, err := p.buildTokenEntry(idx, token)
 	if err != nil {
 		return 0, fmt.Errorf("pool: add token: %w", err)
 	}
-	next := make([]*tokenEntry, 0, len(*toks)+1)
-	next = append(next, *toks...)
-	next = append(next, entry)
-	// Publish the usage slice BEFORE the token snapshot: a concurrent
-	// reader that observes the new snapshot (via p.toks) must always find
-	// a matching entry in p.msgsPerToken, so recordChat/usageCount for the
-	// new index can never index past the usage slice. The two fields are
-	// otherwise independent (toks is an atomic pointer, msgsPerToken is
-	// usageMu-guarded); only this publish order matters. The spend ledger
-	// slice rides along so Snapshot() stays index-aligned too.
-	p.usageMu.Lock()
-	p.msgsPerToken = append(p.msgsPerToken, nil)
-	p.usageMu.Unlock()
-	p.spendMu.Lock()
-	p.spendPerToken = append(p.spendPerToken, newSpendLedger())
-	p.spendMu.Unlock()
-	p.toks.Store(&next)
+	// Append through the roster: the entry carries its own ledger, so no
+	// index-aligned usage/spend slice needs to be extended — the publish
+	// order rule is satisfied by construction.
+	idx = p.roster.add(entry)
 	return idx, nil
 }
 
 // TokenCount returns the current fixed-token count.
 func (p *Pool) TokenCount() int {
-	return len(*p.toks.Load())
+	return len(*p.roster.Load())
 }
 
 // SetSessionStore injects the shared session-state store used by runtime
@@ -786,7 +887,7 @@ func (p *Pool) SetSessionStore(store *session.Store) {
 	// managers were built before the store existed (SetSessionStore runs
 	// after New), so inject it here; runtime-added tokens pass it through
 	// Options at construction.
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	for _, tok := range *toks {
 		tok.runs.SetStore(store)
 	}
@@ -846,38 +947,32 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 	if lease == nil {
 		return nil, errors.New("pool: chat: invalid lease")
 	}
-	if lease.Bridge != nil {
-		rc, err := lease.Bridge.client.ChatCompletions(ctx, opts, body)
-		if err == nil {
-			// Only chats that actually went upstream count against the
-			// daily cap; errors are not recorded.
-			p.bridgeRecordChat(lease.Bridge)
-			p.requestsServed.Add(1)
-		}
-		return rc, err
+	// Leases dispatch through their authoritative owner pinned by Acquire or
+	// AcquireBridge (issue #265): entry for fixed-token leases, Bridge for
+	// bridge leases. A concurrent RemoveLastToken+AddToken can leave a
+	// lease's Token index out of range (chat would fail with "invalid lease
+	// token") or reused by a DIFFERENT token (chat would go through the
+	// wrong account's client and charge the wrong usage/error path); the
+	// entry/bridge is a stable pointer immune to both. The historical
+	// index-fallback path is dropped — production leases always carry one.
+	t := lease.leaseTarget()
+	if t == nil {
+		return nil, errors.New("pool: chat: invalid lease")
 	}
-	// Fixed-token leases dispatch through their backing entry — the
-	// authoritative owner pinned by Acquire. A concurrent RemoveLastToken+
-	// AddToken can leave the lease's Token index out of range (chat would
-	// fail with "invalid lease token") or reused by a DIFFERENT token (chat
-	// would go through the wrong account's client and charge the wrong
-	// usage/error path); the entry is a stable pointer immune to both.
-	if lease.entry != nil {
-		rc, err := lease.entry.client.ChatCompletions(ctx, opts, body)
-		if err == nil {
-			p.recordChatEntry(lease.entry)
-			p.requestsServed.Add(1)
-		}
-		return rc, err
-	}
-	// Synthetic leases without an entry keep the historical index path.
-	toks := p.toks.Load()
-	if lease.Token < 0 || lease.Token >= len(*toks) {
-		return nil, errors.New("pool: chat: invalid lease token")
-	}
-	rc, err := (*toks)[lease.Token].client.ChatCompletions(ctx, opts, body)
+	rc, err := t.client.ChatCompletions(ctx, opts, body)
+	// Per-minute request accounting (MAX_REQUESTS_PER_MINUTE) happens at
+	// lease-grant time in Acquire/AcquireBridge — atomically, so a burst
+	// cannot pass the cap before any record lands. Only the success-side
+	// records (daily message cap, Pacific-day request cap) live here.
 	if err == nil {
-		p.recordChat(lease.Token)
+		if t.bridge != nil {
+			// Only chats that actually went upstream count against the
+			// daily cap; errors are not recorded. The Pacific-day request
+			// count (MAX_REQUESTS_PER_DAY) rides the same success path.
+			p.bridgeRecordChat(t.bridge)
+		} else if t.entry != nil {
+			p.recordChatEntry(t.entry)
+		}
 		p.requestsServed.Add(1)
 	}
 	return rc, err
@@ -943,7 +1038,7 @@ func bestRateLimit(entries []*upstream.RateLimitError) *upstream.RateLimitError 
 
 // EnsureTokenSession admits/creates an upstream session for a specific model on a specific token (dashboard dev action).
 func (p *Pool) EnsureTokenSession(ctx context.Context, token int, model string) (string, error) {
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	if token < 0 || token >= len(*toks) {
 		return "", fmt.Errorf("pool: token %d out of range", token)
 	}

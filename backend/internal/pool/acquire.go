@@ -62,7 +62,7 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		return nil, errors.New("pool: shutting down")
 	}
 
-	toks := p.toks.Load()
+	toks := p.roster.Load()
 	cfg := p.cfg.Load()
 	if len(*toks) == 0 {
 		return nil, errors.New("pool: no auth tokens configured")
@@ -72,8 +72,20 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		return nil, err
 	}
 
-	start := int(p.rr.Add(1)-1) % len(*toks)
+	// Model-allowlist fail-fast (MODEL_LOCKS, issue #325): when every slot
+	// is locked away from the requested model, no admission can succeed —
+	// surface the routing error without touching upstream at all.
+	if allLockedOut(toks, cfg, p.reg, model) {
+		// The ordering/filter stages are bypassed entirely here, so count
+		// the skip decision per slot (the counter tracks decisions, not
+		// requests — a slot can count twice across filter + failover).
+		for _, tok := range *toks {
+			tok.allowlistSkips.Add(1)
+		}
+		return nil, lockFailFastError(model, len(*toks))
+	}
 
+	start := int(p.rr.Add(1)-1) % len(*toks)
 	// Issue #191: leader-election gate per model. The first Acquire for a
 	// model registers as the leader (creates a gate); concurrent
 	// followers block on it. When the leader picks a token (or fails), it
@@ -168,9 +180,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	var countryBlocked []*upstream.CountryBlockedError
 	var modelLimited []*upstream.LimitedIpError
 	var dailyLimited []*upstream.RateLimitError
-	var scarceUntil time.Time
-	var scarceModel string
-	scarceSet := scarceModelSet(cfg.ScarceSessionModels)
 	for _, idx := range order {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -188,6 +197,24 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			continue
 		}
 		name := fmt.Sprintf("token-%d", idx+1)
+
+		// Per-minute request cap (MAX_REQUESTS_PER_MINUTE) and daily request
+		// cap (MAX_REQUESTS_PER_DAY): mirrors the direct loop — capped
+		// tokens are skipped so the pool rolls to the next account; the
+		// day-cap error rides the rate-limited bucket with RetryAfter =
+		// next Pacific midnight (the official daily reset instant).
+		if cfg.MaxRequestsPerMinute > 0 && p.rpmCount(idx) >= cfg.MaxRequestsPerMinute {
+			rateLimited = append(rateLimited, p.rpmLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: per-minute request limit (%d) reached", name, cfg.MaxRequestsPerMinute))
+			p.logger.Debug("pool: token skipped (per-minute request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerMinute)
+			continue
+		}
+		if cfg.MaxRequestsPerDay > 0 && p.dayRequestCount(idx) >= cfg.MaxRequestsPerDay {
+			rateLimited = append(rateLimited, p.dayRequestLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: daily request limit (%d) reached", name, cfg.MaxRequestsPerDay))
+			p.logger.Debug("pool: token skipped (daily request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerDay)
+			continue
+		}
 
 		// Quarantined tokens (terminal account state: banned,
 		// country_blocked, 401 invalid) are permanently skipped — the pool
@@ -226,6 +253,18 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 					countryBlocked = append(countryBlocked, terr)
 				}
 			}
+			continue
+		}
+		// Model-allowlist routing (MODEL_LOCKS, issue #325): a slot locked
+		// to other models is skipped before any session/run contact, so a
+		// request never burns the wrong account's quota or churns its
+		// session (upstream model_locked 409). Sits after the quarantine
+		// gate so terminal states keep their error-bucket precedence, and
+		// mirrors the eligible() filter for custom-order callers.
+		if lockedOutByModel(cfg, p.reg, idx, model) {
+			tok.allowlistSkips.Add(1)
+			errs = append(errs, fmt.Sprintf("%s: model %q not in token allowlist", name, model))
+			p.logger.Debug("pool: token skipped (model allowlist)", "token", idx+1, "model", model)
 			continue
 		}
 
@@ -300,27 +339,36 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			p.logger.Debug("pool: token skipped (daily message limit)", "token", idx+1, "limit", cfg.MaxMessagesPerDay)
 			continue
 		}
-		// Issue #155: scarce-model session protection. If the token holds an
-		// active scarce session (pro/luna) with > 1 minute remaining, do not
-		// switch away from it to serve a different model — that would burn
-		// the irreplaceable 1-session/day allocation.
-		if snap := tok.session.Snapshot(); scarceHeld(snap, model, scarceSet) {
-			exp := snap.ExpiresAt
-			// Remember the session that expires first: it is the one the
-			// caller can retry against, and its model names the refusal.
-			if scarceModel == "" || exp.Before(scarceUntil) {
-				scarceUntil, scarceModel = exp, snap.Model
-			}
-			errs = append(errs, fmt.Sprintf("%s: scarce session (%s) in use until %s", name, snap.Model, exp.Format(time.RFC3339)))
-			p.logger.Debug("pool: token skipped (scarce session in use)", "token", idx+1, "model", snap.Model, "until", exp.Format(time.RFC3339))
+		// Per-minute request cap (MAX_REQUESTS_PER_MINUTE): a token that
+		// already admitted its quota of chat requests in the last 60s is
+		// skipped like a rate limit — upstream-visible bursts (including
+		// retries that later fail) are throttled at the exact rate upstream
+		// observes, keeping the account under abuse-detection patterns.
+		if cfg.MaxRequestsPerMinute > 0 && p.rpmCount(idx) >= cfg.MaxRequestsPerMinute {
+			rateLimited = append(rateLimited, p.rpmLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: per-minute request limit (%d) reached", name, cfg.MaxRequestsPerMinute))
+			p.logger.Debug("pool: token skipped (per-minute request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerMinute)
 			continue
 		}
-
+		// Daily request cap (MAX_REQUESTS_PER_DAY): a token that already
+		// sent its daily successful-request quota is skipped like the daily
+		// message cap; it unlocks at the next Pacific midnight — the same
+		// instant upstream rolls its daily quota windows.
+		if cfg.MaxRequestsPerDay > 0 && p.dayRequestCount(idx) >= cfg.MaxRequestsPerDay {
+			dailyLimited = append(dailyLimited, p.dayRequestLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: daily request limit (%d) reached", name, cfg.MaxRequestsPerDay))
+			p.logger.Debug("pool: token skipped (daily request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerDay)
+			continue
+		}
 		// Issue #85: session-quota-capped token for the requested model.
 		// The hot path excludes these in acquireOrder (their rate-limit
 		// reasons ride back in quotaLimited); the no-hot round-robin path
 		// reaches them here and records the reason the same way.
-		if _, _, capped := quotaRemaining(tok, model); capped {
+		// Matching-hot tokens are EXEMPT (hotReusableForModel): the loop
+		// reaches EnsureSessionForModel, whose fast path reuses the live
+		// instance with zero admission POST — a capped token can still serve
+		// its own live session.
+		if _, _, capped := quotaRemaining(tok, model); capped && !hotReusableForModel(tok, model) {
 			rateLimited = append(rateLimited, quotaLimitError(tok, model))
 			errs = append(errs, fmt.Sprintf("%s: session quota exhausted for model", name))
 			p.logger.Debug("pool: token skipped (session quota exhausted)", "token", idx+1, "model", model)
@@ -355,7 +403,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		// entry's freshly-created session would leak upstream. The
 		// post-admission check below stays: the removal can still land
 		// during the create.
-		if cur := p.toks.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
+		if cur := p.roster.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
 			permit.Release()
 			p.admissionsMu.Lock()
 			if p.admissions != nil && (p.admissions[model] == idx || p.admissions[model] == -1) {
@@ -383,8 +431,8 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		p.admissionsMu.Unlock()
 		phasetiming.FromContext(ctx).Since(phasetiming.SessionRefreshMS, sessionStart)
 		if err != nil {
-			if errors.Is(err, upstream.ErrAuthRejected) {
-				tok.runs.Cooldown(runs.DefaultCooldown)
+			c := p.classifyAndCooldown(tok.runs, err)
+			if c.authRejected {
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
 				p.quarantineToken(tok, "invalid", err)
 			}
@@ -392,7 +440,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			if errors.As(err, &wr) {
 				waiting = append(waiting, wr)
 			}
-			if rle := asRateLimit(err); rle != nil {
+			if rle := c.rateLimited; rle != nil {
 				// Issue #178: tag the refusal with the requested model when
 				// the upstream body omits it, so the remembered cooldown can
 				// be isolated per model — a quota cap on one model (glm-5.2,
@@ -400,76 +448,36 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				if rle.Model == "" {
 					rle.Model = model
 				}
-				tok.runs.CooldownRateLimit(rle)
-				dup := false
-				for _, existing := range rateLimited {
-					if existing.Error() == rle.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					rateLimited = append(rateLimited, rle)
-				}
+				rateLimited = appendRateLimit(rateLimited, rle)
 				// Issue #122: the fresh-admission spend ceiling is the
 				// upstream's primary spend gate, so an admission-path
 				// spend_limited counts on the ledger too (same counter as
 				// the chat-path refusal in CooldownTokenRateLimit).
-				if rle.Status == "spend_limited" {
-					p.spendMu.Lock()
-					p.recordSpendLimited(idx)
-					p.spendMu.Unlock()
+				if c.spendLimited {
+					tok.ledger.recordSpendLimited()
 				}
 			}
-			if ice := asIpCapped(err); ice != nil {
-				tok.runs.CooldownIpCapped(ice)
-				dup := false
-				for _, existing := range ipCapped {
-					if existing.Error() == ice.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					ipCapped = append(ipCapped, ice)
-				}
+			if ice := c.ipCapped; ice != nil {
+				ipCapped = appendIpCapped(ipCapped, ice)
 			}
-			if be := asBan(err); be != nil {
-				tok.runs.CooldownBan(be)
-				p.notifyBan(idx+1, model)
-				// Quarantine only while the ban is still live after
+			if be := c.banned; be != nil {
+				// Display index resolved live (see run-path below).
+				if li := p.indexOfEntry(tok); li >= 0 {
+					p.notifyBan(li+1, model)
+				}
 				// CooldownBan (hard, or a future resumes_at): an expired
 				// temporary ban is already lifted upstream and must not
 				// mark the token terminal.
 				if tok.runs.BanError() != nil {
 					p.quarantineToken(tok, "banned", err)
 				}
-				dup := false
-				for _, existing := range banned {
-					if existing.Error() == be.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					banned = append(banned, be)
-				}
+				banned = appendBan(banned, be)
 			}
-			if cbe := asCountryBlocked(err); cbe != nil {
-				tok.runs.CooldownCountryBlocked(cbe)
+			if cbe := c.countryBlocked; cbe != nil {
 				p.quarantineToken(tok, "country_blocked", err)
-				dup := false
-				for _, existing := range countryBlocked {
-					if existing.Error() == cbe.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					countryBlocked = append(countryBlocked, cbe)
-				}
+				countryBlocked = appendCountryBlock(countryBlocked, cbe)
 			}
-			if lie := asLimitedIp(err); lie != nil {
+			if lie := c.limitedIp; lie != nil {
 				// Issue #74: the egress IP cannot serve this model
 				// (limited_ip). The session row is fine — it stays bound to
 				// its admitted model — so nothing is invalidated or cooled
@@ -497,7 +505,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		// the lease's own entry, but the run would belong to a drained,
 		// retiring manager — so skip instead (the removal path drains the
 		// retired entry once it observes the slip).
-		if cur := p.toks.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
+		if cur := p.roster.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
 			continue
 		}
 		ss := tok.session.Snapshot()
@@ -522,12 +530,12 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		run, err := tok.runs.Acquire(ctx, effectiveAgentID)
 		phasetiming.FromContext(ctx).Since(phasetiming.RunAcquireMS, runStart)
 		if err != nil {
-			if errors.Is(err, upstream.ErrAuthRejected) {
-				tok.runs.Cooldown(runs.DefaultCooldown)
+			c := p.classifyAndCooldown(tok.runs, err)
+			if c.authRejected {
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
 				p.quarantineToken(tok, "invalid", err)
 			}
-			if rle := asRateLimit(err); rle != nil {
+			if rle := c.rateLimited; rle != nil {
 				// Issue #178: tag the refusal with the requested model when
 				// the upstream body omits it, so the remembered cooldown can
 				// be isolated per model — a quota cap on one model (glm-5.2,
@@ -535,78 +543,58 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				if rle.Model == "" {
 					rle.Model = model
 				}
-				tok.runs.CooldownRateLimit(rle)
-				dup := false
-				for _, existing := range rateLimited {
-					if existing.Error() == rle.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					rateLimited = append(rateLimited, rle)
-				}
+				rateLimited = appendRateLimit(rateLimited, rle)
 				// Issue #122: count run-start spend_limited refusals on the
 				// ledger (same counter as the chat-path refusal).
-				if rle.Status == "spend_limited" {
-					p.spendMu.Lock()
-					p.recordSpendLimited(idx)
-					p.spendMu.Unlock()
+				if c.spendLimited {
+					tok.ledger.recordSpendLimited()
 				}
 			}
-			if ice := asIpCapped(err); ice != nil {
-				tok.runs.CooldownIpCapped(ice)
-				dup := false
-				for _, existing := range ipCapped {
-					if existing.Error() == ice.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					ipCapped = append(ipCapped, ice)
-				}
+			if ice := c.ipCapped; ice != nil {
+				ipCapped = appendIpCapped(ipCapped, ice)
 			}
-			if be := asBan(err); be != nil {
-				tok.runs.CooldownBan(be)
-				p.notifyBan(idx+1, model)
-				// Quarantine only while the ban is still live after
+			if be := c.banned; be != nil {
+				// Display index resolved live: a dashboard reorder
+				// mid-flight must not mislabel the ban alert.
+				if li := p.indexOfEntry(tok); li >= 0 {
+					p.notifyBan(li+1, model)
+				}
 				// CooldownBan (hard, or a future resumes_at): an expired
 				// temporary ban is already lifted upstream and must not
 				// mark the token terminal.
 				if tok.runs.BanError() != nil {
 					p.quarantineToken(tok, "banned", err)
 				}
-				dup := false
-				for _, existing := range banned {
-					if existing.Error() == be.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					banned = append(banned, be)
-				}
+				banned = appendBan(banned, be)
 			}
-			if cbe := asCountryBlocked(err); cbe != nil {
-				tok.runs.CooldownCountryBlocked(cbe)
+			if cbe := c.countryBlocked; cbe != nil {
 				p.quarantineToken(tok, "country_blocked", err)
-				dup := false
-				for _, existing := range countryBlocked {
-					if existing.Error() == cbe.Error() {
-						dup = true
-						break
-					}
-				}
-				if !dup {
-					countryBlocked = append(countryBlocked, cbe)
-				}
+				countryBlocked = appendCountryBlock(countryBlocked, cbe)
 			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 			continue
 		}
 		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
 			"country", ss.CountryCode)
+		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
+			"country", ss.CountryCode)
+		lease := &Lease{Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
+			entry: tok, AcquiredAt: time.Now()}
+		// MAX_REQUESTS_PER_MINUTE admission is enforced atomically HERE at
+		// lease grant. The pre-filter above only reads the rolling window;
+		// recording later (in Chat) raced it — a concurrent burst (agent
+		// spawn batches) all passed the cap before any record landed. On a
+		// full window the run is released and the token counted as
+		// rate-limited so the loop tries the next one. Admission is always
+		// recorded (even with cap 0 = unlimited) so the token snapshot
+		// counters stay meaningful.
+		if !p.tryAdmitRequest(tok) {
+			p.LeaseRelease(lease)
+			rateLimited = appendRateLimit(rateLimited, p.rpmLimitError(idx))
+			errs = append(errs, fmt.Sprintf("%s: per-minute request limit (%d) reached", name, cfg.MaxRequestsPerMinute))
+			p.logger.Debug("pool: token skipped (per-minute request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerMinute)
+			continue
+		}
 		// Track the activity and end any idle-maintenance pause: the next
 		// maintain tick resumes rotation/refresh work.
 		p.lastActiveMu.Lock()
@@ -620,8 +608,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		}
 		p.lastTokenByModel[effectiveModel] = idx
 		p.lastTokenMu.Unlock()
-		return &Lease{Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
-			entry: tok, AcquiredAt: time.Now()}, nil
+		return lease, nil
 	}
 
 	// Failover precedence (PRD §6 error matrix): when buckets are mixed the
@@ -636,6 +623,12 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	// surfaces a real 429 with the earliest window reset instead of a
 	// generic combined error.
 	rateLimited = append(rateLimited, quotaLimited...)
+	// Every slot locked away from the model (direct-order callers reach
+	// here via the loop gates): the dedicated routing error beats the
+	// generic combined one.
+	if allLockedOut(toks, cfg, p.reg, model) {
+		return nil, lockFailFastError(model, len(*toks))
+	}
 	if len(banned) > 0 {
 		return nil, banned[0]
 	}
@@ -691,9 +684,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	if len(ipCapped) > 0 {
 		return nil, ipCapped[0]
 	}
-	if scarceModel != "" {
-		return nil, &ScarceSessionError{Model: scarceModel, ExpiresAt: scarceUntil}
-	}
 	if len(waiting) > 0 {
 		wr := bestWaitingRoom(waiting)
 		p.logger.Debug("pool: waiting room surfaced", "position", wr.Position, "queue_depth", wr.QueueDepth, "retry_after", wr.RetryAfter.String())
@@ -704,4 +694,3 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	}
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }
-

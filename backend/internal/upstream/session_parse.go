@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"freebuff-proxy/backend/internal/stealth"
 )
 
 // SessionState is the parsed result of a free-session create/poll.
@@ -23,6 +22,7 @@ type SessionState struct {
 	Model              string
 	CurrentModel       string
 	RequestedModel     string
+	AccessTier         string
 	ExpiresAt          time.Time
 	AdmittedAt         time.Time
 	RemainingMs        int64
@@ -43,6 +43,11 @@ type SessionState struct {
 	RetryAfterMs       int64
 	AvailableHours     string
 	Message            string
+	// WireBody is the raw upstream body the state was parsed from. ProbeAccount
+	// uses it to build BanError/CountryBlockedError through the shared
+	// banFromBody/countryBlockFromBody constructors (issue #306), so its typed
+	// errors match the classification matrix exactly.
+	WireBody string
 	// UnavailableWindow is the parsed availability window carried by a
 	// model_unavailable admission response (issue #158); nil when the
 	// response omitted availableHours or the string could not be parsed.
@@ -63,6 +68,60 @@ type SessionState struct {
 	// Referral is the upstream referral block (FreebuffReferralInfo), parsed
 	// from the session response's "referral" field; nil when omitted.
 	Referral *SessionReferral
+	// Freebucks is the upstream Freebucks allowance block (issue #232),
+	// parsed from the session response's "freebucks" field; nil when omitted.
+	Freebucks *FreebucksInfo
+	// FreeWindows is the upstream free-tier session-pool windows block
+	// (day/week/month; issue #319). Display-only upstream (nothing refuses
+	// on the week or month yet); nil when the response omits it — quota-
+	// exempt accounts, limited access, or older servers.
+	FreeWindows *FreeWindowsInfo
+	// Subscription is the upstream subscription usage block (day / fiveDay /
+	// month windows plus provider spend USD; issue #319). Sent only to
+	// callers in the rollout audience; nil otherwise.
+	Subscription *SubscriptionInfo
+	// UpgradeHint carries the upstream promotional or upgrade broadcast
+	// hint ({url, message}) if provided by the session server; nil otherwise.
+	UpgradeHint *SessionUpgradeHint
+}
+
+// FreeWindowsInfo mirrors upstream FreebuffFreeWindowsInfo (free-tier
+// session pool windows; display-only).
+type FreeWindowsInfo struct {
+	DayUsed      float64   `json:"dayUsed"`
+	DayLimit     float64   `json:"dayLimit"`
+	WeekUsed     float64   `json:"weekUsed"`
+	WeekLimit    float64   `json:"weekLimit"`
+	MonthUsed    float64   `json:"monthUsed"`
+	MonthLimit   float64   `json:"monthLimit"`
+	DayResetAt   time.Time `json:"dayResetAt"`
+	MonthResetAt time.Time `json:"monthResetAt"`
+}
+
+// SessionUpgradeHint mirrors the upstream upgradeHint wire shape
+// (common/src/types/freebuff-session.ts:323-326).
+type SessionUpgradeHint struct {
+	URL     string `json:"url"`
+	Message string `json:"message"`
+}
+
+// SubscriptionInfo mirrors upstream FreebuffSubscriptionUsage (subscriber
+// usage rings + provider spend; rollout audience only).
+type SubscriptionInfo struct {
+	DayUsed            float64   `json:"dayUsed"`
+	DayLimit           float64   `json:"dayLimit"`
+	FiveDayUsed        float64   `json:"fiveDayUsed"`
+	FiveDayLimit       float64   `json:"fiveDayLimit"`
+	MonthUsed          float64   `json:"monthUsed"`
+	MonthLimit         float64   `json:"monthLimit"`
+	DayPremiumUsed     float64   `json:"dayPremiumUsed"`
+	DayPremiumLimit    float64   `json:"dayPremiumLimit"`
+	DayResetAt         time.Time `json:"dayResetAt"`
+	PeriodEndsAt       time.Time `json:"periodEndsAt"`
+	MonthSpendUsd      float64   `json:"monthSpendUsd"`
+	MonthSpendLimitUsd float64   `json:"monthSpendLimitUsd"`
+	FreeDayUsed        *float64  `json:"freeDayUsed,omitempty"`
+	FreeDayLimit       *float64  `json:"freeDayLimit,omitempty"`
 }
 
 // SessionReferral mirrors the upstream FreebuffReferralInfo wire block.
@@ -73,6 +132,116 @@ type SessionReferral struct {
 	WeeklySessionsRemaining int
 	ResetAt                 time.Time
 	GithubLinked            bool
+}
+
+// FreebucksWindow is one window of a Freebucks allowance.
+type FreebucksWindow struct {
+	Limit     float64   `json:"limit"`
+	Spent     float64   `json:"spent"`
+	Remaining float64   `json:"remaining"`
+	ResetAt   time.Time `json:"resetAt"`
+}
+
+// FreebucksWallet is the never-expiring Freebucks store (issue #321 wire
+// drift): plan bonuses land here (monthlyBonus at nextBonusAt; 0 on free).
+type FreebucksWallet struct {
+	Balance      float64   `json:"balance"`
+	MonthlyBonus float64   `json:"monthlyBonus"`
+	NextBonusAt  time.Time `json:"nextBonusAt,omitempty"`
+}
+
+// FreebucksSpendCeiling is the settled-USD daily spend cap for the account's
+// tier (issue #321 wire drift).
+type FreebucksSpendCeiling struct {
+	LimitUsd float64   `json:"limitUsd"`
+	ResetAt  time.Time `json:"resetAt,omitempty"`
+}
+
+// FreebucksMonthlyAllowance is the monthly dollar allowance (wire drift
+// 2026-09-04, issue #330): provider spend for the period at which fresh
+// sessions stop. Pointer in FreebucksInfo: absent on servers that predate
+// it, and clients must render nothing (not a zero) in that case.
+type FreebucksMonthlyAllowance struct {
+	LimitUsd     float64   `json:"limitUsd"`
+	SpentUsd     float64   `json:"spentUsd"`
+	RemainingUsd float64   `json:"remainingUsd"`
+	ResetAt      time.Time `json:"resetAt"`
+}
+
+// FreebucksPriceChange is one server-announced scheduled repricing (wire
+// drift 2026-09-05, issue #350): applied only once due, never to admitted
+// sessions, and only to models already on the meter.
+type FreebucksPriceChange struct {
+	At      string  `json:"at"`
+	ModelID string  `json:"modelId"`
+	Price   float64 `json:"price"`
+	Tagline string  `json:"tagline"`
+}
+
+// FreebucksInfo is the caller's Freebucks position (issue #232, shape
+// issue #321): spendable balance (= daily.remaining + wallet.balance) +
+// the daily pool + the never-expiring wallet + the USD spend ceiling +
+// the plan id ("" when the account is on the free allowance) +
+// the server-authorized quota exemption + per-model prices with their
+// display copy + the announced repricing schedule (issue #350).
+type FreebucksInfo struct {
+	Balance float64                    `json:"balance"`
+	Daily   FreebucksWindow            `json:"daily"`
+	Wallet  FreebucksWallet            `json:"wallet"`
+	Spend   FreebucksSpendCeiling      `json:"spend"`
+	Monthly *FreebucksMonthlyAllowance `json:"monthly,omitempty"`
+	PlanID  string                     `json:"planId,omitempty"`
+	// QuotaExempt: new sessions stay usable at zero balance (server-sent;
+	// the meter's canStart is exempt || balance >= price).
+	QuotaExempt bool               `json:"quotaExempt,omitempty"`
+	Prices      map[string]float64 `json:"prices"`
+	// PriceNotices overrides the static model tagline with price-resolved
+	// copy (mirrors taglineFor in freebuff-model-selector.tsx).
+	PriceNotices map[string]string      `json:"priceNotices,omitempty"`
+	PriceChanges []FreebucksPriceChange `json:"priceChanges,omitempty"`
+}
+
+// ApplyFreebucksPriceChanges applies the server's announced repricing
+// schedule to already-parsed info (mirrors applyFreebucksPriceChanges in
+// freebuff-price-changes.ts): due changes (at <= now) apply in chronological
+// order, reprice only models already on the meter, refresh their notice
+// copy, and are consumed; future changes are kept for the next call.
+func ApplyFreebucksPriceChanges(fb *FreebucksInfo, now time.Time) {
+	if fb == nil || len(fb.PriceChanges) == 0 {
+		return
+	}
+	var pending []FreebucksPriceChange
+	var ready []FreebucksPriceChange
+	for _, c := range fb.PriceChanges {
+		at, err := time.Parse(time.RFC3339, c.At)
+		if err != nil || at.After(now) {
+			pending = append(pending, c)
+			continue
+		}
+		ready = append(ready, c)
+	}
+	if len(ready) == 0 {
+		return
+	}
+	sort.Slice(ready, func(i, j int) bool {
+		ai, _ := time.Parse(time.RFC3339, ready[i].At)
+		aj, _ := time.Parse(time.RFC3339, ready[j].At)
+		return ai.Before(aj)
+	})
+	if fb.Prices == nil {
+		fb.Prices = map[string]float64{}
+	}
+	if fb.PriceNotices == nil && len(ready) > 0 {
+		fb.PriceNotices = map[string]string{}
+	}
+	for _, c := range ready {
+		if _, ok := fb.Prices[c.ModelID]; !ok {
+			continue
+		}
+		fb.Prices[c.ModelID] = c.Price
+		fb.PriceNotices[c.ModelID] = c.Tagline
+	}
+	fb.PriceChanges = pending
 }
 
 // AvailabilityWindow is the parsed daily availability window from a
@@ -250,7 +419,7 @@ type ModelQuota struct {
 	Limit       float64
 	RecentCount float64
 	ResetAt     time.Time
-	Period      string // "pacific_day" | "pacific_week" (empty when absent)
+	Period      string // "pacific_day" | "pacific_week" | "pacific_month" (empty when absent)
 	// Pool / PoolLabel group models that share one session-quota pool on
 	// the wire (FreebuffSessionRateLimit). Pool is opaque — group by it, never
 	// match on its value; PoolLabel is the server-authored display string.
@@ -307,10 +476,96 @@ type rawStandingStep struct {
 	Href   string  `json:"href"`
 }
 
+type rawFreebucksWindow struct {
+	Limit     float64 `json:"limit"`
+	Spent     float64 `json:"spent"`
+	Remaining float64 `json:"remaining"`
+	ResetAt   any     `json:"resetAt"`
+}
+
+type rawFreebucksWallet struct {
+	Balance      float64 `json:"balance"`
+	MonthlyBonus float64 `json:"monthlyBonus"`
+	NextBonusAt  any     `json:"nextBonusAt"`
+}
+
+type rawFreebucksSpendCeiling struct {
+	LimitUsd float64 `json:"limitUsd"`
+	ResetAt  any     `json:"resetAt"`
+}
+type rawFreebucksMonthlyAllowance struct {
+	LimitUsd     float64 `json:"limitUsd"`
+	SpentUsd     float64 `json:"spentUsd"`
+	RemainingUsd float64 `json:"remainingUsd"`
+	ResetAt      any     `json:"resetAt"`
+}
+
+// rawFreebucks mirrors upstream FreebuffFreebucksInfo (issue #321 wire
+// drift, #350 for exemption/notices/schedule): spendable balance + the
+// daily pool window + the never-expiring wallet + the USD spend ceiling +
+// the monthly allowance + the plan id + the quota exemption + per-model
+// price-notice copy + the announced repricing schedule.
+type rawFreebucks struct {
+	Balance      float64                       `json:"balance"`
+	Daily        rawFreebucksWindow            `json:"daily"`
+	Wallet       *rawFreebucksWallet           `json:"wallet"`
+	Spend        *rawFreebucksSpendCeiling     `json:"spend"`
+	Monthly      *rawFreebucksMonthlyAllowance `json:"monthly"`
+	PlanID       *string                       `json:"planId"`
+	QuotaExempt  *bool                         `json:"quotaExempt"`
+	Prices       map[string]float64            `json:"prices"`
+	PriceNotices map[string]string             `json:"priceNotices"`
+	PriceChanges []rawFreebucksPriceChange     `json:"priceChanges"`
+}
+
+// rawFreebucksPriceChange mirrors FreebuffPriceChange (issue #350).
+type rawFreebucksPriceChange struct {
+	At      string  `json:"at"`
+	ModelID string  `json:"modelId"`
+	Price   float64 `json:"price"`
+	Tagline string  `json:"tagline"`
+}
+
+type rawFreeWindows struct {
+	DayUsed      float64 `json:"dayUsed"`
+	DayLimit     float64 `json:"dayLimit"`
+	WeekUsed     float64 `json:"weekUsed"`
+	WeekLimit    float64 `json:"weekLimit"`
+	MonthUsed    float64 `json:"monthUsed"`
+	MonthLimit   float64 `json:"monthLimit"`
+	DayResetAt   any     `json:"dayResetAt"`
+	MonthResetAt any     `json:"monthResetAt"`
+}
+
+type rawSubscription struct {
+	DayUsed            float64  `json:"dayUsed"`
+	DayLimit           float64  `json:"dayLimit"`
+	FiveDayUsed        float64  `json:"fiveDayUsed"`
+	FiveDayLimit       float64  `json:"fiveDayLimit"`
+	MonthUsed          float64  `json:"monthUsed"`
+	MonthLimit         float64  `json:"monthLimit"`
+	DayPremiumUsed     float64  `json:"dayPremiumUsed"`
+	DayPremiumLimit    float64  `json:"dayPremiumLimit"`
+	DayResetAt         any      `json:"dayResetAt"`
+	PeriodEndsAt       any      `json:"periodEndsAt"`
+	MonthSpendUsd      float64  `json:"monthSpendUsd"`
+	MonthSpendLimitUsd float64  `json:"monthSpendLimitUsd"`
+	FreeDayUsed        *float64 `json:"freeDayUsed"`
+	FreeDayLimit       *float64 `json:"freeDayLimit"`
+}
+
 // parseSessionResponse decodes a session control response body into a
 // SessionState: the 404 create/poll mapping, JSON decode, quota/standing/
 // availability-window parsing, and the passive ban-risk feed (#64). Errors
 // are classified through the standard matrix.
+func windowFromRaw(w rawFreebucksWindow) FreebucksWindow {
+	out := FreebucksWindow{Limit: w.Limit, Spent: w.Spent, Remaining: w.Remaining}
+	if t, err := parseFlexTime(w.ResetAt); err == nil {
+		out.ResetAt = t
+	}
+	return out
+}
+
 func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, body string) (*SessionState, error) {
 
 	if resp.StatusCode == 404 {
@@ -343,6 +598,7 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 		PollAt                 any                      `json:"pollAt"`
 		CountryCode            string                   `json:"countryCode"`
 		CountryBlockReason     string                   `json:"countryBlockReason"`
+		AccessTier             string                   `json:"accessTier"`
 		IpPrivacySignals       []string                 `json:"ipPrivacySignals"`
 		ActiveUsersForIP       int                      `json:"activeUsersForIp"`
 		Limit                  float64                  `json:"limit"`
@@ -356,10 +612,18 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 		RateLimitsByModel      map[string]rawModelQuota `json:"rateLimitsByModel"`
 		Standing               *rawStanding             `json:"standing"`
 		Referral               *rawReferral             `json:"referral"`
+		Freebucks              *rawFreebucks            `json:"freebucks"`
+		FreeWindows            *rawFreeWindows          `json:"freeWindows"`
+		Subscription           *rawSubscription         `json:"subscription"`
+		UpgradeHint            *struct {
+			URL     string `json:"url"`
+			Message string `json:"message"`
+		} `json:"upgradeHint"`
 	}
 	if err := json.Unmarshal([]byte(body), &raw); err == nil && raw.Status != "" {
 		state := &SessionState{
 			Status:             raw.Status,
+			WireBody:           body,
 			InstanceID:         raw.InstanceID,
 			Model:              raw.Model,
 			CurrentModel:       raw.CurrentModel,
@@ -372,6 +636,7 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 			CountryCode:        raw.CountryCode,
 			CountryBlockReason: raw.CountryBlockReason,
 			IpPrivacySignals:   raw.IpPrivacySignals,
+			AccessTier:         raw.AccessTier,
 			ActiveUsersForIP:   raw.ActiveUsersForIP,
 			Limit:              raw.Limit,
 			RecentCount:        raw.RecentCount,
@@ -379,6 +644,12 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 			AvailableHours:     raw.AvailableHours,
 			Message:            raw.Message,
 			GlmPromo:           string(raw.GlmPromo),
+		}
+		if raw.UpgradeHint != nil && (raw.UpgradeHint.URL != "" || raw.UpgradeHint.Message != "") {
+			state.UpgradeHint = &SessionUpgradeHint{
+				URL:     raw.UpgradeHint.URL,
+				Message: raw.UpgradeHint.Message,
+			}
 		}
 		if raw.Status == "model_unavailable" && raw.AvailableHours != "" {
 			if w, ok := ParseAvailabilityWindow(raw.AvailableHours); ok {
@@ -415,6 +686,92 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 				ref.ResetAt = time.Time{}
 			}
 			state.Referral = ref
+		}
+		if raw.Freebucks != nil {
+			fb := &FreebucksInfo{
+				Balance:      raw.Freebucks.Balance,
+				Prices:       raw.Freebucks.Prices,
+				PriceNotices: raw.Freebucks.PriceNotices,
+			}
+			if raw.Freebucks.QuotaExempt != nil {
+				fb.QuotaExempt = *raw.Freebucks.QuotaExempt
+			}
+			for _, c := range raw.Freebucks.PriceChanges {
+				fb.PriceChanges = append(fb.PriceChanges, FreebucksPriceChange(c))
+			}
+			// Apply the server's announced schedule at parse time so every
+			// consumer (pool meter, dashboard prices) reads effective prices
+			// (issue #350 — mirrors freebucksOf applying the schedule).
+			ApplyFreebucksPriceChanges(fb, time.Now())
+			if raw.Freebucks.PlanID != nil {
+				fb.PlanID = *raw.Freebucks.PlanID
+			}
+			fb.Daily = windowFromRaw(raw.Freebucks.Daily)
+			if raw.Freebucks.Wallet != nil {
+				fb.Wallet.Balance = raw.Freebucks.Wallet.Balance
+				fb.Wallet.MonthlyBonus = raw.Freebucks.Wallet.MonthlyBonus
+				if t, terr := parseFlexTime(raw.Freebucks.Wallet.NextBonusAt); terr == nil {
+					fb.Wallet.NextBonusAt = t
+				}
+			}
+			if raw.Freebucks.Spend != nil {
+				fb.Spend.LimitUsd = raw.Freebucks.Spend.LimitUsd
+				if t, terr := parseFlexTime(raw.Freebucks.Spend.ResetAt); terr == nil {
+					fb.Spend.ResetAt = t
+				}
+			}
+			if raw.Freebucks.Monthly != nil {
+				m := &FreebucksMonthlyAllowance{
+					LimitUsd:     raw.Freebucks.Monthly.LimitUsd,
+					SpentUsd:     raw.Freebucks.Monthly.SpentUsd,
+					RemainingUsd: raw.Freebucks.Monthly.RemainingUsd,
+				}
+				if t, terr := parseFlexTime(raw.Freebucks.Monthly.ResetAt); terr == nil {
+					m.ResetAt = t
+				}
+				fb.Monthly = m
+			}
+			state.Freebucks = fb
+		}
+		if raw.FreeWindows != nil {
+			fw := &FreeWindowsInfo{
+				DayUsed:    raw.FreeWindows.DayUsed,
+				DayLimit:   raw.FreeWindows.DayLimit,
+				WeekUsed:   raw.FreeWindows.WeekUsed,
+				WeekLimit:  raw.FreeWindows.WeekLimit,
+				MonthUsed:  raw.FreeWindows.MonthUsed,
+				MonthLimit: raw.FreeWindows.MonthLimit,
+			}
+			if t, err := parseFlexTime(raw.FreeWindows.DayResetAt); err == nil {
+				fw.DayResetAt = t
+			}
+			if t, err := parseFlexTime(raw.FreeWindows.MonthResetAt); err == nil {
+				fw.MonthResetAt = t
+			}
+			state.FreeWindows = fw
+		}
+		if raw.Subscription != nil {
+			sub := &SubscriptionInfo{
+				DayUsed:            raw.Subscription.DayUsed,
+				DayLimit:           raw.Subscription.DayLimit,
+				FiveDayUsed:        raw.Subscription.FiveDayUsed,
+				FiveDayLimit:       raw.Subscription.FiveDayLimit,
+				MonthUsed:          raw.Subscription.MonthUsed,
+				MonthLimit:         raw.Subscription.MonthLimit,
+				DayPremiumUsed:     raw.Subscription.DayPremiumUsed,
+				DayPremiumLimit:    raw.Subscription.DayPremiumLimit,
+				MonthSpendUsd:      raw.Subscription.MonthSpendUsd,
+				MonthSpendLimitUsd: raw.Subscription.MonthSpendLimitUsd,
+				FreeDayUsed:        raw.Subscription.FreeDayUsed,
+				FreeDayLimit:       raw.Subscription.FreeDayLimit,
+			}
+			if t, err := parseFlexTime(raw.Subscription.DayResetAt); err == nil {
+				sub.DayResetAt = t
+			}
+			if t, err := parseFlexTime(raw.Subscription.PeriodEndsAt); err == nil {
+				sub.PeriodEndsAt = t
+			}
+			state.Subscription = sub
 		}
 		if state.ExpiresAt, err = parseFlexTime(raw.ExpiresAt); err != nil {
 			state.ExpiresAt = time.Time{}
@@ -454,19 +811,6 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 				}
 				state.RateLimitsByModel[modelID] = mq
 			}
-		}
-		// Feed the passive ban-risk engine (#64): ipPrivacySignals and the
-		// ip_capped activeUsersForIp/limit arrive on the session admission
-		// and probe responses. Read-only — the engine only warns.
-		if c.risk != nil && (len(state.IpPrivacySignals) > 0 ||
-			state.ActiveUsersForIP > 0 || state.Limit > 0 || state.CountryCode != "") {
-			c.risk.Observe(stealth.RiskSample{
-				At:               time.Now(),
-				Country:          state.CountryCode,
-				IPPrivacySignals: state.IpPrivacySignals,
-				ActiveUsersForIP: state.ActiveUsersForIP,
-				Limit:            state.Limit,
-			})
 		}
 		return state, nil
 	}

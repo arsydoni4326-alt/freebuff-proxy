@@ -5,11 +5,13 @@ package dashboard
 // package (43.8% → the functions below were almost entirely untested).
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/modelcat"
 	"freebuff-proxy/backend/internal/pool"
 	"freebuff-proxy/backend/internal/registry"
 	"freebuff-proxy/backend/internal/upstream"
@@ -31,7 +33,7 @@ func testDashboard(t *testing.T) *Dashboard {
 
 func TestSparklineSVG(t *testing.T) {
 	// Empty series: a flat baseline, never a crash.
-	got := string(sparklineSVG(nil, "var(--fp-amber)", "label"))
+	got := string(sparklineSVG(nil, "#e3a857", "label"))
 	if !strings.Contains(got, `<polyline points="0,42 260,42"`) {
 		t.Errorf("empty series = %q, want flat baseline", got)
 	}
@@ -58,10 +60,22 @@ func TestSparklineSVG(t *testing.T) {
 	}
 	got = string(sparklineSVG([]float64{0, 5, 10}, "c", "l"))
 	if !strings.Contains(got, `points="0.0,42.0 130.0,22.0 260.0,2.0"`) {
-		t.Errorf("varying 3-series = %q, want linearly scaled points", got)
+		t.Errorf("varying 3-series = %q, want 0→bottom / 10→top", got)
+	}
+
+	// Regression: stroke is an SVG *attribute* where CSS var() cannot
+	// resolve (invisible polyline). Production call sites must pass
+	// concrete colors.
+	for _, color := range []string{"#e3a857", "#7dd3fc"} {
+		out := string(sparklineSVG([]float64{1, 2, 3}, color, "l"))
+		if !strings.Contains(out, `stroke="`+color+`"`) {
+			t.Errorf("sparkline missing concrete stroke %q: %s", color, out)
+		}
+		if strings.Contains(out, "var(") {
+			t.Errorf("sparkline stroke must not use var(): %s", out)
+		}
 	}
 }
-
 func TestHumanDuration(t *testing.T) {
 	cases := []struct {
 		in   time.Duration
@@ -74,6 +88,9 @@ func TestHumanDuration(t *testing.T) {
 		{90 * time.Second, "2m"},
 		{3 * time.Hour, "3h"},
 		{5*time.Hour + 59*time.Minute, "5h 59m"},
+		{25 * time.Hour, "1d 1h"},
+		{48 * time.Hour, "2d"},
+		{658*time.Hour + 12*time.Minute, "27d 10h"},
 	}
 	for _, tc := range cases {
 		if got := humanDuration(tc.in); got != tc.want {
@@ -173,12 +190,12 @@ func TestMetricsDataRepeatedSampling(t *testing.T) {
 // report the same count as /v1/models and /admin/overview.
 func TestMetricsModelCountServedGate(t *testing.T) {
 	d := testDashboard(t)
-	if d.reg.ModelCount() <= len(registry.SupportedModelIDs) {
+	if d.reg.ModelCount() <= len(modelcat.ServedIDs()) {
 		t.Fatalf("precondition: fallback registry should exceed the served set (got %d)", d.reg.ModelCount())
 	}
 	md := d.metricsData()
-	if md.Models != len(registry.SupportedModelIDs) {
-		t.Errorf("metrics Models = %d, want %d (served set)", md.Models, len(registry.SupportedModelIDs))
+	if md.Models != len(modelcat.ServedIDs()) {
+		t.Errorf("metrics Models = %d, want %d (served set)", md.Models, len(modelcat.ServedIDs()))
 	}
 }
 
@@ -249,6 +266,26 @@ func TestCardFromSnapshotStanding(t *testing.T) {
 	}
 }
 
+// TestCardFromSnapshotAllowlist pins the MODEL_LOCKS card fields (issue
+// #325): the allowlist rides the full card, the skip counter rides both the
+// full card (via TokenSnapshot) and the live card.
+func TestCardFromSnapshotAllowlist(t *testing.T) {
+	snap := pool.TokenSnapshot{
+		Token:          0,
+		RiskLevel:      "low",
+		AllowedModels:  []string{"z-ai/glm-5.2"},
+		AllowlistSkips: 7,
+	}
+	card := cardFromSnapshot(snap)
+	if len(card.AllowedModels) != 1 || card.AllowedModels[0] != "z-ai/glm-5.2" {
+		t.Errorf("AllowedModels = %v, want [z-ai/glm-5.2]", card.AllowedModels)
+	}
+	live := liveCardFromSnapshot(snap)
+	if live.AllowlistSkips != 7 {
+		t.Errorf("live AllowlistSkips = %d, want 7", live.AllowlistSkips)
+	}
+}
+
 // TestCardFromSnapshotBanAndLocked pins the #198/#199 ban mapping: an active
 // temporary ban lands ban_type + RFC3339 banned_until on the card, a hard
 // ban carries only the type, and Locked is copied through (previously
@@ -297,10 +334,39 @@ func TestCardFromSnapshotBanAndLocked(t *testing.T) {
 	}
 }
 
+// TestLiveCardRequestLimits pins the RPD/RPM regression: the hot-poll card
+// must carry the request counters, caps, and Pacific-midnight countdown.
+// They were once full-shape only, so the first ?view=live poll rendered
+// them undefined in QuotaTracker until the next full refresh.
+func TestLiveCardRequestLimits(t *testing.T) {
+	snap := pool.TokenSnapshot{
+		Token:                  0,
+		RequestsPerMinute:      7,
+		RequestsPerDay:         120,
+		RequestsPerMinuteLimit: 30,
+		RequestsPerDayLimit:    1500,
+		RequestsPerDayResetIn:  3*time.Hour + 20*time.Minute,
+	}
+	live := liveCardFromSnapshot(snap)
+	if live.RequestsPerMinute != 7 {
+		t.Errorf("live RequestsPerMinute = %d, want 7", live.RequestsPerMinute)
+	}
+	if live.RequestsPerDay != 120 {
+		t.Errorf("live RequestsPerDay = %d, want 120", live.RequestsPerDay)
+	}
+	if live.RequestsPerMinuteLimit != 30 || live.RequestsPerDayLimit != 1500 {
+		t.Errorf("live limits = %d/%d, want 30/1500", live.RequestsPerMinuteLimit, live.RequestsPerDayLimit)
+	}
+	if live.RequestsPerDayResetIn != 12000 {
+		t.Errorf("live RequestsPerDayResetIn = %d, want 12000", live.RequestsPerDayResetIn)
+	}
+}
+
 // TestModelsDataServedGateOnly pins the served-model filter on modelsData:
 // the vendor registry also carries god-only/eval rows (luna-es since
-// snapshot 0603bc1) that must never appear in the dashboard models view,
-// and Count must reflect the filtered set, not the raw registry size.
+// snapshot 0603bc1) that must never appear in the dashboard models view.
+// One exception: the referral row (GLM 5.2, Served=false) is listed so
+// users discover the grant path. Count = served set + 1.
 func TestModelsDataServedGateOnly(t *testing.T) {
 	cfg := &config.Config{
 		RotationInterval:   time.Hour,
@@ -311,18 +377,38 @@ func TestModelsDataServedGateOnly(t *testing.T) {
 	}
 	reg := registry.New(cfg, nil)
 	reg.LoadFallback()
-	if reg.ModelCount() <= len(registry.SupportedModelIDs) {
+	if reg.ModelCount() <= len(modelcat.ServedIDs()) {
 		t.Fatalf("precondition: fallback registry should exceed the served set (got %d)", reg.ModelCount())
 	}
 	d := New(func() *config.Config { return cfg }, nil, reg, nil, nil)
 	md := d.modelsData()
-	if md.Count != len(registry.SupportedModelIDs) {
-		t.Errorf("Count = %d, want %d (served set)", md.Count, len(registry.SupportedModelIDs))
+	if md.Count != len(modelcat.ServedIDs())+1 {
+		t.Errorf("Count = %d, want %d (served set + referral row)", md.Count, len(modelcat.ServedIDs())+1)
 	}
+	var sawReferral bool
 	for _, row := range md.Models {
-		if !registry.IsServedModel(row.ID) {
+		if row.ID == modelcat.Glm52ModelID {
+			sawReferral = true
+			if row.Served {
+				t.Errorf("referral row %q has Served=true, want false", row.ID)
+			}
+			if row.Quota != "referral +1/day" {
+				t.Errorf("referral row quota = %q, want %q", row.Quota, "referral +1/day")
+			}
+			continue
+		}
+		if !modelcat.IsServed(row.ID) {
 			t.Errorf("models view contains unserved model %q", row.ID)
 		}
+		if !row.Served {
+			t.Errorf("served row %q has Served=false, want true", row.ID)
+		}
+		if got, want := row.Efforts, modelcat.Efforts(row.ID); !slices.Equal(got, want) {
+			t.Errorf("row %q Efforts = %v, want modelcat %v", row.ID, got, want)
+		}
+	}
+	if !sawReferral {
+		t.Error("models view missing the referral row (z-ai/glm-5.2)")
 	}
 }
 
@@ -355,5 +441,99 @@ func TestConfigDataEffectiveRows(t *testing.T) {
 		if seen[k] != 1 {
 			t.Errorf("Effective rows for %s = %d, want exactly 1", k, seen[k])
 		}
+	}
+}
+
+// TestUnmeteredModelsDerivation pins issue #342: the unlimited-session rows
+// come from modelcat (served minus shared premium pool), never from quota
+// rows — compact polls omit quota, which would falsely mark every model
+// unmetered. Luna (sole shared-premium row) must be absent; the unmetered
+// standard rows present; output sorted.
+func TestUnmeteredModelsDerivation(t *testing.T) {
+	cfg := &config.Config{UpstreamBaseURL: "https://www.codebuff.com"}
+	reg := registry.New(cfg, nil)
+	reg.LoadFallback()
+	got := unmeteredModels(reg)
+	if len(got) == 0 {
+		t.Fatal("unmeteredModels empty, want the unmetered standard rows")
+	}
+	byID := make(map[string]string, len(got))
+	for _, r := range got {
+		byID[r.ID] = r.Name
+		if r.Name == "" || r.Name == r.ID && modelcat.DisplayName(r.ID) != r.ID {
+			t.Errorf("row %q has empty display name", r.ID)
+		}
+	}
+	for _, premium := range modelcat.SharedPremiumModels() {
+		if _, ok := byID[premium]; ok {
+			t.Errorf("shared-premium model %q listed as unmetered", premium)
+		}
+	}
+	for _, want := range []string{
+		modelcat.Glm53ModelID,
+		modelcat.SolarPro4ModelID,
+		"deepseek/deepseek-v4-flash",
+		"mimo/mimo-v2.5",
+	} {
+		if !modelcat.IsServed(want) {
+			continue
+		}
+		if _, ok := byID[want]; !ok && !modelcat.IsPremium(want) {
+			t.Errorf("served non-premium model %q missing from unmetered list", want)
+		}
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].ID >= got[i].ID {
+			t.Errorf("unmetered list not sorted: %q before %q", got[i-1].ID, got[i].ID)
+		}
+	}
+}
+
+// TestTokensDataUnmeteredWithoutQuota pins #342's third box at the payload
+// level: a pool with zero quota rows (compact-poll shape) still carries the
+// modelcat-derived list, proving the section ignores quota presence.
+func TestTokensDataUnmeteredWithoutQuota(t *testing.T) {
+	d := testDashboard(t)
+	td := d.tokensData()
+	if len(td.Tokens) != 0 {
+		t.Fatalf("empty-pool tokens = %d, want 0", len(td.Tokens))
+	}
+	if len(td.UnmeteredModels) == 0 {
+		t.Fatal("UnmeteredModels empty on quota-less pool, want modelcat derivation")
+	}
+	for _, r := range td.UnmeteredModels {
+		if modelcat.IsPremium(r.ID) {
+			t.Errorf("premium model %q in payload unmetered list", r.ID)
+		}
+	}
+}
+
+// TestSortModelRowsByPrice pins issue #350 (mirrors sortModelsByPrice):
+// cheapest-first, ties on display name, unpriced rows last, stable on
+// empty prices.
+func TestSortModelRowsByPrice(t *testing.T) {
+	rows := []modelRow{{ID: "b"}, {ID: "a"}, {ID: "c"}, {ID: "z-ai/glm-5.2"}}
+	prices := map[string]float64{"a": 5, "b": 1, "c": 5}
+	sortModelRowsByPrice(rows, prices)
+	got := []string{rows[0].ID, rows[1].ID, rows[2].ID, rows[3].ID}
+	// b cheapest; a before c on equal price only if display name orders so
+	// — assert priced-before-unpriced and cheapest-first, the ported rules.
+	if got[0] != "b" {
+		t.Errorf("first = %q, want b (cheapest)", got[0])
+	}
+	if got[3] != "z-ai/glm-5.2" {
+		t.Errorf("last = %q, want unpriced glm-5.2", got[3])
+	}
+	middleOK := got[1] == "a" && got[2] == "c" || got[1] == "c" && got[2] == "a"
+	if !middleOK {
+		t.Errorf("middle = %v, want a and c in display-name order", got[1:3])
+	}
+	// Empty prices: every row ties → display-name order (upstream
+	// sortModelsByPrice behaves the same; modelsData only calls with a
+	// non-empty map, so unmetered accounts keep catalog order).
+	plain := []modelRow{{ID: "b"}, {ID: "a"}}
+	sortModelRowsByPrice(plain, map[string]float64{})
+	if plain[0].ID != "a" || plain[1].ID != "b" {
+		t.Errorf("empty prices ordered %v, want display-name order", plain)
 	}
 }

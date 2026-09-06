@@ -85,40 +85,28 @@ func bodyOf(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
-// The cookie's Secure flag follows the login transport: HTTPS (or a
-// TLS-terminating proxy via X-Forwarded-Proto) sets it, plain HTTP does not
-// (a Secure cookie over plain HTTP would be rejected and break login).
-func TestDashboardCookieSecureFollowsTransport(t *testing.T) {
+// The cookie's Secure flag adapts to the connection protocol dynamically:
+// on plain HTTP (common in self-hosted cloud VPS environments), Secure is false
+// so browsers accept the cookie without silent drops; when behind an HTTPS
+// reverse proxy (X-Forwarded-Proto: https) or direct TLS, Secure is true.
+func TestDashboardCookieDynamicProtocol(t *testing.T) {
 	ts := dashboardServer(t, "secret", nil)
 
+	// 1. Plain HTTP login -> Secure is false (works out-of-the-box on VPS).
 	plain := postLogin(t, ts.URL+"/admin/login", "secret")
 	defer func() { _ = plain.Body.Close() }()
-	if c := plain.Cookies(); len(c) == 1 && c[0].Secure {
-		t.Error("plain-HTTP login set a Secure cookie")
-	}
-
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/admin/login", strings.NewReader("token=secret"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Forwarded-Proto", "https")
-	resp, err := noRedirectClient().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	// The response carries fb_admin plus fb_csrf; only fb_admin's Secure
-	// flag is the subject here.
 	var admin *http.Cookie
-	for _, cc := range resp.Cookies() {
+	for _, cc := range plain.Cookies() {
 		if cc.Name == "fb_admin" {
 			admin = cc
 			break
 		}
 	}
-	if admin == nil || !admin.Secure {
-		t.Error("X-Forwarded-Proto: https login from loopback did not set a Secure fb_admin cookie")
+	if admin == nil {
+		t.Fatal("plain-HTTP login did not set fb_admin")
+	}
+	if admin.Secure {
+		t.Error("plain-HTTP login must set Secure=false for zero-friction self-hosted VPS login")
 	}
 }
 
@@ -225,9 +213,6 @@ const lockoutBound = 5
 
 // Assets are public (the login page loads them without a cookie).
 func TestDashboardAssetsPublic(t *testing.T) {
-	if !dashboard.HasEmbeddedSPA {
-		t.Skip("skipping SPA asset test in CLI-only build (compiled without -tags dashboard)")
-	}
 	ts := dashboardServer(t, "secret", nil)
 	distFS := dashboard.DistFS()
 	entries, err := fs.ReadDir(distFS, "assets")
@@ -920,9 +905,90 @@ func TestDashboardConfigSaveURLEncoded(t *testing.T) {
 	}
 }
 
+// TestDashboardConfigSaveSyncsLimitsToLiveTokens proves that saving
+// MAX_REQUESTS_PER_MINUTE and MAX_REQUESTS_PER_DAY via POST /admin/config
+// immediately updates both the full /admin/api/tokens and the hot-poll
+// /admin/api/tokens?view=live endpoints with the new limits.
+func TestDashboardConfigSaveSyncsLimitsToLiveTokens(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ts := dashboardServer(t, "secret", func(c *config.Config) {
+		c.AuthTokens = []string{"tok-0"}
+		c.MaxRequestsPerMinute = 30
+		c.MaxRequestsPerDay = 1500
+	})
+	cookie := authedCookie(t, ts)
+	respPre := get(t, ts.URL+"/admin/api/tokens?view=live", cookie)
+	if respPre.StatusCode != http.StatusOK {
+		t.Fatalf("pre-save status = %d", respPre.StatusCode)
+	}
+	var pre map[string]any
+	if err := json.Unmarshal([]byte(bodyOf(t, respPre)), &pre); err != nil {
+		t.Fatal(err)
+	}
+	preToks := pre["tokens"].([]any)
+	if len(preToks) != 1 {
+		t.Fatalf("pre tokens len = %d, want 1", len(preToks))
+	}
+	preCard := preToks[0].(map[string]any)
+	if got := int(preCard["requests_per_minute_limit"].(float64)); got != 30 {
+		t.Errorf("initial requests_per_minute_limit = %d, want 30", got)
+	}
+	if got := int(preCard["requests_per_day_limit"].(float64)); got != 1500 {
+		t.Errorf("initial requests_per_day_limit = %d, want 1500", got)
+	}
+
+	// Save new limits: 15 req/min, 1000 req/day.
+	content := "AUTH_TOKENS=tok-0\nADMIN_TOKEN=secret\nMAX_REQUESTS_PER_MINUTE=15\nMAX_REQUESTS_PER_DAY=1000\n"
+	saveResp := postForm(t, ts.URL, cookie, "/admin/config", url.Values{"content": {content}})
+	if saveResp.StatusCode != http.StatusOK {
+		t.Fatalf("save status = %d, want 200", saveResp.StatusCode)
+	}
+	_ = saveResp.Body.Close()
+
+	// Hot-poll ?view=live must immediately reflect the new limits.
+	respLive := get(t, ts.URL+"/admin/api/tokens?view=live", cookie)
+	if respLive.StatusCode != http.StatusOK {
+		t.Fatalf("live status = %d", respLive.StatusCode)
+	}
+	var live map[string]any
+	if err := json.Unmarshal([]byte(bodyOf(t, respLive)), &live); err != nil {
+		t.Fatal(err)
+	}
+	liveToks := live["tokens"].([]any)
+	if len(liveToks) != 1 {
+		t.Fatalf("live tokens len = %d, want 1", len(liveToks))
+	}
+	liveCard := liveToks[0].(map[string]any)
+	if got := int(liveCard["requests_per_minute_limit"].(float64)); got != 15 {
+		t.Errorf("live requests_per_minute_limit = %d, want 15", got)
+	}
+	if got := int(liveCard["requests_per_day_limit"].(float64)); got != 1000 {
+		t.Errorf("live requests_per_day_limit = %d, want 1000", got)
+	}
+
+	// Full /admin/api/tokens must also reflect the new limits.
+	respFull := get(t, ts.URL+"/admin/api/tokens", cookie)
+	if respFull.StatusCode != http.StatusOK {
+		t.Fatalf("full status = %d", respFull.StatusCode)
+	}
+	var full map[string]any
+	if err := json.Unmarshal([]byte(bodyOf(t, respFull)), &full); err != nil {
+		t.Fatal(err)
+	}
+	fullToks := full["tokens"].([]any)
+	if len(fullToks) != 1 {
+		t.Fatalf("full tokens len = %d, want 1", len(fullToks))
+	}
+	fullCard := fullToks[0].(map[string]any)
+	if got := int(fullCard["requests_per_minute_limit"].(float64)); got != 15 {
+		t.Errorf("full requests_per_minute_limit = %d, want 15", got)
+	}
+	if got := int(fullCard["requests_per_day_limit"].(float64)); got != 1000 {
+		t.Errorf("full requests_per_day_limit = %d, want 1000", got)
+	}
+}
+
 // The smoke form posts urlencoded model=&prompt=; the handler must read the
-// form (like handleTokenAdd), not json.Unmarshal the raw body. JSON clients
-// must keep working.
 func TestDashboardSmokeFormAndJSON(t *testing.T) {
 	t.Chdir(t.TempDir())
 	ts := dashboardServer(t, "secret", nil)

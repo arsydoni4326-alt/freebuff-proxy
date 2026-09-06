@@ -45,6 +45,17 @@ type ChatOptions struct {
 	// Injected as codebuff_metadata["llm_step_number"] when > 0; the run
 	// manager sets it per chat call at the server construction sites.
 	StepNumber int
+	// N is codebuff_metadata["n"] (llm.ts:118 `...(n && {n})`). 0 means
+	// absent (mirrors JS truthiness). CLI forwards it when sampling multiple
+	// completions.
+	N int
+	// CacheDebugCorrelation is codebuff_metadata["cache_debug_correlation"]
+	// (llm.ts:120-122). Empty means absent.
+	CacheDebugCorrelation string
+	// ExtraCodebuffMetadata is the CLI's extraCodebuffMetadata spread
+	// (llm.ts:115 `...(extraCodebuffMetadata ?? {})`) — caller-supplied
+	// keys merged BEFORE reserved identifiers so reserved keys win.
+	ExtraCodebuffMetadata map[string]string
 }
 
 // ChatCompletions POSTs an OpenAI-shaped request to the upstream chat
@@ -93,15 +104,14 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 		if err != nil {
 			return nil, err
 		}
-		// The streamed response body must stay readable after this call returns,
-		// so the request timeout is applied here (not inside do) and released
-		// only when the body is closed.
+		// The streamed response body must stay readable after this call
+		// returns, so no deadline is attached to the request context: the
+		// transport's ResponseHeaderTimeout (REQUEST_TIMEOUT) bounds only
+		// the wait for response headers, and the body streams until
+		// upstream EOF or the caller cancels (client disconnect). cancel
+		// stays nil here; cancelBody exists so a future deadline-based
+		// caller still gets correct release-on-close semantics.
 		var cancel context.CancelFunc
-		if _, hasDeadline := req.Context().Deadline(); !hasDeadline && c.requestTimeout > 0 {
-			reqCtx, cancelFn := context.WithTimeout(req.Context(), c.requestTimeout)
-			cancel = cancelFn
-			req = req.WithContext(reqCtx)
-		}
 		req.Header.Set("Accept", "application/json, text/event-stream")
 		// Chat is the ONLY path carrying the ai-sdk UA: the real
 		// CLI pins it on model calls alone; newRequest defaulted this
@@ -127,17 +137,21 @@ func (c *Client) ChatCompletions(ctx context.Context, opts ChatOptions, body []b
 			// foreign user (a possible flag).
 			req.Header.Set("x-freebuff-acting-user-id", c.userID)
 		}
-		resp, _, err := c.do(req, 0)
-		if err != nil {
+		resp, _, cerr := c.do(req, 0)
+		if cerr != nil && resp == nil {
+			// Transport failure (no upstream response read): surface it.
 			releaseCancel(cancel)
-			return nil, err
+			return nil, cerr
 		}
-		if resp.StatusCode >= 400 {
+		if cerr != nil {
+			// Classified >=400 response: do() already classified the body once
+			// (the 428 waiting-room flag and the rate-limit ledger are
+			// recorded). Preserve the chat path's debug dump and the
+			// same-session capacity-deferred retry.
 			bodyText := drainBody(resp.Body)
 			_ = resp.Body.Close()
 			releaseCancel(cancel)
 			c.dump("chat", req, resp.StatusCode, bodyText)
-			cerr := c.classify(resp.StatusCode, bodyText, resp.Header)
 			if isCapacityDeferred(cerr) && capacityDeferredAttempts < c.transientRetriesLimit {
 				capacityDeferredAttempts++
 				c.capacityDeferredRetries.Add(1) // lifetime metric
@@ -286,9 +300,7 @@ func ensureCliSystemMarker(payload map[string]any, agentID string) {
 		}
 	}
 
-	newMsgs := make([]any, 0, len(rawMsgs)+1)
-	newMsgs = append(newMsgs, map[string]any{"role": "system", "content": marker})
-	newMsgs = append(newMsgs, rawMsgs...)
+	newMsgs := append([]any{map[string]any{"role": "system", "content": marker}}, rawMsgs...)
 	payload["messages"] = newMsgs
 }
 
@@ -319,10 +331,37 @@ func injectEnvelope(body []byte, costMode string, opts ChatOptions) ([]byte, err
 	if clientID == "" {
 		clientID = generateClientID()
 	}
-	metadata := map[string]any{
-		"run_id":    opts.RunID,
-		"client_id": clientID,
+	// Preserve any extra caller-supplied codebuff_metadata keys (e.g.
+	// cache_debug_correlation, n) the CLI's getProviderOptions merges via
+	// extraCodebuffMetadata before stamping reserved identifiers (llm.ts:112-122).
+	// Reserved keys are always overwritten below so the server trusts only
+	// proxy-minted identifiers; non-reserved extras are forwarded verbatim.
+	extraMeta := map[string]any{}
+	if raw, ok := payload["codebuff_metadata"].(map[string]any); ok {
+		for k, v := range raw {
+			switch k {
+			case "run_id", "client_id", "trace_session_id", "freebuff_instance_id", "llm_step_number", "cost_mode", "freebuff_reasoning_effort":
+				// reserved — overwritten below (server-trusted identifiers)
+			default:
+				extraMeta[k] = v
+			}
+		}
 	}
+	for k, v := range opts.ExtraCodebuffMetadata {
+		switch k {
+		case "run_id", "client_id", "trace_session_id", "freebuff_instance_id", "llm_step_number", "cost_mode", "freebuff_reasoning_effort":
+			// reserved — must not be smuggled via extra
+			continue
+		default:
+			extraMeta[k] = v
+		}
+	}
+	metadata := map[string]any{}
+	for k, v := range extraMeta {
+		metadata[k] = v
+	}
+	metadata["run_id"] = opts.RunID
+	metadata["client_id"] = clientID
 	if opts.TraceSessionID != "" {
 		metadata["trace_session_id"] = opts.TraceSessionID
 	}
@@ -334,8 +373,14 @@ func injectEnvelope(body []byte, costMode string, opts ChatOptions) ([]byte, err
 	if opts.StepNumber > 0 {
 		metadata["llm_step_number"] = strconv.Itoa(opts.StepNumber)
 	}
+	if opts.N > 0 {
+		metadata["n"] = opts.N
+	}
 	if costMode != "" {
 		metadata["cost_mode"] = costMode
+	}
+	if opts.CacheDebugCorrelation != "" {
+		metadata["cache_debug_correlation"] = opts.CacheDebugCorrelation
 	}
 	// freebuff_reasoning_effort mirrors the normalized top-level
 	// reasoning_effort the convert layer already clamped to the model's

@@ -46,10 +46,23 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		if tok.locked.Load() {
 			return false
 		}
-		// Quota-capped tokens are excluded from BOTH the hot set and the
-		// cold fallback: their rate-limit reasons ride back in quotaLimited,
-		// so the pool surfaces a real 429 when every token is capped.
-		if _, _, capped := quotaRemaining(tok, model); capped {
+		// Model-allowlist routing (MODEL_LOCKS, issue #325): slots locked
+		// to other models are skipped for this request (as if unavailable),
+		// never demoted or punished. Unlocked slots serve anything.
+		if lockedOutByModel(p.cfg.Load(), p.reg, idx, model) {
+			tok.allowlistSkips.Add(1)
+			return false
+		}
+		// Quota-capped tokens are excluded from the cold fallback: their
+		// rate-limit reasons ride back in quotaLimited, so the pool surfaces
+		// a real 429 when every token is capped. Matching-hot tokens are
+		// EXEMPT (hotReusableForModel): serving via a live session posts no
+		// admission and burns no quota — excluding them strands live
+		// sessions behind a 429 they could still serve.
+		if _, _, capped := quotaRemaining(tok, model); capped && !hotReusableForModel(tok, model) {
+			return false
+		}
+		if capped, _ := freebucksCapped(tok, model); capped {
 			return false
 		}
 		return true
@@ -94,9 +107,6 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 
 	// Sort matchingHot:
 	// 1. In-flight refreshing/admitting tokens rank first so concurrent requests park on single-flight refreshCh.
-	// 2. Known positive remaining quota: smallest remaining quota first (drain account closest to limit first).
-	// 3. Equal/unknown quota: prefer last-used token for this model (session stickiness for multi-turn chats).
-	// 4. Stable token index preference (lower index first) to avoid round-robin ping-pong across accounts.
 	sort.SliceStable(matchingHot, func(i, j int) bool {
 		a, b := matchingHot[i], matchingHot[j]
 		tokA, tokB := (*toks)[a], (*toks)[b]
@@ -115,6 +125,19 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		}
 		if aKnown && aRem != bRem {
 			return aRem < bRem
+		}
+
+		// Freebucks-aware tie-breaker: drain smallest balance first
+		// (preserve fuller Freebucks allowances), alongside existing quota
+		// logic. Only applies when both tokens price the model.
+		if snapA.Freebucks != nil && snapB.Freebucks != nil {
+			if _, okA := snapA.Freebucks.Prices[model]; okA {
+				if _, okB := snapB.Freebucks.Prices[model]; okB {
+					if snapA.Freebucks.Balance != snapB.Freebucks.Balance {
+						return snapA.Freebucks.Balance < snapB.Freebucks.Balance
+					}
+				}
+			}
 		}
 
 		if hasLastUsed {
@@ -231,6 +254,30 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		}
 	}
 
+	// Smart availability (rate-limit handling): demote tokens that are
+	// cooling down or banned behind tokens that can serve right now, and
+	// order the unavailable ones by earliest unblock so the failover loop
+	// reaches an available account first and, when every token is limited,
+	// the surfaced 429 carries the shortest retry. The per-model quota
+	// exemption mirrors the failover loop (acquire.go): a cooldown caused
+	// by a DIFFERENT model's quota cap still leaves this token available
+	// for `model`.
+	sort.SliceStable(order, func(i, j int) bool {
+		ai := tokenAvailable((*toks)[order[i]], model)
+		aj := tokenAvailable((*toks)[order[j]], model)
+		if ai != aj {
+			return ai
+		}
+		if !ai {
+			ci := (*toks)[order[i]].runs.CooldownUntil()
+			cj := (*toks)[order[j]].runs.CooldownUntil()
+			if !ci.Equal(cj) {
+				return ci.Before(cj)
+			}
+		}
+		return false
+	})
+
 	if len(order) == 0 {
 		// All tokens are cooling down or capped: fallback to round-robin
 		// so the failover loop visits them and records their errors.
@@ -255,9 +302,33 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		}
 		if _, _, capped := quotaRemaining((*toks)[idx], model); capped {
 			quotaLimited = append(quotaLimited, quotaLimitError((*toks)[idx], model))
+			continue
+		}
+		if capped, _ := freebucksCapped((*toks)[idx], model); capped {
+			quotaLimited = append(quotaLimited, freebucksLimitError((*toks)[idx], model))
 		}
 	}
 	return order, quotaLimited
+}
+
+// tokenAvailable reports whether tok can serve model right now, for ordering
+// (not gating): a locked, cooling, or banned token is demoted behind
+// available ones. The per-model quota exemption mirrors the failover loop's
+// cooldown skip in leaseFromOrder: a cooldown caused by a DIFFERENT model's
+// quota exhaustion (quota errors carry the model) leaves the token available
+// for this request.
+func tokenAvailable(tok *tokenEntry, model string) bool {
+	if tok.locked.Load() {
+		return false
+	}
+	until := tok.runs.CooldownUntil()
+	if !until.IsZero() && time.Now().Before(until) {
+		if rle := tok.runs.RateLimitError(); rle != nil && rle.Model != "" && rle.Model != model && isQuotaExhaustedError(rle) {
+			return true
+		}
+		return false
+	}
+	return tok.runs.BanError() == nil
 }
 
 // bestWaitingRoom picks the queue entry with the lowest position; ties break

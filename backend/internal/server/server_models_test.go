@@ -3,6 +3,8 @@ package server_test
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/logring"
 	"freebuff-proxy/backend/internal/pool"
 	"freebuff-proxy/backend/internal/registry"
 	"freebuff-proxy/backend/internal/server"
@@ -110,7 +113,9 @@ func TestModelsEndpoint(t *testing.T) {
 	// reclassified it god-only/honeypot-class — vendor snapshot 0603bc1);
 	// 5→6 on 2026-08-26: stealth/ox-alpha added (vendor cce4800);
 	// 6→5 on 2026-08-28: ox-alpha paused, glm-5.3-flash added (vendor 5951772);
-	// 5→6 on 2026-08-29: upstage/solar-pro4 served (vendor 87ef664).
+	// 5→6 on 2026-08-29: upstage/solar-pro4 served (vendor 87ef664);
+	// 6→5 on 2026-08-31: z-ai/glm-5.2 paused, reward moved to glm-5.3-flash (vendor e557373, a5980e38e).
+	// 5→6 on 2026-09-05: meta/muse-spark-1.3-contributor served (upstream b14414d59).
 	if len(out.Data) != 6 {
 		t.Errorf("models = %d, want 6", len(out.Data))
 	}
@@ -201,6 +206,7 @@ func TestHealthz(t *testing.T) {
 	// 5→6 when stealth/ox-alpha was added (2026-08-26),
 	// 5→6 when upstage/solar-pro4 was served (2026-08-29); fable-5 stays
 	// out (not actually reachable on free accounts).
+	// 5→6 when meta/muse-spark-1.3-contributor was served (2026-09-04).
 	if out.Models != 6 {
 		t.Errorf("models = %d, want 6", out.Models)
 	}
@@ -792,12 +798,12 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 		t.Fatalf("models count = %d, want exactly 6", len(out.Data))
 	}
 	wantSet := map[string]bool{
-		"deepseek/deepseek-v4-flash": true,
-		"openai/gpt-5.6-luna":        true,
-		"upstage/solar-pro4":         true,
-		"z-ai/glm-5.2":               true,
-		"z-ai/glm-5.3-flash":         true,
-		"mimo/mimo-v2.5":             true,
+		"deepseek/deepseek-v4-flash":      true,
+		"openai/gpt-5.6-luna":             true,
+		"upstage/solar-pro4":              true,
+		"meta/muse-spark-1.3-contributor": true,
+		"z-ai/glm-5.3-flash":              true,
+		"mimo/mimo-v2.5":                  true,
 	}
 	for _, m := range out.Data {
 		if !wantSet[m.ID] {
@@ -1031,6 +1037,158 @@ func TestMetricsRegistryFreshness(t *testing.T) {
 	}
 }
 
+func TestMetricsFamiliesContract(t *testing.T) {
+	// metricsFamilies maps family name -> TYPE value (the full contract
+	// minus the ring-conditional log_events_total).
+	metricsFamilies := map[string]string{
+		"freebuff_proxy_uptime_seconds":                "gauge",
+		"freebuff_proxy_models_total":                  "gauge",
+		"freebuff_proxy_tokens_total":                  "gauge",
+		"freebuff_proxy_rate_limit_rejected_total":     "counter",
+		"freebuff_proxy_model_unavailable_skips_total": "counter",
+		"freebuff_proxy_token_messages_24h":            "gauge",
+		"freebuff_proxy_token_requests_total":          "counter",
+		"freebuff_proxy_token_active_runs":             "gauge",
+		"freebuff_proxy_token_cooldown_active":         "gauge",
+		"freebuff_proxy_quota_recent":                  "gauge",
+		"freebuff_proxy_quota_limit":                   "gauge",
+		"freebuff_proxy_quota_remaining":               "gauge",
+		"freebuff_proxy_session_remaining_seconds":     "gauge",
+		"freebuff_proxy_transient_retries_total":       "counter",
+		"freebuff_proxy_fingerprint_rotations_total":   "counter",
+		"freebuff_proxy_rate_limit_events_total":       "counter",
+		"freebuff_proxy_model_locked_total":            "counter",
+		"freebuff_proxy_allowlist_skips_total":         "counter",
+		"freebuff_proxy_premium_quota_limit":           "gauge",
+		"freebuff_proxy_premium_quota_used":            "gauge",
+		"freebuff_proxy_premium_quota_remaining":       "gauge",
+		"freebuff_proxy_premium_quota_percent":         "gauge",
+		// Custom (bridge quota dashboard + circuit breaker + registry
+		// freshness, Phase 4.2): families surfaced by this build's /metrics.
+		"freebuff_proxy_registry_age_seconds":     "gauge",
+		"freebuff_proxy_registry_fallback":        "gauge",
+		"freebuff_proxy_bridge_entries_total":     "gauge",
+		"freebuff_proxy_bridge_cooling_down_total": "gauge",
+		"freebuff_proxy_bridge_dead_tokens_total": "gauge",
+		"freebuff_proxy_bridge_locked_total":      "gauge",
+		"freebuff_proxy_bridge_active_runs":       "gauge",
+		"freebuff_proxy_bridge_requests_total":    "counter",
+		"freebuff_proxy_bridge_quota_remaining":   "gauge",
+		"freebuff_proxy_bridge_breaker_failures":  "gauge",
+		"freebuff_proxy_bridge_breaker_open":      "gauge",
+	}
+
+	// assertFamilies checks every expected family has a HELP and a TYPE
+	// line with the pinned type, and fails on ANY family not in want —
+	// additions must be a conscious contract update.
+	assertFamilies := func(t *testing.T, body string, want map[string]string) {
+		t.Helper()
+		help := map[string]bool{}
+		typ := map[string]string{}
+		for _, line := range strings.Split(body, "\n") {
+			switch {
+			case strings.HasPrefix(line, "# HELP "):
+				name := strings.TrimSpace(strings.TrimPrefix(line, "# HELP "))
+				if i := strings.IndexByte(name, ' '); i >= 0 {
+					name = name[:i]
+				}
+				help[name] = true
+			case strings.HasPrefix(line, "# TYPE "):
+				rest := strings.TrimSpace(strings.TrimPrefix(line, "# TYPE "))
+				name, tval, ok := strings.Cut(rest, " ")
+				if !ok {
+					t.Fatalf("malformed TYPE line %q", line)
+				}
+				typ[name] = tval
+			}
+		}
+		for name, wantType := range want {
+			if !help[name] {
+				t.Errorf("family %s missing from /metrics HELP set", name)
+			}
+			gotType, ok := typ[name]
+			if !ok {
+				t.Errorf("family %s missing from /metrics TYPE set", name)
+			} else if gotType != wantType {
+				t.Errorf("family %s TYPE = %q, want %q", name, gotType, wantType)
+			}
+		}
+		for name := range help {
+			if _, ok := want[name]; !ok {
+				t.Errorf("unknown family %s added to /metrics HELP (update TestMetricsFamiliesContract consciously)", name)
+			}
+		}
+		for name := range typ {
+			if _, ok := want[name]; !ok {
+				t.Errorf("unknown family %s has a /metrics TYPE (update TestMetricsFamiliesContract consciously)", name)
+			}
+		}
+	}
+
+	populatedChatBody := func(mock *testutil.MockUpstream) {
+		mock.ChatBody = testutil.SSEEvent(chunk("chatcmpl-fam", 1, `"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]`)) +
+			testutil.SSEEvent(chunk("chatcmpl-fam", 1, `"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]`)) +
+			"data: [DONE]\n\n"
+	}
+
+	t.Run("exact families on a populated server", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		populatedChatBody(mock)
+		ts, _ := newTestServer(t, nil, mock)
+
+		// Populate: one successful streamed chat so the per-token families
+		// carry rows, not just HELP/TYPE headers.
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+		}
+
+		resp, data = doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("metrics status = %d, want 200", resp.StatusCode)
+		}
+		body := string(data)
+		assertFamilies(t, body, metricsFamilies)
+		// The populated server's request counter must carry a real row.
+		if !strings.Contains(body, `freebuff_proxy_token_requests_total{token="1"} 1`) {
+			t.Errorf("populated server missing token_requests_total{token=\"1\"} 1 row:\n%s", body)
+		}
+		// No ring wired: the log-ring family must be absent.
+		if strings.Contains(body, "freebuff_proxy_log_events_total") {
+			t.Error("log_events_total emitted without a dashboard log ring")
+		}
+	})
+
+	t.Run("dashboard log ring adds exactly the log_events family", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		populatedChatBody(mock)
+		ring := logring.NewHandler(slog.NewTextHandler(io.Discard, nil), 500)
+		ts, _ := newTestServerWithLogger(t, nil, slog.New(ring), ring, mock)
+
+		// One chat so the ring holds records (chat request/routing/done).
+		resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody(modelA), nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+		}
+
+		resp, data = doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("metrics status = %d, want 200", resp.StatusCode)
+		}
+		body := string(data)
+		want := map[string]string{"freebuff_proxy_log_events_total": "counter"}
+		for name, tval := range metricsFamilies {
+			want[name] = tval
+		}
+		assertFamilies(t, body, want)
+		if !strings.Contains(body, `freebuff_proxy_log_events_total{level="info",msg="chat request"}`) {
+			t.Errorf("log_events_total missing the chat request row:\n%s", body)
+		}
+	})
+}
+
 // TestHealthzCircuitBreaker verifies that /healthz includes the circuit_breaker
 // object with correct fields when the breaker is disabled (default).
 func TestHealthzCircuitBreaker(t *testing.T) {
@@ -1150,5 +1308,182 @@ func TestMetricsCircuitBreaker(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q in:\n%s", want, body)
 		}
+	}
+}
+
+// TestModelsEndpointLimitedTier verifies that when upstream reports accessTier: "limited",
+// /v1/models annotates each row with current_access_tier: "limited", marks mimo/mimo-v2.5
+// available: true, and marks models outside the limited-tier allowlist available: false,
+// status: "region_limited".
+func TestModelsEndpointLimitedTier(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.AccessTier = "limited"
+	ts, _ := newTestServer(t, nil, mock)
+
+	// Execute a chat to admit a session and populate the pool snapshot with AccessTier: "limited".
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("mimo/mimo-v2.5"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+	}
+
+	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("models status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Data []struct {
+			ID                string `json:"id"`
+			Available         bool   `json:"available"`
+			Status            string `json:"status"`
+			CurrentAccessTier string `json:"current_access_tier"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal /v1/models: %v", err)
+	}
+	if len(out.Data) == 0 {
+		t.Fatal("empty models data")
+	}
+	for _, m := range out.Data {
+		if m.CurrentAccessTier != "limited" {
+			t.Errorf("model %s current_access_tier = %q, want limited", m.ID, m.CurrentAccessTier)
+		}
+		if m.ID == "mimo/mimo-v2.5" {
+			if !m.Available {
+				t.Errorf("mimo available = false, want true on limited tier")
+			}
+		} else {
+			if m.Available {
+				t.Errorf("model %s available = true, want false on limited tier", m.ID)
+			}
+			if m.Status != "region_limited" {
+				t.Errorf("model %s status = %q, want region_limited", m.ID, m.Status)
+			}
+		}
+	}
+}
+
+// TestModelsEndpointLimitedTierHideUnavailable verifies that MODELS_HIDE_UNAVAILABLE=true
+// prunes region_limited models on the limited tier, returning only the limited-allowed models.
+func TestModelsEndpointLimitedTierHideUnavailable(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.AccessTier = "limited"
+	ts, _ := newTestServerCfg(t, nil, func(cfg *config.Config) {
+		cfg.ModelsHideUnavailable = true
+	}, mock)
+
+	// Admit session so AccessTier is known.
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("mimo/mimo-v2.5"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+	}
+
+	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("models status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal /v1/models: %v", err)
+	}
+	if len(out.Data) != 1 || out.Data[0].ID != "mimo/mimo-v2.5" {
+		t.Errorf("got models %+v, want only [mimo/mimo-v2.5]", out.Data)
+	}
+}
+
+// TestModelRetrieveLimitedTier verifies that single model retrieval /v1/models/{model...}
+// returns the current_access_tier and region_limited annotations.
+func TestModelRetrieveLimitedTier(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.AccessTier = "limited"
+	ts, _ := newTestServer(t, nil, mock)
+
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("mimo/mimo-v2.5"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+	}
+
+	// Non-limited model
+	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models/z-ai/glm-5.3-flash", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get glm-5.3-flash status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var glm struct {
+		ID                string `json:"id"`
+		Available         bool   `json:"available"`
+		Status            string `json:"status"`
+		CurrentAccessTier string `json:"current_access_tier"`
+	}
+	if err := json.Unmarshal(data, &glm); err != nil {
+		t.Fatalf("unmarshal glm: %v", err)
+	}
+	if glm.Available || glm.Status != "region_limited" || glm.CurrentAccessTier != "limited" {
+		t.Errorf("glm row = %+v, want available=false, status=region_limited, current_access_tier=limited", glm)
+	}
+
+	// Limited model
+	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models/mimo/mimo-v2.5", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get mimo status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	var mimo struct {
+		ID                string `json:"id"`
+		Available         bool   `json:"available"`
+		Status            string `json:"status"`
+		CurrentAccessTier string `json:"current_access_tier"`
+	}
+	if err := json.Unmarshal(data, &mimo); err != nil {
+		t.Fatalf("unmarshal mimo: %v", err)
+	}
+	if !mimo.Available || mimo.CurrentAccessTier != "limited" {
+		t.Errorf("mimo row = %+v, want available=true, current_access_tier=limited", mimo)
+	}
+}
+
+// TestChatRoutingLogsServedModelOnCoercion verifies issue #230: when upstream coerces
+// the session to a different model (e.g. mimo), the INFO routing log line explicitly
+// includes served_model and the response carries X-FreeBuff-Served-Model.
+func TestChatRoutingLogsServedModelOnCoercion(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-coerced","accessTier":"limited","model":"mimo/mimo-v2.5","expiresAt":"2030-01-01T00:00:00Z"}`)
+	}
+
+	ring := logring.NewHandler(slog.NewTextHandler(io.Discard, nil), 500)
+	ts, _ := newTestServerWithLogger(t, nil, slog.New(ring), ring, mock)
+
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/v1/chat/completions", chatBody("z-ai/glm-5.3-flash"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
+	}
+
+	if servedHeader := resp.Header.Get("X-FreeBuff-Served-Model"); servedHeader != "mimo/mimo-v2.5" {
+		t.Errorf("X-FreeBuff-Served-Model header = %q, want mimo/mimo-v2.5", servedHeader)
+	}
+
+	var routingEntry *logring.Entry
+	for _, e := range ring.Recent(500) {
+		if e.Message == "chat routing" {
+			routingEntry = &e
+			break
+		}
+	}
+	if routingEntry == nil {
+		t.Fatal("missing 'chat routing' entry in log ring")
+	}
+	if gotModel := entryField(*routingEntry, "model"); gotModel != "z-ai/glm-5.3-flash" {
+		t.Errorf("routing model = %q, want z-ai/glm-5.3-flash", gotModel)
+	}
+	if gotServed := entryField(*routingEntry, "served_model"); gotServed != "mimo/mimo-v2.5" {
+		t.Errorf("routing served_model = %q, want mimo/mimo-v2.5 (upstream coercion logged)", gotServed)
 	}
 }
