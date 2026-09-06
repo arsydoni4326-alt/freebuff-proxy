@@ -327,6 +327,7 @@ func (l *spendLedger) rolling24h(now time.Time) int64 {
 func (p *Pool) recordSpend(token int, tokens int64) {
 	p.roster.recordSpend(token, tokens)
 	p.logSpendBuckets(tokens)
+	p.persistTokenIndex(token)
 }
 
 // logSpendBuckets emits one Debug line per period bucket a spend record
@@ -346,6 +347,7 @@ func (p *Pool) logSpendBuckets(tokens int64) {
 func (p *Pool) recordSpendEntry(entry *tokenEntry, tokens int64) {
 	p.roster.recordSpendEntry(entry, tokens)
 	p.logSpendBuckets(tokens)
+	p.persistTokenState(entry)
 }
 
 // bridgeRecordSpend adds tokens to a bridge entry's ledger.
@@ -408,6 +410,7 @@ func ledgerView(l *spendLedger) spendView {
 // at token's ledger (issue #122). The roster's single mutex guards it.
 func (p *Pool) recordSpendLimited(token int) {
 	p.roster.recordSpendLimited(token)
+	p.persistTokenIndex(token)
 }
 
 // bridgeRecordSpendLimited marks one upstream spend_limited refusal on a

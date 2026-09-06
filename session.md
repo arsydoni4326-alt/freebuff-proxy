@@ -1,5 +1,36 @@
 # Session: SQLite Token Database + UI
 
+## Latest: Phase 3 — Spend/Usage Ledgers Persisted in SQLite (quota accounting survives restarts)
+
+- **Phase 3** extends the token_state blob with the spend ledger (rolling 24h
+  window, Pacific day/week/month buckets, spend_limited counter #122) and the
+  account ledger (rolling 24h successful-chat timestamps, rolling 60s
+  admitted-request timestamps, Pacific-day request counter + bucket start).
+  A token that spent most of its daily allowance before a restart stays
+  accounted for after it — no restart-driven quota reset (anti-abuse).
+- **`pool/ledger_persist.go` (new)**: `SpendPersistState` +
+  `AccountPersistState` JSON types with `IsZero` guards (a Phase-1/2-only
+  blob decodes zeroed and is NOT applied). Roster-owned snapshot/apply:
+  `spendState`/`accountState`/`applySpend`/`applyAccount` take
+  `tokenRoster.mu`; shared `spendSnapshotOf`/`accountSnapshotOf`/
+  `applySpendTo`/`applyAccountTo` helpers exist for other guards.
+- **Hooks** (`state_store.go` persistTokenState now captures Spend+Account via
+  the roster index; `persistTokenIndex(idx)` helper for index-based paths):
+  recordChat, recordChatEntry, recordSpend, recordSpendEntry,
+  recordSpendLimited. RestoreTokenState applies Spend/Account after locks,
+  quarantines, and cooldowns. Bridge entries are deliberately NOT persisted:
+  their keys are hashed client tokens absent from auth_tokens (the store JOIN
+  would never match) and LRU eviction makes bridge-ledger durability
+  meaningless — documented in pool/CONTRACT.md.
+- **Tests**: `state_store_test.go` +5 — spend bucket/period/rolling round-trip,
+  spend_limited counter, usage-timestamp round-trip, Pacific-day request
+  counter round-trip, zero-state no-op guard.
+- **Validation**: build + vet clean; hermetic tests pass for pool, runs,
+  tokendb, archtest, cli, config; server suite passes except the pre-existing
+  `TestConcurrentReloadAndChat` EOF failure (verified identical on baseline).
+- **Remaining**: Phase 4 — session/quota durability (move `SESSION_PERSIST`
+  JSON state into the same SQLite store).
+
 ## Latest: Phase 2 — Cooldown Windows Persisted in SQLite (429/403 survive restarts)
 
 - **Phase 2** adds cooldown/ban/country/ip-cap window persistence on top of

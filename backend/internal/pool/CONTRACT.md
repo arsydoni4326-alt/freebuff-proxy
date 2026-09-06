@@ -41,14 +41,19 @@ Multi-token front door for chat requests. Owns token selection order, session ad
 - Token-state persistence (`state_store.go`): every pool cooldown transition
   (auth / rate-limit / ip_capped / ban / country-block, via both the `CooldownToken*`
   and `CooldownLease*` wrappers) and every administrative lock/unlock transition
-  (Lock/UnlockLock/Unlock) writes the entry's durable state to the injected
-  `TokenStateStore` as an opaque JSON blob (lock + quarantine + the full
-  `runs.CooldownState` window snapshot); failures only log and never reject the
-  mutation. `RestoreTokenState()` re-applies persisted locks/quarantines and
-  cooldown windows at startup, keyed by token VALUE (never index). Persisting
-  state rows for a re-added token is INTENTIONAL: the same account is still
-  dead, so the quarantine must survive a remove → re-add. Spend/quota ledgers
-  are Phase 3.
+  (Lock/UnlockLock/Unlock) and every ledger mutation (recordChat /
+  recordChatEntry / recordSpend / recordSpendEntry / recordSpendLimited) writes
+  the entry's durable state to the injected `TokenStateStore` as an opaque JSON
+  blob (lock + quarantine + the full `runs.CooldownState` window snapshot + the
+  `SpendPersistState`/`AccountPersistState` ledger snapshots, see
+  `ledger_persist.go`); failures only log and never reject the mutation.
+  `RestoreTokenState()` re-applies persisted locks/quarantines, cooldown
+  windows, and ledgers at startup, keyed by token VALUE (never index).
+  Persisting state rows for a re-added token is INTENTIONAL: the same account
+  is still dead, so the quarantine must survive a remove → re-add. Bridge
+  entries are NOT persisted: bridge keys are hashed client tokens absent from
+  `auth_tokens`, and the store's JOIN (plus the LRU eviction semantics) makes
+  bridge-state durability meaningless.
 
 ## Tests that protect it
 

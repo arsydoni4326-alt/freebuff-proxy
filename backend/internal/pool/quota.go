@@ -236,15 +236,22 @@ func formatFreebucksBalance(v float64) string {
 
 // recordChat appends one successful upstream chat for token and prunes the
 // token's usage history outside the 24h window. The ledger travels with the
-// entry (issue #263), so the roster's single mutex guards it.
-func (p *Pool) recordChat(token int) { p.roster.recordChat(token) }
+// entry (issue #263), so the roster's single mutex guards it. Phase 3:
+// persist the updated ledger so the usage counters survive a restart.
+func (p *Pool) recordChat(token int) {
+	p.roster.recordChat(token)
+	p.persistTokenIndex(token)
+}
 
 // recordChatEntry appends one successful upstream chat for the lease's
 // backing entry by pointer and prunes its usage history outside the 24h
 // window. The entry is the authoritative owner of its ledger, so after a
 // concurrent RemoveLastToken+AddToken a lease's Token index is never used
 // to locate the ledger — the pointer stays immune to index reuse.
-func (p *Pool) recordChatEntry(entry *tokenEntry) { p.roster.recordChatEntry(entry) }
+func (p *Pool) recordChatEntry(entry *tokenEntry) {
+	p.roster.recordChatEntry(entry)
+	p.persistTokenState(entry)
+}
 
 // usageCount returns how many successful chats token sent within the last
 // usageWindow, pruning expired timestamps.

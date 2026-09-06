@@ -243,3 +243,139 @@ func TestAuthCooldownPersistsAndRestores(t *testing.T) {
 		t.Error("auth cooldown not restored")
 	}
 }
+
+// --- Phase 3: spend + usage/request ledger persistence ---
+
+func TestSpendLedgerPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	// Record spend through the pool (fires the persist hook), then read the
+	// persisted snapshot.
+	p.recordSpend(0, 500)
+	st := store.decoded(t, "tok-0")
+	if st.Spend.DayUsed != 500 {
+		t.Fatalf("spend not persisted: DayUsed = %d, want 500", st.Spend.DayUsed)
+	}
+	if st.Spend.DayStart == 0 || st.Spend.WeekStart == 0 || st.Spend.MonthStart == 0 {
+		t.Errorf("period starts not persisted: %+v", st.Spend)
+	}
+	if len(st.Spend.Rolling) == 0 {
+		t.Error("rolling 24h window not persisted")
+	}
+
+	// A fresh pool restores the spend buckets.
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	view := p2.spendSnapshot(0)
+	if view.Day != 500 {
+		t.Errorf("restored Day = %d, want 500", view.Day)
+	}
+	if view.DayStart.IsZero() || view.DayStart.Unix() != st.Spend.DayStart {
+		t.Errorf("restored DayStart = %v, want unix %d", view.DayStart, st.Spend.DayStart)
+	}
+	if view.Rolling24h != 500 {
+		t.Errorf("restored Rolling24h = %d, want 500", view.Rolling24h)
+	}
+}
+
+func TestSpendLimitedCounterPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	p.recordSpendLimited(0)
+	st := store.decoded(t, "tok-0")
+	if st.Spend.SpendLimited != 1 {
+		t.Fatalf("spend_limited counter not persisted: %d, want 1", st.Spend.SpendLimited)
+	}
+
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	if got := p2.spendSnapshot(0).SpendLimited; got != 1 {
+		t.Errorf("restored SpendLimited = %d, want 1", got)
+	}
+}
+
+func TestUsageLedgerPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	p.recordChat(0)
+	p.recordChat(0)
+	st := store.decoded(t, "tok-0")
+	if len(st.Account.Usage) != 2 {
+		t.Fatalf("usage timestamps not persisted: %d entries, want 2", len(st.Account.Usage))
+	}
+	if st.Account.DayCnt != 0 {
+		t.Errorf("DayCnt should stay 0 on recordChat (success-day counter is recorded elsewhere): %d", st.Account.DayCnt)
+	}
+
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	if got := p2.usageCount(0); got != 2 {
+		t.Errorf("restored usageCount = %d, want 2", got)
+	}
+	if got := p2.usageResetIn(0); got <= 0 {
+		t.Errorf("restored usageResetIn = %v, want > 0 (within the 24h window)", got)
+	}
+}
+
+func TestDayRequestCounterPersistsAndRestores(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	store := newMemoryStateStore()
+	p.SetTokenStateStore(store)
+
+	// Drive a chat through the lease success path (recordChatEntry also
+	// bumps the Pacific-day request counter via the entry ledger).
+	p.recordChat(0)
+	// Bump the day counter directly through the roster (the acquire path is
+	// upstream-bound; the counter rides recordDayRequest).
+	toks := p.roster.Load()
+	(*toks)[0].ledger.recordDayRequest(time.Now())
+	p.persistTokenIndex(0)
+
+	st := store.decoded(t, "tok-0")
+	if st.Account.DayCnt != 1 {
+		t.Fatalf("day request counter not persisted: %d, want 1", st.Account.DayCnt)
+	}
+
+	p2 := newTestPool(t, mock)
+	p2.SetTokenStateStore(store)
+	p2.RestoreTokenState()
+	if got := p2.dayRequestCount(0); got != 1 {
+		t.Errorf("restored dayRequestCount = %d, want 1", got)
+	}
+}
+
+func TestZeroLedgerStateIsNotApplied(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	store := newMemoryStateStore()
+	store.states["tok-0"] = []byte(`{"Locked":false}`) // Phase-1-era blob: no Spend/Account
+
+	p := newTestPool(t, mock)
+	p.SetTokenStateStore(store)
+	p.RestoreTokenState()
+
+	view := p.spendSnapshot(0)
+	if view.Day != 0 || len(store.decoded(t, "tok-0").Spend.Rolling) != 0 {
+		t.Errorf("zero spend state mutated the live ledger: %+v", view)
+	}
+	if got := p.usageCount(0); got != 0 {
+		t.Errorf("zero account state mutated usage: %d", got)
+	}
+}
