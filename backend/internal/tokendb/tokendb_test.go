@@ -202,3 +202,144 @@ func TestTokensSorted(t *testing.T) {
 		t.Fatalf("expected sorted, got %v", tokens)
 	}
 }
+func TestSaveLoadTokenState(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+	db.Add("tok-a")
+	db.Add("tok-b")
+
+	if err := db.SaveTokenState("tok-a", []byte(`{"Locked":true}`)); err != nil {
+		t.Fatalf("SaveTokenState: %v", err)
+	}
+	if err := db.SaveTokenState("tok-b", []byte(`{"Quarantined":true,"QuarantineReason":"banned"}`)); err != nil {
+		t.Fatalf("SaveTokenState: %v", err)
+	}
+	states, err := db.LoadTokenStates()
+	if err != nil {
+		t.Fatalf("LoadTokenStates: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 states, got %d: %v", len(states), states)
+	}
+	if string(states["tok-a"]) != `{"Locked":true}` {
+		t.Errorf("tok-a state = %q", states["tok-a"])
+	}
+
+	// Upsert replaces the previous blob for the same token.
+	if err := db.SaveTokenState("tok-a", []byte(`{"Locked":false}`)); err != nil {
+		t.Fatal(err)
+	}
+	states, _ = db.LoadTokenStates()
+	if string(states["tok-a"]) != `{"Locked":false}` {
+		t.Errorf("after upsert tok-a state = %q, want {Locked:false}", states["tok-a"])
+	}
+	if len(states) != 2 {
+		t.Errorf("upsert must not add a row, got %d states", len(states))
+	}
+}
+
+func TestLoadTokenStatesIgnoresOrphans(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+
+	// State saved for a token that is NOT in auth_tokens must stay invisible.
+	if err := db.SaveTokenState("ghost", []byte(`{"Locked":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	states, err := db.LoadTokenStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("orphan state surfaced: %v", states)
+	}
+
+	// Once the token exists, its state becomes visible (re-added account
+	// keeps its terminal state — the anti-ban contract).
+	db.Add("ghost")
+	states, _ = db.LoadTokenStates()
+	if len(states) != 1 || string(states["ghost"]) != `{"Locked":true}` {
+		t.Errorf("after Add, states = %v, want the ghost state", states)
+	}
+}
+
+func TestClearTokenState(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+	db.Add("tok-a")
+	if err := db.SaveTokenState("tok-a", []byte(`{"Locked":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClearTokenState("tok-a"); err != nil {
+		t.Fatalf("ClearTokenState: %v", err)
+	}
+	states, _ := db.LoadTokenStates()
+	if len(states) != 0 {
+		t.Errorf("states after clear = %v, want empty", states)
+	}
+	// Clearing an absent token is a no-op.
+	if err := db.ClearTokenState("no-such"); err != nil {
+		t.Errorf("ClearTokenState(absent) = %v, want nil", err)
+	}
+}
+
+func TestSessionStateSaveLoadRemove(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := Open(filepath.Join(dir, "test.db"), nil)
+	defer db.Close()
+
+	// Absent key: nil, no error.
+	got, err := db.LoadSessionState("hash-a")
+	if err != nil || got != nil {
+		t.Fatalf("absent session state = (%v, %v), want (nil, nil)", got, err)
+	}
+
+	// Save + load round-trip.
+	if err := db.SaveSessionState("hash-a", []byte(`{"session":{"instance_id":"i1"}}`)); err != nil {
+		t.Fatalf("SaveSessionState: %v", err)
+	}
+	got, err = db.LoadSessionState("hash-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"session":{"instance_id":"i1"}}` {
+		t.Errorf("loaded blob = %q", got)
+	}
+
+	// Upsert replaces.
+	if err := db.SaveSessionState("hash-a", []byte(`{"session":{"instance_id":"i2"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.LoadSessionState("hash-a")
+	if string(got) != `{"session":{"instance_id":"i2"}}` {
+		t.Errorf("after upsert blob = %q", got)
+	}
+
+	// Independent keys.
+	if err := db.SaveSessionState("hash-b", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	all, err := db.LoadAllSessionStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Errorf("LoadAllSessionStates = %d entries, want 2", len(all))
+	}
+
+	// nil blob deletes the row.
+	if err := db.SaveSessionState("hash-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.LoadSessionState("hash-a")
+	if err != nil || got != nil {
+		t.Errorf("after nil-save, state = (%v, %v), want (nil, nil)", got, err)
+	}
+	all, _ = db.LoadAllSessionStates()
+	if len(all) != 1 {
+		t.Errorf("after nil-save, LoadAll = %d entries, want 1", len(all))
+	}
+}

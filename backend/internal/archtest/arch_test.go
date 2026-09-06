@@ -58,6 +58,7 @@ var allowed = map[string][]string{
 	"internal/ratelimit":      {},
 	"internal/reasoningcache": {},
 	"internal/stealth":        {},
+	"internal/tokendb":        {}, // SQLite token + per-token state store (stdlib + mattn/go-sqlite3 only)
 	"internal/tokenestimate":  {}, // o200k_base BPE, stdlib only
 	"internal/tokenhealth":    {},
 	"internal/updatecheck":    {},
@@ -108,6 +109,7 @@ var allowed = map[string][]string{
 		"internal/phasetiming",
 		"internal/pool",
 		"internal/registry",
+		"internal/stealth", // risk engine for the Overview risk cards
 		"internal/updatecheck",
 		"internal/upstream",
 	},
@@ -128,6 +130,7 @@ var allowed = map[string][]string{
 		"internal/session",
 		"internal/telemetry",
 		"internal/tokenestimate",
+		"internal/tokendb", // WithTokenDB wires the SQLite token/state store
 		"internal/updatecheck",
 		"internal/upstream",
 	},
@@ -142,6 +145,7 @@ var allowed = map[string][]string{
 		"internal/server",
 		"internal/session",
 		"internal/telemetry",
+		"internal/tokendb", // opens the SQLite token/state store; wires pool + server
 		"internal/updatecheck",
 		"internal/upstream",
 	},

@@ -17,6 +17,7 @@ func (p *Pool) CooldownToken(token int, d time.Duration) {
 		return
 	}
 	(*toks)[token].runs.Cooldown(d)
+	p.persistTokenState((*toks)[token])
 }
 
 // CooldownTokenRateLimit applies a rate-limit cooldown to token
@@ -34,6 +35,7 @@ func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
 		p.recordSpendLimited(token)
 	}
 	p.recordMismatchEscalation(token+1, rle) // 1-based key: 0 is the bridge-shared window
+	p.persistTokenState((*toks)[token])
 }
 
 // CooldownTokenIpCapped applies an ip_capped cooldown to token via
@@ -48,6 +50,7 @@ func (p *Pool) CooldownTokenIpCapped(token int, ice *upstream.IpCappedError) {
 		return
 	}
 	(*toks)[token].runs.CooldownIpCapped(ice)
+	p.persistTokenState((*toks)[token])
 }
 
 // CooldownTokenBan applies a ban cooldown to token (remembered so
@@ -107,6 +110,7 @@ func (p *Pool) CooldownLease(lease *Lease, d time.Duration) {
 		return
 	}
 	lease.entry.runs.Cooldown(d)
+	p.persistTokenState(lease.entry)
 }
 
 // CooldownLeaseRateLimit applies a rate-limit cooldown to the lease's own
@@ -123,6 +127,7 @@ func (p *Pool) CooldownLeaseRateLimit(lease *Lease, rle *upstream.RateLimitError
 	if idx := p.indexOfEntry(lease.entry); idx >= 0 {
 		p.recordMismatchEscalation(idx+1, rle) // 1-based key: 0 is the bridge-shared window
 	}
+	p.persistTokenState(lease.entry)
 }
 
 // CooldownLeaseIpCapped applies an ip_capped cooldown to the lease's own
@@ -132,6 +137,7 @@ func (p *Pool) CooldownLeaseIpCapped(lease *Lease, ice *upstream.IpCappedError) 
 		return
 	}
 	lease.entry.runs.CooldownIpCapped(ice)
+	p.persistTokenState(lease.entry)
 }
 
 // CooldownLeaseBan applies a ban cooldown to the lease's own entry and
@@ -389,6 +395,7 @@ func (p *Pool) UnlockToken(token int) error {
 	}
 	(*toks)[token].runs.ClearCooldowns()
 	(*toks)[token].quarantine.Store(nil)
+	p.persistTokenState((*toks)[token])
 	return nil
 }
 
@@ -431,6 +438,7 @@ func (p *Pool) quarantineToken(tok *tokenEntry, reason string, err error) {
 	if tok.quarantine.CompareAndSwap(nil, rec) {
 		p.logger.Warn("pool: token quarantined (terminal account state)",
 			"token_label", tokenEntryLabel(tok), "state", reason, "reason", rec.detail)
+		p.persistTokenState(tok)
 	}
 }
 
@@ -453,6 +461,7 @@ func (p *Pool) clearLiftedQuarantine(tok *tokenEntry) bool {
 	if tok.quarantine.CompareAndSwap(q, nil) {
 		p.logger.Info("pool: quarantine lifted (temporary ban expired)",
 			"token_label", tokenEntryLabel(tok), "state", q.reason)
+		p.persistTokenState(tok)
 		return true
 	}
 	return false
@@ -466,6 +475,7 @@ func (p *Pool) LockToken(token int) error {
 		return fmt.Errorf("pool: token %d out of range", token)
 	}
 	(*toks)[token].locked.Store(true)
+	p.persistTokenState((*toks)[token])
 	return nil
 }
 
@@ -477,6 +487,7 @@ func (p *Pool) UnlockLockToken(token int) error {
 		return fmt.Errorf("pool: token %d out of range", token)
 	}
 	(*toks)[token].locked.Store(false)
+	p.persistTokenState((*toks)[token])
 	return nil
 }
 

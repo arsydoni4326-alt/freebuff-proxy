@@ -46,6 +46,19 @@ in the pool sense; pool drives session from above.
   not just pooled ones (PR #348 pattern).
 - Store keys are token SHA-256 hashes; raw tokens never touch disk.
 
+## Phase 4: pluggable persistence backend
+
+`Store` (store.go) persists SESSION_PERSIST state through an optional
+`StateBackend` interface (backend.go): nil = the default JSON file (unchanged
+contract), non-nil = an opaque-blob KV store (the SQLite token DB's
+`session_state` table, adapted in `internal/cli/sessionbackend.go` — the only
+package allowed to import both). Backend mode stores one JSON blob per token
+hash (`kvBlob`: session + per-agent runs) with file-parity semantics: active
+entries without an instance id are dropped on load, stale-instance removal is
+refused, grace-expired entries are dropped, read failures retry on next
+access. The raw token is never written (keys are `upstream.Client.TokenKey`
+hashes) — same as the file store.
+
 ## Tests that protect it
 
 `session_lifecycle_test.go`, `session_admission_test.go`,

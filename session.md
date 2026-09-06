@@ -1,5 +1,108 @@
 # Session: SQLite Token Database + UI
 
+## Latest: Phase 4 — SESSION_PERSIST State in SQLite (full durability, no JSON files)
+
+- **Phase 4** completes the program: when the SQLite token DB is active AND
+  `SESSION_PERSIST=true`, session state and active agent runs are stored in
+  the DB's new `session_state` table (one JSON blob per token hash) instead of
+  the `SESSION_STATE_FILE` JSON file. The JSON-file path is unchanged when no
+  DB (CGO-disabled build) — same opt-in knob, better default storage.
+- **`session/backend.go` (new)**: `StateBackend` interface (opaque blobs:
+  `LoadState`/`LoadAll`/`SaveState`; nil blob = delete) + `kvBlob` (one row =
+  the token's session + per-agent runs). `Store` gains a `backend` field and
+  `NewStoreWithBackend`; `loadLocked`/`flushLocked` route through it with
+  file-parity semantics (active-without-instance-id dropped on load,
+  stale-instance removal refused, grace expiry dropped, read failure retries,
+  deleted keys cleaned up on flush). Keys are token HASHES (same key space as
+  the file store); raw tokens are never written.
+- **`tokendb`**: `session_state` table (`token` PK, opaque `state` BLOB,
+  `updated_at`) + `SaveSessionState` (nil deletes) / `LoadSessionState` /
+  `LoadAllSessionStates`. No JOIN with auth_tokens — the token-hash key space
+  is separate, so a re-added token still resumes its session (anti-slot-burn).
+- **`cli`** (`sessionbackend.go` new, `cli.go` restructured): the tokendb open
+  + MigrateFromEnv hoisted above the session-store construction so the store
+  can be built over the DB; `sqliteSessionBackend` adapter (only this package
+  may import both — archtest matrix). File-mode warning about exe-adjacent
+  state files stays file-mode-only.
+- **Tests**: `session/store_backend_test.go` — 4 tests (session round-trip
+  through a memory backend incl. quota map, run save/load/remove with empty-key
+  deletion, stale-instance removal refusal, corrupt-blob drop);
+  `tokendb_test.go` — `TestSessionStateSaveLoadRemove` (absent/upsert/
+  multi-key/nil-delete + LoadAll).
+- **Validation**: build + vet + gofmt clean; hermetic suites pass for
+  session, tokendb, cli, pool, archtest (plus runs/config from Phase 3);
+  server suite passes except the pre-existing `TestConcurrentReloadAndChat`
+  EOF failure. Phases 1-4 all complete; program CLOSED.
+
+## Latest: Phase 3 — Spend/Usage Ledgers Persisted in SQLite (quota accounting survives restarts)
+
+- **Phase 3** extends the token_state blob with the spend ledger (rolling 24h
+  window, Pacific day/week/month buckets, spend_limited counter #122) and the
+  account ledger (rolling 24h successful-chat timestamps, rolling 60s
+  admitted-request timestamps, Pacific-day request counter + bucket start).
+  A token that spent most of its daily allowance before a restart stays
+  accounted for after it — no restart-driven quota reset (anti-abuse).
+- **`pool/ledger_persist.go` (new)**: `SpendPersistState` +
+  `AccountPersistState` JSON types with `IsZero` guards (a Phase-1/2-only
+  blob decodes zeroed and is NOT applied). Roster-owned snapshot/apply:
+  `spendState`/`accountState`/`applySpend`/`applyAccount` take
+  `tokenRoster.mu`; shared `spendSnapshotOf`/`accountSnapshotOf`/
+  `applySpendTo`/`applyAccountTo` helpers exist for other guards.
+- **Hooks** (`state_store.go` persistTokenState now captures Spend+Account via
+  the roster index; `persistTokenIndex(idx)` helper for index-based paths):
+  recordChat, recordChatEntry, recordSpend, recordSpendEntry,
+  recordSpendLimited. RestoreTokenState applies Spend/Account after locks,
+  quarantines, and cooldowns. Bridge entries are deliberately NOT persisted:
+  their keys are hashed client tokens absent from auth_tokens (the store JOIN
+  would never match) and LRU eviction makes bridge-ledger durability
+  meaningless — documented in pool/CONTRACT.md.
+- **Tests**: `state_store_test.go` +5 — spend bucket/period/rolling round-trip,
+  spend_limited counter, usage-timestamp round-trip, Pacific-day request
+  counter round-trip, zero-state no-op guard.
+- **Validation**: build + vet clean; hermetic tests pass for pool, runs,
+  tokendb, archtest, cli, config; server suite passes except the pre-existing
+  `TestConcurrentReloadAndChat` EOF failure (verified identical on baseline).
+- **Remaining**: Phase 4 — session/quota durability (move `SESSION_PERSIST`
+  JSON state into the same SQLite store).
+
+## Latest: Phase 2 — Cooldown Windows Persisted in SQLite (429/403 survive restarts)
+
+- **Phase 2** adds cooldown/ban/country/ip-cap window persistence on top of
+  Phase 1's lock + quarantine store. A rate-limit 429 applied just before a
+  restart is now still live after restart — the token stays skipped for the
+  remaining window instead of re-hitting upstream and burning another daily
+  session slot.
+- **runs** (`cooldown.go`): new `CooldownState` struct + `CooldownPersistState()` /
+  `RestoreCooldownState()`. The state struct is fully JSON round-trippable
+  (exported fields, all upstream error types are plain exported structs).
+  Restore clamps future deadlines to the 7-day cooldown ceiling so a corrupt
+  far-future `ResetAt` cannot permanently lock the token; expired deadlines
+  are restored verbatim but the accessors (`RateLimitError`, `BanError`, ...)
+  self-time-out against them, so an old window after a long restart silently
+  drops.
+- **pool** (`state_store.go` + `cooldown.go`): `tokenState` extended with
+  `Cooldown runs.CooldownState` (JSON round-trip through the same opaque
+  blob). `persistTokenState` captures the full runs cooldown snapshot on every
+  cooldown transition (auth / rate-limit / ip_capped / ban / country-block —
+  both `CooldownToken*` and `CooldownLease*` wrappers, 9 hooks total).
+  `RestoreTokenState` now calls `e.runs.RestoreCooldownState(st.Cooldown)`.
+  Phase-1-only blobs (no `Cooldown` field) produce a zero-valued
+  `CooldownState` — `RestoreCooldownState` handles zeros as a no-op.
+- **Tests**: `runs/cooldown_persist_test.go` — 8 tests: round-trip for auth /
+  rate-limit / ip-capped / ban / country-block / hard-ban, far-future clamp,
+  expired-window self-timeout. `pool/state_store_test.go` — 3 new tests:
+  rate-limit / ip-capped / auth cooldown persist → restore against a fresh
+  pool.
+- **Phases remaining** (Phase 2 done):
+  - Phase 3 — spend/quota ledgers (Pacific day/week/month buckets, daily
+    message/request counters).
+  - Phase 4 — session/quota durability (move `SESSION_PERSIST` JSON state into
+    SQLite / the same store).
+- **Validation**: `go vet` clean; hermetic tests pass for runs, pool, tokendb,
+  archtest, cli, config; server suite passes except the pre-existing
+  `TestConcurrentReloadAndChat` EOF failure.
+
+
 ## Latest: Merge of upstream/main Resolved (feature/port-upstream)
 
 - Completed the in-progress merge of `upstream/main` (19ef1dd) into

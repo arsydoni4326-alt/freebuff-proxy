@@ -115,12 +115,44 @@ func Serve(configPath string, verbose bool, version string) int {
 
 	go refreshLoop(ctx, logger, reg, cfg.RegistryRefresh)
 
+	// Custom (SQLite token DB): open the persistent token database. The DB
+	// lives at data/auth_tokens.db (configurable via AUTH_TOKEN_DB_PATH env).
+	// On first start, existing AUTH_TOKENS from the environment / .env are
+	// migrated into the database so the operator loses nothing. When the DB
+	// is active, add/remove mutations persist there instead of rewriting .env
+	// (server.WithTokenDB), the pool reconciles to its token list, and — when
+	// SESSION_PERSIST is also on — session/run state is stored in it instead
+	// of a JSON file (Phase 4 of the SQLite state-persistence program).
+	tokenDBPath := os.Getenv("AUTH_TOKEN_DB_PATH")
+	if tokenDBPath == "" {
+		tokenDBPath = "data/auth_tokens.db"
+	}
+	tokenDB, err := tokendb.Open(tokenDBPath, logger)
+	if err != nil {
+		tokenDB = nil
+		logger.Warn("token database unavailable (falling back to .env persistence)", "err", err)
+	} else {
+		defer tokenDB.Close()
+		// One-time migration: seed the database from AUTH_TOKENS env.
+		if _, mErr := tokenDB.MigrateFromEnv(strings.Join(cfg.AuthTokens, ",")); mErr != nil {
+			logger.Warn("token database migration failed", "err", mErr)
+		}
+	}
+
 	// One upstream client and session manager per token, bound into the pool
 	// together with a per-token run manager. When SESSION_PERSIST is enabled
 	// one shared store backs every session manager (fixed, runtime-added, and
 	// bridge entries), so a restart resumes unexpired sessions.
 	var store *session.Store
-	if cfg.SessionPersist {
+	if cfg.SessionPersist && tokenDB != nil {
+		// Phase 4 (SQLite state persistence): the token DB is active, so
+		// SESSION_PERSIST state lives in its session_state table instead of
+		// a JSON file — no bind-mounted-file writes, and session resumption
+		// rides the same durable store as tokens and pool state.
+		store = session.NewStoreWithBackend(sqliteSessionBackend{db: tokenDB})
+		logger.Info("session state persistence enabled (sqlite)", "db", tokenDBPath)
+	}
+	if cfg.SessionPersist && store == nil {
 		// Log the absolute state-file path: a relative SESSION_STATE_FILE is
 		// resolved against the working directory, which is where the file
 		// actually appears on disk.
@@ -219,31 +251,23 @@ func Serve(configPath string, verbose bool, version string) int {
 	// the running version against the latest GitHub release (6h cache).
 	serverOpts = append(serverOpts, server.WithVersion(version, updatecheck.New(updatecheck.DefaultRepo, nil)))
 
-	// Custom (SQLite token DB): open the persistent token database.  The DB
-	// lives at data/auth_tokens.db (configurable via AUTH_TOKEN_DB_PATH env).
-	// On first start, existing AUTH_TOKENS from the environment / .env are
-	// migrated into the database so the operator loses nothing.  When the DB
-	// is active, add/remove mutations persist there instead of rewriting .env
-	// (dashboard handlers wire through server.WithTokenDB).
-	tokenDBPath := os.Getenv("AUTH_TOKEN_DB_PATH")
-	if tokenDBPath == "" {
-		tokenDBPath = "data/auth_tokens.db"
-	}
-	tokenDB, err := tokendb.Open(tokenDBPath, logger)
-	if err != nil {
-		logger.Warn("token database unavailable (falling back to .env persistence)", "err", err)
-	} else {
-		defer tokenDB.Close()
-		// One-time migration: seed the database from AUTH_TOKENS env.
-		if _, mErr := tokenDB.MigrateFromEnv(strings.Join(cfg.AuthTokens, ",")); mErr != nil {
-			logger.Warn("token database migration failed", "err", mErr)
-		}
-		// Reload the token list from the database so the pool starts from
-		// the authoritative source (the DB may have tokens not in .env).
+	// Custom (SQLite token DB): reconcile the pool with the database's
+	// authoritative token list (it was built from the pre-database token
+	// list above), wire the per-token state store, and re-apply persisted
+	// admin locks / terminal quarantines so a locked or dead account stays
+	// locked/quarantined across restarts (anti-ban contract). The DB itself
+	// was opened before the session store below.
+	if tokenDB != nil {
 		if dbTokens, listErr := tokenDB.List(); listErr == nil && len(dbTokens) > 0 {
 			cfg.AuthTokens = dbTokens
 			logger.Info("tokens loaded from database", "count", len(dbTokens))
+			// SetConfig reuses entries by token value and builds fresh ones
+			// for database-only tokens — tokens added via the dashboard in a
+			// previous run must be acquirable now, no file writes involved.
+			p.SetConfig(&cfg)
 		}
+		p.SetTokenStateStore(tokenDB)
+		p.RestoreTokenState()
 		serverOpts = append(serverOpts, server.WithTokenDB(tokenDB))
 	}
 

@@ -327,3 +327,76 @@ func (m *RunManager) CountryBlockedError() *upstream.CountryBlockedError {
 	}
 	return nil
 }
+
+// CooldownState is a serializable snapshot of a RunManager's cooldown/ban/
+// country/ip-cap windows, used by the pool's SQLite state persistence so that
+// 429/403 windows survive restarts (Phase 2 of the SQLite state-persistence
+// program). Every field is exported for JSON round-trip through the pool's
+// opaque blob store.
+type CooldownState struct {
+	CooldownUntil    time.Time
+	RateLimit        *upstream.RateLimitError
+	Ban              *upstream.BanError
+	BanPermanent     bool
+	BanUntil         time.Time
+	CountryBlock     *upstream.CountryBlockedError
+	CountryUntil     time.Time
+	IpCapped         *upstream.IpCappedError
+	IpCappedUntil    time.Time
+	IpCappedReAdmits int
+	IpCappedDayReset time.Time
+}
+
+// CooldownPersistState returns a snapshot of the current cooldown/ban/country/
+// ip-cap windows for durable storage. The caller must NOT hold m.mu.
+func (m *RunManager) CooldownPersistState() CooldownState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return CooldownState{
+		CooldownUntil:    m.cooldownUntil,
+		RateLimit:        m.rateLimit,
+		Ban:              m.ban,
+		BanPermanent:     m.banPermanent,
+		BanUntil:         m.banUntil,
+		CountryBlock:     m.countryBlock,
+		CountryUntil:     m.countryUntil,
+		IpCapped:         m.ipCapped,
+		IpCappedUntil:    m.ipCappedUntil,
+		IpCappedReAdmits: m.ipCappedReAdmits,
+		IpCappedDayReset: m.ipCappedDayReset,
+	}
+}
+
+// RestoreCooldownState re-applies a previously persisted cooldown/ban/country/
+// ip-cap snapshot onto a fresh RunManager at startup. Only still-live windows
+// are meaningfully restored — expired deadlines keep their values but the
+// accessors (RateLimitError, BanError, ...) self-time-out against them, so an
+// expired window after a long restart silently drops. Future deadlines are
+// clamped to the cooldown ceiling (7 days) so a corrupt far-future ResetAt
+// cannot permanently lock the token. The caller must NOT hold m.mu.
+func (m *RunManager) RestoreCooldownState(st CooldownState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	ceiling := now.Add(cooldownCeiling)
+	clamp := func(t time.Time) time.Time {
+		if t.IsZero() {
+			return t
+		}
+		if t.After(ceiling) {
+			return ceiling
+		}
+		return t
+	}
+	m.cooldownUntil = clamp(st.CooldownUntil)
+	m.rateLimit = st.RateLimit
+	m.ban = st.Ban
+	m.banPermanent = st.BanPermanent
+	m.banUntil = clamp(st.BanUntil)
+	m.countryBlock = st.CountryBlock
+	m.countryUntil = clamp(st.CountryUntil)
+	m.ipCapped = st.IpCapped
+	m.ipCappedUntil = clamp(st.IpCappedUntil)
+	m.ipCappedReAdmits = st.IpCappedReAdmits
+	m.ipCappedDayReset = clamp(st.IpCappedDayReset)
+}

@@ -394,6 +394,12 @@ type Pool struct {
 	storeSessionPersist bool
 	storeStateFile      string
 
+	// stateStore persists per-token operational state (admin locks, terminal
+	// quarantines) across restarts — the custom SQLite token DB's
+	// token_state table when active. nil disables persistence. Wired once at
+	// startup via SetTokenStateStore before RestoreTokenState.
+	stateStore TokenStateStore
+
 	// healthTracker detects health label transitions (active → degraded →
 	// critical → exhausted) and logs WARN messages suggesting backup tokens.
 	// Initialised by the pool constructor; nil in test helpers that skip it.

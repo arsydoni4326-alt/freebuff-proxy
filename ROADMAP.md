@@ -39,6 +39,7 @@ drift tracking.
 - [x] Prometheus `/metrics`
 - [x] Per-IP rate limiting
 - [x] Session persistence across restarts
+- [x] SQLite token DB: dashboard token add/remove persists to `auth_tokens`; Phase 1 anti-ban state (admin locks + terminal quarantines) in `token_state`, restored at startup — the `-config` JSON file is never rewritten
 - [x] Admin dashboard (Svelte 5): Overview, Tokens, Models, Config, Logs, Setup
 - [x] Hot config reload (`/admin/reload`, config studio)
 - [x] CLI diagnostics: `-doctor`, `-test-token`, `-setup`, `-version`, `-update`
@@ -175,6 +176,9 @@ Rough backlog; feasibility often depends on (undocumented) upstream behavior.
 - [ ] Optional alert webhooks for ban detection / quota exhaustion via `internal/notify`.
 - [ ] Document systemd/launchd/Task Scheduler status deeper in Getting Started.
 - [ ] Bridge-mode quota introspection surfaced per entry in `/admin` without plaintext exposure.
+- [x] **SQLite state persistence — Phase 2**: persist cooldown/ban/country/ip-cap windows (`runs.CooldownState`) so 429/403 windows survive restarts.
+- [x] **SQLite state persistence — Phase 3**: persist spend/quota ledgers (rolling 24h window, Pacific day/week/month buckets, spend_limited counter, usage + RPM windows, Pacific-day request counter) so quota accounting survives restarts.
+- [x] **SQLite state persistence — Phase 4**: `SESSION_PERSIST` run/session state stored in the SQLite token DB (`session_state` table) via a `session.StateBackend` adapter when the DB is active — full durability without JSON files.
 
 ---
 
