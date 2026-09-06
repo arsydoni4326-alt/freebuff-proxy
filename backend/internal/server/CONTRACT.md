@@ -33,6 +33,7 @@ The HTTP surface of the bridge: OpenAI chat completions + responses, Anthropic m
 - Request correlation: every upstream attempt shares the server's `req_id` (D1); retry chains log once with real `backoff_ms`.
 - Client disconnect cancels the upstream body read (context propagation); keepalives hold the downstream connection during long reasoning pauses.
 - Dashboard security: open mode (`ADMIN_TOKEN` unset or factory default) is loopback-only (403 remote) for config/logs/token routes; login rate limit 5 fails/min/IP; stateless HMAC cookie; CSRF double-submit on admin POSTs.
+- Token-mutation persistence: every dashboard token add/remove/swap/move (and the login-wizard add) funnels through `syncTokensAfterMutation` — SQLite token DB when active, else `.env` — with a persist → reload-verify → rollback contract that restores BOTH files byte-exact on failure. When the process runs with `-config <path>`, the new `AUTH_TOKENS` array is additionally mirrored into that JSON file via a format-preserving splice (`admin_env.go`, `updateAuthTokensJSONFile`), so a `-config /app/config.json` deployment survives restarts; a mirror failure only logs a warning and never rejects the mutation.
 
 ## Tests that protect it
 

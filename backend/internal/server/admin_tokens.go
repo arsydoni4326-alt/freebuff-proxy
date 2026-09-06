@@ -89,6 +89,17 @@ func removeAtCopy(s []string, i int) []string {
 	return append(out[:i], out[i+1:]...)
 }
 
+// tokenPersistTarget names the durable file a dashboard token mutation is
+// written to, for success messages: the -config JSON file when the process
+// runs with `-config <path>`, else .env. (The SQLite token DB, when active,
+// is authoritative on top of either.)
+func tokenPersistTarget(configPath string) string {
+	if configPath != "" {
+		return "the config file"
+	}
+	return ".env"
+}
+
 func (a *adminHandlers) handleTokenUnlock(w http.ResponseWriter, r *http.Request) {
 	id, err := tokenActionID(r)
 	if err == nil {
@@ -343,26 +354,46 @@ func (a *adminHandlers) syncTokensAfterMutation(tokens []string) error {
 		a.cfgStore(cfg)
 		a.reg.SetConfig(cfg)
 		a.pool.SetConfig(cfg)
+		// Custom (JSON -config): the database is authoritative on startup,
+		// but mirror the list into the -config file so the operator's durable
+		// config stays truthful and reseeds a recreated database. Best-effort
+		// — the DB already holds the change, so an unwritable file must not
+		// reject the mutation.
+		if err := updateAuthTokensJSONFile(a.configPath, tokens); err != nil {
+			a.logfunc().Warn("token change persisted to database but not mirrored into -config file", "config_path", a.configPath, "err", err)
+		}
 		return nil
 	}
 
 	// Legacy path: persist to .env file.
-	// Snapshot the .env before writing so a reload-verification failure can
-	// restore it byte-exact (mirrors handleModeSwitch's persist → verify →
+	// Snapshot the .env AND the -config JSON file (when one was passed via
+	// -config) before writing so a reload-verification failure can restore
+	// both byte-exact (mirrors handleModeSwitch's persist → verify →
 	// rollback). Otherwise the failed add leaves AUTH_TOKENS=<new> in .env
-	// while the live pool holds the old list — the very divergence the
-	// caller is trying to avoid.
+	// and/or config.json while the live pool holds the old list — the very
+	// divergence the caller is trying to avoid.
 	old, oldErr := os.ReadFile(config.EnvFileForWrite())
+	cfgOld, cfgOldErr := configJSONSnapshot(a.configPath)
 	if _, err := updateAuthTokensEnv(tokens); err != nil {
 		return fmt.Errorf("persist AUTH_TOKENS: %w", err)
+	}
+	// Custom (JSON -config): the common single-file deployment keeps its
+	// tokens in the -config JSON file (`-config /app/config.json`); mirror the
+	// new list back into it so a restart / container recreate keeps the pool.
+	// Best-effort: .env already holds the list and wins on reload, so a
+	// read-only/unwritable -config file must not reject the whole mutation.
+	if err := updateAuthTokensJSONFile(a.configPath, tokens); err != nil {
+		a.logfunc().Warn("token change not mirrored into -config file", "config_path", a.configPath, "err", err)
 	}
 	newCfg, err := config.Load(a.configPath)
 	if err != nil {
 		restoreEnvFile(old, oldErr)
+		restoreConfigJSONSnapshot(a.configPath, cfgOld, cfgOldErr)
 		return fmt.Errorf("reload config: %w", err)
 	}
 	if !reflect.DeepEqual(newCfg.AuthTokens, tokens) {
 		restoreEnvFile(old, oldErr)
+		restoreConfigJSONSnapshot(a.configPath, cfgOld, cfgOldErr)
 		return fmt.Errorf("AUTH_TOKENS overridden by environment or -config JSON (%d effective vs %d requested) — persisted to .env but NOT activated; clear it there or restart without env_file, then retry", len(newCfg.AuthTokens), len(tokens))
 	}
 	a.applyReloadedConfig(&newCfg)
@@ -476,7 +507,7 @@ func (a *adminHandlers) handleTokenAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.logfunc().Info("dashboard token added", "remote", remoteHost(r), "index", idx)
-	a.dash.RenderConfigResult(w, r, true, "Token added at index "+strconv.Itoa(idx)+" and persisted to .env.")
+	a.dash.RenderConfigResult(w, r, true, "Token added at index "+strconv.Itoa(idx)+" and persisted to "+tokenPersistTarget(a.configPath)+".")
 }
 
 func (a *adminHandlers) handleTokenRemove(w http.ResponseWriter, r *http.Request) {
@@ -542,9 +573,9 @@ func (a *adminHandlers) handleTokenRemove(w http.ResponseWriter, r *http.Request
 		return
 	}
 	a.logfunc().Info("dashboard token removed", "remote", remoteHost(r))
-	msg := "Last token removed and persisted to .env."
+	msg := "Last token removed and persisted to " + tokenPersistTarget(a.configPath) + "."
 	if idx >= 0 {
-		msg = "Token removed and persisted to .env."
+		msg = "Token removed and persisted to " + tokenPersistTarget(a.configPath) + "."
 	}
 	a.dash.RenderConfigResult(w, r, true, msg)
 }
@@ -632,7 +663,7 @@ func (a *adminHandlers) handleTokenSwap(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		a.logfunc().Info("dashboard token moved", "remote", remoteHost(r), "from", fromIdx, "to", toIdx)
-		a.dash.RenderConfigResult(w, r, true, fmt.Sprintf("Token #%d moved to position #%d and updated in .env.", fromIdx+1, toIdx+1))
+		a.dash.RenderConfigResult(w, r, true, fmt.Sprintf("Token #%d moved to position #%d and updated in %s.", fromIdx+1, toIdx+1, tokenPersistTarget(a.configPath)))
 		return
 	}
 
@@ -651,7 +682,7 @@ func (a *adminHandlers) handleTokenSwap(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.logfunc().Info("dashboard tokens swapped", "remote", remoteHost(r), "from", fromIdx, "to", toIdx)
-	a.dash.RenderConfigResult(w, r, true, fmt.Sprintf("Token #%d and Token #%d swapped and prioritized in .env.", fromIdx, toIdx))
+	a.dash.RenderConfigResult(w, r, true, fmt.Sprintf("Token #%d and Token #%d swapped and prioritized in %s.", fromIdx, toIdx, tokenPersistTarget(a.configPath)))
 }
 
 func moveStringSlice(s []string, from, to int) []string {

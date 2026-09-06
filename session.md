@@ -1,5 +1,18 @@
 # Session: SQLite Token Database + UI
 
+## Latest: Dashboard Token Mutations Now Persist to the `-config` JSON File
+
+- **Report**: adding a token in `/admin#tokens` did not update `/app/config.json` — the file the proxy is started with via `-config`.
+- **Root cause**: token add/remove/swap/move mutations only ever wrote `.env` (or the SQLite token DB); the `-config` JSON file was read-only input, so a `-config /app/config.json` deployment lost dashboard token changes on container recreate/restart.
+- **Fix** (`backend/internal/server/admin_env.go` + `admin_tokens.go`): `syncTokensAfterMutation` (the single funnel for dashboard add/remove/swap/move/remove-specific and the login-wizard add) now ALSO mirrors the new `AUTH_TOKENS` list into the `-config` JSON file when one was supplied.
+  - `updateAuthTokensJSONFile` + `setJSONObjectKey` perform a byte-preserving splice: only the top-level `AUTH_TOKENS` member is replaced (or appended before the closing brace when the file has none); key order, indentation, unknown keys, BOM, and the trailing newline survive. Written atomically (0600) via the existing `config.WriteFileAtomic`.
+  - Both branches covered: tokenDB path (best-effort mirror after DB commit — DB stays authoritative on startup; the config file reseeds a recreated DB) and legacy `.env` path (config.json snapshot joined the .env snapshot in persist → reload-verify → rollback so a failed verify restores BOTH files byte-exact). A mirror failure only logs `token change not mirrored into -config file` and never rejects the mutation.
+  - Success messages now say "persisted to the config file" instead of ".env" when a `-config` path is active (`tokenPersistTarget`).
+- **Tests**: `configjson_internal_test.go` (unit: splice replace/append/empty-object/nested-key isolation/literals/round-trip/nil→[]/no-op/snapshot-restore) and `admin_tokens_configfile_test.go` (end-to-end add + remove against a real `config.json`-backed server, incl. a bridge-mode config without an `AUTH_TOKENS` key).
+- **Docs**: README Configuration Reference + Admin Dashboard, `docs/dashboard.md` (Docker caveat: prefer directory mounts over single-file bind mounts — the atomic rename can otherwise fail and the mirror is skipped with a warning), and this file.
+- **Validation**: `go vet ./backend/internal/server/` clean; hermetic `env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./backend/internal/server/` passes EXCEPT the pre-existing `TestConcurrentReloadAndChat` EOF failure (verified identical on baseline via stash). `server_models_test.go` gofmt noise is pre-existing and untouched.
+
+
 ## Latest: Merge of upstream/main Resolved (feature/port-upstream)
 
 - Completed the in-progress merge of `upstream/main` (19ef1dd) into
