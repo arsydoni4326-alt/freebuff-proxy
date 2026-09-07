@@ -284,6 +284,207 @@ test.describe("operator interactions (hermetic mocks)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 3b. Quota Tracker probe-all posts test-all then refetches the store.
+  // -------------------------------------------------------------------------
+  test("quota: probe-all posts test-all and refetches tokens", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+    const state = { tokens: [tokenRow(0), tokenRow(1)] };
+    await page.unroute("**/admin/api/tokens*");
+    let gets = 0;
+    await page.route("**/admin/api/tokens*", async (route) => {
+      gets++;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(tokensPayload(state.tokens)),
+      });
+    });
+    // The real endpoint answers with one JSON object per token
+    // concatenated; the button drains the body as text, so any shape works.
+    await page.route("**/admin/tokens/test-all", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: `{"token":0,"ok":true,"message":"ok"}{"token":1,"ok":true,"message":"ok"}`,
+      });
+    });
+    await page.goto("http://127.0.0.1:4173/admin/#quota");
+    await expect(
+      page.getByRole("heading", { name: "Quota Tracker", exact: true }),
+    ).toBeVisible();
+    const before = gets;
+    const probe = page.waitForRequest(
+      (r) =>
+        r.method() === "POST" && r.url().includes("/admin/tokens/test-all"),
+    );
+    await page.getByRole("button", { name: "Probe all" }).click();
+    await probe;
+    await expect(
+      page.getByText("Quotas refreshed from upstream."),
+    ).toBeVisible();
+    await expect.poll(() => gets).toBeGreaterThan(before);
+  });
+
+  // -------------------------------------------------------------------------
+  // 3c. Tokens page probe-all shares the same store helper + endpoint.
+  // -------------------------------------------------------------------------
+  test("tokens: probe-all posts test-all and shows confirmation", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+    const state = { tokens: [tokenRow(0), tokenRow(1)] };
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(tokensPayload(state.tokens)),
+      });
+    });
+    await page.route("**/admin/tokens/test-all", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: `{"token":0,"ok":true,"message":"ok"}{"token":1,"ok":true,"message":"ok"}`,
+      });
+    });
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await expect(
+      page.getByRole("heading", { name: "Tokens", exact: true }),
+    ).toBeVisible();
+    const probe = page.waitForRequest(
+      (r) =>
+        r.method() === "POST" && r.url().includes("/admin/tokens/test-all"),
+    );
+    await page.getByRole("button", { name: "Probe all" }).click();
+    await probe;
+    await expect(
+      page.getByText("Quotas refreshed from upstream."),
+    ).toBeVisible();
+  });
+
+  // -------------------------------------------------------------------------
+  // 3c2. Pool Tokens never scrolls horizontally (desktop table + narrow cards).
+  // -------------------------------------------------------------------------
+  test("tokens: pool table fits its card without horizontal scroll", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+    const state = { tokens: [tokenRow(0), tokenRow(1)] };
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(tokensPayload(state.tokens)),
+      });
+    });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await expect(
+      page.getByRole("heading", { name: "Pool Tokens" }),
+    ).toBeVisible();
+    const overflow = await page
+      .locator("section", { hasText: "Pool Tokens" })
+      .locator("div.overflow-x-auto")
+      .evaluate((el) => el.scrollWidth - el.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
+  });
+
+  test("tokens: narrow viewport uses stacked cards without page scroll", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+    const state = { tokens: [tokenRow(0), tokenRow(1)] };
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(tokensPayload(state.tokens)),
+      });
+    });
+    await page.setViewportSize({ width: 800, height: 800 });
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await expect(
+      page.getByRole("heading", { name: "Pool Tokens" }),
+    ).toBeVisible();
+    // Below lg the pool table hides (display:none still matches locators)
+    // and stacked cards take over (other page sections may keep tables).
+    await expect(
+      page.locator("section", { hasText: "Pool Tokens" }).locator("table"),
+    ).toBeHidden();
+    // The expand chevron lives in the card footer on mobile: tapping it
+    // reveals the behind-chevron detail (instance row).
+    await page
+      .locator("section", { hasText: "Pool Tokens" })
+      .locator('button[aria-label*="Expand details"]')
+      .filter({ visible: true })
+      .first()
+      .click();
+    await expect(
+      page
+        .locator("section", { hasText: "Pool Tokens" })
+        .getByText("Instance", { exact: true })
+        .filter({ visible: true })
+        .first(),
+    ).toBeVisible();
+    const pageOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(pageOverflow).toBeLessThanOrEqual(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // 3d. Sidebar log out posts logout and lands on the login view.
+  // -------------------------------------------------------------------------
+  test("sidebar: log out posts logout and lands on login", async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+    await page.unroute("**/admin/api/auth/status");
+    await page.route("**/admin/api/auth/status", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ require_login: true }),
+      });
+    });
+    const state = { tokens: [tokenRow(0)] };
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(tokensPayload(state.tokens)),
+      });
+    });
+    const logout = page.waitForRequest(
+      (r) => r.method() === "POST" && r.url().includes("/admin/logout"),
+    );
+    await page.route("**/admin/logout", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await expect(
+      page.getByRole("heading", { name: "Tokens", exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Log out" }).click();
+    await logout;
+    await expect.poll(() => page.url()).toContain("#login");
+    await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+  });
+
+  // -------------------------------------------------------------------------
   // 4. Dismissing the confirm dialog sends no request and keeps the row.
   // -------------------------------------------------------------------------
   test("tokens: dismissing the confirm dialog sends no request", async ({
@@ -374,15 +575,15 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await mockDashboard(page, f);
 
     await page.goto("http://127.0.0.1:4173/admin/#logs");
-    // Console is the default view.
-    await expect(page.getByText("/v1 only")).toBeVisible();
+    // Console is the default view: header counts model requests.
+    await expect(page.getByText("model requests").first()).toBeVisible();
 
     // Table view exposes the labelled filter controls.
     await page.getByRole("button", { name: "Table" }).click();
     await expect(page.locator("#log-level")).toBeVisible();
     await expect(page.locator("#log-msg")).toBeVisible();
     await page.getByRole("button", { name: "Console" }).click();
-    await expect(page.getByText("/v1 only")).toBeVisible();
+    await expect(page.getByText("model requests").first()).toBeVisible();
 
     // Auto toggle flips label and pauses the 1s poll.
     const auto = page.getByRole("button", { name: /^Auto / });

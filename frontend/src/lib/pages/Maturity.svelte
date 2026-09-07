@@ -1,21 +1,26 @@
 <script>
   import { onMount } from "svelte";
-  import PageHeader from "../components/PageHeader.svelte";
+  import { SvelteSet } from "svelte/reactivity";
+  import PageShell from "../components/PageShell.svelte";
+  import FieldBox from "../components/FieldBox.svelte";
+  import Stepper from "../components/Stepper.svelte";
+  import Pips from "../components/Pips.svelte";
   import Card from "../components/Card.svelte";
   import Alert from "../components/Alert.svelte";
   import Button from "../components/Button.svelte";
   import ToggleSwitch from "../components/ToggleSwitch.svelte";
-  import EmptyState from "../components/EmptyState.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
-  import { fetchAPI, postAPI } from "../api/client.js";
-  import { adminApi, tokenActions } from "../api/paths.js";
+  import { fetchAPI, postAPI, postForm } from "../api/client.js";
+  import { adminApi, adminActions, tokenActions } from "../api/paths.js";
+  import { fetchMaturityHistory, historyKindTone } from "../utils/history.js";
   import {
     tokensData as tokensStore,
     tokensError as tokensErrorStore,
     ensureTokensStore,
     refreshTokens,
   } from "../stores/tokens.js";
-  import { getEnvValue } from "../utils/env.js";
+  import { getEnvValue, setEnvValue } from "../utils/env.js";
+  import { confirmAction } from "../stores/confirm.js";
   import { tr } from "../i18n.js";
 
   let data = $state(null);
@@ -29,12 +34,46 @@
   let globalEnabled = $state(true);
   let globalLoaded = $state(false);
 
+  // Global Economy touch model (MATURITY_TOUCH_MODEL): picked here on the
+  // Maturity page instead of Settings. Options are the served models the
+  // gateway can admit (same usable filter as Quota Tracker); fail-open to
+  // the current value alone when the catalog fetch fails.
+  const TOUCH_MODEL_KEY = "MATURITY_TOUCH_MODEL";
+  const TOUCH_MODEL_DEFAULT = "deepseek/deepseek-v4-flash";
+  let envContent = $state("");
+  let touchModel = $state(TOUCH_MODEL_DEFAULT);
+  let touchModelOptions = $state([]);
+  let touchModelSaving = $state(false);
+
   // Per-token draft controls + busy flags, keyed by token index.
   let drafts = $state({});
   let saving = $state({});
   let touching = $state({});
   let actionMessage = $state("");
   let actionOK = $state(true);
+
+  // Restart-surviving event timelines (ADR-0016): loaded once per token
+  // the first time its maturity block appears, never on the 10s poll.
+  let histByIdx = $state({});
+  let histPending = new SvelteSet();
+
+  $effect(() => {
+    for (const t of tokens) {
+      const idx = t.index ?? 0;
+      if (!t.maturity || idx in histByIdx || histPending.has(idx)) continue;
+      histPending.add(idx);
+      fetchMaturityHistory(idx)
+        .then((h) => {
+          histByIdx[idx] = h.events;
+        })
+        .catch(() => {
+          histByIdx[idx] = [];
+        })
+        .finally(() => {
+          histPending.delete(idx);
+        });
+    }
+  });
 
   function applyTokens(v) {
     if (!v) return;
@@ -67,15 +106,6 @@
     if (!iso) return "—";
     const d = new Date(iso);
     return isNaN(d) ? "—" : d.toLocaleString();
-  }
-
-  function progressDots(streak) {
-    const filled = Math.min(streak ?? 0, 7);
-    return (
-      "●".repeat(filled) +
-      "○".repeat(Math.max(0, 7 - filled)) +
-      (streak > 7 ? "+" : "")
-    );
   }
 
   async function save(idx) {
@@ -123,6 +153,42 @@
     }
   }
 
+  async function saveTouchModel(next) {
+    if (touchModelSaving || !next || next === touchModel) return;
+    const ok = await confirmAction({
+      title: $tr("Change Economy Touch Model"),
+      message: $tr(
+        "Save the .env file and reload the proxy with {model} as the maturity touch model?",
+        { model: next },
+      ),
+      confirmText: $tr("Save & Reload"),
+      tone: "warn",
+    });
+    if (!ok) return;
+    touchModelSaving = true;
+    actionMessage = "";
+    try {
+      const cfgRes = await fetchAPI(adminApi.config);
+      const base = cfgRes?.env_content ?? envContent;
+      const res = await postForm(adminActions.configSave, {
+        content: setEnvValue(base, TOUCH_MODEL_KEY, next),
+      });
+      const json = await res.json();
+      if (!res.ok || json.ok === false)
+        throw new Error(json.message || "Save failed");
+      touchModel = next;
+      envContent = setEnvValue(base, TOUCH_MODEL_KEY, next);
+      actionOK = true;
+      actionMessage = $tr("Touch model saved: {model}", { model: next });
+      window.dispatchEvent(new CustomEvent("fp-config-saved"));
+    } catch (e) {
+      actionOK = false;
+      actionMessage = e?.message || String(e);
+    } finally {
+      touchModelSaving = false;
+    }
+  }
+
   onMount(() => {
     const release = ensureTokensStore();
     unsubStore = tokensStore.subscribe(applyTokens);
@@ -139,7 +205,9 @@
     (async () => {
       try {
         const cfgRes = await fetchAPI(adminApi.config);
-        const envContent = cfgRes?.env_content || "";
+        envContent = cfgRes?.env_content || "";
+        touchModel =
+          getEnvValue(envContent, TOUCH_MODEL_KEY) || TOUCH_MODEL_DEFAULT;
         const eff = (cfgRes?.effective || []).find(
           (e) => e.key === "MATURITY_ENABLED",
         );
@@ -163,6 +231,16 @@
         globalLoaded = true;
       }
     })();
+    (async () => {
+      try {
+        const res = await fetchAPI(adminApi.models);
+        const rows = res?.models ?? [];
+        const ids = rows.filter((m) => m.agent).map((m) => m.id);
+        touchModelOptions = ids.length > 0 ? ids : [touchModel];
+      } catch {
+        touchModelOptions = [touchModel];
+      }
+    })();
     return () => {
       release();
       unsubStore?.();
@@ -174,185 +252,218 @@
   const tokens = $derived(data?.tokens ?? []);
 </script>
 
-<div class="page-enter">
-  <div class="flex flex-col gap-6">
-    <PageHeader
-      title={$tr("Account Maturity")}
-      description={$tr(
-        "Lock warming accounts out of rotation while a daily low-cost touch keeps their streak alive. Reaching the target auto-releases the token.",
-      )}
-    />
-
-    {#if actionMessage}
-      <Alert tone={actionOK ? "success" : "error"} title={actionMessage} />
-    {/if}
-    {#if error}
-      <Alert tone="error" title={error}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onclick={() => {
-            error = "";
-            refreshTokens();
-          }}
-        >
-          {$tr("Retry")}
-        </Button>
-      </Alert>
-    {/if}
-
-    {#if globalLoaded && !globalEnabled}
-      <Alert tone="warning" title={$tr("Maturity automation is globally off")}>
-        {$tr(
-          "Set MATURITY_ENABLED=1 in Settings — per-token toggles below do nothing while the kill-switch is off. Dry-run probes stay on until the schedule is proven.",
-        )}
-      </Alert>
-    {/if}
-
-    {#if loading}
-      <EmptyState title={$tr("Loading maturity…")} />
-    {:else if tokens.length === 0}
-      <EmptyState title={$tr("No pooled tokens")} />
-    {:else}
-      <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {#each tokens as t (t.index ?? t.email)}
-          {@const idx = t.index ?? 0}
-          {@const m = t.maturity}
-          {@const d = drafts[idx] ?? {
-            enabled: false,
-            target: 7,
-            mode: "unmetered",
-          }}
-          <Card
-            title={$tr("Account #{idx}", { idx: idx + 1 })}
-            description={t.email || $tr("unknown account")}
-          >
-            <div class="flex flex-col gap-3">
-              <div class="flex flex-wrap items-center gap-2">
-                {#if m?.badge}
-                  <StatusBadge tone={badgeTone(m.badge)} status={m.badge} />
-                {:else}
-                  <StatusBadge tone="idle" status={$tr("Not enrolled")} />
-                {/if}
-                {#if t.locked}
-                  <StatusBadge tone="warn" status={$tr("Locked")} />
-                {/if}
-                {#if m?.warn}
-                  <StatusBadge tone="bad" status={$tr("Touch not advancing")} />
-                {/if}
-                {#if m?.enabled}
-                  <span class="text-sm text-[var(--fp-muted)]">
-                    {progressDots(t.streak ?? 0)}
-                    {t.streak ?? 0}/{$tr("{target} day target", {
-                      target: m.target,
-                    })}
-                  </span>
-                {/if}
-              </div>
-
-              {#if m}
-                <dl class="grid grid-cols-1 gap-1 text-sm sm:grid-cols-2">
-                  <div class="flex justify-between gap-2">
-                    <dt class="text-[var(--fp-muted)]">
-                      {$tr("Today's slot")}
-                    </dt>
-                    <dd class="font-mono">{fmtTime(m.slot)}</dd>
-                  </div>
-                  <div class="flex justify-between gap-2">
-                    <dt class="text-[var(--fp-muted)]">{$tr("Last touch")}</dt>
-                    <dd class="font-mono">
-                      {m.last_action
-                        ? `${m.last_action} → ${m.last_result ?? "?"}`
-                        : "—"}
-                    </dd>
-                  </div>
-                  <div class="flex justify-between gap-2">
-                    <dt class="text-[var(--fp-muted)]">{$tr("Touched at")}</dt>
-                    <dd class="font-mono">{fmtTime(m.last_touch)}</dd>
-                  </div>
-                  <div class="flex justify-between gap-2">
-                    <dt class="text-[var(--fp-muted)]">{$tr("Advanced")}</dt>
-                    <dd class="font-mono">{m.last_advanced || "—"}</dd>
-                  </div>
-                </dl>
-              {:else}
-                <p class="text-sm text-[var(--fp-muted)]">
-                  {$tr(
-                    "Enable maturity to lock this account for warming: it leaves serving rotation and earns its streak back one cheap touch a day.",
-                  )}
-                </p>
-              {/if}
-
-              <div class="flex flex-wrap items-end gap-3">
-                <label class="flex flex-col gap-1 text-sm">
-                  <span class="text-[var(--fp-muted)]"
-                    >{$tr("Target (days)")}</span
-                  >
-                  <input
-                    type="number"
-                    min="1"
-                    max="28"
-                    class="fp-num w-24 rounded border px-2 py-1"
-                    bind:value={d.target}
-                    disabled={!!saving[idx]}
-                    aria-label={$tr("Streak target for Account #{idx}", {
-                      idx: idx + 1,
-                    })}
-                  />
-                </label>
-                <label class="flex flex-col gap-1 text-sm">
-                  <span class="text-[var(--fp-muted)]">{$tr("Touch mode")}</span
-                  >
-                  <select
-                    class="rounded border px-2 py-1"
-                    bind:value={d.mode}
-                    disabled={!!saving[idx]}
-                    aria-label={$tr("Touch mode for Account #{idx}", {
-                      idx: idx + 1,
-                    })}
-                  >
-                    <option value="unmetered">{$tr("Unmetered (free)")}</option>
-                    <option value="premium-short">{$tr("Premium short")}</option
-                    >
-                  </select>
-                </label>
-                <ToggleSwitch
-                  checked={d.enabled}
-                  disabled={!!saving[idx]}
-                  ariaLabel={$tr("Maturity for Account #{idx}", {
-                    idx: idx + 1,
-                  })}
-                  onchange={(next) => {
-                    d.enabled = next;
-                  }}
-                />
-              </div>
-
-              <div class="flex flex-wrap gap-2">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={!!saving[idx]}
-                  loading={!!saving[idx]}
-                  onclick={() => save(idx)}
-                >
-                  {$tr("Save")}
-                </Button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!!touching[idx] || !m?.enabled}
-                  loading={!!touching[idx]}
-                  onclick={() => touchNow(idx)}
-                  title={$tr("Fire one touch now (bypasses slot and throttle)")}
-                >
-                  {$tr("Touch now")}
-                </Button>
-              </div>
-            </div>
-          </Card>
+<PageShell
+  crumb="freebuff-proxy / Admin / maturity.conf"
+  title={$tr("Account Maturity")}
+  description={$tr(
+    "Lock warming accounts out of rotation while a daily low-cost Freebucks touch keeps their streak alive. Reaching the target auto-releases the token.",
+  )}
+  {loading}
+  {error}
+  empty={tokens.length === 0 ? { title: $tr("No pooled tokens") } : null}
+  onRetry={() => {
+    error = "";
+    refreshTokens();
+  }}
+>
+  {#snippet actions()}
+    <label
+      class="flex items-center gap-2 font-mono text-[11px] text-[var(--fp-dim)]"
+    >
+      {$tr("Touch model")}
+      <select
+        class="fp-select !h-8 !py-1 !text-xs font-mono w-56 max-w-[60vw]"
+        value={touchModel}
+        disabled={touchModelSaving}
+        aria-label={$tr("Economy touch model")}
+        onchange={(e) => {
+          const next = e.currentTarget.value;
+          e.currentTarget.value = touchModel;
+          saveTouchModel(next);
+        }}
+      >
+        {#each touchModelOptions.length > 0 ? touchModelOptions : [touchModel] as id (id)}
+          <option value={id} selected={id === touchModel}>{id}</option>
         {/each}
-      </div>
-    {/if}
+      </select>
+    </label>
+  {/snippet}
+  {#if actionMessage}
+    <Alert tone={actionOK ? "success" : "error"} title={actionMessage} />
+  {/if}
+
+  {#if globalLoaded && !globalEnabled}
+    <Alert tone="warning" title={$tr("Maturity automation is globally off")}>
+      {$tr(
+        "Set MATURITY_ENABLED=1 in Settings — per-token toggles below do nothing while the kill-switch is off. Dry-run probes stay on until the schedule is proven.",
+      )}
+    </Alert>
+  {/if}
+
+  <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+    {#each tokens as t (t.index ?? t.email)}
+      {@const idx = t.index ?? 0}
+      {@const m = t.maturity}
+      {@const d = drafts[idx] ?? {
+        enabled: false,
+        target: 7,
+        mode: "unmetered",
+      }}
+      <Card
+        title={$tr("Account #{idx}", { idx: idx + 1 })}
+        description={t.email || $tr("unknown account")}
+      >
+        {#snippet actions()}
+          {@const streakTarget = m?.target ?? d.target ?? 7}
+          <span class="flex flex-wrap items-center justify-end gap-1.5">
+            {#if m?.badge}
+              <StatusBadge tone={badgeTone(m.badge)} status={m.badge} />
+            {:else}
+              <StatusBadge tone="idle" status={$tr("Not enrolled")} />
+            {/if}
+            {#if t.locked}
+              <StatusBadge tone="warn" status={$tr("Locked")} />
+            {/if}
+            {#if m?.warn}
+              <StatusBadge tone="bad" status={$tr("Touch not advancing")} />
+            {/if}
+            <Pips
+              value={t.streak ?? 0}
+              total={streakTarget}
+              label={$tr("Current streak / target")}
+            />
+          </span>
+        {/snippet}
+        <div class="flex flex-col gap-2">
+          {#if m}
+            <p class="fp-num text-[11px] leading-relaxed text-[var(--fp-dim)]">
+              {$tr("slot")}
+              {fmtTime(m.slot)} ·
+              {m.last_action
+                ? `${m.last_action} → ${m.last_result ?? "?"}`
+                : $tr("no touch yet")}{m.last_touch
+                ? ` · ${fmtTime(m.last_touch)}`
+                : ""}{m.last_advanced
+                ? ` · ${$tr("advanced")} ${m.last_advanced}`
+                : ""}
+            </p>
+          {/if}
+
+          <div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
+            <FieldBox
+              label={$tr("Target Period")}
+              unit={$tr("days")}
+              class="sm:col-span-5"
+            >
+              <Stepper
+                bind:value={d.target}
+                min={1}
+                max={28}
+                disabled={!!saving[idx]}
+                ariaLabel={$tr("Streak target for Account #{idx}", {
+                  idx: idx + 1,
+                })}
+                decreaseLabel={$tr("Decrease target for Account #{idx}", {
+                  idx: idx + 1,
+                })}
+                increaseLabel={$tr("Increase target for Account #{idx}", {
+                  idx: idx + 1,
+                })}
+              />
+            </FieldBox>
+            <FieldBox
+              label={$tr("Touch Tier")}
+              unit={d.mode === "premium-short"
+                ? $tr("daily pool")
+                : $tr("minimal")}
+              class="sm:col-span-7"
+            >
+              <select
+                class="fp-select !h-8 !py-1 !text-xs w-full"
+                bind:value={d.mode}
+                disabled={!!saving[idx]}
+                aria-label={$tr("Touch mode for Account #{idx}", {
+                  idx: idx + 1,
+                })}
+                title={d.mode === "premium-short"
+                  ? $tr(
+                      "One short premium admission per day, paid from this account's daily Freebucks pool.",
+                    )
+                  : $tr(
+                      "Cheapest served model, minimal spend from this account's daily Freebucks pool.",
+                    )}
+              >
+                <option value="unmetered"
+                  >{$tr("Economy (min. Freebucks)")}</option
+                >
+                <option value="premium-short"
+                  >{$tr("Premium short (daily pool)")}</option
+                >
+              </select>
+            </FieldBox>
+          </div>
+          <div
+            class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--fp-border)]/60 pt-2.5"
+          >
+            <ToggleSwitch
+              checked={d.enabled}
+              disabled={!!saving[idx]}
+              ariaLabel={$tr("Maturity for Account #{idx}", {
+                idx: idx + 1,
+              })}
+              onchange={(next) => {
+                d.enabled = next;
+              }}
+            />
+            <span class="flex flex-wrap gap-1.5">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={!!touching[idx] || !m?.enabled}
+                loading={!!touching[idx]}
+                onclick={() => touchNow(idx)}
+                title={$tr("Fire one touch now (bypasses slot and throttle)")}
+              >
+                {$tr("Touch now")}
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={!!saving[idx]}
+                loading={!!saving[idx]}
+                onclick={() => save(idx)}
+              >
+                {$tr("Save")}
+              </Button>
+            </span>
+          </div>
+          {#if (histByIdx[idx] ?? []).length > 0}
+            <ul
+              class="flex flex-col gap-1.5 border-t border-[var(--fp-border)]/60 pt-2.5"
+              aria-label={$tr("Maturity history for Account #{idx}", {
+                idx: idx + 1,
+              })}
+            >
+              {#each histByIdx[idx] as ev (ev.ts + ev.kind + ev.detail)}
+                <li
+                  class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs"
+                >
+                  <StatusBadge
+                    tone={historyKindTone(ev.kind)}
+                    status={ev.kind}
+                  />
+                  <span class="text-[var(--fp-muted)] break-words min-w-0"
+                    >{ev.detail}</span
+                  >
+                  <span class="fp-num text-[var(--fp-dim)] ml-auto shrink-0"
+                    >{fmtTime(new Date(ev.ts).toISOString())}</span
+                  >
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </Card>
+    {/each}
   </div>
-</div>
+</PageShell>

@@ -11,10 +11,15 @@
   import Button from "./Button.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import TokenDetailsDrawer from "./TokenDetailsDrawer.svelte";
+  import {
+    statusFor,
+    riskBadgeFor,
+    cooldownLabel,
+  } from "../utils/tokenStatus.js";
   import { tr } from "../i18n.js";
 
   /**
-   * TokenCardMobile — stacked card layout of one pooled token for < md
+   * TokenCardMobile — stacked card layout of one pooled token for < lg
    * viewports. Identity + status + actions are always visible; secondary
    * columns (instance, cooldown) and the detail drawer live behind the
    * expand chevron, so nothing ever scrolls horizontally.
@@ -57,35 +62,6 @@
     onDragEnd,
   } = $props();
 
-  function banBadge(token) {
-    if (token.ban_type === "hard") {
-      return {
-        label: $tr("banned — appeal required"),
-        tone: "critical",
-        pulse: true,
-      };
-    }
-    if (token.ban_type === "temporary") {
-      return { label: $tr("banned (temporary)"), tone: "bad" };
-    }
-    return null;
-  }
-
-  function statusFor(token) {
-    const ban = banBadge(token);
-    if (ban) return ban;
-    if (token.locked) return { label: $tr("locked"), tone: "warn" };
-    if (token.cooldown_active) return { label: $tr("cooldown"), tone: "warn" };
-    const s = token.session_status || "";
-    if (s === "active")
-      return { label: $tr("leased"), tone: "good", pulse: true };
-    if (s === "queued") return { label: $tr("queued"), tone: "info" };
-    if (s === "banned") return { label: $tr("banned"), tone: "bad" };
-    if (s === "expired") return { label: $tr("expired"), tone: "idle" };
-    if (s === "grace") return { label: $tr("grace drain"), tone: "warn" };
-    return { label: $tr("idle"), tone: "idle" };
-  }
-
   const st = $derived(statusFor(token));
 
   // Live session countdown (same tick model as the desktop card). Anchor to
@@ -107,51 +83,9 @@
     Math.max(0, Math.floor((sessionEndsAtMs - nowTick) / 1000)),
   );
 
-  function cooldownLabel(token) {
-    if (!token.cooldown_active || !token.cooldown_until) return "—";
-    const ms = new Date(token.cooldown_until).getTime() - now;
-    if (ms <= 0) return "expiring";
-    const s = Math.floor(ms / 1000);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    if (h >= 24) {
-      const d = Math.floor(h / 24);
-      const hr = h % 24;
-      return hr > 0 ? `${d}d ${hr}h` : `${d}d`;
-    }
-    if (h > 0) return `${h}h ${m}m`;
-    if (m > 0) return `${m}m ${sec}s`;
-    return `${sec}s`;
-  }
-
-  function riskTone(risk) {
-    switch (risk) {
-      case "low":
-        return "good";
-      case "moderate":
-        return "warn";
-      case "high":
-      case "critical":
-        return "bad";
-      default:
-        return "idle";
-    }
-  }
-
   // Risk chip (moved from the standalone At-risk cards): shown when the
   // account carries a risk flag and no ban badge already claims the card.
-  const riskBadge = $derived(
-    banBadge(token)
-      ? null
-      : token.risk_level && token.risk_level !== "low"
-        ? {
-            label: token.risk_level,
-            tone: riskTone(token.risk_level),
-            pulse: token.risk_level === "critical",
-          }
-        : null,
-  );
+  const riskBadge = $derived(riskBadgeFor(token));
 </script>
 
 <div
@@ -161,14 +95,14 @@
   ondragleave={(e) => onDragLeave?.(e, idx)}
   ondrop={(e) => onDrop?.(e, idx)}
   ondragend={onDragEnd}
-  class="fp-inset rounded-lg p-3.5 flex flex-col gap-2.5 transition-all {dragging
+  class="fp-inset rounded p-3.5 flex flex-col gap-2.5 transition-all {dragging
     ? 'opacity-30 bg-[var(--fp-surface-2)]/60'
     : dragOver
       ? 'border-[var(--fp-accent)] ring-2 ring-[var(--fp-accent)] bg-[var(--fp-accent)]/5'
       : ''}"
 >
-  <!-- Header: identity + status + expand -->
-  <div class="flex items-start justify-between gap-2">
+  <!-- Header: identity + status + one control cluster (reorder + expand) -->
+  <div class="flex items-center justify-between gap-2">
     <div class="min-w-0 flex flex-col gap-1">
       <div class="flex items-center gap-1.5 flex-wrap">
         {#if totalTokens > 1}
@@ -183,13 +117,6 @@
         <span class="fp-num text-xs font-semibold text-[var(--fp-text)]"
           >Account #{idx + 1}</span
         >
-        {#if idx === 0}
-          <span
-            class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold bg-[var(--fp-accent)]/15 text-[var(--fp-accent)] border border-[var(--fp-accent)]/30"
-          >
-            {$tr("Primary")}
-          </span>
-        {/if}
         <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
         {#if riskBadge}
           <StatusBadge
@@ -208,28 +135,37 @@
         </span>
       {/if}
     </div>
-    <button
-      type="button"
-      onclick={onToggle}
-      aria-expanded={expanded}
-      aria-label={expanded
-        ? `Collapse details for account ${idx + 1}`
-        : `Expand details for account ${idx + 1}`}
-      class="inline-flex items-center justify-center w-9 h-9 shrink-0 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)] transition-colors"
-    >
-      {#if expanded}
-        <ChevronExpand size={18} />
-      {:else}
-        <ChevronDown size={18} class="rotate-[-90deg]" />
+    <div class="flex items-center gap-0.5 shrink-0">
+      {#if totalTokens > 1}
+        <button
+          type="button"
+          disabled={actionPending || idx === 0}
+          title={$tr("Move Up / Prioritize")}
+          aria-label={$tr("Move Up")}
+          onclick={() => onSwap?.(idx, idx - 1)}
+          class="inline-flex items-center justify-center w-8 h-8 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+        >
+          <ChevronUp size={15} />
+        </button>
+        <button
+          type="button"
+          disabled={actionPending || idx >= totalTokens - 1}
+          title={$tr("Move Down")}
+          aria-label={$tr("Move Down")}
+          onclick={() => onSwap?.(idx, idx + 1)}
+          class="inline-flex items-center justify-center w-8 h-8 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+        >
+          <ChevronDown size={15} />
+        </button>
       {/if}
-    </button>
+    </div>
   </div>
 
   <!-- Risk/usage stats (moved from the standalone At-risk cards): live
        cooldown, 24h messages and run/request counts on every card. -->
   <div class="flex flex-col gap-2">
     {#if token.cooldown_active}
-      {@const cd = cooldownLabel(token)}
+      {@const cd = cooldownLabel(token, now)}
       <div class="fp-inset px-2.5 py-1.5 text-xs text-[var(--fp-warning)]">
         {$tr("Cooldown")} —
         <span class="fp-num">{cd}</span>
@@ -254,17 +190,42 @@
           >{token.active_runs}</span
         ></span
       >
-      <span
-        >reqs <span class="fp-num text-[var(--fp-text)]">{token.requests}</span
-        >{#if token.requests_per_minute_limit > 0 || token.requests_per_day_limit > 0}
+      <span>
+        reqs <span class="fp-num text-[var(--fp-text)]">{token.requests}</span>
+        {#if token.requests_per_minute_limit > 0 || token.requests_per_day_limit > 0}
           <span class="text-[10px] text-[var(--fp-muted)]">
             ({#if token.requests_per_minute_limit > 0}{token.requests_per_minute}/{token.requests_per_minute_limit}m{/if}{#if token.requests_per_minute_limit > 0 && token.requests_per_day_limit > 0}
               ·
-            {/if}{#if token.requests_per_day_limit > 0}{token.requests_per_day}/{token.requests_per_day_limit}d{/if})
-          </span>
+            {/if}{#if token.requests_per_day_limit > 0}{token.requests_per_day}/{token.requests_per_day_limit}d{/if})</span
+          >
         {/if}</span
       >
     </div>
+    {#if token.freebucks}
+      {@const fbBal = Math.max(
+        0,
+        Math.round(token.freebucks.balance ?? token.freebucks.Balance ?? 0),
+      )}
+      {@const fbDaily = token.freebucks.daily ?? token.freebucks.Daily ?? {}}
+      {@const fbRem = Math.max(
+        0,
+        Math.round(fbDaily.remaining ?? fbDaily.Remaining ?? 0),
+      )}
+      {@const fbLim = Math.max(
+        0,
+        Math.round(fbDaily.limit ?? fbDaily.Limit ?? 0),
+      )}
+      <div class="fp-inset px-2.5 py-1.5 text-xs">
+        <span class="fp-num text-[var(--fp-accent)] font-semibold"
+          >{fbBal} {$tr("Freebucks")}</span
+        >
+        {#if fbLim > 0}
+          <span class="text-[var(--fp-muted)]">
+            · {fbRem}/{fbLim} {$tr("today")}</span
+          >
+        {/if}
+      </div>
+    {/if}
   </div>
 
   <!-- Details (secondary info + drawer) behind the expand chevron -->
@@ -295,36 +256,25 @@
     </div>
   {/if}
 
-  <!-- Actions: full-width wrap, tap-friendly -->
+  <!-- Footer: expand chevron left, actions right -->
   <div
     class="flex items-center justify-between gap-2 pt-0.5 border-t border-[var(--fp-border)]"
   >
-    {#if totalTokens > 1}
-      <div class="flex items-center gap-1">
-        <button
-          type="button"
-          disabled={actionPending || idx === 0}
-          title={$tr("Move Up / Prioritize")}
-          aria-label={$tr("Move Up")}
-          onclick={() => onSwap?.(idx, idx - 1)}
-          class="inline-flex items-center justify-center w-9 h-9 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-        >
-          <ChevronUp size={16} />
-        </button>
-        <button
-          type="button"
-          disabled={actionPending || idx >= totalTokens - 1}
-          title={$tr("Move Down")}
-          aria-label={$tr("Move Down")}
-          onclick={() => onSwap?.(idx, idx + 1)}
-          class="inline-flex items-center justify-center w-9 h-9 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
-        >
-          <ChevronDown size={16} />
-        </button>
-      </div>
-    {:else}
-      <span></span>
-    {/if}
+    <button
+      type="button"
+      onclick={onToggle}
+      aria-expanded={expanded}
+      aria-label={expanded
+        ? `Collapse details for account ${idx + 1}`
+        : `Expand details for account ${idx + 1}`}
+      class="inline-flex items-center justify-center w-9 h-9 shrink-0 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)] transition-colors"
+    >
+      {#if expanded}
+        <ChevronExpand size={17} class="rotate-180" />
+      {:else}
+        <ChevronDown size={17} class="rotate-[-90deg]" />
+      {/if}
+    </button>
     <div class="flex items-center gap-1.5 flex-wrap justify-end">
       {#if token.cooldown_active}
         <Button

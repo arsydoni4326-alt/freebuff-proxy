@@ -63,10 +63,6 @@ test.describe("dashboard hermetic mocks", () => {
     ).toBeVisible();
     const table = page.locator("table.fp-table");
     await expect(table.getByText("Account #1")).toBeVisible({ timeout: 10000 });
-    // No fixture token carries a grant: the locked referral pitch shows.
-    await expect(
-      page.getByText("Refer friends → +1 premium session/day").first(),
-    ).toBeVisible();
     const expandBtn = table
       .locator('button[aria-label*="Expand details"]')
       .first();
@@ -167,7 +163,7 @@ test.describe("dashboard hermetic mocks", () => {
     );
   });
 
-  test("Quota Tracker shows premium pool and per-model session quota", async ({
+  test("Quota Tracker shows premium pool bar and Freebucks empty state", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -203,28 +199,21 @@ test.describe("dashboard hermetic mocks", () => {
     // Account 1 fixture carries premium_quota → Premium pool bar renders
     await expect(page.getByText("Premium pool").first()).toBeVisible();
     await expect(page.getByText("4/day pacific_day")).toBeVisible();
-    // Tokens without premium data show the subtle hint
+    // Tokens without Freebucks or premium data show the empty-state hint
     await expect(
       page
         .getByText(
-          "No premium quota data — run a request or -test-token to populate.",
+          "No Freebucks data — run a request or Probe all to populate.",
         )
         .first(),
     ).toBeVisible();
 
-    // Session quota by model tables from the fixture rows
+    // Legacy per-model session quota tables are gone: no heading, no
+    // usage bars, no reset countdowns from quota rows.
     await expect(
-      page.getByRole("heading", { name: "Session quota by model" }).first(),
-    ).toBeVisible();
-    await expect(
-      page.getByText("deepseek/deepseek-v4-flash").first(),
-    ).toBeVisible();
-    await expect(page.getByText("(in 5h 32m)").first()).toBeVisible();
-    await expect(page.getByText("base=1, referral=1").first()).toBeVisible();
-    // Usage bars under quota rows
-    await expect(
-      page.locator('table [role="progressbar"]').first(),
-    ).toBeVisible();
+      page.getByRole("heading", { name: "Session quota by model" }),
+    ).toHaveCount(0);
+    await expect(page.locator('table [role="progressbar"]')).toHaveCount(0);
 
     // Polls every 10s: a second tokens fetch proves periodic refresh
     await page.waitForResponse(
@@ -232,6 +221,40 @@ test.describe("dashboard hermetic mocks", () => {
       { timeout: 12000 },
     );
     expect(tokensCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("Quota Tracker served list hides models the gateway cannot admit", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    // Upstream prices maps carry models with no gateway agent binding
+    // (unusable rows the user flagged); the catalog fixture binds agents
+    // only for the 7 usable models.
+    const pricedTokens = JSON.parse(JSON.stringify(f.tokens));
+    pricedTokens.tokens[0].freebucks = {
+      balance: 20,
+      daily: { remaining: 20, limit: 25, reset_at: "2030-01-01T00:00:00Z" },
+      wallet: { balance: 0 },
+      monthly: { remaining: 9.63, limit: 10 },
+      prices: {
+        "upstage/solar-pro4": 0,
+        "deepseek/deepseek-v4-flash": 15,
+        "openai/gpt-5.6-luna-es": 20,
+        "crof/kimi-k3-eco": 101,
+      },
+    };
+    await mockDashboard(page, f, { tokens: pricedTokens });
+    await page.goto("http://127.0.0.1:4173/admin/#quota");
+    await expect(
+      page.getByRole("heading", { name: "Quota Tracker", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("Served models").first()).toBeVisible();
+    await expect(page.getByText("upstage/solar-pro4").first()).toBeVisible();
+    await expect(
+      page.getByText("deepseek/deepseek-v4-flash").first(),
+    ).toBeVisible();
+    await expect(page.getByText("openai/gpt-5.6-luna-es")).toHaveCount(0);
+    await expect(page.getByText("crof/kimi-k3-eco")).toHaveCount(0);
   });
 
   test("Quota Tracker labels restart-restored quota as last-seen", async ({
@@ -251,10 +274,69 @@ test.describe("dashboard hermetic mocks", () => {
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
     ).toBeVisible();
-    // Stale note renders, and the restored rows render with it (no empty
-    // state for a token that carries last-seen quota).
+    // Stale note renders; the token keeps its premium bar (no empty state
+    // for a token that carries last-seen quota). Legacy per-model rows
+    // are gone, so no model ids render from quota rows.
     await expect(page.getByText("before restart").first()).toBeVisible();
-    await expect(page.getByText("stealth/ox-alpha").first()).toBeVisible();
+    await expect(page.getByText("Premium pool").first()).toBeVisible();
+  });
+  test("Quota Tracker header carries the reset countdown when given a clock", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    // Metered account (issue #364): the header joins the daily figures with
+    // the live "resets in" countdown once the page clock is passed in.
+    const meteredTokens = JSON.parse(JSON.stringify(f.tokens));
+    meteredTokens.tokens[0].freebucks = {
+      balance: 50,
+      daily: { remaining: 30, limit: 75, reset_at: "2030-01-01T00:00:00Z" },
+      wallet: { balance: 20 },
+      monthly: { remaining: 20 },
+      prices: {},
+    };
+    await mockDashboard(page, f, { tokens: meteredTokens });
+
+    await page.goto("http://127.0.0.1:4173/admin/#quota");
+    await expect(
+      page.getByRole("heading", { name: "Account #1" }),
+    ).toBeVisible();
+    const header = page.getByTestId("freebucks-header").first();
+    await expect(header).toContainText("30/75 Freebucks daily");
+    await expect(header).toContainText("resets in");
+    await expect(header).toContainText("20 in wallet");
+  });
+  test("Quota Tracker renders a usage sparkline from quota history", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.route("**/admin/api/quota/history*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          token: 0,
+          model: "deepseek/deepseek-v4-flash",
+          snapshots: [
+            { ts: 1785892800000, limit: 75, recent: 28, reset_at: 0 },
+            { ts: 1785896400000, limit: 75, recent: 30, reset_at: 0 },
+            { ts: 1785900000000, limit: 75, recent: 31, reset_at: 0 },
+          ],
+        }),
+      });
+    });
+
+    await page.goto("http://127.0.0.1:4173/admin/#quota");
+    await expect(
+      page.getByRole("heading", { name: "Account #1" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: "Session usage history" }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByText("3 samples · latest 31/75").first(),
+    ).toBeVisible();
   });
 
   test("Settings renders catalog groups and saves a toggled bool into the .env", async ({
@@ -338,9 +420,47 @@ test.describe("dashboard hermetic mocks", () => {
     expect(savedBody).toContain("LOG_LEVEL=info");
   });
 
-  test("Settings legacy #config alias, select save, and deployment guide card", async ({
+  test("Settings Advanced renders catalog keys with defaults and saves", async ({
     page,
   }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+    const metaResp = page.waitForResponse(
+      (r) => r.url().includes("/admin/api/config/meta") && r.status() === 200,
+      { timeout: 5000 },
+    );
+    await page.goto("http://127.0.0.1:4173/admin/#settings");
+    await metaResp;
+    await expect(
+      page.getByRole("heading", { name: "Settings", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("Advanced", { exact: true })).toBeVisible();
+    // A catalog bool renders as a switch keyed by env name; secrets never
+    // reach the advanced list.
+    const failover = page.getByRole("switch", { name: "RATE_LIMIT_FAILOVER" });
+    await expect(failover).toBeVisible();
+    await expect(page.getByText("ADMIN_TOKEN", { exact: true })).toHaveCount(0);
+    // Toggling posts the key on save.
+    let savedBody = "";
+    await page.route(/\/admin\/config$/, async (route) => {
+      if (route.request().method() === "POST") {
+        savedBody = decodeURIComponent(route.request().postData() || "");
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+      } else {
+        await route.fallback();
+      }
+    });
+    page.once("dialog", (d) => d.accept());
+    await failover.click();
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect.poll(() => savedBody).toContain("RATE_LIMIT_FAILOVER=");
+  });
+
+  test("Settings legacy #config alias and select save", async ({ page }) => {
     const f = loadFixtures();
     const configWithContent = {
       ...f.config,
@@ -392,14 +512,6 @@ test.describe("dashboard hermetic mocks", () => {
     expect(decodeURIComponent(postReq.postData() ?? "")).toContain(
       "LOG_LEVEL=warn",
     );
-
-    // Configuration file and deployment guide card renders.
-    await expect(
-      page.getByRole("heading", { name: "Configuration File & Deployment" }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("/app/state/.env", { exact: true }),
-    ).toBeVisible();
   });
 
   test("Settings rejected save reverts the form to the server state", async ({
@@ -542,9 +654,7 @@ test.describe("dashboard hermetic mocks", () => {
     });
 
     await page.goto("http://127.0.0.1:4173/admin/#logs");
-    // Console is the default view: the five same-req_id lines merge into ONE
-    // request group carrying the MSG/TOOL counts, no crash.
-    await expect(page.getByText("1 request")).toBeVisible();
+    await expect(page.getByText("1 model request")).toBeVisible();
     expect(pageErrors).toEqual([]);
   });
 
@@ -584,7 +694,7 @@ test.describe("dashboard hermetic mocks", () => {
     await mockDashboard(page, f, { logs: { entries } });
 
     await page.goto("http://127.0.0.1:4173/admin/#logs");
-    await expect(page.getByText("25 requests")).toBeVisible();
+    await expect(page.getByText("25 model requests")).toBeVisible();
     await expect(page.getByRole("button", { name: "Follow on" })).toBeVisible();
 
     await page.waitForFunction(
@@ -648,11 +758,35 @@ test.describe("dashboard hermetic mocks", () => {
     const rows = page.locator("table tbody tr");
     await expect(rows).toHaveCount(7);
     await expect(page.getByText("z-ai/glm-5.2").first()).toBeVisible();
-    await expect(page.getByText("referral +1/day").first()).toBeVisible();
+    await expect(page.getByText("Referral grant").first()).toBeVisible();
+    await expect(page.getByText("Referral only").first()).toBeVisible();
     await expect(page.getByText("low/high/max").first()).toBeVisible();
-    await expect(page.getByText("Pool").first()).toBeVisible();
     await expect(page.getByText("Price").first()).toBeVisible();
+    await expect(page.getByText("Pool").first()).toHaveCount(0);
     await expect(page.getByText("referral", { exact: true })).toHaveCount(2);
+  });
+  test("Models sorts cheapest-first on the meter", async ({ page }) => {
+    const f = loadFixtures();
+    // Metered account: luna at 2/hr sorts above flash at 15/hr even
+    // though the catalog lists flash first (upstream picker revamp).
+    const pricedTokens = JSON.parse(JSON.stringify(f.tokens));
+    pricedTokens.tokens[0].freebucks = {
+      balance: 50,
+      daily: { remaining: 30, limit: 75, reset_at: "2030-01-01T00:00:00Z" },
+      wallet: { balance: 20 },
+      monthly: { remaining: 20 },
+      prices: {
+        "openai/gpt-5.6-luna": 2,
+        "deepseek/deepseek-v4-flash": 15,
+      },
+    };
+    await mockDashboard(page, f, { tokens: pricedTokens });
+
+    await page.goto("http://127.0.0.1:4173/admin/#models");
+    await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
+    const rows = page.locator("table tbody tr");
+    await expect(rows).toHaveCount(7);
+    await expect(rows.first()).toContainText("openai/gpt-5.6-luna");
   });
 
   test("Overview shows client integration and base_url", async ({ page }) => {

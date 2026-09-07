@@ -1,17 +1,39 @@
 <script>
   import { onMount } from "svelte";
-  import PageHeader from "../components/PageHeader.svelte";
+  import PageShell from "../components/PageShell.svelte";
   import Stat from "../components/Stat.svelte";
   import Card from "../components/Card.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
-  import Alert from "../components/Alert.svelte";
-  import EmptyState from "../components/EmptyState.svelte";
-  import Button from "../components/Button.svelte";
   import CopyButton from "../components/CopyButton.svelte";
   import { fetchAPI } from "../api/client.js";
   import { adminApi } from "../api/paths.js";
   import { tokensData, ensureTokensStore } from "../stores/tokens.js";
+  import { sortModelsByPrice } from "../utils/freebucks.js";
   import { tr } from "../i18n.js";
+  // Cheapest-first order on the meter (upstream picker revamp): merge the
+  // live per-token price maps first-win, and sort only when at least one
+  // price exists — unmetered accounts keep the deliberate catalog order.
+  const meteredPrices = $derived(
+    (() => {
+      const map = {};
+      for (const t of live?.tokens ?? []) {
+        for (const [id, p] of Object.entries(t.freebucks?.prices ?? {})) {
+          if (!(id in map)) map[id] = p;
+        }
+      }
+      return map;
+    })(),
+  );
+  const orderedModels = $derived(
+    data == null || Object.keys(meteredPrices).length === 0
+      ? (data?.models ?? [])
+      : sortModelsByPrice(
+          data.models.map((m) => m.id),
+          { prices: meteredPrices },
+        )
+          .map((id) => data.models.find((m) => m.id === id))
+          .filter(Boolean),
+  );
   let data = $state(null);
   let loading = $state(true);
   let error = $state("");
@@ -39,18 +61,9 @@
     }
   }
 
-  // Live pool/price join: quota chips (N of M) and Freebucks $/hr come from
-  // the shared tokens snapshot, keyed by model id across pool tokens.
+  // Live price join: Freebucks $/hr comes from the shared tokens snapshot,
+  // keyed by model id across pool tokens.
   let live = $state(null);
-  function poolChip(id) {
-    for (const t of live?.tokens ?? []) {
-      const q = (t.quota ?? []).find((r) => r.model === id);
-      if (q && q.pool && q.pool !== "unlimited" && q.pool_label) {
-        return `${q.pool_label}: ${q.recent ?? "?"} of ${q.limit} used`;
-      }
-    }
-    return "";
-  }
   function priceLabel(id) {
     for (const t of live?.tokens ?? []) {
       const p = t.freebucks?.prices?.[id];
@@ -77,36 +90,26 @@
   );
 </script>
 
-<div class="space-y-6 page-enter">
-  <PageHeader
-    title={$tr("Models")}
-    description={$tr(
-      "Served model catalog with upstream agent bindings and session quotas.",
-    )}
-  />
-
-  {#if error}
-    <Alert tone="error" title={$tr("Failed to load models")}>
-      <p>{error}</p>
-      <div class="mt-3">
-        <Button variant="secondary" size="sm" onclick={load}
-          >{$tr("Retry")}</Button
-        >
-      </div>
-    </Alert>
-  {:else if loading}
-    <div role="status" aria-label="Loading model catalog" class="space-y-6">
-      <div class="skeleton skeleton-text w-56"></div>
-      <div class="fp-card">
-        <div class="p-4 space-y-3">
-          <div class="skeleton skeleton-line w-40"></div>
-          {#each Array(6) as _, i (i)}
-            <div class="skeleton skeleton-line w-full"></div>
-          {/each}
-        </div>
-      </div>
-    </div>
-  {:else if data}
+<PageShell
+  crumb="freebuff-proxy / Admin / models.conf"
+  title={$tr("Models")}
+  description={$tr(
+    "Served model catalog with upstream agent bindings and Freebucks pricing.",
+  )}
+  {loading}
+  {error}
+  errorTitle={$tr("Failed to load models")}
+  empty={data && data.models.length === 0
+    ? {
+        title: $tr("No models registered"),
+        description: $tr(
+          "The model registry is empty. Add model-to-agent mappings in the gateway config and reload.",
+        ),
+      }
+    : null}
+  onRetry={load}
+>
+  {#if data}
     <Stat
       label={$tr("Served Models")}
       value={servedCount}
@@ -118,233 +121,177 @@
       big
     />
 
-    {#if data.models.length > 0}
-      <Card title={$tr("Model Catalog")} pad="none">
-        <!-- Desktop: table (md+) -->
-        <div class="hidden md:block overflow-x-auto">
-          <table class="fp-table">
-            <thead>
+    <Card title={$tr("Model Catalog")} pad="none">
+      <!-- Desktop: table (md+) -->
+      <div class="hidden md:block overflow-x-auto">
+        <table class="fp-table">
+          <thead>
+            <tr>
+              <th scope="col">{$tr("Model ID")}</th>
+              <th scope="col">{$tr("Served")}</th>
+              <th scope="col">{$tr("Agent")}</th>
+              <th scope="col">{$tr("Price")}</th>
+            </tr>
+          </thead><tbody>
+            {#each orderedModels as m (m.id)}
+              {@const bound = Boolean(m.agent)}
+              {@const st = modelState(m)}
+              {@const effectivePrice = priceLabel(m.id) || m.price_label || "—"}
               <tr>
-                <th scope="col">{$tr("Model ID")}</th>
-                <th scope="col">{$tr("Served")}</th>
-                <th scope="col">{$tr("Agent")}</th>
-                <th scope="col">{$tr("Premium Quota")}</th>
-                <th scope="col">{$tr("Pool")}</th>
-                <th scope="col">{$tr("Price")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each data.models as m (m.id)}
-                {@const bound = Boolean(m.agent)}
-                {@const st = modelState(m)}
-                {@const effectivePrice =
-                  priceLabel(m.id) || m.price_label || "—"}
-                {@const effectivePool = poolChip(m.id) || m.pool || "—"}
-                <tr>
-                  <td>
-                    <div class="flex flex-col gap-0.5 min-w-0">
-                      <div class="flex items-center gap-1.5 flex-wrap">
-                        <strong
-                          class="text-xs font-semibold text-[var(--fp-text)] truncate"
-                        >
-                          {m.display_name || m.id}
-                        </strong>
-                        {#if m.badges?.length}
-                          {#each m.badges as badge (badge)}
+                <td>
+                  <div class="flex flex-col gap-0.5 min-w-0">
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <strong
+                        class="text-xs font-semibold text-[var(--fp-text)] truncate"
+                      >
+                        {m.display_name || m.id}
+                      </strong>
+                      {#if m.badges?.length}
+                        {#each m.badges as badge (badge)}
+                          {#if badge !== "NEW"}
                             <span
-                              class="px-1 py-0.2 rounded text-[9px] uppercase tracking-wider border {badge ===
-                              'NEW'
-                                ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30 font-semibold'
-                                : 'text-[var(--fp-dim)] bg-[var(--fp-surface)] border-[var(--fp-border)]'}"
+                              class="px-1 py-0.2 rounded text-[9px] uppercase tracking-wider border text-[var(--fp-dim)] bg-[var(--fp-surface)] border-[var(--fp-border)]"
                             >
                               {badge}
                             </span>
-                          {/each}
-                        {/if}
-                      </div>
-                      <div class="flex items-center gap-1 text-[11px]">
-                        <span
-                          class="fp-num text-[11px] text-[var(--fp-dim)] truncate max-w-[220px]"
-                          title={$tr("Click copy button to copy model ID")}
-                        >
-                          {m.id}
-                        </span>
-                        <CopyButton
-                          text={m.id}
-                          label={$tr("Copy model ID")}
-                          iconOnly
-                        />
-                      </div>
-                      {#if m.tagline || m.notice}
-                        <div
-                          class="text-[11px] text-[var(--fp-muted)] flex items-center gap-1.5 pt-0.5"
-                        >
-                          {#if m.tagline}
-                            <span>{m.tagline}</span>
                           {/if}
-                          {#if m.tagline && m.notice}
-                            <span class="text-[var(--fp-dim)]">·</span>
-                          {/if}
-                          {#if m.notice}
-                            <span class="italic text-[var(--fp-dim)]"
-                              >{m.notice}</span
-                            >
-                          {/if}
-                        </div>
+                        {/each}
                       {/if}
                     </div>
-                  </td>
-                  <td>
-                    <StatusBadge status={$tr(st)} tone={modelTone(st)} />
-                  </td>
-                  <td>
-                    {#if bound}
-                      <span class="fp-mono text-[var(--fp-muted)]"
-                        >{m.agent}</span
+                    <div
+                      class="flex items-center gap-1.5 flex-wrap text-[11px] text-[var(--fp-dim)] min-w-0"
+                    >
+                      <code
+                        class="fp-num truncate max-w-[220px] text-[var(--fp-muted)]"
+                        title={m.id}
                       >
-                    {:else}
-                      <span class="text-[var(--fp-dim)]">—</span>
-                    {/if}
-                  </td>
-                  <td
-                    ><span class="fp-num text-xs text-[var(--fp-muted)]"
-                      >{m.quota || "unlimited session"}{#if m.efforts?.length}
-                        <span class="text-[var(--fp-dim)]">
-                          · {$tr("Reasoning")}: {m.efforts.join("/")}</span
-                        >{/if}</span
-                    ></td
-                  >
-                  <td
-                    ><span
-                      class="fp-num text-xs font-medium {m.pool === 'premium'
-                        ? 'text-[var(--fp-accent)]'
-                        : m.pool === 'referral'
-                          ? 'text-amber-400'
-                          : 'text-[var(--fp-muted)]'}">{effectivePool}</span
-                    >
-                  </td>
-                  <td>
-                    <span
-                      class="fp-num text-xs font-semibold {effectivePrice ===
-                      '0 Freebucks/hr'
-                        ? 'text-emerald-400'
-                        : 'text-[var(--fp-accent)]'}">{effectivePrice}</span
-                    ></td
-                  >
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-        <!-- Mobile: stacked cards (< md) — no horizontal scrolling -->
-        <ul
-          class="md:hidden flex flex-col gap-2.5 p-3.5"
-          aria-label={$tr("Model Catalog")}
-        >
-          {#each data.models as m (m.id)}
-            {@const bound = Boolean(m.agent)}
-            {@const st = modelState(m)}
-            {@const effectivePrice = priceLabel(m.id) || m.price_label || "—"}
-            {@const effectivePool = poolChip(m.id) || m.pool || "—"}
-            <li class="fp-inset rounded-lg p-3 flex flex-col gap-2 min-w-0">
-              <div class="flex items-start justify-between gap-2 min-w-0">
-                <div class="min-w-0">
-                  <strong
-                    class="text-sm font-bold text-[var(--fp-text)] block truncate"
-                  >
-                    {m.display_name || m.id}
-                  </strong>
-                  <div class="flex items-center gap-1.5 pt-0.5">
-                    <code
-                      class="fp-num text-xs text-[var(--fp-dim)] truncate max-w-[200px]"
-                      >{m.id}</code
-                    >
-                    <span class="shrink-0 -mr-1">
+                        {m.id}
+                      </code>
                       <CopyButton
                         text={m.id}
                         label={$tr("Copy model ID")}
                         iconOnly
                       />
-                    </span>
+                      {#if m.tagline}
+                        <span class="text-[var(--fp-dim)]">·</span>
+                        <span class="text-[var(--fp-muted)]">{m.tagline}</span>
+                      {/if}
+                      {#if m.notice}
+                        <span class="text-[var(--fp-dim)]">·</span>
+                        <span class="italic">{m.notice}</span>
+                      {/if}
+                      {#if m.efforts?.length}
+                        <span class="text-[var(--fp-dim)]">·</span>
+                        <span>{$tr("Reasoning")}: {m.efforts.join("/")}</span>
+                      {/if}
+                    </div>
                   </div>
-                </div>
-                <StatusBadge status={$tr(st)} tone={modelTone(st)} />
-              </div>
-              {#if m.tagline || m.notice || m.badges?.length}
-                <div
-                  class="flex flex-wrap items-center gap-1.5 text-xs text-[var(--fp-muted)]"
+                </td>
+                <td>
+                  <StatusBadge status={$tr(st)} tone={modelTone(st)} />
+                </td>
+                <td>
+                  {#if bound}
+                    <span class="fp-mono text-[var(--fp-muted)]">{m.agent}</span
+                    >
+                  {:else}
+                    <span class="text-[var(--fp-dim)]">—</span>
+                  {/if}
+                </td>
+                <td>
+                  <span
+                    class="fp-num text-xs font-semibold {effectivePrice ===
+                    '0 Freebucks/hr'
+                      ? 'text-emerald-400'
+                      : 'text-[var(--fp-accent)]'}">{effectivePrice}</span
+                  ></td
                 >
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <!-- Mobile: stacked cards (< md) — no horizontal scrolling -->
+      <ul
+        class="md:hidden flex flex-col gap-2.5 p-3.5"
+        aria-label={$tr("Model Catalog")}
+      >
+        {#each orderedModels as m (m.id)}
+          {@const bound = Boolean(m.agent)}
+          {@const st = modelState(m)}
+          {@const effectivePrice = priceLabel(m.id) || m.price_label || "—"}
+          <li class="fp-inset rounded p-3 flex flex-col gap-2 min-w-0">
+            <div class="flex items-start justify-between gap-2 min-w-0">
+              <div class="min-w-0">
+                <strong
+                  class="text-sm font-bold text-[var(--fp-text)] block truncate"
+                >
+                  {m.display_name || m.id}
+                </strong>
+                <div
+                  class="flex items-center gap-1.5 flex-wrap text-xs text-[var(--fp-dim)] pt-0.5 min-w-0"
+                >
+                  <code class="fp-num truncate max-w-[200px]">{m.id}</code>
+                  <span class="shrink-0 -mr-1">
+                    <CopyButton
+                      text={m.id}
+                      label={$tr("Copy model ID")}
+                      iconOnly
+                    />
+                  </span>
                   {#if m.tagline}
-                    <span>{m.tagline}</span>
+                    <span>·</span>
+                    <span class="text-[var(--fp-muted)]">{m.tagline}</span>
                   {/if}
                   {#each m.badges ?? [] as badge (badge)}
-                    <span class="text-[var(--fp-dim)]">·</span>
-                    <span
-                      class="px-1.5 py-0.2 rounded text-[10px] uppercase tracking-wider border {badge ===
-                      'NEW'
-                        ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30 font-semibold'
-                        : 'text-[var(--fp-dim)] bg-[var(--fp-surface)] border-[var(--fp-border)]'}"
-                    >
-                      {badge}
-                    </span>
+                    {#if badge !== "NEW"}
+                      <span>·</span>
+                      <span
+                        class="px-1.5 py-0.2 rounded text-[10px] uppercase tracking-wider border bg-[var(--fp-surface)] border-[var(--fp-border)]"
+                      >
+                        {badge}
+                      </span>
+                    {/if}
                   {/each}
                   {#if m.notice}
-                    <span class="text-[var(--fp-dim)]">·</span>
-                    <span class="italic text-[var(--fp-dim)]">{m.notice}</span>
+                    <span>·</span>
+                    <span class="italic">{m.notice}</span>
+                  {/if}
+                  {#if m.efforts?.length}
+                    <span>·</span>
+                    <span>{$tr("Reasoning")}: {m.efforts.join("/")}</span>
                   {/if}
                 </div>
-              {/if}
-              <div
-                class="flex items-center justify-between gap-2 text-xs pt-1 border-t border-[var(--fp-border)]/60"
+              </div>
+              <StatusBadge status={$tr(st)} tone={modelTone(st)} />
+            </div>
+            <div
+              class="flex items-center justify-between gap-2 text-xs pt-1 border-t border-[var(--fp-border)]/60"
+            >
+              <span
+                class="font-semibold {effectivePrice === '0 Freebucks/hr'
+                  ? 'text-emerald-400'
+                  : 'text-[var(--fp-accent)]'}"
               >
+                {effectivePrice}
+              </span>
+            </div>
+            <div
+              class="flex items-center justify-between gap-2 text-xs min-w-0"
+            >
+              <span class="text-[var(--fp-dim)] shrink-0">{$tr("Agent")}</span>
+              {#if bound}
                 <span
-                  class="font-semibold {effectivePrice === '0 Freebucks/hr'
-                    ? 'text-emerald-400'
-                    : 'text-[var(--fp-accent)]'}"
+                  class="fp-mono text-[var(--fp-muted)] text-right break-all min-w-0"
+                  >{m.agent}</span
                 >
-                  {effectivePrice}
-                </span>
-                <span class="text-[var(--fp-dim)]">
-                  {effectivePool}
-                </span>
-              </div>
-              <div
-                class="flex items-center justify-between gap-2 border-t border-[var(--fp-border)]/60 pt-1.5 text-xs text-[var(--fp-muted)]"
-              >
-                <span class="text-[var(--fp-dim)] shrink-0">{$tr("Quota")}</span
-                >
-                <span class="fp-num text-xs text-right break-words min-w-0"
-                  >{m.quota || "unlimited session"}{#if m.efforts?.length}
-                    <span class="text-[var(--fp-dim)]">
-                      · {m.efforts.join("/")}</span
-                    >{/if}</span
-                >
-              </div>
-              <div
-                class="flex items-center justify-between gap-2 text-xs min-w-0"
-              >
-                <span class="text-[var(--fp-dim)] shrink-0">{$tr("Agent")}</span
-                >
-                {#if bound}
-                  <span
-                    class="fp-mono text-[var(--fp-muted)] text-right break-all min-w-0"
-                    >{m.agent}</span
-                  >
-                {:else}
-                  <span class="text-[var(--fp-dim)]">—</span>
-                {/if}
-              </div>
-            </li>
-          {/each}
-        </ul>
-      </Card>
-    {:else}
-      <EmptyState
-        title={$tr("No models registered")}
-        description={$tr(
-          "The model registry is empty. Add model-to-agent mappings in the gateway config and reload.",
-        )}
-      />
-    {/if}
+              {:else}
+                <span class="text-[var(--fp-dim)]">—</span>
+              {/if}
+            </div>
+          </li>
+        {/each}
+      </ul>
+    </Card>
   {/if}
-</div>
+</PageShell>
