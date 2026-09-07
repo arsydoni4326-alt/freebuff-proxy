@@ -121,6 +121,9 @@ func pollSession(ctx context.Context, sess *session.Manager, cfg *config.Config,
 // nothing else.
 func (p *Pool) Start(ctx context.Context) {
 	p.once.Do(func() {
+		// ADR-0024: anchor the staggered boot-probe slots before the
+		// maintain loop launches (spawn happens-before the first tick).
+		p.quotaBootAt = time.Now()
 		runCtx, cancel := context.WithCancel(ctx)
 		p.cancel = cancel
 		p.wg.Add(1)
@@ -322,6 +325,15 @@ func (p *Pool) maintainTick(ctx context.Context) {
 	// need keeping. It never fires on unhealthy accounts (banned, cooling,
 	// quarantined, country-blocked) and defaults to dry-run probes.
 	p.maturityTick(ctx)
+	// Quota auto-probe (ADR-0022) rides every pass alongside maturity —
+	// including idle stretches, so quota is fresh when traffic resumes.
+	// Session-less ProbeToken, warn-only, one GET per token per Pacific
+	// day; QUOTA_AUTO_PROBE=false skips the pass entirely.
+	p.quotaAutoProbeTick(ctx)
+	// Burst balance (ADR-0023): prune out-of-window admission hits and fire
+	// exit edges for recovered episodes. Pure memory + WARN logging (no
+	// upstream traffic); rides every pass like maturity/autoprobe.
+	p.burstPruneAt(time.Now())
 	// Idle handling — tryIdleFinish atomically checks the threshold and
 	// marks idleFinished in one lastActiveMu critical section (TOCTOU fix).
 	// The first idle pass FINISHes all runs so rotation/refresh stops

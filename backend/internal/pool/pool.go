@@ -272,6 +272,12 @@ type Pool struct {
 
 	rr     atomic.Uint64 // round-robin start index
 	logger *slog.Logger
+	// quotaBootAt anchors the ADR-0024 staggered boot-probe slots. Set once
+	// in Start before the maintain loop launches (happens-before the first
+	// tick via the goroutine spawn); zero until then, which also keeps
+	// unit tests that never Start probe-free. Never reset — Shutdown is
+	// terminal and a second Start is a no-op (p.once).
+	quotaBootAt time.Time
 	// histSink is the optional maturity history consumer (ADR-0016); nil
 	// keeps the pool free of persistence. Set once via SetHistorySink.
 	histSink atomic.Pointer[HistorySink]
@@ -365,6 +371,22 @@ type Pool struct {
 	// on different tokens for the same model). Guarded by admissionsMu.
 	admissionsMu sync.Mutex
 	admissions   map[string]int
+	// Burst balance (ADR-0023, opt-in): per-model sliding-window admission
+	// timestamps plus the engaged-episode flags behind one mutex. In-memory
+	// only (a restart starts un-tripped); pruned on the maintain tick.
+	// Guarded by burstMu; nil maps read as empty and are allocated on the
+	// first recorded admission.
+	burstMu   sync.Mutex
+	burstHits map[string][]burstHit
+	burstOn   map[string]bool
+
+	// lastBulkProbe is the pool-scoped timestamp of the last bulk probe
+	// pass (manual Probe-all button or stale visit auto-probe, ADR-0025).
+	// In-memory only (a restart re-probes on the next stale visit); the
+	// slot is claimed before probing so concurrent tabs share one pass.
+	// Guarded by bulkProbeMu.
+	bulkProbeMu   sync.Mutex
+	lastBulkProbe time.Time
 
 	// modelAdmissionGate serializes cold-path Acquire per model: the leader
 	// creates a gate on registration; concurrent followers block on it
@@ -481,6 +503,20 @@ type tokenEntry struct {
 	// (SetConfig slot changes) drop it — re-enable after a token swap.
 	maturityMu sync.Mutex
 	maturity   maturityState
+	// quotaProbeDay is the Pacific calendar day (YYYY-MM-DD) the quota
+	// auto-probe last fired for this entry (ADR-0022). Touched only by the
+	// maintain goroutine (quotaAutoProbeTick), so no lock is needed — the
+	// same single-writer rule as nextPollAt/pollFailures above. Zero value
+	// = never probed; entry rebuilds (SetConfig slot changes) drop it.
+	quotaProbeDay string
+	// quotaSeeded reports the ADR-0024 boot seed filled this entry's
+	// last-known quota (SeedQuotaSnapshot, before Start). quotaBootProbed
+	// marks the one staggered recovery probe fired (maintain goroutine).
+	// Same single-writer discipline: seed flag written pre-Start
+	// (happens-before the maintain loop via the Start spawn), boot flag by
+	// the maintain goroutine only. Entry rebuilds drop both.
+	quotaSeeded     bool
+	quotaBootProbed bool
 }
 
 func (e *tokenEntry) Email() string {
@@ -626,7 +662,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState()}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState(), burstHits: make(map[string][]burstHit), burstOn: make(map[string]bool)}
 	p.cfg.Store(cfg)
 	p.gate = newCreateGate(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))

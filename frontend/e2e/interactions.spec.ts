@@ -327,11 +327,12 @@ test.describe("operator interactions (hermetic mocks)", () => {
     ).toBeVisible();
     await expect.poll(() => gets).toBeGreaterThan(before);
   });
-
+  // Probe-all lives on the Quota Tracker page only: the Tokens page header
+  // button was removed (per-token probe buttons remain on each row).
   // -------------------------------------------------------------------------
-  // 3c. Tokens page probe-all shares the same store helper + endpoint.
+  // 3c. Tokens page has no Probe-all header button.
   // -------------------------------------------------------------------------
-  test("tokens: probe-all posts test-all and shows confirmation", async ({
+  test("tokens: no probe-all header button, per-row probe stays", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -345,30 +346,17 @@ test.describe("operator interactions (hermetic mocks)", () => {
         body: JSON.stringify(tokensPayload(state.tokens)),
       });
     });
-    await page.route("**/admin/tokens/test-all", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: `{"token":0,"ok":true,"message":"ok"}{"token":1,"ok":true,"message":"ok"}`,
-      });
-    });
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
       page.getByRole("heading", { name: "Tokens", exact: true }),
     ).toBeVisible();
-    const probe = page.waitForRequest(
-      (r) =>
-        r.method() === "POST" && r.url().includes("/admin/tokens/test-all"),
+    await expect(page.getByRole("button", { name: "Probe all" })).toHaveCount(
+      0,
     );
-    await page.getByRole("button", { name: "Probe all" }).click();
-    await probe;
-    await expect(
-      page.getByText("Quotas refreshed from upstream."),
-    ).toBeVisible();
   });
 
   // -------------------------------------------------------------------------
-  // 3c2. Pool Tokens never scrolls horizontally (desktop table + narrow cards).
+  // 3d. Pool Tokens never scrolls horizontally (desktop table + narrow cards).
   // -------------------------------------------------------------------------
   test("tokens: pool table fits its card without horizontal scroll", async ({
     page,
@@ -558,11 +546,124 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await expect(rr).toHaveAttribute("aria-checked", "true");
     expect(bodies[bodies.length - 1]).toContain("TOKEN_ROTATION=round_robin");
 
-    const failover = page.getByRole("switch");
+    const failover = page.getByRole("switch", {
+      name: "Auto Failover on Rate Limit (429)",
+    });
     await expect(failover).toHaveAttribute("aria-checked", "true");
     await failover.click();
     await expect(failover).toHaveAttribute("aria-checked", "false");
     expect(bodies[bodies.length - 1]).toContain("RATE_LIMIT_FAILOVER=false");
+  });
+  // -------------------------------------------------------------------------
+  // 5b. Burst Balance toggle and steppers persist via the settings overlay.
+  // -------------------------------------------------------------------------
+  test("tokens: burst balance toggle and steppers persist via settings overlay", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f, {}, { loginPage: true });
+
+    const posted: Array<Record<string, unknown>> = [];
+    // Stateful overlay mock (mirrors the real endpoint): POSTs persist and
+    // later GETs reflect them, so each per-key save's refetch converges
+    // instead of resetting the next control mid-test.
+    const overlay: Record<string, string> = {
+      BURST_BALANCE_ENABLED: "false",
+      BURST_WINDOW: "1m",
+      BURST_THRESHOLD: "20",
+      BURST_MAX_TOKENS: "2",
+    };
+    await page.route("**/admin/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            settings: Object.entries(overlay).map(([key, value]) => ({
+              key,
+              value,
+              source: "default",
+              restart_only: false,
+              secret: false,
+            })),
+            degraded: false,
+          }),
+        });
+        return;
+      }
+      if (route.request().method() === "POST") {
+        const body = JSON.parse(route.request().postData() ?? "{}");
+        posted.push(body);
+        if (typeof body.key === "string" && body.key in overlay) {
+          overlay[body.key] = String(body.value);
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            message: "BURST saved to the DB overlay and applied live.",
+            code: "setting_saved",
+            restart_only: [],
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    const burst = page.getByRole("region", { name: "Burst Balance" });
+
+    // Toggle flips locally, then its own overlay save persists the key.
+    const toggle = burst.getByRole("switch", { name: "Burst Balance" });
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    await burst
+      .getByRole("button", { name: "Save as override" })
+      .nth(0)
+      .click();
+    await expect
+      .poll(() => posted[posted.length - 1]?.key)
+      .toBe("BURST_BALANCE_ENABLED");
+    expect(posted[posted.length - 1]).toMatchObject({
+      key: "BURST_BALANCE_ENABLED",
+      value: "true",
+    });
+
+    // Each stepper persists its own key independently.
+    const threshold = burst.getByRole("spinbutton", {
+      name: "Burst threshold (requests)",
+    });
+    await threshold.fill("25");
+    await burst
+      .getByRole("button", { name: "Save as override" })
+      .nth(2)
+      .click();
+    await expect
+      .poll(() => posted[posted.length - 1]?.key)
+      .toBe("BURST_THRESHOLD");
+    expect(posted[posted.length - 1]).toMatchObject({
+      key: "BURST_THRESHOLD",
+      value: "25",
+    });
+
+    const maxTokens = burst.getByRole("spinbutton", {
+      name: "Burst max tokens",
+    });
+    await maxTokens.fill("3");
+    await burst
+      .getByRole("button", { name: "Save as override" })
+      .nth(3)
+      .click();
+    await expect
+      .poll(() => posted[posted.length - 1]?.key)
+      .toBe("BURST_MAX_TOKENS");
+    expect(posted[posted.length - 1]).toMatchObject({
+      key: "BURST_MAX_TOKENS",
+      value: "3",
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -575,15 +676,19 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await mockDashboard(page, f);
 
     await page.goto("http://127.0.0.1:4173/admin/#logs");
-    // Console is the default view: header counts model requests.
-    await expect(page.getByText("model requests").first()).toBeVisible();
+    // Console is the default view: the seeded chat request/done pair renders
+    // one request-group card (singular header + POST line).
+    await expect(page.getByText("1 model request").first()).toBeVisible();
+    await expect(
+      page.getByText("POST openai/gpt-5.6-luna").first(),
+    ).toBeVisible();
 
     // Table view exposes the labelled filter controls.
     await page.getByRole("button", { name: "Table" }).click();
     await expect(page.locator("#log-level")).toBeVisible();
     await expect(page.locator("#log-msg")).toBeVisible();
     await page.getByRole("button", { name: "Console" }).click();
-    await expect(page.getByText("model requests").first()).toBeVisible();
+    await expect(page.getByText("1 model request").first()).toBeVisible();
 
     // Auto toggle flips label and pauses the 1s poll.
     const auto = page.getByRole("button", { name: /^Auto / });
