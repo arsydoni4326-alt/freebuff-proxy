@@ -241,6 +241,11 @@ type Config struct {
 	// tokens (MATURITY_TARGET_DAYS; default 7, valid 1..28). A token whose
 	// streak reaches its target auto-releases its administrative lock.
 	MaturityTargetDays int
+	// QuotaAutoProbe enables the quota auto-probe scheduler (ADR-0022,
+	// QUOTA_AUTO_PROBE; default true): each pooled token is probed once per
+	// Pacific day at a deterministic jittered slot in the 2h window before
+	// its known quota reset. False restores exact pre-scheduler behavior.
+	QuotaAutoProbe bool
 	// WaitingRoomChain, when enabled (WAITING_ROOM_CHAIN=false default),
 	// fires the reference ad-chain + streak requests before the next
 	// session create after an upstream 428 waiting_room_required (issue
@@ -301,6 +306,25 @@ type Config struct {
 	// message content for clients that do not render a reasoning channel
 	// (REASONING_IN_CONTENT; default "" = off). See CompressPrompt.
 	ReasoningInContent string
+	// BurstBalanceEnabled opts into per-model burst spreading (ADR-0023,
+	// BURST_BALANCE_ENABLED; default false): while one model's sliding-window
+	// admissions exceed BURST_THRESHOLD, that model's selection switches to
+	// least_used across at most BURST_MAX_TOKENS accounts. False restores
+	// exact drain-only selection. Live-apply (atomic pointer swap, no pool
+	// rebuild).
+	BurstBalanceEnabled bool
+	// BurstWindow is the sliding window for counting same-model admissions
+	// toward BURST_THRESHOLD (BURST_WINDOW; default 1m). Zero = unset (the
+	// pool normalizes to its default); negative is rejected in Validate.
+	BurstWindow time.Duration
+	// BurstThreshold is the same-model admission count inside BurstWindow
+	// that trips spreading for that model (BURST_THRESHOLD; default 20).
+	// Zero = unset; negative is rejected in Validate.
+	BurstThreshold int
+	// BurstMaxTokens caps the distinct accounts one model's burst spreads
+	// across (BURST_MAX_TOKENS; default 2, minimum 2 — enforced in
+	// Validate). Zero = unset.
+	BurstMaxTokens int
 }
 
 // DefaultAdminToken is the default dashboard admin password ("123456") used when ADMIN_TOKEN is unconfigured or empty.
@@ -427,6 +451,11 @@ type rawConfig struct {
 	MaturityDryRun                   bool                    `json:"MATURITY_DRY_RUN"`
 	MaturityTouchModel               string                  `json:"MATURITY_TOUCH_MODEL"`
 	MaturityTargetDays               *int                    `json:"MATURITY_TARGET_DAYS"`
+	QuotaAutoProbe                   bool                    `json:"QUOTA_AUTO_PROBE"`
+	BurstBalanceEnabled              bool                    `json:"BURST_BALANCE_ENABLED"`
+	BurstWindow                      string                  `json:"BURST_WINDOW"`
+	BurstThreshold                   *int                    `json:"BURST_THRESHOLD"`
+	BurstMaxTokens                   *int                    `json:"BURST_MAX_TOKENS"`
 	WaitingRoomChain                 bool                    `json:"WAITING_ROOM_CHAIN"`
 	RateLimitPerIP                   *float64                `json:"RATE_LIMIT_PER_IP"`
 	RateLimitBurst                   *int                    `json:"RATE_LIMIT_BURST"`
@@ -533,9 +562,14 @@ func defaultRawConfig() rawConfig {
 		FallbackAfter:                    "0",                             // #100: queue-wait fallback threshold (ms); 0 = disabled by default
 		RiskMediumThreshold:              ptrInt(30),                   // #3.5: risk engine medium boundary (score 0-100)
 		RiskHighThreshold:                ptrInt(40),                   // #3.5: risk engine high boundary (must be > medium)
+		BurstBalanceEnabled:              false,                        // burst spreading off by default (ADR-0023); true spreads a per-model burst across BURST_MAX_TOKENS accounts
+		BurstWindow:                      "1m",                         // sliding window for counting same-model admissions toward BURST_THRESHOLD
+		BurstThreshold:                   ptrInt(20),                   // same-model admissions inside BURST_WINDOW that trip spreading for that model
+		BurstMaxTokens:                   ptrInt(2),                    // distinct accounts one model's burst spreads across (minimum 2)
 		MaturityEnabled:                  true,                         // streak-maturity automation on by default; dry-run probes prove schedule before live touches
 		MaturityDryRun:                   true,                         // maturity touches probe only until the operator proves the schedule
 		MaturityTouchModel:               "deepseek/deepseek-v4-flash", // unmetered default: never burns premium quota
+		QuotaAutoProbe:                   true,                         // quota auto-probe scheduler on by default (ADR-0022); false restores pre-scheduler behavior
 	}
 }
 

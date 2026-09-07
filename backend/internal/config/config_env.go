@@ -28,6 +28,13 @@ const (
 // credential files.
 type LoadOptions struct {
 	DiscoverCLIToken func() (token, email, path string, ok bool)
+	// Overlay is the DB settings overlay (ADR-0019): canonical KEY -> raw
+	// VALUE pairs applied after the .env file and before the process
+	// environment, so UI-persisted knobs beat the file without rewriting
+	// it while explicit process env keeps winning. Blocked keys (secrets,
+	// UPSTREAM_BASE_URL, DB_PATH) are filtered, never applied. Nil or empty
+	// behaves like Load.
+	Overlay map[string]string
 }
 
 // Load resolves configuration from the optional JSON file at configPath
@@ -52,6 +59,9 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	if err := applyDotenv(&raw, envFileUsed); err != nil {
 		return Config{}, err
 	}
+	// DB settings overlay (ADR-0019): beats the file, loses to explicit
+	// process env (applied below).
+	applySettingsOverlay(&raw, opts.Overlay)
 
 	overrideString(&raw.ListenAddr, "LISTEN_ADDR")
 	overrideString(&raw.UpstreamBaseURL, "UPSTREAM_BASE_URL")
@@ -125,6 +135,11 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideBool(&raw.MaturityDryRun, "MATURITY_DRY_RUN")
 	overrideString(&raw.MaturityTouchModel, "MATURITY_TOUCH_MODEL")
 	overrideInt(&raw.MaturityTargetDays, "MATURITY_TARGET_DAYS")
+	overrideBool(&raw.QuotaAutoProbe, "QUOTA_AUTO_PROBE")
+	overrideBool(&raw.BurstBalanceEnabled, "BURST_BALANCE_ENABLED")
+	overrideString(&raw.BurstWindow, "BURST_WINDOW")
+	overrideInt(&raw.BurstThreshold, "BURST_THRESHOLD")
+	overrideInt(&raw.BurstMaxTokens, "BURST_MAX_TOKENS")
 	overrideBool(&raw.WaitingRoomChain, "WAITING_ROOM_CHAIN")
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
@@ -532,6 +547,29 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	if maturityTouchModel == "" {
 		maturityTouchModel = "deepseek/deepseek-v4-flash"
 	}
+	// BURST_WINDOW is zero-tolerant: "" falls back to the 1m default (a zero
+	// window would trip on every admission past the threshold count of zero
+	// history); an explicit non-positive value falls back the same way.
+	burstWindow := time.Minute
+	if v := strings.TrimSpace(raw.BurstWindow); v != "" {
+		burstWindow, err = parseDuration(v, "BURST_WINDOW")
+		if err != nil {
+			return Config{}, err
+		}
+		if burstWindow <= 0 {
+			burstWindow = time.Minute
+		}
+	}
+	// BURST_THRESHOLD defaults to 20; BURST_MAX_TOKENS defaults to 2 (an
+	// explicit value below 2 is range-checked in Validate).
+	burstThreshold := 20
+	if raw.BurstThreshold != nil {
+		burstThreshold = *raw.BurstThreshold
+	}
+	burstMaxTokens := 2
+	if raw.BurstMaxTokens != nil {
+		burstMaxTokens = *raw.BurstMaxTokens
+	}
 
 	cfg := Config{
 		ListenAddr:                       strings.TrimSpace(raw.ListenAddr),
@@ -594,6 +632,11 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		MaturityDryRun:                   raw.MaturityDryRun,
 		MaturityTouchModel:               maturityTouchModel,
 		MaturityTargetDays:               maturityTargetDays,
+		QuotaAutoProbe:                   raw.QuotaAutoProbe,
+		BurstBalanceEnabled:              raw.BurstBalanceEnabled,
+		BurstWindow:                      burstWindow,
+		BurstThreshold:                   burstThreshold,
+		BurstMaxTokens:                   burstMaxTokens,
 		QuotaFallbackModels:              quotaFallbackModels,
 		WaitingRoomChain:                 raw.WaitingRoomChain,
 		RateLimitPerIP:                   rateLimitPerIP,
@@ -719,6 +762,18 @@ func applyDotenv(raw *rawConfig, path string) error {
 		raw.AuthTokens = splitList(v)
 		raw.AuthTokensSet = true
 	}
+	applyMappedValues(raw, get)
+	return nil
+}
+
+// applyMappedValues overlays KEY=VALUE pairs from get onto raw. It is the
+// single key list shared by applyDotenv (the .env file tier) and
+// applySettingsOverlay (the DB overlay tier, ADR-0019), so every key the
+// loader parses is overlay-addressable by construction — a new knob lands
+// here once and both tiers learn it (pinned by
+// TestCatalogCoversApplyDotenvKeys on the dotenv side and
+// TestOverlayCoversCatalog on the overlay side).
+func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideStringFrom(&raw.ListenAddr, get, "LISTEN_ADDR")
 	overrideStringFrom(&raw.UpstreamBaseURL, get, "UPSTREAM_BASE_URL")
 	overrideStringFrom(&raw.RotationInterval, get, "ROTATION_INTERVAL")
@@ -784,6 +839,11 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideBoolFrom(&raw.MaturityDryRun, get, "MATURITY_DRY_RUN")
 	overrideStringFrom(&raw.MaturityTouchModel, get, "MATURITY_TOUCH_MODEL")
 	overrideIntFrom(&raw.MaturityTargetDays, get, "MATURITY_TARGET_DAYS")
+	overrideBoolFrom(&raw.QuotaAutoProbe, get, "QUOTA_AUTO_PROBE")
+	overrideBoolFrom(&raw.BurstBalanceEnabled, get, "BURST_BALANCE_ENABLED")
+	overrideStringFrom(&raw.BurstWindow, get, "BURST_WINDOW")
+	overrideIntFrom(&raw.BurstThreshold, get, "BURST_THRESHOLD")
+	overrideIntFrom(&raw.BurstMaxTokens, get, "BURST_MAX_TOKENS")
 	overrideBoolFrom(&raw.WaitingRoomChain, get, "WAITING_ROOM_CHAIN")
 	overrideFloatFrom(&raw.RateLimitPerIP, get, "RATE_LIMIT_PER_IP")
 	overrideIntFrom(&raw.RateLimitBurst, get, "RATE_LIMIT_BURST")
@@ -793,7 +853,6 @@ func applyDotenv(raw *rawConfig, path string) error {
 	overrideStringFrom(&raw.CompressPrompt, get, "COMPRESS_PROMPT")
 	overrideStringFrom(&raw.CacheControlInjection, get, "CACHE_CONTROL_INJECTION")
 	overrideStringFrom(&raw.ReasoningInContent, get, "REASONING_IN_CONTENT")
-	return nil
 }
 
 // override applies envName from get to target through parse. An unset or

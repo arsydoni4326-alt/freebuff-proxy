@@ -1,5 +1,6 @@
 <script>
   import { onMount } from "svelte";
+  import { recordPageVisit } from "../stores/pageState.js";
   import { SvelteSet } from "svelte/reactivity";
   import PageShell from "../components/PageShell.svelte";
   import FieldBox from "../components/FieldBox.svelte";
@@ -10,8 +11,8 @@
   import Button from "../components/Button.svelte";
   import ToggleSwitch from "../components/ToggleSwitch.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
-  import { fetchAPI, postAPI, postForm } from "../api/client.js";
-  import { adminApi, adminActions, tokenActions } from "../api/paths.js";
+  import { fetchAPI, postAPI } from "../api/client.js";
+  import { adminApi, tokenActions } from "../api/paths.js";
   import { fetchMaturityHistory, historyKindTone } from "../utils/history.js";
   import {
     tokensData as tokensStore,
@@ -19,8 +20,7 @@
     ensureTokensStore,
     refreshTokens,
   } from "../stores/tokens.js";
-  import { getEnvValue, setEnvValue } from "../utils/env.js";
-  import { confirmAction } from "../stores/confirm.js";
+  import { getEnvValue } from "../utils/env.js";
   import { tr } from "../i18n.js";
 
   let data = $state(null);
@@ -34,16 +34,13 @@
   let globalEnabled = $state(true);
   let globalLoaded = $state(false);
 
-  // Global Economy touch model (MATURITY_TOUCH_MODEL): picked here on the
-  // Maturity page instead of Settings. Options are the served models the
-  // gateway can admit (same usable filter as Quota Tracker); fail-open to
-  // the current value alone when the catalog fetch fails.
-  const TOUCH_MODEL_KEY = "MATURITY_TOUCH_MODEL";
-  const TOUCH_MODEL_DEFAULT = "deepseek/deepseek-v4-flash";
-  let envContent = $state("");
-  let touchModel = $state(TOUCH_MODEL_DEFAULT);
-  let touchModelOptions = $state([]);
-  let touchModelSaving = $state(false);
+  // Touch-model candidates: served models the gateway can admit (same
+  // usable filter as Quota Tracker: a live agent binding, no withdrawn
+  // rows, no referral-grant row). Server order is cheapest-Freebucks-cost
+  // first, so unmetered-capable rows lead with the premium pool last;
+  // each option is labeled with its server-reported cost class
+  // (price_label/quota/pool) — never an invented price.
+  let modelRows = $state([]);
 
   // Per-token draft controls + busy flags, keyed by token index.
   let drafts = $state({});
@@ -53,7 +50,8 @@
   let actionOK = $state(true);
 
   // Restart-surviving event timelines (ADR-0016): loaded once per token
-  // the first time its maturity block appears, never on the 10s poll.
+  // when its card renders (cards are always expanded), never on the
+  // 10s poll.
   let histByIdx = $state({});
   let histPending = new SvelteSet();
 
@@ -87,7 +85,10 @@
         drafts[idx] = {
           enabled: !!t.maturity?.enabled,
           target: t.maturity?.target ?? 7,
+          // No UI: the Touch box is model-select-only, the server value rides
+          // along on save so an enabled token never resets to unmetered.
           mode: t.maturity?.mode ?? "unmetered",
+          touchModel: t.maturity?.touch_model ?? "",
         };
       }
     }
@@ -108,6 +109,47 @@
     return isNaN(d) ? "—" : d.toLocaleString();
   }
 
+  // Served touch candidates, cheapest-Freebucks-cost first: the rows the
+  // gateway can admit (live agent binding, served, never the referral
+  // grant). Server order already sorts cheapest-first, so partition
+  // unmetered-capable rows ahead of the premium pool without re-sorting.
+  function touchCandidates() {
+    const rows = (modelRows ?? []).filter(
+      (m) => m?.agent && m?.served !== false && m?.pool !== "referral",
+    );
+    return [
+      ...rows.filter((m) => m.pool !== "premium"),
+      ...rows.filter((m) => m.pool === "premium"),
+    ];
+  }
+
+  // Server-reported cost class for one candidate row (never invented:
+  // price_label/quota/pool straight from /admin/api/models, premium pool
+  // named as the pool it spends).
+  function touchCostClass(m) {
+    if (!m) return "";
+    if (m.pool === "premium") return "premium pool";
+    return m.price_label || m.quota || m.pool || "";
+  }
+
+  function touchLabel(m) {
+    const cls = touchCostClass(m);
+    return cls ? `${m.id} (${cls})` : m.id;
+  }
+
+  // Fail-open options for one card: live candidates when the catalog
+  // loaded, else the drafted value alone so the select never empties.
+  function touchOptions(d) {
+    const cands = touchCandidates();
+    if (cands.length > 0) return cands;
+    if (d?.touchModel) {
+      return [
+        { id: d.touchModel, price_label: "", quota: "", pool: "unlimited" },
+      ];
+    }
+    return [];
+  }
+
   async function save(idx) {
     if (saving[idx]) return;
     saving[idx] = true;
@@ -118,6 +160,7 @@
         enabled: d.enabled,
         target: Number(d.target) || 7,
         mode: d.mode,
+        touch_model: d.touchModel ?? "",
       });
       if (res && res.ok === false)
         throw new Error(res.message || "Save rejected");
@@ -153,43 +196,8 @@
     }
   }
 
-  async function saveTouchModel(next) {
-    if (touchModelSaving || !next || next === touchModel) return;
-    const ok = await confirmAction({
-      title: $tr("Change Economy Touch Model"),
-      message: $tr(
-        "Save the .env file and reload the proxy with {model} as the maturity touch model?",
-        { model: next },
-      ),
-      confirmText: $tr("Save & Reload"),
-      tone: "warn",
-    });
-    if (!ok) return;
-    touchModelSaving = true;
-    actionMessage = "";
-    try {
-      const cfgRes = await fetchAPI(adminApi.config);
-      const base = cfgRes?.env_content ?? envContent;
-      const res = await postForm(adminActions.configSave, {
-        content: setEnvValue(base, TOUCH_MODEL_KEY, next),
-      });
-      const json = await res.json();
-      if (!res.ok || json.ok === false)
-        throw new Error(json.message || "Save failed");
-      touchModel = next;
-      envContent = setEnvValue(base, TOUCH_MODEL_KEY, next);
-      actionOK = true;
-      actionMessage = $tr("Touch model saved: {model}", { model: next });
-      window.dispatchEvent(new CustomEvent("fp-config-saved"));
-    } catch (e) {
-      actionOK = false;
-      actionMessage = e?.message || String(e);
-    } finally {
-      touchModelSaving = false;
-    }
-  }
-
   onMount(() => {
+    recordPageVisit("maturity");
     const release = ensureTokensStore();
     unsubStore = tokensStore.subscribe(applyTokens);
     unsubErr = tokensErrorStore.subscribe((err) => {
@@ -205,9 +213,7 @@
     (async () => {
       try {
         const cfgRes = await fetchAPI(adminApi.config);
-        envContent = cfgRes?.env_content || "";
-        touchModel =
-          getEnvValue(envContent, TOUCH_MODEL_KEY) || TOUCH_MODEL_DEFAULT;
+        const content = cfgRes?.env_content || "";
         const eff = (cfgRes?.effective || []).find(
           (e) => e.key === "MATURITY_ENABLED",
         );
@@ -216,7 +222,7 @@
           globalEnabled =
             v === "true" || v === "1" || v === "on" || v === "yes";
         } else {
-          const raw = getEnvValue(envContent, "MATURITY_ENABLED");
+          const raw = getEnvValue(content, "MATURITY_ENABLED");
           if (raw !== null && raw !== undefined && raw !== "") {
             const v = String(raw).trim().toLowerCase();
             globalEnabled =
@@ -234,11 +240,9 @@
     (async () => {
       try {
         const res = await fetchAPI(adminApi.models);
-        const rows = res?.models ?? [];
-        const ids = rows.filter((m) => m.agent).map((m) => m.id);
-        touchModelOptions = ids.length > 0 ? ids : [touchModel];
+        modelRows = res?.models ?? [];
       } catch {
-        touchModelOptions = [touchModel];
+        modelRows = [];
       }
     })();
     return () => {
@@ -266,28 +270,6 @@
     refreshTokens();
   }}
 >
-  {#snippet actions()}
-    <label
-      class="flex items-center gap-2 font-mono text-[11px] text-[var(--fp-dim)]"
-    >
-      {$tr("Touch model")}
-      <select
-        class="fp-select !h-8 !py-1 !text-xs font-mono w-56 max-w-[60vw]"
-        value={touchModel}
-        disabled={touchModelSaving}
-        aria-label={$tr("Economy touch model")}
-        onchange={(e) => {
-          const next = e.currentTarget.value;
-          e.currentTarget.value = touchModel;
-          saveTouchModel(next);
-        }}
-      >
-        {#each touchModelOptions.length > 0 ? touchModelOptions : [touchModel] as id (id)}
-          <option value={id} selected={id === touchModel}>{id}</option>
-        {/each}
-      </select>
-    </label>
-  {/snippet}
   {#if actionMessage}
     <Alert tone={actionOK ? "success" : "error"} title={actionMessage} />
   {/if}
@@ -308,6 +290,7 @@
         enabled: false,
         target: 7,
         mode: "unmetered",
+        touchModel: "",
       }}
       <Card
         title={$tr("Account #{idx}", { idx: idx + 1 })}
@@ -353,7 +336,7 @@
             <FieldBox
               label={$tr("Target Period")}
               unit={$tr("days")}
-              class="sm:col-span-5"
+              class="sm:col-span-6 min-w-0 h-full"
             >
               <Stepper
                 bind:value={d.target}
@@ -372,33 +355,24 @@
               />
             </FieldBox>
             <FieldBox
-              label={$tr("Touch Tier")}
-              unit={d.mode === "premium-short"
-                ? $tr("daily pool")
-                : $tr("minimal")}
-              class="sm:col-span-7"
+              label={$tr("Touch Model")}
+              class="sm:col-span-6 min-w-0 h-full"
             >
               <select
-                class="fp-select !h-8 !py-1 !text-xs w-full"
-                bind:value={d.mode}
+                class="fp-select !h-8 !py-1 !text-xs font-mono w-full min-w-0"
+                bind:value={d.touchModel}
                 disabled={!!saving[idx]}
-                aria-label={$tr("Touch mode for Account #{idx}", {
+                aria-label={$tr("Touch model for Account #{idx}", {
                   idx: idx + 1,
                 })}
-                title={d.mode === "premium-short"
-                  ? $tr(
-                      "One short premium admission per day, paid from this account's daily Freebucks pool.",
-                    )
-                  : $tr(
-                      "Cheapest served model, minimal spend from this account's daily Freebucks pool.",
-                    )}
+                title={$tr(
+                  "Per-token touch model (cheapest first, premium pool last). Empty uses the global MATURITY_TOUCH_MODEL fallback.",
+                )}
               >
-                <option value="unmetered"
-                  >{$tr("Economy (min. Freebucks)")}</option
-                >
-                <option value="premium-short"
-                  >{$tr("Premium short (daily pool)")}</option
-                >
+                <option value="">{$tr("Global default")}</option>
+                {#each touchOptions(d) as o (o.id)}
+                  <option value={o.id}>{touchLabel(o)}</option>
+                {/each}
               </select>
             </FieldBox>
           </div>
