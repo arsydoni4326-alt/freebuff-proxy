@@ -1,5 +1,5 @@
 <script>
-  import { Menu, X } from "@lucide/svelte";
+  import { Menu, X, LogOut } from "@lucide/svelte";
 
   /**
    * @prop {string} activeTab
@@ -11,14 +11,34 @@
   import { isDevToolsEnabled } from "./utils/devtools.js";
   import { NAV_ITEMS } from "./nav.js";
   import { onMount } from "svelte";
-  import { fetchAPI } from "./api/client.js";
-  import { adminApi, adminRoot } from "./api/paths.js";
+  import { fetchAPI, csrfHeader } from "./api/client.js";
+  import { adminApi, adminRoot, adminActions } from "./api/paths.js";
+  import { authState } from "./stores/session.js";
 
   let mobileOpen = $state(false);
   let drawerEl = $state(null);
   let hamburgerEl = $state(null);
   // Dev Tools is a manual testing surface (batch chat, session spawn); it is
   // hidden unless the operator explicitly enables DEVTOOLS_ENABLED=true.
+
+  // Manual logout: clears the session cookie server-side, then lands on
+  // the login view with a full reload so polling stores never fire once
+  // more against a dead session.
+  let loggingOut = $state(false);
+  async function handleLogout() {
+    if (loggingOut) return;
+    loggingOut = true;
+    try {
+      await fetch(adminActions.logout, {
+        method: "POST",
+        headers: csrfHeader("POST"),
+      });
+    } catch {
+      // Cookie already dead server-side; the login screen is still correct.
+    }
+    window.location.hash = "login";
+    window.location.reload();
+  }
   let devToolsEnabled = $state(false);
 
   const tabs = $derived(
@@ -191,32 +211,44 @@
     </a>
 
     <ul class="mt-8 space-y-0.5">
-      {#each tabs as tab (tab.id)}
+      {#each tabs as tab, ti (tab.id)}
         <li>
           <a
             href={"#" + tab.id}
             onclick={() => switchTab(tab.id)}
             aria-current={activeTab === tab.id ? "page" : undefined}
-            class="relative flex items-center gap-2.5 pl-4 pr-3 py-2 rounded-sm text-xs font-medium transition-colors duration-150
+            class="relative flex items-center gap-2.5 pl-4 pr-3 py-2 rounded-[3px] text-xs font-medium transition-colors duration-150
               {activeTab === tab.id
-              ? 'text-[var(--fp-accent)] bg-[var(--fp-surface)]'
+              ? 'bg-[var(--fp-accent)] text-[#0b0e14] font-semibold'
               : 'text-[var(--fp-muted)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)]'}"
           >
-            {#if activeTab === tab.id}
-              <span
-                class="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[2px] bg-[var(--fp-accent)]"
-                aria-hidden="true"
-              ></span>
-              <span class="led led-accent" aria-hidden="true"></span>
-            {/if}
             <tab.icon size={16} class="shrink-0" />
             <span class="font-mono text-xs">{$tr(tab.label)}</span>
+            <span
+              class="ml-auto font-mono text-[10px] opacity-60"
+              aria-hidden="true">_{String(ti + 1).padStart(2, "0")}</span
+            >
           </a>
         </li>
       {/each}
     </ul>
 
     <div class="mt-auto border-t border-[var(--fp-border)] px-2 pt-3 pb-1">
+      {#if $authState.requireLogin}
+        <button
+          type="button"
+          onclick={handleLogout}
+          disabled={loggingOut}
+          class="fp-btn fp-btn-ghost fp-btn-sm w-full justify-start gap-2 mb-2 font-mono text-xs"
+        >
+          {#if loggingOut}
+            <span>{$tr("Logging out…")}</span>
+          {:else}
+            <LogOut size={14} class="shrink-0" />
+            <span>{$tr("Log out")}</span>
+          {/if}
+        </button>
+      {/if}
       {#if versionInfo?.has_update}
         <a
           href={versionInfo.update_url}
@@ -264,7 +296,7 @@
   <div class="flex items-center gap-2 h-14 px-4">
     <button
       bind:this={hamburgerEl}
-      class="p-2.5 min-w-11 min-h-11 rounded-lg text-[var(--fp-muted)] hover:text-white hover:bg-[var(--fp-surface)] transition-colors flex items-center justify-center shrink-0"
+      class="p-2.5 min-w-11 min-h-11 rounded text-[var(--fp-muted)] hover:text-white hover:bg-[var(--fp-surface)] transition-colors flex items-center justify-center shrink-0"
       onclick={mobileOpen ? closeDrawer : openDrawer}
       aria-label={mobileOpen ? "Close menu" : "Open menu"}
       aria-expanded={mobileOpen}
@@ -338,31 +370,27 @@
       </a>
 
       <ul class="space-y-0.5">
-        {#each tabs as tab (tab.id)}
+        {#each tabs as tab, ti (tab.id)}
           <li>
             <a
               href={"#" + tab.id}
               onclick={() => switchTab(tab.id)}
               aria-current={activeTab === tab.id ? "page" : undefined}
-              class="relative flex items-center gap-2.5 pl-4 pr-3 py-2.5 min-h-11 rounded-sm text-sm font-medium transition-colors
+              class="relative flex items-center gap-2.5 pl-4 pr-3 py-2.5 min-h-11 rounded-[3px] text-sm font-medium transition-colors
                 {activeTab === tab.id
-                ? 'text-[var(--fp-accent)] bg-[var(--fp-surface)]'
+                ? 'bg-[var(--fp-accent)] text-[#0b0e14] font-semibold'
                 : 'text-[var(--fp-muted)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface)]'}"
             >
-              {#if activeTab === tab.id}
-                <span
-                  class="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[2px] bg-[var(--fp-accent)]"
-                  aria-hidden="true"
-                ></span>
-                <span class="led led-accent" aria-hidden="true"></span>
-              {/if}
               <tab.icon size={16} class="shrink-0" />
               <span class="font-mono text-xs">{$tr(tab.label)}</span>
+              <span
+                class="ml-auto font-mono text-[10px] opacity-60"
+                aria-hidden="true">_{String(ti + 1).padStart(2, "0")}</span
+              >
             </a>
           </li>
         {/each}
       </ul>
-
       <div class="mt-auto border-t border-[var(--fp-border)] px-2 pt-3 pb-1">
         {#if versionInfo?.has_update}
           <a

@@ -32,6 +32,7 @@ import (
 	"freebuff-proxy/backend/internal/ratelimit"
 	"freebuff-proxy/backend/internal/reasoningcache"
 	"freebuff-proxy/backend/internal/registry"
+	"freebuff-proxy/backend/internal/store"
 	"freebuff-proxy/backend/internal/tokendb"
 	"freebuff-proxy/backend/internal/tokenestimate"
 	"freebuff-proxy/backend/internal/updatecheck"
@@ -61,6 +62,9 @@ type Server struct {
 
 	// dash is the embedded admin UI (Svelte SPA + vendored assets).
 	dash *dashboard.Dashboard
+	// hist is the dashboard history store (nil = live-only views). Threaded
+	// into the dashboard at construction; closed via Close on shutdown.
+	hist *store.Store
 	// adminAuth guards the dashboard: a stateless HMAC-signed session cookie
 	// issued against ADMIN_TOKEN, plus a per-IP login rate limiter.
 	adminAuth *adminAuth
@@ -168,6 +172,14 @@ func WithTokenDB(db *tokendb.DB) Option {
 	}
 }
 
+// WithHistory threads the dashboard history store into the embedded admin
+// UI (ADR-0016). A nil store keeps every history view on live data.
+func WithHistory(st *store.Store) Option {
+	return func(s *Server) {
+		s.hist = st
+	}
+}
+
 // Option configures optional server features (release-version badge).
 type Option func(*Server)
 
@@ -200,6 +212,9 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 		if s.version != "" {
 			dashOpts = append(dashOpts, dashboard.WithVersion(s.version, s.updates))
 		}
+		if s.hist != nil {
+			dashOpts = append(dashOpts, dashboard.WithHistory(s.hist))
+		}
 		s.dash = dashboard.New(func() *config.Config { return s.cfg.Load() }, p, reg, logger, logs, dashOpts...)
 	}
 	s.adminAuth = newAdminAuth()
@@ -220,6 +235,15 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 	}
 	s.reasoningCache = reasoningcache.New(10000, 2*time.Hour)
 	return s
+}
+
+// Close flushes and releases server-owned resources: the dashboard history
+// consumer and store. Safe to call on a server built without WithHistory.
+func (s *Server) Close() error {
+	if s.dash != nil {
+		return s.dash.Close()
+	}
+	return nil
 }
 
 // registerAdminRoutes mounts every dashboard.AdminRoutes row on the mux.
@@ -284,6 +308,12 @@ func (s *Server) adminHandler(r dashboard.AdminRoute) http.Handler {
 		return http.HandlerFunc(s.dash.APIConfigMeta)
 	case "GET /admin/api/logs":
 		return s.dash.APIHandler("logs")
+	case "GET /admin/api/quota/history":
+		return s.dash.APIHandler("quota/history")
+	case "GET /admin/api/maturity/history":
+		return s.dash.APIHandler("maturity/history")
+	case "GET /admin/api/logs/history":
+		return s.dash.APIHandler("logs/history")
 	case "GET /admin/api/metrics":
 		return s.dash.APIHandler("metrics")
 	case "GET /admin/api/version":
@@ -431,13 +461,18 @@ func (s *Server) Handler() http.Handler {
 		if crid := clientRequestID(r); crid != "" {
 			attrs = append(attrs, "client_request_id", crid)
 		}
-		// T17: LOG_ACCESS=false disables access lines entirely. Quiet
-		// endpoints (/healthz, /metrics, OPTIONS preflights) are
-		// rate-limited to one access line per path per accessQuietWindow so
-		// a poller or browser preflight does not flood the log; every other
-		// path keeps one line per request. req_id/client_request_id survive
-		// in both cases.
-		if !s.cfg.Load().LogAccess {
+		// T17: LOG_ACCESS=false disables access lines entirely. Silent
+		// paths (probes + dashboard GET polls) never log; quiet endpoints
+		// (OPTIONS preflights) and UNKNOWN paths (404s) are rate-limited
+		// to one access line per path per accessQuietWindow, and the
+		// quiet-class budget caps the total quiet lines per window — a
+		// client minting distinct paths cannot grow the access log without
+		// bound (per-path gating alone would pass one line per unique
+		// path). req_id/client_request_id survive in both cases.
+		if !cfg.LogAccess {
+			return
+		}
+		if silentAccessPath(r.Method, r.URL.Path) {
 			return
 		}
 		if quiet := quietAccessPath(r.Method, r.URL.Path) || sw.status == http.StatusNotFound; quiet {
