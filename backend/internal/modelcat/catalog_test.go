@@ -305,28 +305,6 @@ func TestCatalogParityWithPinnedUpstream(t *testing.T) {
 		}
 	}
 
-	// Per-model caps.
-	capsRe := regexp.MustCompile(`\[(\w+)\]:\s*\{[\s\S]*?limit:\s*(\d+),[\s\S]*?pool:\s*'([^']+)'`)
-	seen := 0
-	for _, m := range capsRe.FindAllStringSubmatch(modelsSrc, -1) {
-		id := resolveModelRef(t, ids, m[1])
-		wantLimit, _ := strconv.Atoi(m[2])
-		gotLimit, gotPool := PerModelCap(id)
-		if gotLimit != wantLimit || gotPool != m[3] {
-			t.Errorf("cap[%q] = (%d, %q), want (%d, %q)", id, gotLimit, gotPool, wantLimit, m[3])
-		}
-		seen++
-	}
-	capCount := 0
-	for _, c := range Catalog {
-		if c.Cap > 0 {
-			capCount++
-		}
-	}
-	if seen != capCount {
-		t.Errorf("capped rows = %d, upstream FREEBUFF_PER_MODEL_SESSION_CAPS entries = %d", capCount, seen)
-	}
-
 	// Context windows — extract entries inside FREEBUFF_MODEL_CONTEXT_WINDOWS
 	// (balance braces to find the map body).
 	ctxOpen := regexp.MustCompile(`FREEBUFF_MODEL_CONTEXT_WINDOWS[^=]*=\s*\{`)
@@ -363,22 +341,6 @@ func TestCatalogParityWithPinnedUpstream(t *testing.T) {
 		_ = ctxSeen
 	}
 
-	// Scalar constants.
-	scalarChecks := []struct {
-		name string
-		got  int
-	}{
-		{"FREEBUFF_PREMIUM_SESSION_LIMIT", PremiumSessionLimit},
-	}
-	for _, sc := range scalarChecks {
-		re := regexp.MustCompile(`export const ` + sc.name + ` = (\d+)`)
-		if m := re.FindStringSubmatch(modelsSrc); m != nil {
-			want, _ := strconv.Atoi(m[1])
-			if sc.got != want {
-				t.Errorf("%s = %d, want %d", sc.name, sc.got, want)
-			}
-		}
-	}
 	// GLM session length (60 * 60 * 1000).
 	if m := regexp.MustCompile(`export const FREEBUFF_GLM_V52_SESSION_LENGTH_MS = ([\d *]+)`).FindStringSubmatch(modelsSrc); m != nil {
 		want, err := strconv.Atoi(strings.ReplaceAll(m[1], " ", ""))
@@ -397,18 +359,18 @@ func catalogIDs() []string {
 }
 
 // TestCatalogFactsPinned asserts the documented catalog reality directly:
-// the served set, the shared premium pool (Luna + Muse Spark 1.3 since
-// 2026-09-04; GLM 5.3 Flash is unmetered), the paused map (all four
-// withdrawn rows recommend the default model), per-model caps (none at
-// this pin), and per-model effort ladders. This pins what the doc comments
-// CLAIM so a stale claim (e.g. "GLM 5.3 Flash is premium") fails here
-// before an operator reads it.
+// the served set, the shared premium pool (Luna + Muse Spark 1.2 since
+// 2026-09-07, when 1.3 was withdrawn; GLM 5.3 Flash is unmetered), the
+// paused map (all five withdrawn rows recommend the default model), and
+// per-model effort ladders. This pins what the doc comments CLAIM so a
+// stale claim (e.g. "GLM 5.3 Flash is premium") fails here before an
+// operator reads it.
 func TestCatalogFactsPinned(t *testing.T) {
 	// Served set, catalog order.
 	wantServed := []string{
 		"openai/gpt-5.6-luna",
 		"upstage/solar-pro4",
-		"meta/muse-spark-1.3-contributor",
+		"meta/muse-spark-1.2-contributor",
 		"z-ai/glm-5.3-flash",
 		"deepseek/deepseek-v4-flash",
 		"mimo/mimo-v2.5",
@@ -417,15 +379,18 @@ func TestCatalogFactsPinned(t *testing.T) {
 		t.Errorf("ServedIDs() = %v, want %v", got, wantServed)
 	}
 
-	// Shared premium pool = Luna + Muse Spark 1.3 since 2026-09-04 (solar's
+	// Shared premium pool = Luna + Muse Spark 1.2 since 2026-09-07 (solar's
 	// entitlement went unmetered; gemini is Pro-paywalled and cannot consume
-	// the pool). GLM 5.3 Flash unmetered.
-	wantPremium := []string{"openai/gpt-5.6-luna", "meta/muse-spark-1.3-contributor"}
+	// the pool; 1.3 is paused and consumes nothing). GLM 5.3 Flash unmetered.
+	wantPremium := []string{"openai/gpt-5.6-luna", "meta/muse-spark-1.2-contributor"}
 	if got := SharedPremiumModels(); !slices.Equal(got, wantPremium) {
 		t.Errorf("SharedPremiumModels() = %v, want %v", got, wantPremium)
 	}
 	if IsPremium("z-ai/glm-5.3-flash") {
 		t.Error("glm-5.3-flash marked premium, want unmetered (not premium)")
+	}
+	if IsPremium("meta/muse-spark-1.3-contributor") {
+		t.Error("muse-spark-1.3 marked premium, want paused (not premium)")
 	}
 	for _, id := range wantPremium {
 		if !IsPremium(id) {
@@ -433,30 +398,20 @@ func TestCatalogFactsPinned(t *testing.T) {
 		}
 	}
 	wantPaused := map[string]string{
-		"stealth/ox-alpha":         DefaultModelID,
-		"deepseek/deepseek-v4-pro": DefaultModelID,
-		"minimax/minimax-m3":       DefaultModelID,
-		"z-ai/glm-5.2":             DefaultModelID,
+		"stealth/ox-alpha":                DefaultModelID,
+		"deepseek/deepseek-v4-pro":        DefaultModelID,
+		"minimax/minimax-m3":              DefaultModelID,
+		"z-ai/glm-5.2":                    DefaultModelID,
+		"meta/muse-spark-1.3-contributor": DefaultModelID,
 	}
 	if got := PausedMap(); !maps.Equal(got, wantPaused) {
 		t.Errorf("PausedMap() = %v, want %v", got, wantPaused)
 	}
 
-	// Per-model count caps: none at this pin. Upstream
-	// FREEBUFF_PER_MODEL_SESSION_CAPS is EMPTY — solar's 1/day trial cap
-	// closed 2026-09-01 (upstream 051fd4d9, its count cap came off; the
-	// per-session $ spend ceiling stays upstream-side).
-	for _, id := range ServedIDs() {
-		limit, pool := PerModelCap(id)
-		if limit != 0 || pool != "" {
-			t.Errorf("PerModelCap(%q) = (%d, %q), want (0, \"\")", id, limit, pool)
-		}
-	}
-
 	// Effort ladders for served models (nil = the route ignores it).
 	wantEfforts := map[string][]string{
 		"openai/gpt-5.6-luna":             {"low", "medium", "high", "xhigh", "max"},
-		"meta/muse-spark-1.3-contributor": {"minimal", "low", "medium", "high", "xhigh"},
+		"meta/muse-spark-1.2-contributor": {"minimal", "low", "medium", "high", "xhigh"},
 		"deepseek/deepseek-v4-flash":      {"low", "high", "max"},
 		"mimo/mimo-v2.5":                  {"high"},
 		"upstage/solar-pro4":              nil,
