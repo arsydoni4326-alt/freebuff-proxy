@@ -105,6 +105,7 @@ func maturityCardFromSnapshot(m *pool.MaturitySnapshot) *maturityCard {
 		Enabled:       m.Enabled,
 		Target:        m.Target,
 		Mode:          m.Mode,
+		TouchModel:    m.TouchModel,
 		Badge:         m.Badge,
 		LastAction:    m.LastAction,
 		LastResult:    m.LastResult,
@@ -340,38 +341,6 @@ func formatQuota(v float64) string {
 		return strconv.FormatInt(int64(v), 10)
 	}
 	return strconv.FormatFloat(v, 'f', -1, 64)
-}
-
-// formatFreebucks returns a human summary of the Freebucks allowance.
-// Nil-safe: returns "" when fb is nil.
-//
-//nolint:unused
-func formatFreebucks(fb *freebucksCard) string {
-	if fb == nil {
-		return ""
-	}
-	s := fmt.Sprintf("balance %s · daily %s · wallet %s · spend-ceiling $%s",
-		formatQuota(fb.Balance),
-		formatFreebucksWindow(fb.Daily),
-		formatQuota(fb.Wallet.Balance),
-		formatQuota(fb.Spend.LimitUsd),
-	)
-	if fb.PlanID != "" {
-		s += " · plan " + fb.PlanID
-	}
-	return s
-}
-
-// formatFreebucksWindow formats one Freebucks window as "spent/limit (remaining left)".
-// Zero-limit windows return "spent/limit".
-//
-//nolint:unused
-func formatFreebucksWindow(w freebucksWindowCard) string {
-	base := formatQuota(w.Spent) + "/" + formatQuota(w.Limit)
-	if w.Limit == 0 {
-		return base
-	}
-	return base + " (" + formatQuota(w.Remaining) + " left, " + formatQuota(w.PercentUsed) + "%)"
 }
 
 func formatEntitlement(e map[string]float64) string {

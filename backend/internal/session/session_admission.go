@@ -97,6 +97,7 @@ func (m *Manager) adoptOwner() (CLIOwner, bool) {
 // is enabled it adopts the CLI's active session (or refuses to create a
 // competing one); otherwise it creates a fresh session exactly as before.
 func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*upstream.SessionState, error) {
+	admitStart := time.Now()
 	m.mu.Lock()
 	adopt := m.adopt
 	m.mu.Unlock()
@@ -147,7 +148,7 @@ func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*up
 			}
 			st.PollAt = time.Now().Add(wait)
 		}
-		slog.Info("adopted queued CLI freebuff session", "instance_id", shortInstance(st.InstanceID), "position", st.Position)
+		slog.Info("adopted queued CLI freebuff session", "instance_id", shortInstance(st.InstanceID), "position", st.Position, "wait", queueWaitHuman(st.PollAt), "elapsed", queueElapsedHuman(admitStart))
 		return st, nil
 	case "disabled":
 		slog.Info("adopted disabled CLI freebuff session")
@@ -217,6 +218,27 @@ func shortInstance(id string) string {
 	return id
 }
 
+// queueWaitHuman renders the remaining wait until pollAt as an
+// operator-readable duration ("1m30s"). Log-only helper: zero behavior
+// change, structured slog fields stay untouched.
+func queueWaitHuman(pollAt time.Time) string {
+	d := time.Until(pollAt).Round(time.Second)
+	if d < 0 {
+		d = 0
+	}
+	return d.String()
+}
+
+// queueElapsedHuman renders time spent in admission since start as an
+// operator-readable duration ("5s"). Log-only helper: zero behavior change.
+func queueElapsedHuman(start time.Time) string {
+	d := time.Since(start).Round(time.Second)
+	if d < 0 {
+		d = 0
+	}
+	return d.String()
+}
+
 // asyncReAdmit runs a pre-emptive refresh in the background (issue #99): the
 // triggering request rides the old session while the new admission proceeds;
 // concurrent requests park on the single-flight refreshCh and get the new
@@ -244,8 +266,8 @@ func (m *Manager) asyncReAdmit(model string) {
 
 // recordReAdmitTrigger remembers a pre-emptive re-admit trigger (issue #99)
 // for the re-admit storm summary's burned_slots count: a trigger whose
-// session is later invalidated burned a daily session slot. Caller must NOT
-// hold m.mu.
+// session is later invalidated burned a fresh billable admission. Caller
+// must NOT hold m.mu.
 func (m *Manager) recordReAdmitTrigger() {
 	m.mu.Lock()
 	now := m.now()
@@ -304,9 +326,9 @@ func (m *Manager) recordInvalidation(reason string) {
 		}
 	}
 	// burned_slots: pre-emptive re-admit triggers within the same window —
-	// each one whose session the storm then invalidated burned a daily slot.
-	// The trigger list is pruned to the window above, so its length is the
-	// count.
+	// each one whose session the storm then invalidated burned a fresh
+	// billable admission. The trigger list is pruned to the window above,
+	// so its length is the count.
 	burned := len(m.snap.reAdmitTriggers)
 	m.mu.Unlock()
 
@@ -356,6 +378,7 @@ func (m *Manager) releaseHeldSlotForTarget(ctx context.Context, targetModel stri
 // old instance is still authoritative must NOT invalidate the cached session
 // (the caller is riding it) — return instead of committing nil and looping.
 func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive bool) error {
+	admitStart := time.Now()
 	targetModel := requestedModel
 	// Issue #158: a model cached unavailable skips the 409 admission
 	// roundtrip entirely (see modelUnavailableShortCircuit).
@@ -379,9 +402,9 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			st, err = m.client.GetSession(ctx, cached.instanceID)
 		} else if cached == nil {
 			// Fresh manager (first call or restart): resume a persisted
-			// session before creating a new one. A persisted active slot
+			// session before creating a new one. A persisted active session
 			// that is still alive upstream (and model-compatible) is adopted
-			// instead of burning a fresh session quota.
+			// instead of admitting a fresh billable one.
 			st, err = m.pollPersisted(ctx, targetModel)
 			if st == nil && err == nil {
 				st, err = m.adoptOrCreate(ctx, targetModel)
@@ -508,7 +531,7 @@ func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive
 			})
 			m.mu.Unlock()
 			slog.Debug("session queued", "instance_id", st.InstanceID, "model", model,
-				"position", st.Position, "queue_depth", st.QueueDepth, "poll_at", pollAt.Format(time.RFC3339))
+				"position", st.Position, "queue_depth", st.QueueDepth, "poll_at", pollAt.Format(time.RFC3339), "wait", queueWaitHuman(pollAt), "elapsed", queueElapsedHuman(admitStart))
 			return nil
 		case "ended", "superseded", "none":
 			if preemptive {

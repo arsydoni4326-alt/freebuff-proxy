@@ -1,3 +1,18 @@
+# Streak Display + Maturity Automation — Status
+
+PR1 (streak display) and PR2 (preserve-only automation v1) are shipped.
+Implementation: `backend/internal/pool/maturity.go`, `backend/internal/upstream/session.go`
+(`StreakInfo`), config keys `MATURITY_ENABLED` (default on) + `MATURITY_DRY_RUN`
+(default true). Per-token touch-model override, folded cards, and Probe-all
+removal are decided in ADR-0021, which supersedes §2 details below.
+
+Remaining: the §3 ladder experiment on one sacrificial token, then the 7-day
+soak before any fleet rollout. Do not expand scope before that soak passes.
+
+The full design is kept below for reference.
+
+---
+
 # Streak Display + Maturity Automation — Full Plan
 
 Status: PR1 (display) shipped; PR2 automation landed as preserve-only v1
@@ -86,7 +101,7 @@ every maintain tick (15 min):
    (deepseek-flash / glm-flash) through the normal Acquire path —
    wire-identical to a user opening the CLI. Reservation 1.0 against
    an infinite limit = free, plus a live session real traffic can
-   reuse. Never burns premium quota for farming.
+   reuse. Never spends premium Freebucks for farming.
 3. Escalate (e.g. minimal chat) only if §3 proves rung 2
    insufficient. Never by default.
 

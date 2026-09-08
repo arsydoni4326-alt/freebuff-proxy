@@ -46,6 +46,7 @@
   let drafts = $state({});
   let saving = $state({});
   let touching = $state({});
+  let resetting = $state({});
   let actionMessage = $state("");
   let actionOK = $state(true);
 
@@ -53,6 +54,8 @@
   // when its card renders (cards are always expanded), never on the
   // 10s poll.
   let histByIdx = $state({});
+  // History fold state per card (default folded, latest event visible).
+  let histOpen = $state({});
   let histPending = new SvelteSet();
 
   $effect(() => {
@@ -111,8 +114,8 @@
 
   // Served touch candidates, cheapest-Freebucks-cost first: the rows the
   // gateway can admit (live agent binding, served, never the referral
-  // grant). Server order already sorts cheapest-first, so partition
-  // unmetered-capable rows ahead of the premium pool without re-sorting.
+  // grant). Server order already sorts cheapest-first, so priced rows
+  // stay ahead without re-sorting.
   function touchCandidates() {
     const rows = (modelRows ?? []).filter(
       (m) => m?.agent && m?.served !== false && m?.pool !== "referral",
@@ -124,12 +127,11 @@
   }
 
   // Server-reported cost class for one candidate row (never invented:
-  // price_label/quota/pool straight from /admin/api/models, premium pool
-  // named as the pool it spends).
+  // price_label/quota straight from /admin/api/models). The legacy pool
+  // tag renders only when the row carries no price.
   function touchCostClass(m) {
     if (!m) return "";
-    if (m.pool === "premium") return "premium pool";
-    return m.price_label || m.quota || m.pool || "";
+    return m.price_label || m.quota || "";
   }
 
   function touchLabel(m) {
@@ -196,6 +198,26 @@
     }
   }
 
+  async function resetWarn(idx) {
+    if (resetting[idx]) return;
+    resetting[idx] = true;
+    actionMessage = "";
+    try {
+      const res = await postAPI(tokenActions.maturityWarnReset(idx), {});
+      if (res && res.ok === false)
+        throw new Error(res.message || "Reset rejected");
+      actionOK = true;
+      actionMessage = $tr("Warning cleared for Account #{idx}", {
+        idx: idx + 1,
+      });
+      await refreshTokens();
+    } catch (e) {
+      actionOK = false;
+      actionMessage = e?.message || String(e);
+    } finally {
+      resetting[idx] = false;
+    }
+  }
   onMount(() => {
     recordPageVisit("maturity");
     const release = ensureTokensStore();
@@ -366,7 +388,7 @@
                   idx: idx + 1,
                 })}
                 title={$tr(
-                  "Per-token touch model (cheapest first, premium pool last). Empty uses the global MATURITY_TOUCH_MODEL fallback.",
+                  "Per-token touch model (cheapest first, priced rows last). Empty uses the global default from Settings → Advanced → Maturity Touch Model.",
                 )}
               >
                 <option value="">{$tr("Global default")}</option>
@@ -400,6 +422,20 @@
               >
                 {$tr("Touch now")}
               </Button>
+              {#if m?.warn}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!!resetting[idx]}
+                  loading={!!resetting[idx]}
+                  onclick={() => resetWarn(idx)}
+                  title={$tr(
+                    "Clear the non-advance warning and re-arm the daily loop (config unchanged)",
+                  )}
+                >
+                  {$tr("Reset warning")}
+                </Button>
+              {/if}
               <Button
                 variant="primary"
                 size="sm"
@@ -412,13 +448,15 @@
             </span>
           </div>
           {#if (histByIdx[idx] ?? []).length > 0}
+            {@const evs = (histByIdx[idx] ?? []).slice(-5)}
+            {@const open = !!histOpen[idx]}
             <ul
               class="flex flex-col gap-1.5 border-t border-[var(--fp-border)]/60 pt-2.5"
               aria-label={$tr("Maturity history for Account #{idx}", {
                 idx: idx + 1,
               })}
             >
-              {#each histByIdx[idx] as ev (ev.ts + ev.kind + ev.detail)}
+              {#each open ? evs : evs.slice(-1) as ev (ev.ts + ev.kind + ev.detail)}
                 <li
                   class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs"
                 >
@@ -435,6 +473,18 @@
                 </li>
               {/each}
             </ul>
+            {#if evs.length > 1}
+              <button
+                type="button"
+                class="self-start text-xs font-mono text-[var(--fp-dim)] hover:text-[var(--fp-fg)]"
+                onclick={() => (histOpen[idx] = !open)}
+                aria-expanded={open}
+              >
+                {open
+                  ? $tr("Show less")
+                  : $tr("Show {n} more", { n: evs.length - 1 })}
+              </button>
+            {/if}
           {/if}
         </div>
       </Card>
