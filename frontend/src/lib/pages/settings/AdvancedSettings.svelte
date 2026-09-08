@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from "svelte";
   import SettingsCard from "../../components/SettingsCard.svelte";
   import SettingsRow from "../../components/SettingsRow.svelte";
   import ToggleSwitch from "../../components/ToggleSwitch.svelte";
@@ -89,6 +90,38 @@
     if (v === "") return (entry?.default ?? "true") !== "false";
     return v !== "false";
   }
+  // Deep-link focus from cross-page jump links (Maturity Touch Model):
+  // the link stashes a catalog key in sessionStorage, then routes here.
+  // Meta loads async, so consume the key once the rows exist, scroll the
+  // row into view, and focus its control (visible accent focus ring).
+  // $state + rows-first read: the effect must subscribe to BOTH, whatever
+  // order onMount/meta/fetch resolve in (an early return before reading a
+  // source never re-fires on that source).
+  let pendingFocusKey = $state("");
+  onMount(() => {
+    try {
+      pendingFocusKey = sessionStorage.getItem("fp-settings-focus") ?? "";
+      sessionStorage.removeItem("fp-settings-focus");
+    } catch {
+      /* storage blocked: no deep focus, page still renders */
+    }
+  });
+  $effect(() => {
+    const rowCount = rows.length;
+    if (!pendingFocusKey || rowCount === 0) return;
+    const key = pendingFocusKey;
+    pendingFocusKey = "";
+    requestAnimationFrame(() => {
+      // Scope to the row's own labeled control: the row also hosts the
+      // per-key DbOverrideSave button, so a bare "input, button" selector
+      // would focus the save button instead of the setting control.
+      const el = document.getElementById(`setting-${key}`);
+      const control = el?.querySelector(`[aria-label="${CSS.escape(key)}"]`);
+      if (!el || !(control instanceof HTMLElement)) return;
+      el.scrollIntoView({ block: "center" });
+      control.focus({ preventScroll: true });
+    });
+  });
 </script>
 
 <SettingsCard
@@ -116,78 +149,81 @@
       {/if}
       {#each rows.filter((e) => e.group === group) as entry, ei (entry.key)}
         {@const isFirst = gi === 0 && ei === 0}
-        <SettingsRow
-          first={isFirst}
-          label={labelFor(entry.key)}
-          description={entry.description ?? ""}
-        >
-          {#snippet badge()}
-            <code
-              class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--fp-surface-2)] text-[var(--fp-dim)] font-mono"
-              >{entry.key}</code
-            >
-            {#if !env[entry.key]}
-              <span
-                class="text-[10px] px-1.5 py-0.5 rounded-[var(--fp-radius-sm)] border border-[var(--fp-border)] bg-[var(--fp-surface-2)] text-[var(--fp-dim)] font-semibold uppercase tracking-wider shrink-0"
-                >{$tr("default")}</span
+        <!-- Stable anchor for cross-page jump links (fp-settings-focus). -->
+        <div id="setting-{entry.key}" class="scroll-mt-24">
+          <SettingsRow
+            first={isFirst}
+            label={labelFor(entry.key)}
+            description={entry.description ?? ""}
+          >
+            {#snippet badge()}
+              <code
+                class="text-[10px] px-1.5 py-0.5 rounded bg-[var(--fp-surface-2)] text-[var(--fp-dim)] font-mono"
+                >{entry.key}</code
               >
-            {/if}
-            {#if entry.restart_only}
-              <span
-                class="text-[10px] px-1.5 py-0.5 rounded-[var(--fp-radius-sm)] border border-[var(--fp-warning)]/40 bg-[var(--fp-warning)]/10 text-[var(--fp-warning)] font-semibold uppercase tracking-wider shrink-0"
-                >{$tr("restart")}</span
+              {#if !env[entry.key]}
+                <span
+                  class="text-[10px] px-1.5 py-0.5 rounded-[var(--fp-radius-sm)] border border-[var(--fp-border)] bg-[var(--fp-surface-2)] text-[var(--fp-dim)] font-semibold uppercase tracking-wider shrink-0"
+                  >{$tr("default")}</span
+                >
+              {/if}
+              {#if entry.restart_only}
+                <span
+                  class="text-[10px] px-1.5 py-0.5 rounded-[var(--fp-radius-sm)] border border-[var(--fp-warning)]/40 bg-[var(--fp-warning)]/10 text-[var(--fp-warning)] font-semibold uppercase tracking-wider shrink-0"
+                  >{$tr("restart")}</span
+                >
+              {/if}
+              {#if sources[entry.key] === "db"}
+                <DbBadge settingKey={entry.key} {onReset} />
+              {/if}
+            {/snippet}
+            {#snippet extra()}
+              <DbOverrideSave
+                settingKey={entry.key}
+                value={val(entry.key, entry)}
+                restartOnly={entry.restart_only}
+                {onSaved}
+              />
+            {/snippet}
+            {#if entry.kind === "bool"}
+              <ToggleSwitch
+                checked={boolVal(entry.key, entry)}
+                ariaLabel={entry.key}
+                onchange={(v) => onField(entry.key, v ? "true" : "false")}
+              />
+            {:else if entry.kind === "select"}
+              <select
+                class="fp-select"
+                value={val(entry.key, entry)}
+                aria-label={entry.key}
+                onchange={(e) => onField(entry.key, e.currentTarget.value)}
               >
+                {#each entry.enum ?? [] as opt (opt)}
+                  <option value={opt}>{opt}</option>
+                {/each}
+              </select>
+            {:else if entry.kind === "int"}
+              <input
+                type="number"
+                class="fp-input fp-num"
+                value={val(entry.key, entry)}
+                aria-label={entry.key}
+                placeholder={entry.default ?? ""}
+                oninput={(e) => onField(entry.key, e.currentTarget.value)}
+              />
+            {:else}
+              <input
+                type="text"
+                class="fp-input fp-mono"
+                value={val(entry.key, entry)}
+                title={val(entry.key, entry)}
+                aria-label={entry.key}
+                placeholder={entry.default ?? ""}
+                oninput={(e) => onField(entry.key, e.currentTarget.value)}
+              />
             {/if}
-            {#if sources[entry.key] === "db"}
-              <DbBadge settingKey={entry.key} {onReset} />
-            {/if}
-          {/snippet}
-          {#snippet extra()}
-            <DbOverrideSave
-              settingKey={entry.key}
-              value={val(entry.key, entry)}
-              restartOnly={entry.restart_only}
-              {onSaved}
-            />
-          {/snippet}
-          {#if entry.kind === "bool"}
-            <ToggleSwitch
-              checked={boolVal(entry.key, entry)}
-              ariaLabel={entry.key}
-              onchange={(v) => onField(entry.key, v ? "true" : "false")}
-            />
-          {:else if entry.kind === "select"}
-            <select
-              class="fp-select"
-              value={val(entry.key, entry)}
-              aria-label={entry.key}
-              onchange={(e) => onField(entry.key, e.currentTarget.value)}
-            >
-              {#each entry.enum ?? [] as opt (opt)}
-                <option value={opt}>{opt}</option>
-              {/each}
-            </select>
-          {:else if entry.kind === "int"}
-            <input
-              type="number"
-              class="fp-input fp-num"
-              value={val(entry.key, entry)}
-              aria-label={entry.key}
-              placeholder={entry.default ?? ""}
-              oninput={(e) => onField(entry.key, e.currentTarget.value)}
-            />
-          {:else}
-            <input
-              type="text"
-              class="fp-input fp-mono"
-              value={val(entry.key, entry)}
-              title={val(entry.key, entry)}
-              aria-label={entry.key}
-              placeholder={entry.default ?? ""}
-              oninput={(e) => onField(entry.key, e.currentTarget.value)}
-            />
-          {/if}
-        </SettingsRow>
+          </SettingsRow>
+        </div>
       {/each}
     {/each}
   {/if}
