@@ -576,6 +576,7 @@ func TestModelsAnnotationWithQuota(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("model %q not in /v1/models", modelA)
+		return
 	}
 	if !found.Available {
 		t.Errorf("available = false, want true")
@@ -1493,6 +1494,7 @@ func TestChatRoutingLogsServedModelOnCoercion(t *testing.T) {
 	}
 	if routingEntry == nil {
 		t.Fatal("missing 'chat routing' entry in log ring")
+		return
 	}
 	if gotModel := entryField(*routingEntry, "model"); gotModel != "z-ai/glm-5.3-flash" {
 		t.Errorf("routing model = %q, want z-ai/glm-5.3-flash", gotModel)
