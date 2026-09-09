@@ -92,6 +92,7 @@ func TestPersistResumePollTransportError(t *testing.T) {
 	_, err := mgr.EnsureSession(context.Background())
 	if err == nil {
 		t.Fatal("resume poll transport error must surface, got nil")
+		return
 	}
 	if got := creates.Load(); got != 0 {
 		t.Errorf("creates = %d, want 0 (transport error must not fall through to create)", got)
@@ -319,6 +320,7 @@ func TestShutdownAlwaysDeletesEvenWhenPersisting(t *testing.T) {
 
 		if _, err := mgr.EnsureSession(context.Background()); err == nil {
 			t.Fatal("want WaitingRoomError for queued session")
+			return
 		} else {
 			var wr *WaitingRoomError
 			if !errors.As(err, &wr) {
@@ -327,6 +329,7 @@ func TestShutdownAlwaysDeletesEvenWhenPersisting(t *testing.T) {
 		}
 		if got := store.Load(key); got == nil || got.status != "queued" {
 			t.Fatalf("store before Shutdown = %+v, want queued entry", got)
+			return
 		}
 
 		if err := mgr.Shutdown(context.Background()); err != nil {
@@ -657,6 +660,7 @@ func TestPersistQuotaByModelRoundTrip(t *testing.T) {
 	loaded := store2.Load(key)
 	if loaded == nil {
 		t.Fatal("loaded state is nil")
+		return
 	}
 	if loaded.instanceID != "inst-quota-123" {
 		t.Errorf("loaded instanceID = %q, want inst-quota-123", loaded.instanceID)
@@ -701,6 +705,7 @@ func TestPersistAccountBlocksRoundTrip(t *testing.T) {
 	loaded := store2.Load(key)
 	if loaded == nil {
 		t.Fatal("loaded state is nil")
+		return
 	}
 	if loaded.referral == nil || loaded.referral.Code != "FREE-abc" {
 		t.Errorf("referral = %+v, want code FREE-abc", loaded.referral)

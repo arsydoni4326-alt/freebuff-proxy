@@ -67,6 +67,7 @@ func TestNewTLSFingerprintInvalid(t *testing.T) {
 	_, err := New("tok", cfg)
 	if err == nil {
 		t.Fatal("New with bogus TLS_FINGERPRINT succeeded, want error")
+		return
 	}
 	if !strings.Contains(err.Error(), "TLS_FINGERPRINT") {
 		t.Errorf("error = %q, want mention of TLS_FINGERPRINT", err)
@@ -91,6 +92,7 @@ func TestStealthProfileResolvedOncePerRequest(t *testing.T) {
 	stashed := stealthProfileFrom(req.Context())
 	if stashed == nil {
 		t.Fatal("no concrete profile stashed in the request context")
+		return
 	}
 	if stashed.ID == stealth.ProfileIDAuto || stashed.ID == stealth.ProfileIDRandom {
 		t.Fatalf("stashed profile %s is not concrete (auto must resolve once)", stashed.ID)
