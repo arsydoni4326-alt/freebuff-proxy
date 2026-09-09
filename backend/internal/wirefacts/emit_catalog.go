@@ -7,6 +7,10 @@
 // explicitly (file plus the upstream commit) instead of emitting a
 // half-read table.
 //
+// Mapping rule: only models the CLI client serves are mapped. Web/god-only
+// rows (crof/kimi-k3-eco, openai/gpt-5.6-luna-es) never become catalog rows,
+// no matter what prices the upstream ledger quotes them.
+//
 // What flows from the snapshots: SUPPORTED order and row ids, Served
 // (FREEBUFF_MODELS membership), Paused (FREEBUFF_PAUSED_FREE_MODEL_IDS),
 // Premium (served rows mirror the resolved row flag; paused rows never are),
@@ -237,8 +241,8 @@ var catalogDisplayTrimmed = map[string]bool{
 // Pinned copy the snapshots only reference indirectly (asserted at build).
 const (
 	pinnedTrainingNotice = "May use data for AI training"
-	pinnedSolarTagline   = "Fast & Direct"
-	pinnedSolarNotice    = "Labor Day weekend (through Sep 7 PT)"
+	pinnedSolarTagline   = "0 Freebucks"
+	pinnedSolarNotice    = ""
 	pinnedGlm52Tagline   = "Referral reward"
 	pinnedGlm52Notice    = "Unlocked via referral code"
 )
