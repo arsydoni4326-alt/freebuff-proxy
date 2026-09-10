@@ -80,8 +80,34 @@ func TestEmitToolsFailsExplicit(t *testing.T) {
 		err := EmitTools(sha, wireDir, regDir, &out)
 		if err == nil {
 			t.Fatal("EmitTools succeeded on unknown session status, want explicit failure")
+			return
 		}
 		for _, want := range []string{sessionTypesPath, "time_travel", sha} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q lacks %q", err.Error(), want)
+			}
+		}
+		if out.Len() != 0 {
+			t.Errorf("failed run emitted %d bytes, want nothing", out.Len())
+		}
+	})
+	t.Run("union unknown status", func(t *testing.T) {
+		t.Parallel()
+		// Union arms are envelope too (status: 'purchase_in_use' |
+		// 'purchase_capacity'): an unknown second arm must fail naming it,
+		// not slide through while the head literal checks out.
+		wireDir, regDir, sha := toolsFixtureStage(t, map[string]func(string) string{
+			sessionTypesPath: func(s string) string {
+				return strings.Replace(s, "status: 'superseded'", "status: 'superseded' | 'zzz_unknown'", 1)
+			},
+		})
+		var out bytes.Buffer
+		err := EmitTools(sha, wireDir, regDir, &out)
+		if err == nil {
+			t.Fatal("EmitTools succeeded on unknown union-arm session status, want explicit failure")
+			return
+		}
+		for _, want := range []string{sessionTypesPath, "zzz_unknown", sha} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q lacks %q", err.Error(), want)
 			}
@@ -101,6 +127,7 @@ func TestEmitToolsFailsExplicit(t *testing.T) {
 		err := EmitTools(sha, wireDir, regDir, &out)
 		if err == nil {
 			t.Fatal("EmitTools succeeded on missing toolNameParam, want explicit failure")
+			return
 		}
 		for _, want := range []string{toolsConstantsPath, "toolNameParam", sha} {
 			if !strings.Contains(err.Error(), want) {
@@ -117,6 +144,7 @@ func TestEmitToolsFailsExplicit(t *testing.T) {
 		err := EmitTools("ffffffffffffffffffffffffffffffffffffffff", testWireDir, testRegDir, &out)
 		if err == nil || !strings.Contains(err.Error(), "does not match manifest") {
 			t.Fatalf("EmitTools with wrong SHA = %v, want manifest-mismatch failure", err)
+			return
 		}
 	})
 }

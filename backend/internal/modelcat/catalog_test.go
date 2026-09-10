@@ -13,7 +13,7 @@ import (
 
 // The parity test below re-reads the pinned upstream snapshot
 // (backend/internal/registry/testdata/upstream/*.ts, copied from
-// reference/freebuff/common/src/constants on every sync) and asserts the
+// upstream/freebuff/common/src/constants on every sync) and asserts the
 // catalog table matches it constant-for-constant. An upstream sync that
 // changes a catalog fact WITHOUT updating this table fails here — that is
 // the drift tripwire the whole package exists to provide.
@@ -104,6 +104,7 @@ func parseList(t *testing.T, src, name string) []string {
 	m := re.FindStringIndex(src)
 	if m == nil {
 		t.Fatalf("constant %s not found in pinned snapshot", name)
+		return nil
 	}
 	// Balance brackets to find the matching closing ]. Scan from the
 	// opening bracket itself so depth 0 lands on the real closing one.
@@ -421,6 +422,30 @@ func TestCatalogFactsPinned(t *testing.T) {
 	for id, want := range wantEfforts {
 		if got := Efforts(id); !slices.Equal(got, want) {
 			t.Errorf("Efforts(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+func TestLimitedTierModelsPinned(t *testing.T) {
+	wantAllowed := []string{
+		"z-ai/glm-5.3-flash",
+		"deepseek/deepseek-v4-flash",
+		"mimo/mimo-v2.5",
+		"upstage/solar-pro4",
+	}
+	for _, id := range wantAllowed {
+		if !IsLimitedTierAllowed(id) {
+			t.Errorf("IsLimitedTierAllowed(%q) = false, want true", id)
+		}
+	}
+	wantDisallowed := []string{
+		"openai/gpt-5.6-luna",
+		"meta/muse-spark-1.2-contributor",
+		"z-ai/glm-5.2",
+	}
+	for _, id := range wantDisallowed {
+		if IsLimitedTierAllowed(id) {
+			t.Errorf("IsLimitedTierAllowed(%q) = true, want false", id)
 		}
 	}
 }

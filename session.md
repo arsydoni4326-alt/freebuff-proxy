@@ -438,3 +438,45 @@ aggressive round-robin.** The documentation explicitly prohibits:
 - **Tool Stripping**: `end_turn` injected upstream, stripped downstream
 - **Sequential SSE Content Blocks**: Never interleave unclosed blocks
 - **Circuit Breaker**: Only trips on transient upstream failures (5xx/network); classified errors never trip
+
+## 2026-09-10: Fix merge-resurrected stale sources blocking Docker build
+
+**Symptom**: `docker build` failed at `go build` with mass redeclarations
+(`modelcat`: `ModelInfo`, `Catalog`, …; `server`: `admin_tokens*` duplicates).
+
+**Root cause**: the two merge commits (`97ea848`, `c36ffca`) resurrected
+pre-codegen sources that the restructured tree had already deleted/replaced:
+
+- `modelcat`: stale hand-written `catalog.go` (pre-`ebb0081` layout)
+  redeclared everything in wiregen-generated `catalog_gen.go`; the split
+  helpers `catalog_ladder.go`/`catalog_query.go` were dropped. Restored the
+  last-good layout from `dd8b17d` (current pin 78a7ab4): deleted
+  `catalog.go`, re-added `catalog_ladder.go` + `catalog_query.go`.
+- `server`: stale `admin_tokens_ops.go`/`admin_tokens_routes.go` (3b21bd9's
+  split) coexisted with the consolidated `admin_tokens.go` (fd592e7). Kept
+  the consolidated file, deleted the stale split (probe file was already
+  gone).
+- `pool/pool_bridge_test.go`: merge truncated `TestValidateClientToken`
+  mid-function (syntax error at EOF). Restored from first merge parent
+  `0068daa` (superset, 24 tests).
+- `registry/registry_test.go`: missing `}` before `TestPausedModelPolicy`
+  (old, multi-merge truncation). Restored closing braces.
+- `registry/registry_refresh.go`: merge dropped freshness bookkeeping —
+  `lastRefreshAt`/`usingFallback` were declared but never assigned.
+  Restored assignments in `Refresh` (success path) and `LoadFallback`,
+  mirroring 92901b9.
+- `dashboard/history.go`: merge dropped retention ticker + `purgeHistory`
+  (history rows never purged; test referenced the method). Restored from
+  0e9244e (`dashboard_history.go` pre-rename), incl. retention constants.
+- `dashboard/dashboard_internal_test.go`: stale 2-arg
+  `bridgeCardFromSnapshot` call; dropped the extra arg.
+- `session/store_test.go`: stale `NewStoreWithBackend(path, fb)` call;
+  restored `NewStore(path)` per 6ae5c61.
+
+**Verification**: exact Docker build command compiles; `go test ./backend/...`
+— 24 packages ok. Remaining `server` (6) + `session` (8) FAILs are
+pre-existing on the main lineage: reproduced identically at merge parents
+`0068daa`/`6ae5c61` in isolated worktrees; `feb8e20` (upstream lineage) is
+green but carries the older session architecture. Reconciling the
+`6ae5c61` session-backend refactor's failing behavioral tests is deferred
+as its own task (not a merge artifact).

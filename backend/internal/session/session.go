@@ -202,8 +202,6 @@ type snapshotState struct {
 	savedGlmPromo      string
 	savedAccessTier    string
 	savedFreebucks     *upstream.FreebucksInfo
-	savedFreeWindows   *upstream.FreeWindowsInfo
-	savedSubscription  *upstream.SubscriptionInfo
 	invalidationEvents []invalidationEvent
 	reAdmitTriggers    []time.Time
 	lastStormAt        time.Time
@@ -254,13 +252,7 @@ type cachedState struct {
 	referral *upstream.SessionReferral
 	// freebucks is the upstream Freebucks allowance block (issue #232); nil
 	// until an admission/poll that carried it.
-	freebucks *upstream.FreebucksInfo
-	// freeWindows is the upstream free-tier pool windows block (issue #319);
-	// nil until an admission/poll that carried it.
-	freeWindows *upstream.FreeWindowsInfo
-	// subscription is the upstream subscription usage block (issue #319);
-	// nil until an admission/poll that carried it.
-	subscription  *upstream.SubscriptionInfo
+	freebucks     *upstream.FreebucksInfo
 	upgradeHint   *upstream.SessionUpgradeHint
 	serverMessage string
 }
@@ -288,7 +280,7 @@ func NewManagerWithStore(client *upstream.Client, store *Store) *Manager {
 // an active session until expiresAt-5s (the reference safety margin), or any
 // state that still holds a live instance id within the 30-minute grace drain
 // after expiry (FREEBUFF_SESSION_GRACE_MS: within grace the row
-// stays alive and chat passes — reference/freebuff freebuff-session.ts). The
+// stays alive and chat passes — upstream/freebuff freebuff-session.ts). The
 // instance-id test guards the grace extension: an ended row whose instance id
 // is gone cannot be ridden, and an expired active cache is only reusable
 // while its slot survives upstream.
@@ -341,12 +333,6 @@ func (m *Manager) commit(cs *cachedState) {
 		if m.state.freebucks != nil {
 			m.snap.savedFreebucks = m.state.freebucks
 		}
-		if m.state.freeWindows != nil {
-			m.snap.savedFreeWindows = m.state.freeWindows
-		}
-		if m.state.subscription != nil {
-			m.snap.savedSubscription = m.state.subscription
-		}
 	}
 	// Freshness for the stale-mark clear below: captured BEFORE the
 	// restore, so a re-applied saved map does not pose as fresh quota.
@@ -375,12 +361,6 @@ func (m *Manager) commit(cs *cachedState) {
 	}
 	if cs != nil && cs.freebucks == nil && m.snap.savedFreebucks != nil {
 		cs.freebucks = m.snap.savedFreebucks
-	}
-	if cs != nil && cs.freeWindows == nil && m.snap.savedFreeWindows != nil {
-		cs.freeWindows = m.snap.savedFreeWindows
-	}
-	if cs != nil && cs.subscription == nil && m.snap.savedSubscription != nil {
-		cs.subscription = m.snap.savedSubscription
 	}
 	m.state = cs
 	// Fresh quota-carrying state clears the restart-restored stale mark;
@@ -672,8 +652,6 @@ func (m *Manager) Snapshot() SessionSnapshot {
 			Referral:     m.snap.savedReferral,
 			AccessTier:   m.snap.savedAccessTier,
 			Freebucks:    m.snap.savedFreebucks,
-			FreeWindows:  m.snap.savedFreeWindows,
-			Subscription: m.snap.savedSubscription,
 		}
 	}
 	quota := make(map[string]QuotaSnapshot, len(m.state.quotaByModel))
@@ -720,8 +698,6 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		RemainingMs:   m.state.remainingMs,
 		Referral:      m.state.referral,
 		Freebucks:     m.state.freebucks,
-		FreeWindows:   m.state.freeWindows,
-		Subscription:  m.state.subscription,
 		UpgradeHint:   m.state.upgradeHint,
 		ServerMessage: m.state.serverMessage,
 	}
@@ -822,18 +798,6 @@ func (m *Manager) UpdateQuotaFromProbe(st *upstream.SessionState) {
 		m.snap.savedFreebucks = st.Freebucks
 		if m.state != nil {
 			m.state.freebucks = st.Freebucks
-		}
-	}
-	if st.FreeWindows != nil {
-		m.snap.savedFreeWindows = st.FreeWindows
-		if m.state != nil {
-			m.state.freeWindows = st.FreeWindows
-		}
-	}
-	if st.Subscription != nil {
-		m.snap.savedSubscription = st.Subscription
-		if m.state != nil {
-			m.state.subscription = st.Subscription
 		}
 	}
 }

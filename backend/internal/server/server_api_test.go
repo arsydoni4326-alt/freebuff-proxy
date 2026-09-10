@@ -1018,6 +1018,7 @@ func TestTracePhasesRecorded(t *testing.T) {
 	}
 	if trace == nil {
 		t.Fatal("no 'chat trace' entry in the log ring")
+		return
 	}
 	joined := strings.Join(trace.Fields, " ")
 	for _, phase := range []string{"acquire_ms", "upstream_ttfb_ms", "total_ms"} {
@@ -1089,6 +1090,7 @@ func TestRequestCorrelationIDs(t *testing.T) {
 	for _, want := range []string{"access", "chat request", "chat routing", "chat done", "chat trace"} {
 		if byMsg[want] == nil {
 			t.Fatalf("missing %q entry in the log ring", want)
+			return
 		}
 	}
 	reqID := entryField(*byMsg["access"], "req_id")
@@ -1136,12 +1138,14 @@ func TestRequestCorrelationIDs(t *testing.T) {
 	}
 	if access2 == nil {
 		t.Fatal("no access entry for the second request")
+		return
 	}
 	if got := entryField(*access2, "client_request_id"); got != "" {
 		t.Errorf("header-less request access client_request_id = %q, want absent", got)
 	}
 	if trace2 == nil {
 		t.Fatal("no chat trace entry for the second request")
+		return
 	}
 	if got := entryField(*trace2, "client_request_id"); got != "" {
 		t.Errorf("header-less request trace client_request_id = %q, want absent", got)
@@ -1286,6 +1290,7 @@ func TestChatRetryTelemetry(t *testing.T) {
 	}
 	if transient == nil {
 		t.Fatal("no 'transient chat error, retrying once' entry")
+		return
 	}
 	if got := entryField(*transient, "attempt"); got != "1" {
 		t.Errorf("transient entry attempt = %q, want 1", got)
@@ -1298,6 +1303,7 @@ func TestChatRetryTelemetry(t *testing.T) {
 	}
 	if retriedOK == nil {
 		t.Fatal("no 'chat retry succeeded' entry")
+		return
 	}
 	if got := entryField(*retriedOK, "attempts"); got != "2" {
 		t.Errorf("retry succeeded attempts = %q, want 2", got)
@@ -1307,6 +1313,7 @@ func TestChatRetryTelemetry(t *testing.T) {
 	}
 	if trace == nil {
 		t.Fatal("no chat trace entry")
+		return
 	}
 	reqID := entryField(*trace, "req_id")
 	if reqID == "" {
@@ -1329,6 +1336,7 @@ func TestChatRetryTelemetry(t *testing.T) {
 	// on the server-side retry lines.
 	if ok1 == nil || ok2 == nil {
 		t.Fatal("expected two upstream attempt entries (one per chat attempt)")
+		return
 	}
 	if got := entryField(*ok1, "req_id"); got != reqID {
 		t.Errorf("first upstream attempt req_id = %q, want %q", got, reqID)
