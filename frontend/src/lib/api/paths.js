@@ -32,9 +32,7 @@ export const adminApi = {
   version: "/admin/api/version",
   authStatus: "/admin/api/auth/status",
   changePassword: "/admin/api/change-password",
-  requireLogin: "/admin/api/require-login",
   notices: "/admin/api/notices",
-  upstreamDrift: "/admin/api/upstream-drift",
   events: "/admin/api/events",
   loginStatus: "/admin/login/status",
   tokenList: "/admin/tokens/list",
@@ -49,9 +47,6 @@ export const adminActions = {
   login: "/admin/login",
   logout: "/admin/logout",
   loginStart: "/admin/login/start",
-  mode: "/admin/mode",
-  smoke: "/admin/smoke",
-  diag: "/admin/diag",
   configSave: "/admin/config",
   tokenAdd: "/admin/tokens/add",
   tokenRemove: "/admin/tokens/remove",
@@ -59,12 +54,6 @@ export const adminActions = {
   tokenSwap: "/admin/tokens/swap",
   tokenTestAll: "/admin/tokens/test-all",
   restart: "/admin/restart",
-};
-
-/** SPA shell routes (the gateway also serves these directly). */
-export const adminShell = {
-  root: "/admin",
-  playground: "/admin/playground",
 };
 
 /**
@@ -81,4 +70,5 @@ export const tokenActions = {
   session: (idx) => `/admin/tokens/${idx}/session`,
   maturity: (idx) => `/admin/tokens/${idx}/maturity`,
   maturityTouch: (idx) => `/admin/tokens/${idx}/maturity/touch`,
+  maturityWarnReset: (idx) => `/admin/tokens/${idx}/maturity/warn-reset`,
 };

@@ -21,6 +21,8 @@ package pool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -76,6 +78,11 @@ type Lease struct {
 	// reused by a later AddToken), and a bounds-checked release would leak
 	// the run's inflight or hit an unrelated manager.
 	entry *tokenEntry
+	// chat is the per-(token,model) in-flight chat slot held for this lease
+	// (burst queue). Set at grant time; released through the lease by
+	// LeaseRelease/LeaseAbandon via the entry pointer, never by index. Nil
+	// when the caps are off (unlimited) or the lease is synthetic.
+	chat *chatPermit
 	// AcquiredAt is when this lease was handed out (per acquire attempt,
 	// not per run — a chat retry re-acquires and gets a fresh timestamp).
 	// The chat success path uses it to clear unfit marks that PREDATE this
@@ -226,10 +233,6 @@ type TokenSnapshot struct {
 	// outside it.
 	AllowedModels  []string `json:"allowed_models,omitempty"`
 	AllowlistSkips int64    `json:"allowlist_skips,omitempty"`
-	// PremiumQuota is the 5/day premium-pool quota (pacific_day) derived from
-	// the live QuotaByModel entry for the premium models. Nil when no premium
-	// quota has been reported.
-	PremiumQuota *PremiumQuotaSnapshot `json:"premium_quota,omitempty"`
 	// BanType / BannedUntil surface the token's active upstream ban
 	// (issues #198/#199): BanType is "temporary" when the ban carries a
 	// resumes_at deadline (auto-lifts at BannedUntil) and "hard" when it
@@ -300,6 +303,12 @@ type Pool struct {
 	// and global in-flight create counters with wait-or-503, wired from
 	// SESSION_CREATE_MAX_PARALLEL_GLOBAL/PER_MODEL.
 	gate *createGate
+	// chatGate bounds concurrent in-flight chat leases per (token, model)
+	// lane (burst queue): per-lane in-flight counters with wait-or-503,
+	// wired from CHAT_MAX_INFLIGHT_METERED/UNMETERED. Caps ride the
+	// per-request config load, so the gate stores no limits and needs no
+	// reload wiring.
+	chatGate *chatGate
 
 	// Idle rotation (IDLE_ROTATION_TIMEOUT): last successful Acquire and
 	// whether the maintain loop already FINISHed all runs for the current
@@ -411,6 +420,12 @@ type Pool struct {
 	notify   *notify.Sender
 	notifyMu sync.Mutex // guards notify reads/writes (data race)
 
+	// maturityStore persists per-token maturity automation blobs across
+	// restarts (Account Maturity rev 2). Interface, not a concrete store:
+	// the pool must never import the store package (archtest leaf rule).
+	// nil disables persistence (in-memory only, pre-rev-2 behavior).
+	maturityStoreMu sync.Mutex
+	maturityStore   MaturityStore
 	// storeSessionPersist and storeStateFile record the persistence config
 	// the store was created with (captured by SetSessionStore), so SetConfig
 	// can detect a reload that changes the persistence semantics — the live
@@ -433,6 +448,17 @@ type Pool struct {
 	// probeResults stores the last background health probe outcome per
 	// token (TOKEN_HEALTH_PROBES). Surfaced in /healthz and dashboard.
 	probeResults *probeState
+	// Runtime persistence (pool_persist.go, DB-unified-storage):
+	// write-through cache of the allowlisted counters (ledger counters,
+	// admissions counts, bridge daily usage + survivors, burst hits)
+	// through the PoolPersist interface. nil disables (in-memory only).
+	// persistDirty is set lock-free on every mutation; the maintain tick
+	// plus a best-effort Shutdown pass flush it in the background, so the
+	// request hot path never blocks on the store.
+	persistMu    sync.Mutex
+	persist      PoolPersist
+	persistDirty atomic.Bool
+
 	// randMu and randGen support stochastic rotation ("random" TokenRotation mode)
 	randMu  sync.Mutex
 	randGen *rand.Rand
@@ -665,6 +691,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState(), burstHits: make(map[string][]burstHit), burstOn: make(map[string]bool)}
 	p.cfg.Store(cfg)
 	p.gate = newCreateGate(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
+	p.chatGate = newChatGate()
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
 		if sessions[i] == nil || clients[i] == nil {
@@ -981,6 +1008,129 @@ type ProbeResult struct {
 	Error    string
 	ProbedAt time.Time
 }
+// MaturityStore persists per-token maturity automation blobs across
+// restarts. Keyed by the SHA-256 hex of the token value: raw tokens never
+// cross this boundary. stateJSON is the opaque automation blob
+// (marshalMaturity), streakJSON the opaque upstream streak JSON; both may
+// be empty. The store package implements this implicitly (no import here).
+type MaturityStore interface {
+	SaveMaturity(tokenHash string, stateJSON string, streakJSON []byte) error
+	LoadMaturity(tokenHash string) (stateJSON string, streakJSON []byte, ok bool, err error)
+}
+
+// SetMaturityStore wires the maturity persistence backend (nil disables).
+// Safe to call at runtime (nil-friendly); call RestoreMaturity once at boot
+// after wiring so automation state survives restarts.
+func (p *Pool) SetMaturityStore(s MaturityStore) {
+	p.maturityStoreMu.Lock()
+	defer p.maturityStoreMu.Unlock()
+	p.maturityStore = s
+}
+
+// maturityTokenHash keys maturity rows without ever persisting the raw
+// token (mirrors the 8-hex log labels, but full-length for store keys).
+func maturityTokenHash(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum)
+}
+
+// saveMaturity persists one token's automation state best-effort (nil store
+// or never-enrolled token = no-op; errors only warn, never fail the tick).
+func (p *Pool) saveMaturity(idx int, tok *tokenEntry) {
+	p.maturityStoreMu.Lock()
+	st := p.maturityStore
+	p.maturityStoreMu.Unlock()
+	if st == nil {
+		return
+	}
+	ms := p.maturityCopy(tok)
+	if !ms.enabled && ms.lastAction == "" && ms.lastResult == "" && ms.releasedTarget <= 0 && ms.touchModel == "" {
+		return
+	}
+	stateJSON, err := ms.marshalMaturity()
+	if err != nil {
+		p.logger.Warn("pool: maturity persist marshal failed", "token", idx+1, "err", err)
+		return
+	}
+	var streakJSON []byte
+	if cached := tok.Streak(); cached != nil {
+		streakJSON, err = json.Marshal(cached)
+		if err != nil {
+			p.logger.Warn("pool: maturity persist streak marshal failed", "token", idx+1, "err", err)
+			return
+		}
+	}
+	if err := st.SaveMaturity(maturityTokenHash(tok.token), stateJSON, streakJSON); err != nil {
+		p.logger.Warn("pool: maturity persist save failed", "token", idx+1, "err", err)
+	}
+}
+
+// RestoreMaturity loads persisted automation state into the roster (boot
+// path; the owner calls it once after SetMaturityStore). Tokens with no row
+// stay never-enrolled; corrupt rows warn and stay never-enrolled (never
+// fatal: automation must not block boot). Re-enabled warming tokens
+// re-lock out of rotation, mirroring SetMaturity.
+func (p *Pool) RestoreMaturity() error {
+	p.maturityStoreMu.Lock()
+	st := p.maturityStore
+	p.maturityStoreMu.Unlock()
+	if st == nil {
+		return nil
+	}
+	toks := p.roster.Load()
+	if toks == nil {
+		return nil
+	}
+	for i, tok := range *toks {
+		stateJSON, streakJSON, ok, err := st.LoadMaturity(maturityTokenHash(tok.token))
+		if err != nil {
+			return fmt.Errorf("pool: restore maturity token %d: %w", i, err)
+		}
+		if !ok || stateJSON == "" {
+			continue
+		}
+		ms, err := unmarshalMaturity(stateJSON)
+		if err != nil {
+			p.logger.Warn("pool: maturity restore skips corrupt row", "token", i+1, "err", err)
+			continue
+		}
+		tok.maturityMu.Lock()
+		tok.maturity = ms
+		tok.maturityMu.Unlock()
+		if len(streakJSON) > 0 {
+			var si upstream.StreakInfo
+			if err := json.Unmarshal(streakJSON, &si); err != nil {
+				p.logger.Warn("pool: maturity restore skips corrupt streak", "token", i+1, "err", err)
+			} else {
+				tok.SetStreak(&si)
+			}
+		}
+		if ms.enabled {
+			tok.locked.Store(true)
+		}
+	}
+	return nil
+}
+
+// ClearMaturityWarn resets one token's non-advance warning (dashboard Reset
+// warning lever): warn + day counters drop and the daily loop re-arms, while
+// config (enabled/target/mode/touch model) and streak evidence stay
+// untouched. Idempotent: clearing a token with no warning succeeds.
+func (p *Pool) ClearMaturityWarn(token int) error {
+	toks := p.roster.Load()
+	if toks == nil || token < 0 || token >= len(*toks) {
+		return fmt.Errorf("pool: token %d out of range", token)
+	}
+	tok := (*toks)[token]
+	tok.maturityMu.Lock()
+	tok.maturity.warn = false
+	tok.maturity.noAdvanceDays = 0
+	tok.maturity.lastNoAdvanceDay = ""
+	tok.maturityMu.Unlock()
+	p.saveMaturity(token, tok)
+	p.emitMaturity(token, "warn-reset", "warning cleared by operator")
+	return nil
+}
 
 // Chat sends a chat-completion request through the leased token's upstream
 // client, returning the raw SSE body reader on 2xx. The caller must release
@@ -1021,64 +1171,6 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 		p.requestsServed.Add(1)
 	}
 	return rc, err
-}
-
-// asRateLimit extracts a RateLimitError from err (nil when absent).
-func asRateLimit(err error) *upstream.RateLimitError {
-	var rle *upstream.RateLimitError
-	if errors.As(err, &rle) {
-		return rle
-	}
-	return nil
-}
-
-// asIpCapped extracts an IpCappedError from err (nil when absent).
-func asIpCapped(err error) *upstream.IpCappedError {
-	var ice *upstream.IpCappedError
-	if errors.As(err, &ice) {
-		return ice
-	}
-	return nil
-}
-
-// asBan extracts a BanError from err (nil when absent).
-func asBan(err error) *upstream.BanError {
-	var be *upstream.BanError
-	if errors.As(err, &be) {
-		return be
-	}
-	return nil
-}
-
-// asCountryBlocked extracts a CountryBlockedError from err (nil when
-// absent).
-func asCountryBlocked(err error) *upstream.CountryBlockedError {
-	var cbe *upstream.CountryBlockedError
-	if errors.As(err, &cbe) {
-		return cbe
-	}
-	return nil
-}
-
-// asLimitedIp extracts a LimitedIpError from err (nil when absent).
-func asLimitedIp(err error) *upstream.LimitedIpError {
-	var lie *upstream.LimitedIpError
-	if errors.As(err, &lie) {
-		return lie
-	}
-	return nil
-}
-
-// bestRateLimit picks the rate-limit error with the shortest retry
-// window (the token that unblocks earliest bounds the wait).
-func bestRateLimit(entries []*upstream.RateLimitError) *upstream.RateLimitError {
-	best := entries[0]
-	for _, e := range entries[1:] {
-		if e.RetryAfter < best.RetryAfter {
-			best = e
-		}
-	}
-	return best
 }
 
 // EnsureTokenSession admits/creates an upstream session for a specific model on a specific token (dashboard dev action).

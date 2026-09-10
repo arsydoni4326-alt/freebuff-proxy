@@ -1,71 +1,124 @@
 package store
 
-import "testing"
+import (
+	"database/sql"
+	"path/filepath"
+	"testing"
 
-func TestTokenMetaUpsertPreservesCreatedAt(t *testing.T) {
-	s := openTest(t)
-	if _, ok, err := s.GetTokenMeta("deadbeef"); err != nil {
-		t.Fatalf("GetTokenMeta missing: %v", err)
-	} else if ok {
-		t.Fatal("GetTokenMeta on empty store returned ok=true")
-	}
-	if err := s.UpsertTokenMeta("deadbeef", "label-a", "active", `{"limit":100}`); err != nil {
-		t.Fatalf("UpsertTokenMeta: %v", err)
-	}
-	first, ok, err := s.GetTokenMeta("deadbeef")
-	if err != nil || !ok {
-		t.Fatalf("GetTokenMeta = %+v,%v,%v, want row", first, ok, err)
-	}
-	if first.Label != "label-a" || first.Status != "active" || first.QuotaData != `{"limit":100}` {
-		t.Fatalf("GetTokenMeta = %+v, want label-a/active/quota", first)
-	}
-	if first.CreatedAt <= 0 {
-		t.Fatalf("CreatedAt = %d, want a positive millis stamp", first.CreatedAt)
-	}
-	if err := s.UpsertTokenMeta("deadbeef", "label-b", "banned", `{"limit":0}`); err != nil {
-		t.Fatalf("UpsertTokenMeta overwrite: %v", err)
-	}
-	second, _, _ := s.GetTokenMeta("deadbeef")
-	if second.Label != "label-b" || second.Status != "banned" {
-		t.Fatalf("upsert kept %+v, want label-b/banned", second)
-	}
-	if second.CreatedAt != first.CreatedAt {
-		t.Fatalf("CreatedAt moved %d -> %d, want it preserved", first.CreatedAt, second.CreatedAt)
-	}
-}
+	_ "modernc.org/sqlite"
+)
 
-func TestTokenMetaListAndDelete(t *testing.T) {
-	s := openTest(t)
-	if err := s.UpsertTokenMeta("h1", "a", "active", ""); err != nil {
-		t.Fatalf("upsert h1: %v", err)
-	}
-	if err := s.UpsertTokenMeta("h2", "b", "active", ""); err != nil {
-		t.Fatalf("upsert h2: %v", err)
-	}
-	got, err := s.ListTokenMetas()
+// legacyV2TokensSchema is the v2 tokens table (before the maturity columns).
+// A v2 file crafted from it must open cleanly and migrate: existing rows
+// preserved, maturity_json + streak_blob added, version stamped v3.
+const legacyV2TokensSchema = `
+CREATE TABLE tokens(
+  id INTEGER PRIMARY KEY,
+  value_hash TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  quota_data TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0
+);
+`
+
+func TestOpenMigratesV2ToV3(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.db")
+	raw, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("ListTokenMetas: %v", err)
+		t.Fatalf("raw open: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("ListTokenMetas = %d rows, want 2", len(got))
+	if _, err := raw.Exec(legacyV2TokensSchema); err != nil {
+		t.Fatalf("v2 schema: %v", err)
 	}
-	if err := s.DeleteTokenMeta("h1"); err != nil {
-		t.Fatalf("DeleteTokenMeta: %v", err)
+	if _, err := raw.Exec(`INSERT INTO tokens(value_hash, label) VALUES('abc', 'kept')`); err != nil {
+		t.Fatalf("v2 seed: %v", err)
 	}
-	if _, ok, _ := s.GetTokenMeta("h1"); ok {
-		t.Fatal("deleted token still returned")
+	if _, err := raw.Exec(`PRAGMA user_version=2`); err != nil {
+		t.Fatalf("v2 stamp: %v", err)
 	}
-	if got, _ := s.ListTokenMetas(); len(got) != 1 {
-		t.Fatalf("ListTokenMetas after delete = %d rows, want 1", len(got))
+	if err := raw.Close(); err != nil {
+		t.Fatalf("raw close: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on v2 file: %v (want in-place migration, not rejection)", err)
+	}
+	defer func() { _ = s.Close() }()
+	var v int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		t.Fatalf("user_version: %v", err)
+	}
+	if v != schemaVersion {
+		t.Fatalf("user_version = %d, want %d", v, schemaVersion)
+	}
+	cols := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(tokens)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("table_info rows: %v", err)
+	}
+	if !cols["maturity_json"] || !cols["streak_blob"] {
+		t.Fatalf("tokens columns = %v, want maturity_json + streak_blob", cols)
+	}
+	// The v2 row survives with empty maturity state.
+	got, blob, ok, err := s.LoadTokenMaturity("abc")
+	if err != nil {
+		t.Fatalf("LoadTokenMaturity after migrate: %v", err)
+	}
+	if !ok {
+		t.Fatal("v2 row lost in migration (want preserved with empty state)")
+	}
+	if got != "" || len(blob) != 0 {
+		t.Errorf("migrated state = %q/%q, want empty", got, blob)
 	}
 }
 
-func TestTokenMetaRejectsEmptyHash(t *testing.T) {
-	s := openTest(t)
-	if err := s.UpsertTokenMeta("", "a", "active", ""); err == nil {
-		t.Fatal("UpsertTokenMeta(\"\") accepted, want an error")
+// Maturity state round-trips per token hash; raw tokens never touch disk.
+func TestTokenMaturityRoundTrip(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "mat.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
 	}
-	if _, _, err := s.GetTokenMeta(""); err == nil {
-		t.Fatal("GetTokenMeta(\"\") accepted, want an error")
+	defer func() { _ = s.Close() }()
+	if _, _, ok, err := s.LoadTokenMaturity("abc"); err != nil || ok {
+		t.Fatalf("absent load = ok:%v err:%v, want ok:false err:nil", ok, err)
+	}
+	state := `{"enabled":true,"target":7,"mode":"unmetered","touch_model":"mimo/mimo-v2.5"}`
+	streak := []byte(`{"streak":3,"todayUsed":false,"timeZone":"America/New_York"}`)
+	if err := s.SaveTokenMaturity("abc", state, streak); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, gotBlob, ok, err := s.LoadTokenMaturity("abc")
+	if err != nil || !ok {
+		t.Fatalf("load = ok:%v err:%v, want row", ok, err)
+	}
+	if got != state || string(gotBlob) != string(streak) {
+		t.Errorf("round-trip = %q/%q, want %q/%q", got, gotBlob, state, streak)
+	}
+	// Refresh replaces wholesale; empty hash rejects.
+	if err := s.SaveTokenMaturity("abc", `{}`, nil); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if got, _, _, _ := s.LoadTokenMaturity("abc"); got != `{}` {
+		t.Errorf("refreshed state = %q, want {}", got)
+	}
+	if err := s.SaveTokenMaturity("", state, streak); err == nil {
+		t.Error("empty hash accepted, want error")
 	}
 }

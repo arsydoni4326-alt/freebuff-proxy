@@ -61,8 +61,8 @@ var allowed = map[string][]string{
 	"internal/tokendb":        {}, // SQLite token + per-token state store (stdlib + mattn/go-sqlite3 only)
 	"internal/tokenestimate":  {}, // o200k_base BPE, stdlib only
 	"internal/tokenhealth":    {},
-	"internal/updatecheck":    {},
 	"internal/store":          {}, // history backend (ADR-0016); stdlib + sqlite driver only
+	"internal/wirefacts":      {}, // Wave D codegen foundation: verbatim upstream snapshots, stdlib only
 
 	// ---- layer 1: small dependents of config/leaves ----
 	"internal/telemetry": {"internal/config"},

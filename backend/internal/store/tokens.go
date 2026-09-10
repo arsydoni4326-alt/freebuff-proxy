@@ -7,79 +7,40 @@ import (
 	"time"
 )
 
-// TokenMeta is the durable side of one gateway token: the SHA-256 hash of
-// the value (raw tokens never touch disk), an operator label, a status, and
-// an opaque quota JSON blob the dashboard renders. CreatedAt is Unix millis
-// UTC, stamped once on first upsert and preserved afterwards.
-type TokenMeta struct {
-	ValueHash string
-	Label     string
-	Status    string
-	QuotaData string
-	CreatedAt int64
-}
-
-// UpsertTokenMeta inserts or refreshes one token row. CreatedAt survives
-// refreshes; label/status/quota are replaced wholesale.
-func (s *Store) UpsertTokenMeta(valueHash, label, status, quotaData string) error {
+// SaveTokenMaturity persists per-token maturity automation state (Account
+// Maturity rev 2) in the tokens table keyed by the SHA-256 hash of the
+// value (raw tokens never touch disk). maturity_json is the opaque automation blob
+// the pool marshals (config, slot, counters, warning); streak_blob is the
+// opaque upstream streak JSON for the dashboard. CreatedAt is Unix millis
+// UTC, stamped once on first save and preserved afterwards.
+func (s *Store) SaveTokenMaturity(valueHash, maturityJSON string, streakBlob []byte) error {
 	if valueHash == "" {
 		return errors.New("store: token hash cannot be empty")
 	}
 	if _, err := s.db.Exec(
-		`INSERT INTO tokens(value_hash, label, status, quota_data, created_at) VALUES(?, ?, ?, ?, ?)
-		 ON CONFLICT(value_hash) DO UPDATE SET label=excluded.label, status=excluded.status, quota_data=excluded.quota_data`,
-		valueHash, label, status, quotaData, Millis(time.Now())); err != nil {
-		return fmt.Errorf("store: upsert token: %w", err)
+		`INSERT INTO tokens(value_hash, maturity_json, streak_blob, created_at) VALUES(?, ?, ?, ?)
+		 ON CONFLICT(value_hash) DO UPDATE SET maturity_json=excluded.maturity_json, streak_blob=excluded.streak_blob`,
+		valueHash, maturityJSON, streakBlob, Millis(time.Now())); err != nil {
+		return fmt.Errorf("store: save token maturity: %w", err)
 	}
 	return nil
 }
 
-// GetTokenMeta returns one token row. ok is false when absent.
-func (s *Store) GetTokenMeta(valueHash string) (meta TokenMeta, ok bool, err error) {
+// LoadTokenMaturity returns one token's maturity blobs. ok is false when the
+// token has no row yet (never enabled); a migrated v2 row loads as empty
+// state with a nil blob.
+func (s *Store) LoadTokenMaturity(valueHash string) (maturityJSON string, streakBlob []byte, ok bool, err error) {
 	if valueHash == "" {
-		return TokenMeta{}, false, errors.New("store: token hash cannot be empty")
+		return "", nil, false, errors.New("store: token hash cannot be empty")
 	}
-	meta.ValueHash = valueHash
+	var blob sql.Null[[]byte]
 	if err := s.db.QueryRow(
-		`SELECT label, status, quota_data, created_at FROM tokens WHERE value_hash = ?`,
-		valueHash).Scan(&meta.Label, &meta.Status, &meta.QuotaData, &meta.CreatedAt); err != nil {
+		`SELECT maturity_json, streak_blob FROM tokens WHERE value_hash = ?`,
+		valueHash).Scan(&maturityJSON, &blob); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return TokenMeta{}, false, nil
+			return "", nil, false, nil
 		}
-		return TokenMeta{}, false, fmt.Errorf("store: get token: %w", err)
+		return "", nil, false, fmt.Errorf("store: load token maturity: %w", err)
 	}
-	return meta, true, nil
-}
-
-// ListTokenMetas returns every token row oldest-first.
-func (s *Store) ListTokenMetas() ([]TokenMeta, error) {
-	rows, err := s.db.Query(
-		`SELECT value_hash, label, status, quota_data, created_at FROM tokens ORDER BY id`)
-	if err != nil {
-		return nil, fmt.Errorf("store: list tokens: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []TokenMeta
-	for rows.Next() {
-		var m TokenMeta
-		if err := rows.Scan(&m.ValueHash, &m.Label, &m.Status, &m.QuotaData, &m.CreatedAt); err != nil {
-			return nil, fmt.Errorf("store: scan token: %w", err)
-		}
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list tokens: %w", err)
-	}
-	return out, nil
-}
-
-// DeleteTokenMeta drops one token row (token removed from the pool).
-func (s *Store) DeleteTokenMeta(valueHash string) error {
-	if valueHash == "" {
-		return errors.New("store: token hash cannot be empty")
-	}
-	if _, err := s.db.Exec(`DELETE FROM tokens WHERE value_hash = ?`, valueHash); err != nil {
-		return fmt.Errorf("store: delete token: %w", err)
-	}
-	return nil
+	return maturityJSON, blob.V, true, nil
 }
