@@ -60,8 +60,12 @@ case "$choice" in
     echo "Run 'docker compose logs -f' to see the logs."
     ;;
   3) docker run --rm \
-    --name cpatest \
-    -v $(pwd)/config.yaml:/root/.cliproxyapi/bin/config.yaml \
+    --name freebuff-cli \
+    -v "$(pwd)/.env:/app/.env" \
+    -v "$(pwd)/.freebuff-session-state.json:/app/.freebuff-session-state.json" \
+    -v "$(pwd)/config.json:/app/config.json" \
+    -v "$(pwd)/data:/app/data" \
+    ghcr.io/arsydoni4326-alt/freebuff-proxy:latest 
     --network host \
     $IMAGE_NAME
     ;;
