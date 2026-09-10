@@ -1,17 +1,14 @@
 package server
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"freebuff-proxy/backend/internal/phasetiming"
 	"freebuff-proxy/backend/internal/pool"
-	"freebuff-proxy/backend/internal/session"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebuff-proxy/backend/internal/store"
 )
 
 // traceChat records a structured "chat trace" entry for the dashboard
@@ -61,37 +58,39 @@ func (s *Server) traceChat(lease *pool.Lease, model string, ms int64, status, er
 		}
 	}
 	s.logger.Info("chat trace", attrs...)
+	s.recordRequestOutcome(lease, model, status, errClass, phases, st)
 }
 
-// chatErrClass buckets an upstream error into the trace error column. A
-// canceled downstream client gets its own bucket: the access line keeps a
-// 200 default when nothing was (or could be) written, so a generic "error"
-// would render a context-free "ERROR 200" on the dashboard.
-func chatErrClass(err error) string {
-	if errors.Is(err, context.Canceled) {
-		return "client_canceled"
+// recordRequestOutcome persists one /v1 inference outcome to the history
+// store for the Logs console view. It runs on the chat path but performs a
+// single indexed upsert and never fails the request: a nil store skips the
+// write (live-only), a missing req_id skips it (the PRIMARY KEY cannot
+// distinguish pre-attempt refusals — the ring log still carries them), and
+// insert errors only warn. Raw client tokens never reach the store: the
+// lease's token index (bridge = -1) is the only token signal recorded.
+func (s *Server) recordRequestOutcome(lease *pool.Lease, model string, status, errClass string, phases map[string]int64, st *chatTraceState) {
+	if s.hist == nil || st == nil || st.reqID == "" {
+		return
 	}
-	switch err.(type) {
-	case *upstream.RateLimitError:
-		return "rate_limited"
-	case *upstream.BanError:
-		return "banned"
-	case *upstream.IpCappedError:
-		return "ip_capped"
-	case *upstream.LimitedIpError:
-		return "model_ip_limited"
-	case *upstream.SessionLimitError:
-		return "session_limit_reached"
-	case *upstream.WaitingRoomError, *session.WaitingRoomError, *upstream.WaitingRoomRequiredError:
-		return "waiting_room"
-	case *upstream.SessionSupersededError:
-		return "session_superseded"
-	case *upstream.TurnSpendLimitError:
-		return "turn_spend_limited"
-	case *upstream.UpstreamError:
-		return "upstream"
-	default:
-		return "error"
+	tokenIdx := -1
+	if lease != nil {
+		tokenIdx = lease.Token
+	}
+	var ttfb int64
+	if phases != nil {
+		ttfb = phases[phasetiming.UpstreamTTFBMS]
+	}
+	if err := s.hist.RecordRequest(store.RequestRecord{
+		ReqID:    st.reqID,
+		TS:       store.Millis(time.Now()),
+		Endpoint: "/v1/chat/completions",
+		Model:    model,
+		TokenIdx: tokenIdx,
+		Status:   status,
+		TTFBms:   ttfb,
+		Err:      errClass,
+	}); err != nil {
+		s.logger.Warn("request record failed", "err", err, "req_id", st.reqID)
 	}
 }
 
@@ -141,40 +140,6 @@ func (st *chatTraceState) statusesSeen() string {
 		parts[i] = strconv.Itoa(s)
 	}
 	return strings.Join(parts, ",")
-}
-
-// attemptStatus extracts the upstream HTTP status carried by a chat error,
-// or 0 when the error carries none (wrapped sentinels such as
-// ErrSessionInvalid/ErrRunInvalid, and transport-level failures). A 0 is
-// skipped in statuses_seen — only observed statuses are listed.
-func attemptStatus(err error) int {
-	switch e := err.(type) {
-	case *upstream.UpstreamError:
-		return e.Status
-	case *upstream.CreditsError:
-		return e.Status
-	case *upstream.CapacityDeferredError:
-		return e.Status
-	case *upstream.SessionSupersededError:
-		return e.Status
-	case *upstream.TurnSpendLimitError:
-		return e.Status
-	case *upstream.SessionLimitError:
-		return e.Status
-	case *upstream.WaitingRoomRequiredError:
-		// The canonical 428 waiting_room_required (#94); the marker can
-		// ride 428/429 alike, 428 is the documented gate. No named
-		// net/http constant exists for 428, so spell it out.
-		return 428
-	case *upstream.RateLimitError:
-		// RateLimitError.Status is the upstream "429" string; parse when
-		// numeric, else the 429 bucket is implicit.
-		if n, perr := strconv.Atoi(e.Status); perr == nil {
-			return n
-		}
-		return http.StatusTooManyRequests
-	}
-	return 0
 }
 
 // tokenLabel renders the lease's token for logging: "bridge" for bridge

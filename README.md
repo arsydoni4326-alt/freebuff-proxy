@@ -1,168 +1,47 @@
-# freebuff-proxy: No ads, no CLI, just /v1/chat/completions
+# freebuff-proxy
 
-[![CI](https://img.shields.io/github/actions/workflow/status/trefeon/freebuff-proxy/ci.yml)](https://github.com/trefeon/freebuff-proxy/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/releases)
-[![License](https://img.shields.io/github/license/trefeon/freebuff-proxy)](https://github.com/trefeon/freebuff-proxy/blob/main/LICENSE)
+Go wire gateway in front of FreeBuff, with OpenAI-compatible and Anthropic
+endpoints plus an embedded Svelte dashboard.
 
-`freebuff-proxy` is a local gateway that makes the AI coding models behind Codebuff/FreeBuff available to **any** tool that speaks the OpenAI API: OpenCode, pi, 9router, LiteLLM, or your own scripts.
+## What it is
 
-Your coding tools expect an OpenAI-style endpoint (`/v1/chat/completions`). The upstream service is not OpenAI-shaped: it is a CLI coding agent with its own session protocol, and its free-tier access is tied to per-account tokens that carry individual daily quotas and can be rate-limited or banned. `freebuff-proxy` sits between the two and absorbs that friction:
+- Speaks OpenAI chat (`POST /v1/chat/completions`, `GET /v1/models`) and an
+  Anthropic-compatible layer, then translates to the FreeBuff wire protocol.
+- Runs in pooled, bridge, or hybrid mode (`EffectiveMode`):
+  - **Pooled** — `AUTH_TOKENS` set + `BRIDGE_ENABLED=0`; pool only.
+  - **Bridge** — `AUTH_TOKENS` empty; each request carries its own token.
+  - **Hybrid** (default with `AUTH_TOKENS`) — `API_KEYS` credential uses the
+    pool, any other credential relays upstream as a bridge token.
+- Dashboard at `/admin` (Svelte SPA embedded in the binary).
+- Freebucks metering follows the wire `prices` map: charged once per session-hour
+  at session start, refunded on early `DELETE`, refilled on a Pacific-midnight
+  cadence.
 
-- **Translates**: rewrites standard OpenAI requests into the upstream session protocol (CLI request envelope, model-bound agent runs, tool-schema normalization) and streams the SSE response back as OpenAI `chat.completion.chunk` events.
-- **Pools**: routes requests across multiple tokens (hot-session-first with round-robin start and failover), so a busy client or router rides out per-account quotas instead of failing.
-- **Stealths**: makes egress look like a real browser (TLS fingerprints, header sanitization, request jitter) so upstream abuse detection is less likely to flag your account (see the ToS warning below).
+## Quickstart
 
-> **⚠️ Terms-of-service risk.** Using your FreeBuff token through this proxy conflicts with FreeBuff/Codebuff terms of service; upstream abuse detection can suspend or permanently ban accounts. Use `SAFE_MODE=true`, keep usage modest, and do not run unattended 24/7. See [Getting Started](docs/getting-started.md).
-
-> **⚠️ Honest expectations.** FreeBuff's servers are strict, and this proxy **reduces** ban risk; it does not eliminate it. Nothing here can guarantee your account is never flagged or banned. Upstream detection is documented in the open-source FreeBuff client: per-request IP scoring (VPN/proxy/Tor/hosting egress → limited tier or terminal `country_blocked`), per-account trust levels with sticky caps (third-party-client flag, shared signup network, shared mailbox), daily spend ceilings ($0.50/day for restricted cohorts), and mass sweeps against known farm shapes (6,699 of 7,129 disposable-email accounts were already banned when the blocklist was compiled). This project is a local adapter that exposes FreeBuff's models as an OpenAI-compatible API for other coding agents (OpenCode, pi, hermes, openclaw, or any client that supports a custom endpoint). Your auth tokens are handled automatically by the gateway, which reimplements the official CLI's wire protocol (~99% parity); it is not the official client, and upstream changes can break it until adapted. Keep usage modest and follow the hygiene rules below; further improvements to session handling and ban avoidance are planned.
-
----
-
-## Table of Contents
-
-- [New here? Start here](#new-here-start-here)
-- [Requirements](#requirements)
-- [Features](#features)
-- [How It Works](#how-it-works)
-- [Key Concepts](#key-concepts)
-- [Quick Start](#quick-start)
-- [Command-Line Interface](#command-line-interface)
-- [Configuration Reference](#configuration-reference)
-- [Deployment](#deployment)
-- [Guides](#guides)
-- [Contributing & Security](#contributing--security)
-- [Contact & Support](#contact--support)
-- [License](#license)
-
----
-
-## New here? Start here (30-Second Quick Start)
-
-Freebuff-proxy makes the free AI models behind the FreeBuff/Codebuff CLI available to any OpenAI-compatible tool (Cursor, VS Code Continue/Cline, OpenCode, pi, 9router, Chatbox, LibreChat).
-
-If you are a beginner, you don't need to write code or compile anything:
-
-1. **Download the pre-built Release**: Go to [**Releases**](https://github.com/trefeon/freebuff-proxy/releases) and download the ZIP for your OS (e.g. `freebuff-proxy_..._windows_amd64.zip`). *(Do not use the green "Code -> Download ZIP" button, which is raw source code)*.
-2. **Extract & Double-Click**: Unzip the folder.
-   - **Windows**: Double-click `start-proxy.cmd`.
-   - **Linux / macOS**: Open terminal in the extracted folder and run `./start-proxy.sh`.
-3. **Log in**: When prompted, press Enter to open your browser and sign in with your FreeBuff/GitHub account. Your token is saved automatically!
-4. **Open Web Dashboard**: Open [**http://localhost:3457/admin**](http://localhost:3457/admin) in your browser to view your live status, test chat, and manage tokens visually.
-5. **Connect your tool**: In Cursor, VS Code Continue/Cline, Chatbox, or OpenCode, set:
-   - **Base URL**: `http://localhost:3457/v1`
-   - **API Key**: `not-needed`
-   - **Model**: `deepseek/deepseek-v4-flash` (full-tier only; limited-tier accounts are coerced to `mimo/mimo-v2.5`)
-   *(See [Client Integration Guide](docs/client-integration.md) for 1-click config snippets)*.
-
-**Before you start, the rules (what you should / shouldn't do):**
-
-| ✅ Do | ❌ Don't |
-|---|---|
-| Use **one key until it is rate-limited**; the pool drains it naturally | **Don't rotate many healthy keys**; it looks like account farming |
-| Use a **normal residential connection** | **Don't use a VPN / proxy / Tor** (Cloudflare TCP-layer GeoIP + MaxMind/Spur ASN detection → restricted cohort or `country_blocked`) |
-| Register with a **real email** (e.g. Gmail) | **Don't use temp-mail** (documented ban cohort: 6,699 of 7,129 accounts already banned) |
-| Request **only models your tier/region offers** (default Flash) | **Don't request out-of-region models**: refused/downgraded and correlated with your IP's geo |
-| Read a `429` as **quota, resets Pacific midnight** | **Don't confuse it with a ban**; only `403` `banned`/`country_blocked` is terminal |
-| Expect **reduced** risk, not immunity | **Don't run unattended 24/7** or expect zero ban risk |
-| Keep the pool **draining one key at a time** | **Don't hammer many tokens from one public IP** (`ip_capped`) |
-
-
-**Access Tiers & Upstream Models.** FreeBuff determines your access tier via Cloudflare TCP-layer GeoIP (not HTTP headers — spoofing is impossible). A residential IP in a Tier-1 country (US, UK, DE, JP, CA, etc.) gets `accessTier: "full"` with all premium models available (**5 premium sessions/day base** — 4 at the floor when trust levels are enforced). Non-Tier-1 country IPs get `accessTier: "limited"` where `mimo/mimo-v2.5` (`MiMo 2.5`) is the sole active model.
-
-> **📢 Official Freebuff Upstream Notice** (vendor snapshot `b14414d59` · npm `0.0.168` `2026-09-05`):
-> *"Every model runs on your normal daily sessions — no per-model caps; your shared premium allowance still charges partial time, rounded up to a tenth. MiMo, DeepSeek V4 Flash and GLM 5.3 Flash are unmetered. —❤️ Freebuff Team"*
-> (Premium pool `5/day` `pacific_day` `America/Los_Angeles`; shared by `GPT-5.6 Luna` and `Muse Spark 1.3`. `GLM 5.3 Flash`, `DeepSeek V4 Flash`, `MiMo 2.5` and `Solar Pro 4` are unmetered — no per-model cap.)
-
-| Category | Model Name | Wire Model ID | Specs & Upstream Quota Policy |
-|---|---|---|---|
-| **Premium** | **GPT-5.6 Luna** | `openai/gpt-5.6-luna` | **Strong all-around**, Reasoning: `high`, Images. Shares `5/day` premium pool. |
-| **Premium** | **Muse Spark 1.3** `NEW` | `meta/muse-spark-1.3-contributor` | **Queues, then falls back** — rate-limited shared ceiling (15s queue, then answers on DeepSeek V4 Flash). Meta trains on prompts/completions (Contributor discount). Context `1_000_000`. Shares `5/day` premium pool. |
-| **Unlimited**| **Solar Pro 4** | `upstage/solar-pro4` | Graduated from trial `2026-09-04` (no longer experimental). OpenRouter BYOK (Upstage), text-only, context `500_000`. **Unmetered** — always available, no per-model cap. |
-| **Unlimited**| **GLM 5.3 Flash** | `z-ai/glm-5.3-flash` | **Deep reasoning**, Images. **Unmetered** — always available, no per-model cap (left the premium pool `2026-08-28`; default pick again since `2026-09-05`, per vendor `0.0.168`). |
-| **Unlimited**| **DeepSeek V4 Flash** | `deepseek/deepseek-v4-flash` | **Smart & Fast**, Reasoning: `high`. **Unmetered** — always available (peak pricing applies; default pick `2026-09-02`→`2026-09-05`). |
-| **Unlimited**| **MiMo 2.5** | `mimo/mimo-v2.5` | **Balanced**, Images. **Unlimited across all tiers**. |
-| **Pro-only** | **Gemini 3.8 Flash** | `google/gemini-3.8-flash` | Returned `2026-09-04` behind the Pro paywall, Web-only. The proxy has no Pro surface, so this row is **not served**. |
-| **Disabled** | **MiniMax M3** | `minimax/minimax-m3` | **Withdrawn** upstream (2026-08-20). |
-| **Disabled** | **DeepSeek V4 Pro** | `deepseek/deepseek-v4-pro` | **Withdrawn** upstream (2026-08-26, cost). |
-| **Disabled** | **Ox Alpha** | `stealth/ox-alpha` | **Withdrawn** upstream (2026-08-27, free promotion ended). |
-
-Full detail in [Key Hygiene & Ban Avoidance](#key-hygiene--ban-avoidance).
-
-For a guided walkthrough, read [Getting Started](docs/getting-started.md) (5 minutes).
-
-## Requirements
-
-| Requirement | Details |
-|---|---|
-| **A FreeBuff/Codebuff account** | Free account at codebuff.com / freebuff.com. The proxy relays your account's token; each account has its own daily session quota. |
-| **A token (`cb_...`)** | From the official CLI login or `scripts/gen-token.*`. See [Obtain an Auth Token](#2-obtain-an-auth-token). |
-| **OS** | Linux, macOS, or Windows (amd64/arm64). Prebuilt release binaries; no Go toolchain needed. |
-| **Docker** | Optional: only for the container deployment path (`docker compose up -d --build`). |
-| **Network** | Outbound HTTPS to `codebuff.com` (configurable via `UPSTREAM_BASE_URL`); the proxy listens on loopback `127.0.0.1:3457` by default. |
-| **Go 1.26+** | Only if building from source. |
-
----
-
-## Features
-
-- **OpenAI-Compatible API**: `POST /v1/chat/completions` (stream + non-stream), `POST /v1/responses`, `POST /v1/messages` (Anthropic shape) + `/v1/messages/count_tokens`, `POST /v1/embeddings` (unsupported → `400 unsupported_endpoint`), `GET /v1/models`, `GET /healthz`, Prometheus `GET /metrics`, and hot config reload via `POST /admin/reload`.
-- **Admin Dashboard**: embedded single-binary web UI at `http://<host>:3457/admin`: a modern **Svelte 5 + Tailwind CSS v4** single-page application built with self-hosted **IBM Plex Sans & IBM Plex Mono** typography and an "instrument panel" operational design. Features a live overview with 6 KPIs, runtime token pool management (`Account #1, #2, …` rows with at-risk cards, reorder, lock/remove, rotation radios) with in-browser OAuth device login, quota tracker, served models catalog, hot-reloading intent-driven Settings cards, in-memory structured log viewer (console + table), and universal 1-click client setup snippets. Zero external CDN or runtime Node.js dependency.
-- **Dynamic Reasoning Effort**: OpenAI `reasoning_effort` (`low`/`medium`/`high`/`max`) and Codex/Anthropic `reasoning.effort` are normalized and mapped to upstream reasoning engines.
-- **Honest Feature Translation**: Every request param of the three surfaces is mapped to what the upstream chat endpoint accepts, or answered with an explicit `400` when it cannot be honored (OpenAI `n > 1`, `audio`, `web_search_options`, `moderation`; Responses `previous_response_id`, `conversation`, `background`, built-in `web_search`/`file_search`/`code_interpreter`/`computer_use` tools — only function tools translate; Anthropic `top_k` and Responses `include`/`truncation`/`service_tier` are documented-ignored). `/v1/messages` requests that omit `max_tokens` (spec-required) default to 8192.
-- **Session & Run Lifecycle**: Upstream session handshakes, model-lock recovery (`DELETE` → re-`POST`), grace draining, and idle-run finishing, all automatic.
-- **Token Pooling & Hybrid/Bridge Mode**: Hot-session-first pooling with round-robin start and failover across `AUTH_TOKENS`, zero-storage relay when clients bring their own token, or **both at once** — `AUTH_TOKENS` plus `BRIDGE_ENABLED` (default) serves API-key clients from the pool and other credentials as bridge tokens on one instance. See [Key Concepts](#key-concepts).
-- **Token Auto-Discovery**: With empty `AUTH_TOKENS`, credentials are read from the official CLI login files (`~/.config/manicode/credentials.json`, `~/.config/codebuff/credentials.json`). Disable with `AUTO_DISCOVER_TOKEN=false`.
-- **TLS Stealth**: browser TLS fingerprinting via uTLS (Chrome, Firefox, Safari, Edge) plus sanitized request headers so upstream traffic reads as a browser client.
-- **CLI Impersonation**: egress presents as the official FreeBuff CLI — `Freebuff-CLI/1.0.0` ads-API User-Agent with a **Chrome/124 body UA**, `ai-sdk/openai-compatible/1.0.0/codebuff` chat UA, Bun/1.3.14 on session/auth endpoints, and your real device timezone/locale.
-- **Subagent-Ready Concurrency**: Single-flight session refresh prevents race conditions during high-volume tool-calling loops.
-- **Safe Mode**: On by default: anti-ban presets (TLS stealth, header sanitization, jitter, idle rotation).
-- **Management (dashboard first)**: daily work happens in `/admin` (tokens, config, logs, metrics, quota, setup copy blocks, update notice). The same checks stay scriptable headless: `-doctor` diagnostics (config, port, DNS/TLS, registry; zero-cost per-token validity probes run by default), `-test-token` and `-validate-tokens` (zero-cost probes with exit codes for installers and scripts), `-setup` interactive client configuration, and a SHA-256-verified `-update` self-updater. `-help` groups every flag with its dashboard twin.
-- **Quota Transparency**: Live per-model quota (from the upstream `rateLimitsByModel` admission payload) is surfaced in `GET /healthz` (per-token `quota` map) and `GET /metrics` (`freebuff_proxy_quota_recent` / `freebuff_proxy_quota_limit` gauges).
-
-## How It Works
-
-One chat request, end to end:
-
-1. **Your tool calls the proxy.** It POSTs a standard OpenAI request to `http://127.0.0.1:3457/v1/chat/completions`, same shape it would send to any OpenAI-compatible endpoint.
-2. **A token is chosen.** The proxy prefers the token that already holds a live session (hot-session-first), starting from a round-robin index and skipping tokens in cooldown or locked by a rate limit; in bridge mode (or hybrid, for a credential that does not match `API_KEYS`) it uses the token your client sent in its `Authorization` header.
-3. **The request is translated.** The model id is resolved through the catalog to the upstream agent that runs it, the message list is sanitized and re-wrapped in the CLI request envelope, and OpenAI extras (`reasoning_effort`, tool schemas, etc.) are mapped to what upstream expects.
-4. **It goes out stealthily.** The upstream call uses a browser-like TLS handshake and sanitized headers.
-5. **The stream comes back translated.** The upstream SSE stream is converted into OpenAI `chat.completion.chunk` events and relayed to your client in real time.
-6. **State is cleaned up.** When the request finishes, the run is drained; once a run or token ages out (rotation interval, idle timeout), it is rotated or finished so the next request starts clean. A token that hit a quota limit (`429`) is locked locally until its reset time. The proxy answers `429` + `Retry-After` itself, with no traffic sent upstream.
-
-The translation layer reimplements the official CLI's wire protocol and session lifecycle, sourced from the open-source Freebuff client (Apache-2.0). It changes when the upstream changes. The translation lives in `backend/internal/convert`, `backend/internal/upstream`, `backend/internal/stealth`, and `backend/internal/registry`.
-
-```mermaid
-graph TD
-    Client[AI Client / Router<br/>OpenCode · pi · 9router · LiteLLM] -->|POST /v1/chat/completions| Proxy[freebuff-proxy<br/>localhost:3457]
-    Proxy -->|1. Session & Run Lifecycle| Pool[Token Pool & Session Cache]
-    Proxy -->|2. Inject Envelope + Stealth| Upstream[Upstream Backend API]
-    Upstream -->|3. SSE Stream| Proxy
-    Proxy -->|4. OpenAI SSE Chunks| Client
-    Client -.->|GET /metrics · GET /healthz · POST /admin/reload| Proxy
+```sh
+cp .env.example .env   # then edit: AUTH_TOKENS, ADMIN_TOKEN, ...
+go build ./backend/...
+go run ./backend/cmd/freebuff-proxy
 ```
 
-## Key Concepts
+Then:
 
-| Concept | What it means |
-|---|---|
-| **Token** | One FreeBuff/Codebuff account credential (`cb_...`). Each token has its own daily quota and can be rate-limited or banned independently. |
-| **Session** | Per-token upstream admission state (handshake, model locks). The proxy maintains and reuses it so every request does not pay the handshake cost. |
-| **Run** | One upstream agent execution for a model, shared across many requests. Runs start on first use, live for `ROTATION_INTERVAL` (default `6h`), then are rotated (fresh start, old one drained/finished) so no run accumulates suspiciously long-lived activity. Idle tokens get their runs finished too. |
-| **Model** | A catalog entry addressed as `provider/model` (e.g. `deepseek/deepseek-v4-flash`). The registry serves `/v1/models` and maps each model to the upstream agent that runs it. |
-| **Pooled mode** | You configure several tokens in `AUTH_TOKENS`. Requests stick to the token with a live session and fail over only when it is rate-limited or errors: a reactive drain, not aggressive rotation. Best for one user with several accounts who wants maximum uptime and quota headroom. |
-| **Bridge mode** | You configure no tokens. Each client sends its own token as `Authorization: Bearer <token>`, and the proxy relays with it, caching per-client state (LRU, max 32, 72h idle eviction). Best for a shared router (e.g. 9router) serving many users who each bring their own account. |
-| **Hybrid mode** | **The default when `AUTH_TOKENS` is set.** The pool and the bridge run side by side: a request whose credential matches an `API_KEYS` entry is served from the pool, any other credential is relayed upstream as the client's own bridge token, and a missing credential is rejected `401` when `API_KEYS` are configured (open pooled otherwise). Set `BRIDGE_ENABLED=0` for a locked-down pooled-only instance. |
-| **Safe mode** | Default-on anti-ban presets: TLS stealth, proxy-header sanitization, request jitter, and idle rotation. See [Safe Mode](#safe-mode--zero-spam-quota-handling). |
-| **Quota lock** | When a token hits its daily limit, the proxy parses the upstream `429` reset timestamp and refuses local requests for that token until reset, fast (`<1ms`), silent, and spam-free. |
+- `GET http://localhost:3457/healthz` → 200
+- `GET http://localhost:3457/v1/models` → live model list
+- `http://localhost:3457/admin` → dashboard
 
----
+Defaults that matter (`.env.example`): `SAFE_MODE=true` (anti-ban preset),
+`COST_MODE=free`, 30 req/min and 1500 req/day Pacific limits.
 
-## Quick Start
+## Layout
 
-### 1. Install
+- `backend/` — gateway source.
+- `frontend/` — dashboard SPA source.
+- `scripts/` — upstream sync / drift tooling.
+- `docs/` — agent workflow notes.
 
-### Where the files are installed
+## Contributing
 
 `freebuff-proxy` follows platform-standard paths, and it **finds its configuration automatically** — you never need to `cd` into a specific folder for the `.env` to resolve.
 

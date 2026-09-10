@@ -156,7 +156,7 @@ func TestBackendActiveEntryWithoutInstanceIDDropped(t *testing.T) {
 	backend := newMemoryBackend()
 	key := "hash-key"
 	// Simulate a legacy/corrupt blob: active status but no instance id.
-	blob, err := marshalKvBlob(kvBlob{Session: &persistedState{Status: "active", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}})
+	blob, err := MarshalKvBlob(KvBlob{Session: &PersistedState{Status: "active", Model: "m", ExpiresAt: time.Now().Add(time.Hour)}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -27,21 +27,23 @@ type StateBackend interface {
 	SaveState(key string, blob []byte) error
 }
 
-// kvBlob is the per-key blob shape persisted through a StateBackend: the
+// KvBlob is the per-key blob shape persisted through a StateBackend: the
 // token's cached session plus its per-agent runs, so one row holds everything
 // a restart needs for that token. Additive-friendly: unknown fields decode as
 // zero values.
-type kvBlob struct {
-	Session *persistedState         `json:"session,omitempty"`
+type KvBlob struct {
+	Session *PersistedState         `json:"session,omitempty"`
 	Runs    map[string]PersistedRun `json:"runs,omitempty"`
 }
 
-func marshalKvBlob(b kvBlob) ([]byte, error) {
+// MarshalKvBlob serializes a kvBlob to JSON.
+func MarshalKvBlob(b KvBlob) ([]byte, error) {
 	return json.Marshal(b)
 }
 
-func unmarshalKvBlob(data []byte) (kvBlob, error) {
-	var b kvBlob
+// UnmarshalKvBlob deserializes JSON into a kvBlob.
+func UnmarshalKvBlob(data []byte) (KvBlob, error) {
+	var b KvBlob
 	err := json.Unmarshal(data, &b)
 	return b, err
 }

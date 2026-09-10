@@ -46,6 +46,9 @@
   // no binding for — those rows are unusable and stay hidden. Null until
   // the catalog loads, in which case nothing is filtered.
   let usableIds = $state(null);
+  // Modelcat display names keyed by model id (same rows, display_name).
+  // Row names prefer these over the static MODEL_METADATA table.
+  let modelNames = $state({});
 
   // Probe-all status: the button POSTs /admin/tokens/test-all (zero-cost
   // upstream GET per token, no session claimed) then refetches the store.
@@ -124,6 +127,11 @@
       .then((res) => {
         const rows = res?.models ?? [];
         usableIds = new Set(rows.filter((m) => m.agent).map((m) => m.id));
+        const names = {};
+        for (const m of rows) {
+          if (m?.id && m.display_name) names[m.id] = m.display_name;
+        }
+        modelNames = names;
       })
       .catch(() => {
         usableIds = null;
@@ -185,7 +193,7 @@
   crumb="freebuff-proxy / Admin / quota.conf"
   title={$tr("Quota Tracker")}
   description={$tr(
-    "Live per-model session quota and premium pool usage across pooled tokens",
+    "Live Freebucks allowances and model pricing across pooled tokens",
   )}
   {loading}
   {error}
@@ -193,7 +201,7 @@
     ? {
         title: $tr("No tokens in pool"),
         description: $tr(
-          "Add a token to the pool to see per-model session quota and premium pool usage.",
+          "Add a token to the pool to see Freebucks allowances and model pricing.",
         ),
       }
     : null}
@@ -250,8 +258,14 @@
       )}
     </p>
     <ul class="list-disc list-inside space-y-1 text-[var(--fp-muted)] pl-0.5">
-      <li>{$tr("A fresh pool every day – spend it on any model.")}</li>
-      <li>{$tr("No more weekly or monthly session caps.")}</li>
+      <li>
+        {$tr("A fresh Freebucks pool every day – spend it on any model.")}
+      </li>
+      <li>
+        {$tr(
+          "No per-model caps — every served row draws from the same daily pool.",
+        )}
+      </li>
       <li>
         {$tr(
           "Each model shows its price per hour; the list runs cheapest first.",
@@ -260,7 +274,7 @@
     </ul>
     <p class="text-[11px] text-[var(--fp-muted)] font-mono pt-0.5">
       {$tr(
-        "Codebuff is transitioning accounts from legacy session pools to daily Freebucks allowances. Per-account Daily pools and model pricing below are live upstream values.",
+        "Accounts run on daily Freebucks allowances. Per-account daily pools and model pricing below are live upstream values.",
       )}
     </p>
   </div>
@@ -321,16 +335,13 @@
                 </div>
                 {#if token.streak < 7}
                   <p class="text-xs text-[var(--fp-muted)]">
-                    🎁 {$tr(
-                      "{count} more day(s) to unlock +1 bonus session every day",
-                      { count: 7 - token.streak },
-                    )}
+                    {$tr("{count} more day(s) to complete the 7 day streak", {
+                      count: 7 - token.streak,
+                    })}
                   </p>
                 {:else}
                   <p class="text-xs text-emerald-400 font-medium">
-                    🎁 {$tr(
-                      "Streak perk: +1 bonus session every day + 1 reward session each day",
-                    )}
+                    {$tr("7 day streak complete")}
                   </p>
                 {/if}
               </div>
@@ -374,12 +385,19 @@
               </div>
             {/if}
             {#if token.freebucks?.prices && Object.keys(token.freebucks.prices).length > 0}
+              {@const unmeteredIds = new Set(
+                (data.unmetered_models ?? []).map((r) => r.id),
+              )}
               {@const servedModels = sortModelsByPrice(
                 Object.keys(token.freebucks.prices).filter(
                   (id) => usableIds == null || usableIds.has(id),
                 ),
                 token.freebucks,
-              ).map((id) => modelDisplayInfo(id, token.freebucks))}
+                modelNames,
+              ).map((id) => ({
+                ...modelDisplayInfo(id, token.freebucks, modelNames),
+                unmetered: unmeteredIds.has(id),
+              }))}
               {@const fullAccess =
                 servedModels.length > 0 && servedModels.length >= maxServed}
               {#if servedModels.length > 0}
@@ -418,6 +436,14 @@
                               class="font-bold text-[var(--fp-text)] truncate"
                               >{m.displayName}</span
                             >
+                            <span
+                              class="text-[9px] uppercase tracking-wider font-semibold px-1 py-px rounded font-mono shrink-0 {m.unmetered
+                                ? 'bg-emerald-500/10 text-emerald-400'
+                                : 'bg-[var(--fp-accent)]/10 text-[var(--fp-accent)]'}"
+                              >{m.unmetered
+                                ? $tr("Unmetered")
+                                : $tr("Metered")}</span
+                            >
                           </span>
                           <span
                             class="font-semibold shrink-0 {m.price === 0
@@ -446,7 +472,7 @@
                   </ul>
                   <p class="text-[11px] text-[var(--fp-dim)] leading-relaxed">
                     {$tr(
-                      "Live served models for this account, cheapest first, charged hourly at session start.",
+                      "Live served models for this account, cheapest first, charged hourly in Freebucks.",
                     )}
                   </p>
                 </div>

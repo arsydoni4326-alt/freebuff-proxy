@@ -10,6 +10,7 @@ reference/
 .env.*
 !.env.example
 !.env.full-example
+!.env.minimal
 config.json
 config.*.json
 !config.example.json
@@ -108,3 +109,4 @@ skills-lock.json
 # Windows build backups (rename-aside of locked exe)
 *.exe~
 API_Keys*
+data

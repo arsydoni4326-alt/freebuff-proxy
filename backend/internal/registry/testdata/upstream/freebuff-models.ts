@@ -313,7 +313,7 @@ export const FREEBUFF_GPT_5_6_LUNA_MAX_PRICE = {
 export const FREEBUFF_GPT_5_6_LUNA_REASONING_EFFORT = 'high' as const
 /** Solar Pro 4 (Upstage), served through OpenRouter and constrained to Upstage
  *  by `applyOpenRouterProviderRouting`. Context 524,288, text in / text out,
- *  and the `upstage/zdr` (zero data retention) tag.
+ *  using Upstage's non-ZDR endpoint for provider-side debugging.
  *
  *  PRICE: Upstage's LIST card is $0.30/M in, $0.06/M cached, $1.20/M out.
  *  OpenRouter's card shows $0.03/$0.006/$0.12 with `"discount": 0.9` — that is
@@ -333,23 +333,9 @@ export const FREEBUFF_GPT_5_6_LUNA_REASONING_EFFORT = 'high' as const
  *  and falls back to OpenRouter's figure — correct again at list — when it
  *  ends. Re-evaluate the row before then rather than silently changing what
  *  "unmetered" means when the price changes. */
-/**
- * The OpenRouter endpoint Solar Pro 4 is pinned to — TAG-QUALIFIED, not the
- * bare `upstage` provider slug.
- *
- * OpenRouter lists two endpoints for this model that are identical in price,
- * context, supported parameters and `provider_name`, and differ only by `tag`:
- * this one and an untagged `upstage`. The bare slug matches both, which split
- * traffic across two prompt caches (worse hit rates with no warming than
- * every other high-volume row) and — because SOLAR_PRO_4_MODEL's
- * `dataUse: 'service'` rests on the ZDR tag — let half of all turns run on an
- * endpoint that is not zero-data-retention while the UI suppressed the training
- * notice.
- *
- * See applyOpenRouterProviderRouting for the full reasoning and for the probe
- * that shows OpenRouter validates tags rather than ignoring them.
- */
-export const SOLAR_PRO_4_OPENROUTER_ENDPOINT = 'upstage/zdr'
+/** Upstage's requested non-ZDR route for debugging. Pair with
+ *  `allow_fallbacks: false` in applyOpenRouterProviderRouting. */
+export const SOLAR_PRO_4_OPENROUTER_ENDPOINT = 'upstage'
 
 /**
  * Gemini 3.8 Flash (Google), served through OpenRouter. The id is OpenRouter's
@@ -405,7 +391,7 @@ export const SOLAR_PRO_4_OPENROUTER_ENDPOINT = 'upstage/zdr'
  *    drift onto Vertex shows up as a doubled $/msg on /web/admin/spend rather
  *    than as free traffic.
  *
- * The row is PREMIUM and carries a per-session dollar ceiling
+ * The row is PREMIUM and carries a per-session pacing target
  * (FREEBUFF_PER_MODEL_SESSION_SPEND_CAPS). At the flex rate and the cache
  * rates the browser surfaces actually get, it prices out at roughly 4x DeepSeek
  * V4 Flash and 9x GLM 5.3 Flash per message; the cache-read rate is the dearest
@@ -896,7 +882,12 @@ export const FREEBUFF_FORCE_LIMITED_MODE = false
  * Referral, streak, bounty and operator entitlement still add on top of this,
  * unchanged.
  */
-export const FREEBUFF_PREMIUM_SESSION_LIMIT = 4
+// Back to 5 on 2026-09-07, the day Levels were retired: the 5 → 4 retune
+// existed so a Level could add the difference back, and with the ladder gone
+// a reduced base is the pure takeaway the switch below was built to prevent.
+// Moot for a metered account (Freebucks is the meter and these pools are not
+// consulted), so this is the rollback-safety value, not a live limit.
+export const FREEBUFF_PREMIUM_SESSION_LIMIT = 5
 /**
  * Limited-region base sessions per Pacific day.
  *
@@ -912,21 +903,6 @@ export const FREEBUFF_PREMIUM_SESSION_LIMIT = 4
 export const FREEBUFF_LIMITED_SESSION_LIMIT = 6
 
 /**
- * What those two pools paid BEFORE Levels, and the revert lever.
- *
- * `FREEBUFF_LEVEL_SESSIONS=off` selects these instead of the reduced bases
- * above, and suppresses the level bonus with them. The two halves have to move
- * together: a reduced base with the ladder switched off is a pure takeaway,
- * which is the one configuration this feature must never be able to land in.
- * That is why the switch gates the whole change rather than just the bonus.
- *
- * Delete both, and the branch in `free-session/public-api.ts` that reads them,
- * once Levels has been on long enough that rolling back is not a thing anyone
- * would do.
- */
-export const FREEBUFF_PRE_LEVELS_PREMIUM_SESSION_LIMIT = 5
-export const FREEBUFF_PRE_LEVELS_LIMITED_SESSION_LIMIT = 6
-/**
  * There is no standard-model session limit, on any surface.
  *
  * `FREEBUFF_WEB_STANDARD_SESSION_LIMIT` used to live here at 6, capping fresh
@@ -940,7 +916,7 @@ export const FREEBUFF_PRE_LEVELS_LIMITED_SESSION_LIMIT = 6
  * length that session COUNT is the wrong thing to meter — starting a session
  * costs nothing and an idle session costs nothing, while the traffic inside it
  * is bounded four separate ways (`messagesPerDay`, `messagesPer5Hours`,
- * `userMessagesPerDay`, and the daily spend ceiling). The churn it was aimed
+ * `userMessagesPerDay`). The churn it was aimed
  * at is project creation, which has its own gate
  * (`docs/freebuff-web-creation-gate.md`).
  *
@@ -1520,8 +1496,8 @@ const SOLAR_PRO_4_MODEL = {
   displayName: 'Solar Pro 4',
   tagline: SOLAR_REGULAR_OFFER.tagline,
   availability: 'always',
-  // `upstage/zdr` — zero data retention, so no training notice and no trace
-  // storage (FREEBUFF_TRACED_MODEL_IDS keys off this field).
+  // Provider-side debugging logs are allowed; this is not a ZDR promise or
+  // permission for AI training. Keep our own training traces disabled.
   dataUse: 'service',
   // Limited access still uses its tier-specific metering.
   premium: FREEBUFF_SOLAR_PRO_4_ENTITLEMENT.fullAccess.premium,
@@ -1531,8 +1507,7 @@ const SOLAR_PRO_4_MODEL = {
 /**
  * Gemini 3.8 Flash. Premium, and unlike most premium rows it is priced premium
  * as well as badged it — see FREEBUFF_GEMINI_38_FLASH_MODEL_ID for the tier
- * table and FREEBUFF_PER_MODEL_SESSION_SPEND_CAPS for the ceiling that bounds
- * one session on it.
+ * table and FREEBUFF_PER_MODEL_SESSION_SPEND_CAPS for its pacing target.
  */
 const GEMINI_38_FLASH_MODEL = {
   id: FREEBUFF_GEMINI_38_FLASH_MODEL_ID,
@@ -1775,12 +1750,6 @@ const MUSE_SPARK_12_CONTRIBUTOR_MODEL = {
   // better model. migrateSupersededFreebuffModelPreference rewrites a saved
   // 1.2 pick to 1.3 on load, which is the only way a browser that remembered
   // this row ever reaches the new one — the retired row itself is not offered.
-  supersededBy: {
-    modelId: FREEBUFF_MUSE_SPARK_13_CONTRIBUTOR_MODEL_ID,
-    notice:
-      'Muse Spark 1.3 replaces 1.2: same price and terms, better at agentic coding.',
-    actionLabel: 'Switch to Muse Spark 1.3',
-  },
 } as const satisfies FreebuffModelOption
 
 /**
@@ -1898,6 +1867,7 @@ export const SUPPORTED_FREEBUFF_MODELS = [
   SOLAR_PRO_4_MODEL,
   GEMINI_38_FLASH_MODEL,
   MUSE_SPARK_13_CONTRIBUTOR_MODEL,
+  MUSE_SPARK_12_CONTRIBUTOR_MODEL,
   GLM_V52_MODEL,
   GLM_V53_FLASH_MODEL,
   DEEPSEEK_V4_FLASH_MODEL,
@@ -1995,14 +1965,29 @@ export const FREEBUFF_MODELS = [
   // served; the pause is. Its row stays in SUPPORTED_FREEBUFF_MODELS so the id
   // stays recognisable and coercible for the installed binaries that hold it.
   //
-  // MUSE SPARK 1.3 JOINED on 2026-09-04, and is last on purpose: ordering is
-  // the only steer this list gives, and this is the one row that may answer on
-  // a different model when its shared ceiling is full. A row carrying that
-  // caveat should not outrank one without it. Joining here is also what puts it
-  // in the premium pool and in the Web picker — both are derived from this list
-  // and the row's own `premium` flag, so there is no second entry to keep in
-  // step.
-  MUSE_SPARK_13_CONTRIBUTOR_MODEL,
+  // MUSE SPARK 1.3 LEFT on 2026-09-07, three days after joining. It is not
+  // busy or flapping any more, it is GONE at Meta: probed that day, all four
+  // keys returned `404 model_not_found` on 5 of 5 attempts each, while 1.2
+  // answered 5 of 5 on the same keys in the same minute. Meanwhile 2,838
+  // sessions a day were still being admitted on it, every one of them served
+  // on DeepSeek V4 Flash by the fallback — a row in the picker that cannot
+  // answer is a promise we break on every turn, however well the fallback
+  // works. Its id is PAUSED rather than deleted so the installed binaries
+  // that hold it are coerced instead of refused.
+  //
+  // 1.2 TAKES ITS PLACE, on every surface (2026-09-07). It answered 5 of 5 on
+  // all four keys in the same probe that found 1.3 dead, and the reason it was
+  // Freebuff Web only for its first life no longer holds: the completions
+  // layer reroutes anything the shared ceiling cannot absorb to DeepSeek V4
+  // Flash with no client involvement, and the key pool made saturation rare —
+  // so a surface no longer needs somewhere to render a wait, which was the
+  // only thing that kept it browser-bound. That is the same argument that
+  // widened 1.3 three days ago; it did not depend on the version.
+  //
+  // Last in the list on purpose, as 1.3 was: this is still the one row that
+  // may answer as another model when Meta's team-wide ceiling is full, and a
+  // row carrying that caveat should not outrank one without it.
+  MUSE_SPARK_12_CONTRIBUTOR_MODEL,
 ] as const satisfies readonly FreebuffModelOption[]
 
 /** Public full-access models metered by the shared premium pool. The catalog
@@ -2040,8 +2025,8 @@ export function isFreebuffExperimentalModel(
 }
 
 /**
- * Per-session provider-spend ceilings. The lookup happens before any database
- * read, so models absent from this table stay off the spend-gate path.
+ * Historical per-model ceilings, retained as soft session pacing targets.
+ * Crossing a target adds a pause; it never refuses a prompt or model call.
  */
 export const FREEBUFF_PER_MODEL_SESSION_SPEND_CAPS: Readonly<
   Record<string, number>
@@ -2051,7 +2036,7 @@ export const FREEBUFF_PER_MODEL_SESSION_SPEND_CAPS: Readonly<
   [FREEBUFF_GEMINI_38_FLASH_MODEL_ID]: 0.5,
 }
 
-/** The per-session dollar ceiling for `model`, or undefined when it has none. */
+/** Optional model-specific pacing target; the legacy name is retained. */
 export function getFreebuffPerModelSessionSpendCap(
   model: string | null | undefined,
 ): number | undefined {
@@ -2084,6 +2069,12 @@ export function getFreebuffPerModelSessionSpendCap(
  * clients that need it are the ones already installed.
  */
 export const FREEBUFF_PAUSED_FREE_MODEL_IDS: readonly string[] = [
+  // Muse Spark 1.3, withdrawn 2026-09-07: `404 model_not_found` on every key,
+  // every attempt. Paused rather than deleted for the reason the whole list
+  // exists — an id the server does not recognise can only be refused, and a
+  // refusal is the retry loop that cost the limited tier 2.5x its admissions
+  // in #1801. See its row in FREEBUFF_MODELS for the measurement.
+  FREEBUFF_MUSE_SPARK_13_CONTRIBUTOR_MODEL_ID,
   // Withdrawn from free mode entirely on 2026-08-20. Its hourly burn became
   // the largest single line on the bill — and is not worth that at any tier.
   //
@@ -2286,11 +2277,9 @@ export const FREEBUFF_WEB_MODELS = [
   // back in the picker without making it admissible — a visible row whose
   // first send is coerced away, which is the offer-without-gate shape
   // common/src/testing/freebuff-offer-invariants.ts exists to catch.
-  // Muse Spark 1.2 is RETIRED from the picker as of 2026-09-02
-  // (FREEBUFF_WEB_RETIRED_PICKER_MODEL_IDS) and stays here only so sessions
-  // admitted on it finish their hour. Remove this entry with the row once
-  // those sessions have drained.
-  MUSE_SPARK_12_CONTRIBUTOR_MODEL,
+  // Muse Spark 1.2 reaches this list by spreading FREEBUFF_MODELS again,
+  // as it did before its 2026-09-02 retirement; naming it here too would
+  // duplicate the row.
   // Gemini 3.8 Flash is listed HERE rather than in FREEBUFF_MODELS, and the
   // difference is the whole gate. It is a Pro row
   // (FREEBUFF_SUBSCRIPTION_PRO_MODEL_IDS), and Pro is enforced on Freebuff Web
@@ -2361,7 +2350,6 @@ export const FREEBUFF_WEB_RETIRED_PICKER_MODEL_IDS = [
   // budget at Meta. A saved pick is rewritten to 1.3 by `supersededBy`.
   // Finish the removal (row, roots, allowlist entries, this line) once the
   // last 1.2 session is gone — a day is plenty.
-  FREEBUFF_MUSE_SPARK_12_CONTRIBUTOR_MODEL_ID,
 ] as const
 
 /** Whether the Web/Cloud picker should offer `id` as a new selection. False
@@ -2442,7 +2430,6 @@ export const FREEBUFF_REWARD_MODEL_IDS = [FREEBUFF_REWARD_MODEL_ID] as const
 export const FREEBUFF_REWARD_MODEL_DISPLAY_NAME: string =
   SUPPORTED_FREEBUFF_MODELS.find((m) => m.id === FREEBUFF_REWARD_MODEL_ID)
     ?.displayName ?? 'GLM 5.3 Flash'
-
 
 /** Wire headers for the free-mode session endpoints
  *  (/api/v1/freebuff/session). Shared so the server handlers and every client
@@ -2900,12 +2887,8 @@ export const FREEBUFF_CLOUD_PLANNER_TURN_LIMIT = 12
  * Freebucks an hour, a third of the Flash price — so the tier that can least
  * afford a session was also the one barred from the cheap one.
  *
- * What makes this safe is that the tier is no longer metered by CATALOG. On
- * the Freebucks meter a limited account holds 25 Freebucks a day under a hard
- * $0.50 daily ceiling, and every row is priced, so widening WHAT they may pick
- * cannot widen HOW MUCH they draw — it only lets them spend the same allowance
- * on a row that goes further. Before the meter, catalog WAS the control, which
- * is why this list was narrow.
+ * Freebucks meters access through session prices and a daily pool, while
+ * session length and per-session pacing govern usage within an hour.
  *
  * Luna is the deliberate full-access exception: it stays plan-gated only at
  * the limited tier

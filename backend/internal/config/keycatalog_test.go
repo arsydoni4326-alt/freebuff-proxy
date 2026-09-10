@@ -16,7 +16,7 @@ var validCatalogKinds = map[string]bool{
 }
 
 // dotenvKeys is the set of keys applyDotenv mirrors from a .env file onto
-// rawConfig (config_env.go). It must stay in lock-step with the catalog:
+// rawConfig (config_load.go). It must stay in lock-step with the catalog:
 // a key the loader parses but the catalog does not describe would be lost
 // from the settings form, and a catalog key the loader cannot apply would
 // be a phantom row.
@@ -45,6 +45,7 @@ var dotenvKeys = map[string]bool{
 	"MATURITY_ENABLED": true, "MATURITY_DRY_RUN": true, "MATURITY_TOUCH_MODEL": true,
 	"MATURITY_TARGET_DAYS": true, "QUOTA_AUTO_PROBE": true,
 	"BURST_BALANCE_ENABLED": true, "BURST_WINDOW": true, "BURST_THRESHOLD": true, "BURST_MAX_TOKENS": true,
+	"CHAT_MAX_INFLIGHT_METERED": true, "CHAT_MAX_INFLIGHT_UNMETERED": true,
 	"RATE_LIMIT_PER_IP": true, "RATE_LIMIT_BURST": true, "TOKEN_ROTATION": true, "RATE_LIMIT_FAILOVER": true,
 	"DASHBOARD_ENABLED": true, "DASHBOARD_REQUIRE_LOGIN": true,
 	"COMPRESS_PROMPT": true, "CACHE_CONTROL_INJECTION": true, "REASONING_IN_CONTENT": true,
