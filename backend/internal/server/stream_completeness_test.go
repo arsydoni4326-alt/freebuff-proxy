@@ -244,6 +244,7 @@ func TestChatStreamUpstreamErrorEnvelope(t *testing.T) {
 		}
 		if errPayload == nil {
 			t.Fatalf("no error frame in stream: %s", truncateStr(data, 400))
+			return
 		}
 		if errPayload["type"] != "upstream_error" {
 			t.Errorf("error.type = %v, want upstream_error", errPayload["type"])
@@ -387,6 +388,7 @@ func TestResponsesJSONUsageCarriesDetails(t *testing.T) {
 	usage, _ := resp["usage"].(map[string]any)
 	if usage == nil {
 		t.Fatal("usage missing")
+		return
 	}
 	inDetails, _ := usage["input_tokens_details"].(map[string]any)
 	if inDetails == nil || inDetails["cached_tokens"].(float64) != 7 {

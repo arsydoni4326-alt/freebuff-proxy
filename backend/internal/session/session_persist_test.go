@@ -92,6 +92,7 @@ func TestPersistResumePollTransportError(t *testing.T) {
 	_, err := mgr.EnsureSession(context.Background())
 	if err == nil {
 		t.Fatal("resume poll transport error must surface, got nil")
+		return
 	}
 	if got := creates.Load(); got != 0 {
 		t.Errorf("creates = %d, want 0 (transport error must not fall through to create)", got)
@@ -319,6 +320,7 @@ func TestShutdownAlwaysDeletesEvenWhenPersisting(t *testing.T) {
 
 		if _, err := mgr.EnsureSession(context.Background()); err == nil {
 			t.Fatal("want WaitingRoomError for queued session")
+			return
 		} else {
 			var wr *WaitingRoomError
 			if !errors.As(err, &wr) {
@@ -327,6 +329,7 @@ func TestShutdownAlwaysDeletesEvenWhenPersisting(t *testing.T) {
 		}
 		if got := store.Load(key); got == nil || got.status != "queued" {
 			t.Fatalf("store before Shutdown = %+v, want queued entry", got)
+			return
 		}
 
 		if err := mgr.Shutdown(context.Background()); err != nil {
@@ -656,6 +659,7 @@ func TestPersistQuotaByModelRoundTrip(t *testing.T) {
 	loaded := store2.Load(key)
 	if loaded == nil {
 		t.Fatal("loaded state is nil")
+		return
 	}
 	if loaded.instanceID != "inst-quota-123" {
 		t.Errorf("loaded instanceID = %q, want inst-quota-123", loaded.instanceID)
@@ -676,8 +680,8 @@ func TestPersistQuotaByModelRoundTrip(t *testing.T) {
 }
 
 // TestPersistAccountBlocksRoundTrip pins the rework: referral, freebucks
-// (with schedule), windows, subscription and standing survive a restart so
-// the dashboard keeps its banner/cards until the next full admission.
+// (with schedule) and standing survive a restart so the dashboard keeps
+// its banner/cards until the next full admission.
 func TestPersistAccountBlocksRoundTrip(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "state.json"))
 	key := "test-token-key"
@@ -692,8 +696,6 @@ func TestPersistAccountBlocksRoundTrip(t *testing.T) {
 			{At: "2999-01-01T00:00:00Z", ModelID: "openai/gpt-5.6-luna", Price: 9, Tagline: "future"},
 		},
 	}
-	slot.freeWindows = &upstream.FreeWindowsInfo{DayUsed: 1, DayLimit: 6}
-	slot.subscription = &upstream.SubscriptionInfo{DayUsed: 0, DayLimit: 0}
 	slot.standing = &upstream.SessionStanding{Level: "trusted", NextSteps: []upstream.StandingNextStep{{ID: "a", Label: "b"}}}
 
 	store.Save(key, slot)
@@ -702,6 +704,7 @@ func TestPersistAccountBlocksRoundTrip(t *testing.T) {
 	loaded := store2.Load(key)
 	if loaded == nil {
 		t.Fatal("loaded state is nil")
+		return
 	}
 	if loaded.referral == nil || loaded.referral.Code != "FREE-abc" {
 		t.Errorf("referral = %+v, want code FREE-abc", loaded.referral)
@@ -711,12 +714,6 @@ func TestPersistAccountBlocksRoundTrip(t *testing.T) {
 	}
 	if len(loaded.freebucks.PriceChanges) != 1 {
 		t.Errorf("priceChanges = %+v, want 1 future change kept", loaded.freebucks.PriceChanges)
-	}
-	if loaded.freeWindows == nil || loaded.freeWindows.DayLimit != 6 {
-		t.Errorf("freeWindows = %+v, want day limit 6", loaded.freeWindows)
-	}
-	if loaded.subscription == nil {
-		t.Error("subscription = nil, want persisted block")
 	}
 	if loaded.standing == nil || loaded.standing.Level != "trusted" || len(loaded.standing.NextSteps) != 1 {
 		t.Errorf("standing = %+v, want trusted + 1 step", loaded.standing)

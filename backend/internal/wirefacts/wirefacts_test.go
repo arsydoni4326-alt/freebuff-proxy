@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	testUpstream = "cc9069e251e8fedd5784c688ce78ccfecd76815f"
+	testUpstream = "78a7ab4ed6754a694a7699091e03f5f9bfee45d9"
 	testWireDir  = "testdata/wire"
 	testRegDir   = "../registry/testdata/upstream"
 	testGenFile  = "wirefacts_gen.go"
@@ -122,6 +122,7 @@ func TestUnknownConstructFailsExplicit(t *testing.T) {
 	err = Run(m.UpstreamSHA, wireDir, regDir, &out)
 	if err == nil {
 		t.Fatal("Run succeeded on unknown construct, want explicit failure")
+		return
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "unknown-construct.ts:5") {
@@ -146,6 +147,7 @@ func TestUpstreamFlagMismatch(t *testing.T) {
 	err := Run("ffffffffffffffffffffffffffffffffffffffff", testWireDir, testRegDir, &out)
 	if err == nil || !strings.Contains(err.Error(), "does not match manifest") {
 		t.Fatalf("Run with wrong SHA = %v, want manifest-mismatch failure", err)
+		return
 	}
 	if out.Len() != 0 {
 		t.Fatalf("failed run emitted %d bytes, want nothing", out.Len())

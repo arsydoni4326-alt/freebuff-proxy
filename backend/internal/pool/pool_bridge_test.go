@@ -104,6 +104,7 @@ func TestBridgeAcquireReusesEntry(t *testing.T) {
 	}
 	if lease1.Bridge == nil {
 		t.Fatal("bridge lease missing Bridge entry")
+		return
 	}
 	if lease1.SessionInstanceID != "inst-abc-123" {
 		t.Errorf("instance = %q, want inst-abc-123", lease1.SessionInstanceID)
@@ -122,6 +123,7 @@ func TestBridgeAcquireReusesEntry(t *testing.T) {
 	}
 	if entry := p.bridgeToken(clientToken); entry == nil {
 		t.Fatal("bridge entry missing after two acquires")
+		return
 	}
 	// The shared entry started the run and created the session exactly once.
 	if got := mock.StartedRunsSnapshot(); len(got) != 1 {
@@ -265,9 +267,11 @@ func TestBridgeAcquireEmptyToken(t *testing.T) {
 
 	if _, err := p.AcquireBridge(context.Background(), "", modelA); err == nil {
 		t.Fatal("want error for empty client token")
+		return
 	}
 	if _, err := p.AcquireBridge(context.Background(), "   ", modelA); err == nil {
 		t.Fatal("want error for whitespace-only client token")
+		return
 	}
 	if got := p.bridgeLen(); got != 0 {
 		t.Errorf("bridge entries = %d, want 0 (no entry for empty token)", got)
@@ -327,6 +331,7 @@ func TestBridgeMaintainEvictHonorsCtx(t *testing.T) {
 	entry := p.bridgeToken("idle-bridge-tok")
 	if entry == nil {
 		t.Fatal("bridge entry missing")
+		return
 	}
 	entry.lastUsed = time.Now().Add(-defaultBridgeIdleEvict - time.Minute)
 
@@ -390,6 +395,7 @@ func TestBridgeEvictionSkipsBusyEntry(t *testing.T) {
 
 	if e := p.bridgeToken("client-tok-00"); e == nil {
 		t.Fatal("busy bridge entry was evicted while its lease is outstanding")
+		return
 	}
 	finished := mock.FinishedRunsSnapshot()
 	if len(finished) != 1 {
@@ -485,6 +491,7 @@ func TestRuntimeTokenManagement(t *testing.T) {
 	}
 	if err := p.RemoveLastToken(); err == nil {
 		t.Fatal("RemoveLastToken succeeded with an in-flight lease, want refusal")
+		return
 	}
 	p.LeaseRelease(lease2)
 
@@ -553,6 +560,7 @@ func TestBridgeTokenLocking(t *testing.T) {
 	_, err = p.AcquireBridge(context.Background(), token, modelA)
 	if err == nil {
 		t.Fatal("AcquireBridge succeeded on locked entry, want error")
+		return
 	}
 
 	// Unlock the entry.
@@ -578,9 +586,11 @@ func TestBridgeLockNotFound(t *testing.T) {
 	fakeKey := "00000000000000000000000000000000" // 32 hex chars
 	if err := p.LockBridgeEntry(fakeKey); err == nil {
 		t.Fatal("LockBridgeEntry succeeded on nonexistent key, want error")
+		return
 	}
 	if err := p.UnlockBridgeEntry(fakeKey); err == nil {
 		t.Fatal("UnlockBridgeEntry succeeded on nonexistent key, want error")
+		return
 	}
 }
 
@@ -747,6 +757,104 @@ func TestBridgeRateLimitEntryIsIndependent(t *testing.T) {
 // TestBridgeDeadToken verifies that DeadToken is surfaced correctly in
 // BridgeSnapshot for hard-banned tokens.
 func TestBridgeDeadToken(t *testing.T) {
+	// Hard ban: CooldownBan keeps no timed window (cooldownUntil zero), so
+	// only the BanError guard stops the loops.
+	entry := p.bridgeToken("client-tok")
+	if entry == nil {
+		t.Fatal("bridge entry missing")
+		return
+	}
+	entry.runs.CooldownBan(&upstream.BanError{Body: "banned"})
+	if entry.runs.BanError() == nil {
+		t.Fatal("BanError() = nil after hard ban, want live ban")
+		return
+	}
+
+	before := mock.RequestCount()
+	p.bridgeMaintain(context.Background(), false)
+	p.bridgeSessionPollTick(context.Background(), p.cfg.Load())
+	if after := mock.RequestCount(); after != before {
+		t.Errorf("upstream requests during hard ban = %d, want %d (poll/maintain must skip)", after, before)
+	}
+}
+
+// TestAcquireBridgeFallbackDepthGuard pins the QUOTA_FALLBACK_MODELS
+// recursion backstop in bridge mode: a fallback cycle (each admission
+// refused quota-exhausted with a different model name than requested)
+// degrades to the bounded error instead of an unbounded recursion.
+func TestAcquireBridgeFallbackDepthGuard(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+	cfg := p.cfg.Load()
+	cfg.QuotaFallbackModels = map[string]string{
+		"openai/gpt-5.6-luna":      "anthropic/claude-fable-5",
+		"anthropic/claude-fable-5": "openai/gpt-5.6-luna",
+	}
+	p.cfg.Store(cfg)
+	const quotaBody = `{"model":"mimo/mimo-v2.5","limit":3,"period":"pacific_day","resetAt":"2026-08-12T07:00:00.000Z","recentCount":3.6,"status":"rate_limited","retryAfterMs":48549499}`
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, quotaBody)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-depth"}`)
+	}
+
+	_, err := p.AcquireBridge(context.Background(), "depth-tok", "openai/gpt-5.6-luna")
+	if err == nil {
+		t.Fatal("want fallback-cycle error, got a lease")
+		return
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("err = %v, want QUOTA_FALLBACK_MODELS cycle detection", err)
+	}
+}
+
+// TestHybridPooledCredentialRefusedOnBridge pins the hybrid guard: in
+// hybrid mode a client credential that equals a pooled AUTH_TOKENS entry
+// must not be relayed as a bridge token — the same upstream account would
+// otherwise run a pooled lease AND a bridge entry (two paths, two
+// concurrent sessions). Non-pooled bridge credentials keep working.
+func TestHybridPooledCredentialRefusedOnBridge(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	cfg := p.cfg.Load()
+	cfg.BridgeEnabled = true
+	cfg.UpstreamBaseURL = mock.URL()
+	p.cfg.Store(cfg)
+
+	_, err := p.AcquireBridge(context.Background(), "tok-0", modelA)
+	if err == nil {
+		t.Fatal("pooled credential bridged, want refusal")
+		return
+	}
+	if !strings.Contains(err.Error(), "pooled") {
+		t.Fatalf("err = %v, want pooled-token refusal", err)
+	}
+	if got := p.BridgeCount(); got != 0 {
+		t.Errorf("bridge count = %d, want 0 (no entry for a pooled credential)", got)
+	}
+
+	// A genuinely different client token still bridges.
+	lease, err := p.AcquireBridge(context.Background(), "client-own-token", modelA)
+	if err != nil {
+		t.Fatalf("non-pooled bridge credential rejected: %v", err)
+	}
+	p.LeaseRelease(lease)
+	if got := p.BridgeCount(); got != 1 {
+		t.Errorf("bridge count = %d, want 1", got)
+	}
+}
+
+// TestCooldownBridgeIpCappedSurfacesRemembered pins the bridge entry's
+// ip_capped cooldown: after CooldownBridgeIpCapped the next AcquireBridge
+// surfaces the remembered error instead of re-hitting upstream.
+func TestCooldownBridgeIpCappedSurfacesRemembered(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newBridgePool(t, mock)
@@ -765,6 +873,17 @@ func TestBridgeDeadToken(t *testing.T) {
 	}
 	if snaps[0].DeadToken {
 		t.Error("DeadToken = true for healthy entry, want false")
+	p.Shutdown(context.Background())
+	before := mock.SessionCreates
+	_, err = p.AcquireBridge(context.Background(), "drain-tok", modelA)
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("bridge acquire after drain = %v, want shutting-down error", err)
+		return
+	}
+	_, err = p.Acquire(context.Background(), modelA)
+	if err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("pooled acquire after drain = %v, want shutting-down error", err)
+		return
 	}
 
 	// Apply a hard ban to the runs.

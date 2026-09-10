@@ -62,6 +62,7 @@ func ageRun(t *testing.T, m *RunManager, agentID string, minAge time.Duration) {
 	run := m.runs[agentID]
 	if run == nil {
 		t.Fatalf("ageRun: no live run for agent %q", agentID)
+		return
 	}
 	run.StartedAt = time.Now().Add(-minAge)
 }
@@ -207,6 +208,7 @@ func TestCooldownBlocksAcquire(t *testing.T) {
 	_, err := mgr.Acquire(context.Background(), agentA)
 	if err == nil {
 		t.Fatal("Acquire succeeded while cooling down")
+		return
 	}
 	if !strings.Contains(err.Error(), "cooling down until") {
 		t.Errorf("error = %v, want cooldown error", err)
@@ -515,6 +517,7 @@ func TestCountryBlockCooldown(t *testing.T) {
 
 	if got := mgr.CountryBlockedError(); got == nil || got.CountryCode != "CN" {
 		t.Fatalf("CountryBlockedError() = %v, want remembered CN block", got)
+		return
 	}
 	if until := mgr.CooldownUntil(); !time.Now().Before(until) || time.Until(until) > 16*time.Minute {
 		t.Errorf("cooldown until = %v, want ~15m country window", until)
@@ -695,6 +698,7 @@ func TestSnapshotBannedUntil(t *testing.T) {
 	snap := mgr.Snapshot()
 	if snap.BanError == nil {
 		t.Fatal("Snapshot.BanError = nil, want non-nil during the ban window")
+		return
 	}
 	if !snap.BannedUntil.Equal(until) {
 		t.Errorf("Snapshot.BannedUntil = %v, want %v", snap.BannedUntil, until)
@@ -708,11 +712,13 @@ func TestClearCooldowns(t *testing.T) {
 	m.CooldownRateLimit(&upstream.RateLimitError{RetryAfter: time.Hour})
 	if m.RateLimitError() == nil {
 		t.Fatal("expected rate-limit lock to be active")
+		return
 	}
 	// A ban supersedes the rate-limit lock (mutually exclusive by design).
 	m.CooldownBan(&upstream.BanError{ResumesAt: now.Add(2 * time.Hour)})
 	if m.RateLimitError() != nil || m.BanError() == nil {
 		t.Fatal("expected ban to supersede rate-limit lock")
+		return
 	}
 	m.ClearCooldowns()
 	if !m.CooldownUntil().IsZero() {
@@ -821,6 +827,7 @@ func TestCooldownIpCappedCapsReAdmits(t *testing.T) {
 	got := mgr.IpCappedError()
 	if got == nil {
 		t.Fatal("IpCappedError() = nil after budget exhausted, want remembered terminal error")
+		return
 	}
 	// The remembered error surfaces the REMAINING window to midnight. Near
 	// Pacific midnight that window is legitimately short — the suite can
@@ -900,6 +907,7 @@ func TestSingleFlightRunAcquisition(t *testing.T) {
 		}
 		if runs[i] == nil {
 			t.Fatalf("goroutine %d returned nil run", i)
+			return
 		}
 		if runs[i].RunID != "run-0001" {
 			t.Errorf("goroutine %d RunID = %q, want run-0001", i, runs[i].RunID)
@@ -955,6 +963,7 @@ func TestSingleFlightRunRotation(t *testing.T) {
 		}
 		if runs[i] == nil {
 			t.Fatalf("goroutine %d returned nil run", i)
+			return
 		}
 		if runs[i].RunID != "run-0002" {
 			t.Errorf("goroutine %d RunID = %q, want run-0002", i, runs[i].RunID)
@@ -1077,6 +1086,7 @@ func TestRunStartedFinishedLogTraceSessionID(t *testing.T) {
 	started := startedRe.FindStringSubmatch(logged())
 	if started == nil {
 		t.Fatalf("no run started line with trace_session_id:\n%s", logged())
+		return
 	}
 
 	eventually(t, "run finished line", func() bool {
@@ -1086,6 +1096,7 @@ func TestRunStartedFinishedLogTraceSessionID(t *testing.T) {
 	finished := finishedRe.FindStringSubmatch(logged())
 	if finished == nil {
 		t.Fatalf("run finished line missing trace_session_id:\n%s", logged())
+		return
 	}
 	if finished[1] != started[1] {
 		t.Errorf("run finished trace_session_id = %q, want the run started value %q", finished[1], started[1])
@@ -1133,6 +1144,7 @@ func TestRunFinishedLogCarriesLifecycleAttrs(t *testing.T) {
 	m := re.FindStringSubmatch(logged())
 	if m == nil {
 		t.Fatalf("run finished record missing lifecycle attrs:\n%s", logged())
+		return
 	}
 	if m[3] != "finish" {
 		t.Errorf("termination = %q, want finish (FINISH queue path)", m[3])
@@ -1190,6 +1202,7 @@ func TestRunFinishedDropLogsTermination(t *testing.T) {
 	m := dropRe.FindStringSubmatch(out)
 	if m == nil {
 		t.Fatalf("no run finished drop record:\n%s", out)
+		return
 	}
 	if m[1] != "1" {
 		t.Errorf("dropped run steps = %s, want 1", m[1])
@@ -1262,6 +1275,7 @@ func TestShutdownAbandonWarnLogsFields(t *testing.T) {
 	m := re.FindStringSubmatch(out)
 	if m == nil {
 		t.Fatalf("abandon warn missing pending_jobs/runs/key:\n%s", out)
+		return
 	}
 	if m[1] != fmt.Sprint(wantPending) || m[2] != fmt.Sprint(wantRuns) {
 		t.Errorf("abandon warn pending_jobs/runs = %s/%s, want %d/%d", m[1], m[2], wantPending, wantRuns)

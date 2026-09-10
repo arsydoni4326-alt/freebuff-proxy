@@ -379,6 +379,7 @@ func TestModelsAnnotationWithQuota(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("model %q not in /v1/models", modelA)
+		return
 	}
 	if !found.Available {
 		t.Errorf("available = false, want true")
@@ -1359,11 +1360,12 @@ func TestModelsEndpointLimitedTier(t *testing.T) {
 		if m.CurrentAccessTier != "limited" {
 			t.Errorf("model %s current_access_tier = %q, want limited", m.ID, m.CurrentAccessTier)
 		}
-		if m.ID == "mimo/mimo-v2.5" {
+		switch m.ID {
+		case "z-ai/glm-5.3-flash", "deepseek/deepseek-v4-flash", "mimo/mimo-v2.5", "upstage/solar-pro4":
 			if !m.Available {
-				t.Errorf("mimo available = false, want true on limited tier")
+				t.Errorf("model %s available = false, want true on limited tier", m.ID)
 			}
-		} else {
+		default:
 			if m.Available {
 				t.Errorf("model %s available = true, want false on limited tier", m.ID)
 			}
@@ -1402,8 +1404,8 @@ func TestModelsEndpointLimitedTierHideUnavailable(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal /v1/models: %v", err)
 	}
-	if len(out.Data) != 1 || out.Data[0].ID != "mimo/mimo-v2.5" {
-		t.Errorf("got models %+v, want only [mimo/mimo-v2.5]", out.Data)
+	if len(out.Data) != 4 {
+		t.Errorf("got %d models (%+v), want 4 limited-tier models", len(out.Data), out.Data)
 	}
 }
 
@@ -1420,24 +1422,23 @@ func TestModelRetrieveLimitedTier(t *testing.T) {
 		t.Fatalf("chat status = %d, want 200: %s", resp.StatusCode, data)
 	}
 
-	// Non-limited model
-	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models/z-ai/glm-5.3-flash", nil, nil)
+	// Non-limited model (luna is full-tier only)
+	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models/openai/gpt-5.6-luna", nil, nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("get glm-5.3-flash status = %d, want 200: %s", resp.StatusCode, data)
+		t.Fatalf("get gpt-5.6-luna status = %d, want 200: %s", resp.StatusCode, data)
 	}
-	var glm struct {
+	var luna struct {
 		ID                string `json:"id"`
 		Available         bool   `json:"available"`
 		Status            string `json:"status"`
 		CurrentAccessTier string `json:"current_access_tier"`
 	}
-	if err := json.Unmarshal(data, &glm); err != nil {
-		t.Fatalf("unmarshal glm: %v", err)
+	if err := json.Unmarshal(data, &luna); err != nil {
+		t.Fatalf("unmarshal luna: %v", err)
 	}
-	if glm.Available || glm.Status != "region_limited" || glm.CurrentAccessTier != "limited" {
-		t.Errorf("glm row = %+v, want available=false, status=region_limited, current_access_tier=limited", glm)
+	if luna.Available || luna.Status != "region_limited" || luna.CurrentAccessTier != "limited" {
+		t.Errorf("luna row = %+v, want available=false, status=region_limited, current_access_tier=limited", luna)
 	}
-
 	// Limited model
 	resp, data = doJSON(t, http.MethodGet, ts.URL+"/v1/models/mimo/mimo-v2.5", nil, nil)
 	if resp.StatusCode != http.StatusOK {
@@ -1489,6 +1490,7 @@ func TestChatRoutingLogsServedModelOnCoercion(t *testing.T) {
 	}
 	if routingEntry == nil {
 		t.Fatal("missing 'chat routing' entry in log ring")
+		return
 	}
 	if gotModel := entryField(*routingEntry, "model"); gotModel != "z-ai/glm-5.3-flash" {
 		t.Errorf("routing model = %q, want z-ai/glm-5.3-flash", gotModel)

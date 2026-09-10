@@ -121,7 +121,7 @@ func TestSignalGuardNoProxySignalHeaders(t *testing.T) {
 	if _, err := client.ProbeAccount(ctx); err != nil {
 		t.Fatalf("ProbeAccount: %v", err)
 	}
-	if err := client.EndSession(ctx); err != nil {
+	if err := client.EndSession(ctx, "inst-1"); err != nil {
 		t.Fatalf("EndSession: %v", err)
 	}
 	if _, err := client.StartRun(ctx, "agent-1"); err != nil {
@@ -213,12 +213,14 @@ func TestSignalGuardSessionPostsModelHeader(t *testing.T) {
 	}
 	if withModel == nil {
 		t.Fatal("no session POST carrying x-freebuff-model recorded")
+		return
 	}
 	if got := withModel.header.Get("x-freebuff-model"); got != model {
 		t.Errorf("session x-freebuff-model = %q, want %q", got, model)
 	}
 	if withoutModel == nil {
 		t.Fatal("no session POST without x-freebuff-model recorded")
+		return
 	}
 	if got := withoutModel.header.Get("x-freebuff-model"); got != "" {
 		t.Errorf("CreateSession x-freebuff-model = %q, want absent", got)
