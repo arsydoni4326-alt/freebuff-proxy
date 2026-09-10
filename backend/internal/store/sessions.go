@@ -88,6 +88,30 @@ func (s *Store) SessionsEmpty() (bool, error) {
 	return n == 0, nil
 }
 
+// ListSessionKeys returns every token hash present in sessions_persist, in
+// no guaranteed order. Used by the session-StateBackend adapter to enumerate
+// persisted blobs for LoadAll without importing session.
+func (s *Store) ListSessionKeys() ([]string, error) {
+	rows, err := s.db.Query(`SELECT token_hash FROM sessions_persist`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list session keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("store: scan session key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return keys, fmt.Errorf("store: session key iteration: %w", err)
+	}
+	return keys, nil
+}
+
 // legacySessionFile is the on-disk shape of .freebuff-session-state.json
 // (see session.storeFile). Entries stay raw: the store never interprets
 // them, so a newer session schema still imports byte-identically.

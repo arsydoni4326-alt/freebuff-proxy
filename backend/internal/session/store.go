@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -20,10 +21,10 @@ const storeVersion = 1
 // as empty instead of being read into memory wholesale.
 const maxStoreFileSize = 8 << 20 // 8 MiB
 
-// persistedState is the on-disk shape of one token's cached session. The
+// PersistedState is the on-disk shape of one token's cached session. The
 // instance id + expiry are the fields that matter for restart-resume; the
 // rest are carried so a resumed session keeps its country/queue view.
-type persistedState struct {
+type PersistedState struct {
 	InstanceID         string                    `json:"instance_id"`
 	Model              string                    `json:"model"`
 	Status             string                    `json:"status"`
@@ -35,7 +36,7 @@ type persistedState struct {
 	CountryCode        string                    `json:"country_code"`
 	CountryBlockReason string                    `json:"country_block_reason"`
 	AccessTier         string                    `json:"access_tier,omitempty"`
-	QuotaByModel       map[string]persistedQuota `json:"quota_by_model,omitempty"`
+	QuotaByModel       map[string]PersistedQuota `json:"quota_by_model,omitempty"`
 	// GlmPromo is the raw upstream glmPromo block ({dailySessions,
 	// endsAt}); "" when absent (issue #178).
 	GlmPromo string `json:"glm_promo,omitempty"`
@@ -51,8 +52,8 @@ type persistedState struct {
 	Standing     *upstream.SessionStanding  `json:"standing,omitempty"`
 }
 
-// persistedQuota is one model's live session quota persisted on disk.
-type persistedQuota struct {
+// PersistedQuota is one model's live session quota persisted on disk.
+type PersistedQuota struct {
 	Model       string             `json:"model"`
 	Limit       float64            `json:"limit"`
 	RecentCount float64            `json:"recent_count"`
@@ -78,7 +79,7 @@ type PersistedRun struct {
 
 type storeFile struct {
 	Version  int                       `json:"version"`
-	Sessions map[string]persistedState `json:"sessions"`
+	Sessions map[string]PersistedState `json:"sessions"`
 	// Runs maps token key → agent id → persisted run (issue #40). Additive
 	// since version 1: old files parse with an empty runs map, and old
 	// binaries ignore the extra field.
@@ -102,7 +103,7 @@ type Store struct {
 	backendKeys map[string]struct{} // keys known to the backend, for deletions
 
 	mu     sync.Mutex
-	data   map[string]persistedState
+	data   map[string]PersistedState
 	runs   map[string]map[string]PersistedRun // token key → agent id → run (issue #40)
 	loaded bool
 	// readFailed is set when a read of the on-disk file failed with a
@@ -118,14 +119,14 @@ type Store struct {
 	// in-window updates survive instead of being silently discarded by the
 	// rebuild (a lost update would leave a restart unable to resume the
 	// session, burning a daily slot). Guarded by mu.
-	pending map[string]*persistedState
+	pending map[string]*PersistedState
 }
 
 // NewStore builds a store backed by path. The file is read lazily on the
 // first Load; NewStore never fails (a missing/unreadable file is treated as
 // empty and a later Save overwrites it).
 func NewStore(path string) *Store {
-	return &Store{path: path, pending: make(map[string]*persistedState), runs: make(map[string]map[string]PersistedRun)}
+	return &Store{path: path, pending: make(map[string]*PersistedState), runs: make(map[string]map[string]PersistedRun)}
 }
 
 // NewStoreWithBackend builds a store whose persistence is backed by the
@@ -134,20 +135,38 @@ func NewStore(path string) *Store {
 // identical: the backend is read lazily on first Load/Save, an unreadable
 // backend retries on the next access.
 func NewStoreWithBackend(backend StateBackend) *Store {
-	return &Store{backend: backend, pending: make(map[string]*persistedState), runs: make(map[string]map[string]PersistedRun), backendKeys: make(map[string]struct{})}
+	return &Store{backend: backend, pending: make(map[string]*PersistedState), runs: make(map[string]map[string]PersistedRun), backendKeys: make(map[string]struct{})}
+}
+
+// NewStoreWithBackendPath is a backward-compatible variant that accepts a
+// path for legacy file import tests. When path is non-empty, the store imports
+// the legacy JSON file on first load (if the backend is a fakeSessionBackend
+// or similar test double). Production code should use NewStoreWithBackend.
+func NewStoreWithBackendPath(backend StateBackend, path string) *Store {
+	s := &Store{backend: backend, pending: make(map[string]*PersistedState), runs: make(map[string]map[string]PersistedRun), backendKeys: make(map[string]struct{})}
+	if path != "" {
+		s.path = path
+	}
+	return s
 }
 
 func (s *Store) loadLocked() {
 	if s.loaded {
 		return
 	}
-	s.data = make(map[string]persistedState)
+	s.data = make(map[string]PersistedState)
 	s.runs = make(map[string]map[string]PersistedRun)
 
 	// Backend mode (Phase 4): read every persisted blob once and decode
-	// each into the in-memory view. A read failure leaves loaded=false so
-	// the next access retries (mirrors the file path's readFailed logic).
+	// each into the in-memory view. If a legacy session path is also set,
+	// import that file into the backend first (import-only: the source
+	// archives to .bak and the backend row wins on collision).
 	if s.backend != nil {
+		if s.path != "" {
+			if err := s.importLegacyFileIntoBackend(); err != nil {
+				slog.Warn("session store: legacy file import failed, proceeding with existing backend data", "path", s.path, "err", err)
+			}
+		}
 		blobs, err := s.backend.LoadAll()
 		if err != nil {
 			s.readFailed = true
@@ -155,7 +174,7 @@ func (s *Store) loadLocked() {
 			return
 		}
 		for key, blob := range blobs {
-			kb, err := unmarshalKvBlob(blob)
+			kb, err := UnmarshalKvBlob(blob)
 			if err != nil {
 				slog.Warn("session store: backend blob parse failed, ignoring", "err", err)
 				continue
@@ -179,6 +198,18 @@ func (s *Store) loadLocked() {
 				}
 			}
 			s.backendKeys[key] = struct{}{}
+		}
+		s.loaded = true
+		s.readFailed = false
+		s.applyPendingLocked()
+		return
+	}
+
+	// Legacy file fallback: import-only when path is set and backend is nil.
+	// The file is archived to .bak on first use and never written again.
+	if s.path != "" {
+		if err := s.importLegacyFileIntoBackend(); err != nil {
+			slog.Warn("session store: legacy file import failed", "path", s.path, "err", err)
 		}
 		s.loaded = true
 		s.readFailed = false
@@ -342,7 +373,7 @@ func (s *Store) Save(key string, cs *cachedState) {
 		}
 		return
 	}
-	s.data[key] = persistedState{
+	s.data[key] = PersistedState{
 		InstanceID:         cs.instanceID,
 		Model:              cs.model,
 		Status:             cs.status,
@@ -358,9 +389,9 @@ func (s *Store) Save(key string, cs *cachedState) {
 	}
 	if len(cs.quotaByModel) > 0 {
 		ps := s.data[key]
-		ps.QuotaByModel = make(map[string]persistedQuota, len(cs.quotaByModel))
+		ps.QuotaByModel = make(map[string]PersistedQuota, len(cs.quotaByModel))
 		for k, q := range cs.quotaByModel {
-			pq := persistedQuota{
+			pq := PersistedQuota{
 				Model:       q.Model,
 				Limit:       q.Limit,
 				RecentCount: q.RecentCount,
@@ -545,41 +576,6 @@ func (s *Store) flushLockedUnlessReadFailed() bool {
 	return false
 }
 
-// recordPendingLocked remembers a mutation that could not be flushed because
-// the file was unreadable (readFailed): the key with the state that was
-// written, or nil for a removal. A later successful loadLocked merges
-// pending back over the disk content so the in-window update survives the
-// reload instead of being lost. Caller holds s.mu.
-func (s *Store) recordPendingLocked(key string, ps *persistedState) {
-	if s.pending == nil {
-		s.pending = make(map[string]*persistedState)
-	}
-	s.pending[key] = ps
-}
-
-// applyPendingLocked merges mutations recorded while the file was unreadable
-// back over the freshly-loaded disk view and persists the result: a nil
-// value removes the key, a non-nil value restores the in-memory update that
-// was never flushed. Without this, a Save/Remove made during the failure
-// window would be silently discarded by the reload, and the following flush
-// would persist WITHOUT it — a restart then fails to resume that session
-// and burns a daily slot. The merged map is flushed immediately so the disk
-// catches up. Caller holds s.mu.
-func (s *Store) applyPendingLocked() {
-	if len(s.pending) == 0 {
-		return
-	}
-	for key, ps := range s.pending {
-		if ps == nil {
-			delete(s.data, key)
-		} else {
-			s.data[key] = *ps
-		}
-	}
-	clear(s.pending)
-	s.flushLocked()
-}
-
 // flushLocked writes the current map atomically. Caller holds s.mu.
 func (s *Store) flushLocked() {
 	// Backend mode (Phase 4): write every current key's blob and delete
@@ -595,7 +591,7 @@ func (s *Store) flushLocked() {
 			if _, ok := s.data[key]; ok {
 				continue // the session pass below carries the runs too
 			}
-			blob, err := marshalKvBlob(kvBlob{Runs: agents})
+			blob, err := MarshalKvBlob(KvBlob{Runs: agents})
 			if err == nil {
 				err = s.backend.SaveState(key, blob)
 			}
@@ -604,8 +600,8 @@ func (s *Store) flushLocked() {
 			}
 		}
 		for key, ps := range s.data {
-			kb := kvBlob{Session: &ps, Runs: s.runs[key]}
-			blob, err := marshalKvBlob(kb)
+			kb := KvBlob{Session: &ps, Runs: s.runs[key]}
+			blob, err := MarshalKvBlob(kb)
 			if err == nil {
 				err = s.backend.SaveState(key, blob)
 			}
@@ -674,4 +670,166 @@ func (s *Store) flushLocked() {
 		_ = os.Remove(tmpName)
 		slog.Warn("session store: rename failed", "path", s.path, "err", err)
 	}
+}
+
+// recordPendingLocked remembers a mutation that could not be flushed because
+// the file was unreadable (readFailed): the key with the state that was
+// written, or nil for a removal. A later successful loadLocked merges
+// pending back over the disk content so the in-window update survives the
+// reload instead of being lost. Caller holds s.mu.
+func (s *Store) recordPendingLocked(key string, ps *PersistedState) {
+	if s.pending == nil {
+		s.pending = make(map[string]*PersistedState)
+	}
+	s.pending[key] = ps
+}
+
+// applyPendingLocked merges mutations recorded while the file was unreadable
+// back over the freshly-loaded disk view and persists the result: a nil
+// value removes the key, a non-nil value restores the in-memory update that
+// was never flushed. Without this, a Save/Remove made during the failure
+// window would be silently discarded by the reload, and the following flush
+// would persist WITHOUT it — a restart then fails to resume that session
+// and burns a daily slot. The merged map is flushed immediately so the disk
+// catches up. Caller holds s.mu.
+func (s *Store) applyPendingLocked() {
+	if len(s.pending) == 0 {
+		return
+	}
+	for key, ps := range s.pending {
+		if ps == nil {
+			delete(s.data, key)
+		} else {
+			s.data[key] = *ps
+		}
+	}
+	clear(s.pending)
+	s.flushLocked()
+}
+
+// importLegacyFileIntoBackend imports a legacy .freebuff-session-state.json
+// file into the backend (if set) or loads it directly into memory (if backend
+// is nil). The source file is archived to .bak on first use and never written
+// again. When the file doesn't exist, this is a no-op.
+func (s *Store) importLegacyFileIntoBackend() error {
+	if s.path == "" {
+		return nil
+	}
+
+	// Read the legacy file.
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // No legacy file to import.
+		}
+		return fmt.Errorf("session store: read legacy file: %w", err)
+	}
+
+	// Parse the legacy file format.
+	var file storeFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		return fmt.Errorf("session store: parse legacy file: %w", err)
+	}
+
+	if file.Version != storeVersion {
+		return fmt.Errorf("session store: legacy file version mismatch: want %d, got %d", storeVersion, file.Version)
+	}
+
+	// Import sessions into backend or load directly.
+	if s.backend != nil {
+		// Backend mode: save each session to the backend.
+		if file.Sessions != nil {
+			for key, ps := range file.Sessions {
+				// Skip entries that cannot be resumed.
+				if ps.Status == "active" && ps.InstanceID == "" {
+					continue
+				}
+				kb := KvBlob{Session: &ps, Runs: nil}
+				if file.Runs != nil {
+					if agents, ok := file.Runs[key]; ok && len(agents) > 0 {
+						runMap := make(map[string]PersistedRun, len(agents))
+						for agentID, pr := range agents {
+							if pr.RunID != "" {
+								runMap[agentID] = pr
+							}
+						}
+						if len(runMap) > 0 {
+							kb.Runs = runMap
+						}
+					}
+				}
+				blob, err := MarshalKvBlob(kb)
+				if err != nil {
+					return fmt.Errorf("session store: marshal legacy session %s: %w", key, err)
+				}
+				if err := s.backend.SaveState(key, blob); err != nil {
+					return fmt.Errorf("session store: save legacy session %s to backend: %w", key, err)
+				}
+				s.backendKeys[key] = struct{}{}
+			}
+		}
+		// Also import runs-only entries (no session data).
+		if file.Runs != nil {
+			for key, agents := range file.Runs {
+				if _, ok := file.Sessions[key]; ok {
+					continue // Already handled above.
+				}
+				if len(agents) == 0 {
+					continue
+				}
+				runMap := make(map[string]PersistedRun, len(agents))
+				for agentID, pr := range agents {
+					if pr.RunID != "" {
+						runMap[agentID] = pr
+					}
+				}
+				if len(runMap) > 0 {
+					kb := KvBlob{Session: nil, Runs: runMap}
+					blob, err := MarshalKvBlob(kb)
+					if err != nil {
+						return fmt.Errorf("session store: marshal legacy runs %s: %w", key, err)
+					}
+					if err := s.backend.SaveState(key, blob); err != nil {
+						return fmt.Errorf("session store: save legacy runs %s to backend: %w", key, err)
+					}
+					s.backendKeys[key] = struct{}{}
+				}
+			}
+		}
+	} else {
+		// No backend: load directly into memory.
+		if file.Sessions != nil {
+			for key, ps := range file.Sessions {
+				if ps.Status == "active" && ps.InstanceID == "" {
+					continue
+				}
+				s.data[key] = ps
+			}
+		}
+		if file.Runs != nil {
+			for key, agents := range file.Runs {
+				if len(agents) == 0 {
+					continue
+				}
+				runMap := make(map[string]PersistedRun, len(agents))
+				for agentID, pr := range agents {
+					if pr.RunID != "" {
+						runMap[agentID] = pr
+					}
+				}
+				if len(runMap) > 0 {
+					s.runs[key] = runMap
+				}
+			}
+		}
+	}
+
+	// Archive the legacy file to .bak.
+	bak := s.path + ".bak"
+	_ = os.Remove(bak)
+	if err := os.Rename(s.path, bak); err != nil {
+		return fmt.Errorf("session store: archive legacy file: %w", err)
+	}
+
+	return nil
 }

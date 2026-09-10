@@ -176,11 +176,12 @@ func Serve(configPath string, verbose bool, version string) int {
 			stateFile = abs
 		}
 		if histStore != nil {
-			// *history.Store satisfies session.SessionBackend
+			// *history.Store satisfies session.StateBackend
 			// structurally (opaque blobs, SHA-256 keys); the session
 			// package never imports the store package (archtest leaf).
-			store = session.NewStoreWithBackend(stateFile, histStore)
-			logger.Info("session state persistence enabled (dashboard store)", "file", stateFile)
+			// path param is unused in backend mode.
+			store = session.NewStoreWithBackend(storeSessionBackend{histStore})
+			logger.Info("session state persistence enabled (dashboard store)", "path", stateFile)
 		} else {
 			// DB unavailable: memory-only for this run. The legacy file
 			// still seeds memory on first use, never written.

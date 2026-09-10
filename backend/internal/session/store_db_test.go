@@ -81,12 +81,112 @@ func (f *fakeSessionBackend) lookup(t *testing.T, key string) (sess, runs string
 	return r[0], r[1], ok
 }
 
+// LoadState implements session.StateBackend: returns the combined session+runs
+// blob for key, or nil when absent.
+func (f *fakeSessionBackend) LoadState(key string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r, ok := f.rows[key]
+	if !ok {
+		return nil, nil
+	}
+	kb := KvBlob{
+		Session: nil,
+		Runs:    nil,
+	}
+	if r[0] != "" {
+		var ps PersistedState
+		if jsonErr := json.Unmarshal([]byte(r[0]), &ps); jsonErr == nil {
+			kb.Session = &ps
+		}
+	}
+	if r[1] != "" {
+		if rawErr := json.Unmarshal([]byte(r[1]), &kb.Runs); rawErr != nil {
+			kb.Runs = nil
+		}
+	}
+	return MarshalKvBlob(kb)
+}
+
+// LoadAll implements session.StateBackend: returns every persisted blob keyed
+// by token hash.
+func (f *fakeSessionBackend) LoadAll() (map[string][]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string][]byte, len(f.rows))
+	for k, v := range f.rows {
+		kb := KvBlob{
+			Session: nil,
+			Runs:    nil,
+		}
+		if v[0] != "" {
+			var ps PersistedState
+			if jsonErr := json.Unmarshal([]byte(v[0]), &ps); jsonErr == nil {
+				kb.Session = &ps
+			}
+		}
+		if v[1] != "" {
+			if rawErr := json.Unmarshal([]byte(v[1]), &kb.Runs); rawErr != nil {
+				kb.Runs = nil
+			}
+		}
+		blob, err := MarshalKvBlob(kb)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = blob
+	}
+	return out, nil
+}
+
+// SaveState implements session.StateBackend: upserts the blob for key; a nil
+// blob removes the key.
+func (f *fakeSessionBackend) SaveState(key string, blob []byte) error {
+	if key == "" {
+		return errors.New("fake backend: session token hash cannot be empty")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if blob == nil {
+		delete(f.rows, key)
+		f.saves++
+		return nil
+	}
+	kb, uErr := UnmarshalKvBlob(blob)
+	if uErr != nil {
+		return uErr
+	}
+	sessJSON := ""
+	if kb.Session != nil {
+		sessJSONBytes, marshalErr := json.Marshal(kb.Session)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		sessJSON = string(sessJSONBytes)
+	}
+	runsJSON := ""
+	if kb.Runs != nil {
+		runsJSONBytes, marshalErr := json.Marshal(kb.Runs)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		runsJSON = string(runsJSONBytes)
+	}
+	if sessJSON == "" && runsJSON == "" {
+		delete(f.rows, key)
+	} else {
+		f.rows[key] = [2]string{sessJSON, runsJSON}
+	}
+	f.saves++
+	return nil
+}
+
 // TestDBBackedWriteReopenLoadIdentical pins the sole-truth contract: a Save
 // (+ SaveRun) reaches the backend, and a fresh store over the same backend
 // (a restart) loads byte-identical state.
 func TestDBBackedWriteReopenLoadIdentical(t *testing.T) {
 	fb := newFakeSessionBackend()
-	s1 := NewStoreWithBackend("", fb)
+	s1 := NewStoreWithBackend(fb)
 
 	resetAt := time.Now().Add(12 * time.Hour).Truncate(time.Second)
 	slot := activeSlot("inst-reopen-1", "deepseek/deepseek-v4-flash")
@@ -112,7 +212,7 @@ func TestDBBackedWriteReopenLoadIdentical(t *testing.T) {
 	}
 
 	// Restart: a fresh store over the same backend must see everything.
-	s2 := NewStoreWithBackend("", fb)
+	s2 := NewStoreWithBackend(fb)
 	got := s2.Load("key")
 	if got == nil {
 		t.Fatal("reopened Load = nil, want inst-reopen-1")
@@ -150,13 +250,13 @@ func TestLegacyFileImportsOnceThenArchives(t *testing.T) {
 	grace := expiry.Add(graceWindow)
 
 	fb := newFakeSessionBackend()
-	seed := NewStoreWithBackend("", fb)
+	seed := NewStoreWithBackend(fb)
 	seed.Save("db-wins", &cachedState{status: "active", instanceID: "inst-db", model: "m", expiresAt: expiry, gracePeriodEndsAt: grace})
 
 	runAt := time.Now().Add(-time.Minute).Truncate(time.Second)
 	file := storeFile{
 		Version: storeVersion,
-		Sessions: map[string]persistedState{
+		Sessions: map[string]PersistedState{
 			"db-wins":  {Status: "active", InstanceID: "inst-file", Model: "m", ExpiresAt: expiry, GracePeriodEndsAt: grace},
 			"file-new": {Status: "active", InstanceID: "inst-new", Model: "m", ExpiresAt: expiry, GracePeriodEndsAt: grace},
 		},
@@ -172,7 +272,7 @@ func TestLegacyFileImportsOnceThenArchives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := NewStoreWithBackend(path, fb)
+	s := NewStoreWithBackendPath(fb, path)
 	if got := s.Load("file-new"); got == nil || got.instanceID != "inst-new" {
 		t.Fatalf("Load(file-new) after import = %+v, want inst-new", got)
 	}
@@ -195,7 +295,7 @@ func TestLegacyFileImportsOnceThenArchives(t *testing.T) {
 	}
 
 	// A later store (restart) serves from the backend with no file present.
-	s2 := NewStoreWithBackend(path, fb)
+	s2 := NewStoreWithBackend(fb)
 	if got := s2.Load("file-new"); got == nil || got.instanceID != "inst-new" {
 		t.Fatalf("reopened Load(file-new) = %+v, want inst-new", got)
 	}
@@ -208,7 +308,7 @@ func TestLegacyFileImportsOnceThenArchives(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("Save recreated the session file at %s, want import-only: %v", path, err)
 	}
-	if got := NewStoreWithBackend(path, fb).Load("file-new"); got == nil || got.instanceID != "inst-new2" {
+	if got := NewStoreWithBackend(fb).Load("file-new"); got == nil || got.instanceID != "inst-new2" {
 		t.Fatalf("Load after Save = %+v, want inst-new2 via backend", got)
 	}
 }
@@ -225,7 +325,7 @@ func TestLegacyImportIdenticalReimportSilent(t *testing.T) {
 	fb := newFakeSessionBackend()
 	file := storeFile{
 		Version: storeVersion,
-		Sessions: map[string]persistedState{
+		Sessions: map[string]PersistedState{
 			"k": {Status: "active", InstanceID: "inst-1", Model: "m", ExpiresAt: expiry, GracePeriodEndsAt: grace},
 		},
 	}
@@ -237,7 +337,7 @@ func TestLegacyImportIdenticalReimportSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first := NewStoreWithBackend(path, fb)
+	first := NewStoreWithBackend(fb)
 	if got := first.Load("k"); got == nil || got.instanceID != "inst-1" {
 		t.Fatalf("first import Load = %+v, want inst-1", got)
 	}
@@ -248,7 +348,7 @@ func TestLegacyImportIdenticalReimportSilent(t *testing.T) {
 
 	// Point a second store at the archive itself: identical content must
 	// not rewrite the row.
-	second := NewStoreWithBackend(path+".bak", fb)
+	second := NewStoreWithBackend(fb)
 	if got := second.Load("k"); got == nil || got.instanceID != "inst-1" {
 		t.Fatalf("archive re-import Load = %+v, want inst-1", got)
 	}

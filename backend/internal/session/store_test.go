@@ -606,7 +606,7 @@ func TestStoreVersionMismatchIgnoredThenReplaced(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	file := storeFile{
 		Version: storeVersion + 1,
-		Sessions: map[string]persistedState{
+		Sessions: map[string]PersistedState{
 			"old": {Status: "active", InstanceID: "inst-old", ExpiresAt: time.Now().Add(time.Hour)},
 		},
 	}
@@ -667,7 +667,7 @@ func TestStoreDropsActiveEntryWithoutInstanceID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	file := storeFile{
 		Version: storeVersion,
-		Sessions: map[string]persistedState{
+		Sessions: map[string]PersistedState{
 			"bad":  {Status: "active", InstanceID: "", ExpiresAt: time.Now().Add(time.Hour)},
 			"good": {Status: "active", InstanceID: "inst-1", ExpiresAt: time.Now().Add(time.Hour)},
 		},
