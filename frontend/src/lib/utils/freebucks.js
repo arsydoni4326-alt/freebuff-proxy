@@ -67,10 +67,10 @@ export const MODEL_METADATA = {
     badges: ["Reasoning: high", "NEW"],
     disclaimer: "May use data for AI training",
   },
-  "meta/muse-spark-1.3-contributor": {
-    displayName: "Muse Spark 1.3",
-    tagline: "Queues, then falls back",
-    badges: ["Reasoning: xhigh", "NEW"],
+  "meta/muse-spark-1.2-contributor": {
+    displayName: "Muse Spark 1.2",
+    tagline: "Queue",
+    badges: ["Reasoning: xhigh"],
     disclaimer: "May use data for AI training",
   },
   "openai/gpt-5.6-luna": {
@@ -145,17 +145,17 @@ export function freebucksHeaderLine(fb, nowMs, t = (s) => s) {
   }
   return parts.join(" · ");
 }
-export function freebucksPriceLabel(price) {
-  return `${formatFreebucks(price)} Freebucks/hr`;
-}
 
-export function modelDisplayInfo(modelId, freebucks) {
+export function modelDisplayInfo(modelId, freebucks, names) {
   const meta = MODEL_METADATA[modelId] || {
     displayName: modelId,
     tagline: "",
     badges: [],
     disclaimer: "",
   };
+  // Modelcat names ride /admin/api/models display_name; the static table
+  // stays as fallback for rows the catalog fetch never returned.
+  const displayName = names?.[modelId] || meta.displayName;
   const price = freebucks?.prices?.[modelId] ?? 0;
   const customNotice = freebucks?.price_notices?.[modelId];
   const notice = customNotice || meta.disclaimer || "";
@@ -165,7 +165,7 @@ export function modelDisplayInfo(modelId, freebucks) {
   const shortfall = Math.max(0, price - balance);
   return {
     id: modelId,
-    displayName: meta.displayName,
+    displayName,
     tagline: meta.tagline,
     badges: meta.badges,
     notice,
@@ -175,10 +175,10 @@ export function modelDisplayInfo(modelId, freebucks) {
   };
 }
 
-export function sortModelsByPrice(modelIds, freebucks) {
+export function sortModelsByPrice(modelIds, freebucks, names) {
   if (!Array.isArray(modelIds)) return [];
   const priceOf = (id) => freebucks?.prices?.[id] ?? Number.POSITIVE_INFINITY;
-  const nameOf = (id) => MODEL_METADATA[id]?.displayName || id;
+  const nameOf = (id) => names?.[id] || MODEL_METADATA[id]?.displayName || id;
   return [...modelIds].sort(
     (a, b) => priceOf(a) - priceOf(b) || nameOf(a).localeCompare(nameOf(b)),
   );

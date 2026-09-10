@@ -15,6 +15,10 @@
   import { adminApi, tokenActions } from "../api/paths.js";
   import { fetchMaturityHistory, historyKindTone } from "../utils/history.js";
   import {
+    touchOptions as sharedTouchOptions,
+    touchLabel,
+  } from "../utils/touchModels.js";
+  import {
     tokensData as tokensStore,
     tokensError as tokensErrorStore,
     ensureTokensStore,
@@ -33,6 +37,9 @@
   // header notice. Settings renders the toggle itself (catalog Essential).
   let globalEnabled = $state(true);
   let globalLoaded = $state(false);
+  // Resolved global MATURITY_TOUCH_MODEL for the per-card "Global default"
+  // option label: effective snapshot first, raw .env fallback, "" = unknown.
+  let globalTouchModel = $state("");
 
   // Touch-model candidates: served models the gateway can admit (same
   // usable filter as Quota Tracker: a live agent binding, no withdrawn
@@ -46,6 +53,7 @@
   let drafts = $state({});
   let saving = $state({});
   let touching = $state({});
+  let resetting = $state({});
   let actionMessage = $state("");
   let actionOK = $state(true);
 
@@ -53,6 +61,8 @@
   // when its card renders (cards are always expanded), never on the
   // 10s poll.
   let histByIdx = $state({});
+  // History fold state per card (default folded, latest event visible).
+  let histOpen = $state({});
   let histPending = new SvelteSet();
 
   $effect(() => {
@@ -109,45 +119,11 @@
     return isNaN(d) ? "—" : d.toLocaleString();
   }
 
-  // Served touch candidates, cheapest-Freebucks-cost first: the rows the
-  // gateway can admit (live agent binding, served, never the referral
-  // grant). Server order already sorts cheapest-first, so partition
-  // unmetered-capable rows ahead of the premium pool without re-sorting.
-  function touchCandidates() {
-    const rows = (modelRows ?? []).filter(
-      (m) => m?.agent && m?.served !== false && m?.pool !== "referral",
-    );
-    return [
-      ...rows.filter((m) => m.pool !== "premium"),
-      ...rows.filter((m) => m.pool === "premium"),
-    ];
-  }
-
-  // Server-reported cost class for one candidate row (never invented:
-  // price_label/quota/pool straight from /admin/api/models, premium pool
-  // named as the pool it spends).
-  function touchCostClass(m) {
-    if (!m) return "";
-    if (m.pool === "premium") return "premium pool";
-    return m.price_label || m.quota || m.pool || "";
-  }
-
-  function touchLabel(m) {
-    const cls = touchCostClass(m);
-    return cls ? `${m.id} (${cls})` : m.id;
-  }
-
-  // Fail-open options for one card: live candidates when the catalog
-  // loaded, else the drafted value alone so the select never empties.
+  // Touch-model options live in utils/touchModels.js (shared with the
+  // Settings → Advanced global MATURITY_TOUCH_MODEL select so both
+  // dropdowns stay identical).
   function touchOptions(d) {
-    const cands = touchCandidates();
-    if (cands.length > 0) return cands;
-    if (d?.touchModel) {
-      return [
-        { id: d.touchModel, price_label: "", quota: "", pool: "unlimited" },
-      ];
-    }
-    return [];
+    return sharedTouchOptions(modelRows, d?.touchModel ?? "");
   }
 
   async function save(idx) {
@@ -196,6 +172,26 @@
     }
   }
 
+  async function resetWarn(idx) {
+    if (resetting[idx]) return;
+    resetting[idx] = true;
+    actionMessage = "";
+    try {
+      const res = await postAPI(tokenActions.maturityWarnReset(idx), {});
+      if (res && res.ok === false)
+        throw new Error(res.message || "Reset rejected");
+      actionOK = true;
+      actionMessage = $tr("Warning cleared for Account #{idx}", {
+        idx: idx + 1,
+      });
+      await refreshTokens();
+    } catch (e) {
+      actionOK = false;
+      actionMessage = e?.message || String(e);
+    } finally {
+      resetting[idx] = false;
+    }
+  }
   onMount(() => {
     recordPageVisit("maturity");
     const release = ensureTokensStore();
@@ -231,6 +227,21 @@
             globalEnabled = true;
           }
         }
+        // Effective snapshot wins (it reflects the live value incl. any DB
+        // overlay); fall back to the raw .env line. Masked secret-style
+        // display values ("N token(s)") never name a model, so ignore them.
+        const effTouch = (cfgRes?.effective || []).find(
+          (e) => e.key === "MATURITY_TOUCH_MODEL",
+        );
+        const effRaw =
+          effTouch?.value !== undefined && effTouch?.value !== null
+            ? String(effTouch.value).trim()
+            : "";
+        const envRaw = (
+          getEnvValue(content, "MATURITY_TOUCH_MODEL") ?? ""
+        ).trim();
+        const resolved = effRaw && !effRaw.includes("(") ? effRaw : envRaw;
+        globalTouchModel = resolved.includes("(") ? "" : resolved;
       } catch {
         globalEnabled = false;
       } finally {
@@ -298,7 +309,7 @@
       >
         {#snippet actions()}
           {@const streakTarget = m?.target ?? d.target ?? 7}
-          <span class="flex flex-wrap items-center justify-end gap-1.5">
+          <span class="flex shrink-0 flex-nowrap items-center gap-1.5">
             {#if m?.badge}
               <StatusBadge tone={badgeTone(m.badge)} status={m.badge} />
             {:else}
@@ -310,10 +321,17 @@
             {#if m?.warn}
               <StatusBadge tone="bad" status={$tr("Touch not advancing")} />
             {/if}
+            <!-- Dots stay for never-enrolled accounts (consistent geometry,
+              0/7 reads honestly as nothing banked); the tooltip explains
+              what the count measures in each case. -->
             <Pips
               value={t.streak ?? 0}
               total={streakTarget}
-              label={$tr("Current streak / target")}
+              label={m
+                ? $tr("Daily touches banked toward the target (streak/target)")
+                : $tr(
+                    "Streak/target counts daily touches once enrolled — nothing banked yet",
+                  )}
             />
           </span>
         {/snippet}
@@ -366,14 +384,39 @@
                   idx: idx + 1,
                 })}
                 title={$tr(
-                  "Per-token touch model (cheapest first, premium pool last). Empty uses the global MATURITY_TOUCH_MODEL fallback.",
+                  "Per-token touch model (cheapest first, priced rows last). Empty uses the global default from Settings → Advanced → Maturity Touch Model.",
                 )}
               >
-                <option value="">{$tr("Global default")}</option>
+                <option value="">
+                  {globalTouchModel
+                    ? $tr("Global default ({model})", {
+                        model: globalTouchModel,
+                      })
+                    : $tr("Global default")}
+                </option>
                 {#each touchOptions(d) as o (o.id)}
                   <option value={o.id}>{touchLabel(o)}</option>
                 {/each}
               </select>
+              <!-- Jump link to the exact Settings row that owns the global. The
+                click stashes a focus key; AdvancedSettings scrolls to the row
+                and focuses its control on mount. -->
+              <a
+                href="#settings"
+                class="fp-num text-[11px] text-[var(--fp-dim)] underline underline-offset-2 hover:text-[var(--fp-fg)]"
+                onclick={() => {
+                  try {
+                    sessionStorage.setItem(
+                      "fp-settings-focus",
+                      "MATURITY_TOUCH_MODEL",
+                    );
+                  } catch {
+                    /* storage blocked: plain navigation still lands on Settings */
+                  }
+                }}
+              >
+                {$tr("Settings → Advanced → Maturity Touch Model")}
+              </a>
             </FieldBox>
           </div>
           <div
@@ -400,6 +443,20 @@
               >
                 {$tr("Touch now")}
               </Button>
+              {#if m?.warn}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={!!resetting[idx]}
+                  loading={!!resetting[idx]}
+                  onclick={() => resetWarn(idx)}
+                  title={$tr(
+                    "Clear the non-advance warning and re-arm the daily loop (config unchanged)",
+                  )}
+                >
+                  {$tr("Reset warning")}
+                </Button>
+              {/if}
               <Button
                 variant="primary"
                 size="sm"
@@ -412,13 +469,15 @@
             </span>
           </div>
           {#if (histByIdx[idx] ?? []).length > 0}
+            {@const evs = (histByIdx[idx] ?? []).slice(-5)}
+            {@const open = !!histOpen[idx]}
             <ul
               class="flex flex-col gap-1.5 border-t border-[var(--fp-border)]/60 pt-2.5"
               aria-label={$tr("Maturity history for Account #{idx}", {
                 idx: idx + 1,
               })}
             >
-              {#each histByIdx[idx] as ev (ev.ts + ev.kind + ev.detail)}
+              {#each open ? evs : evs.slice(-1) as ev (ev.ts + ev.kind + ev.detail)}
                 <li
                   class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs"
                 >
@@ -435,6 +494,18 @@
                 </li>
               {/each}
             </ul>
+            {#if evs.length > 1}
+              <button
+                type="button"
+                class="self-start text-xs font-mono text-[var(--fp-dim)] hover:text-[var(--fp-fg)]"
+                onclick={() => (histOpen[idx] = !open)}
+                aria-expanded={open}
+              >
+                {open
+                  ? $tr("Show less")
+                  : $tr("Show {n} more", { n: evs.length - 1 })}
+              </button>
+            {/if}
           {/if}
         </div>
       </Card>

@@ -35,6 +35,8 @@ func (c Config) Validate() error {
 		return errors.New("TRANSIENT_RETRIES cannot be negative")
 	case c.SessionCreateMaxParallelGlobal < 0 || c.SessionCreateMaxParallelPerModel < 0:
 		return errors.New("SESSION_CREATE_MAX_PARALLEL_GLOBAL/PER_MODEL cannot be negative (0 = unlimited)")
+	case c.ChatMaxInflightMetered < 0 || c.ChatMaxInflightUnmetered < 0:
+		return errors.New("CHAT_MAX_INFLIGHT_METERED/UNMETERED cannot be negative (0 = unlimited)")
 	case c.RunFinishQueueSize < 0 || c.RunsDrainQueueCap < 0:
 		return errors.New("RUN_FINISH_QUEUE_SIZE/RUNS_DRAIN_QUEUE_CAP cannot be negative (0 = default)")
 	case c.SessionPersist && strings.TrimSpace(c.SessionStateFile) == "":
@@ -152,8 +154,8 @@ func (c Config) Validate() error {
 	}
 
 	// The maturity touch model must look like a catalog id
-	// (provider/model). Whether it is actually served and unmetered
-	// (never burns premium quota) is enforced where modelcat is visible —
+	// (provider/model). Whether it is actually served and unpriced
+	// (never spends Freebucks) is enforced where modelcat is visible —
 	// the pool skips misconfigured touches with a warn log and the admin
 	// maturity endpoint rejects them (config is a bottom-layer package
 	// and must not import modelcat).

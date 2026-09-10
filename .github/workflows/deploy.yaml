@@ -73,8 +73,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           file: ./Dockerfile
           build-args: |
-            APP_VERSION=${{ steps.git_meta.outputs.VERSION }}
-            APP_COMMIT=${{ steps.git_meta.outputs.COMMIT }}
+            VERSION=${{ steps.git_meta.outputs.VERSION }}
+            COMMIT=${{ steps.git_meta.outputs.COMMIT }}
           # platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

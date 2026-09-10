@@ -2,7 +2,7 @@
 #
 #  Wire drift is additionally classified by scripts/review-wire-drift.sh:
 #  COMMENT-ONLY (docs) vs FUNCTIONAL (needs a Go-side port).
-#  1. **Registry pin drift** (the 5 files in backend/internal/registry/testdata/upstream/):
+#  1. **Registry pin drift** (the 6 files in backend/internal/registry/testdata/upstream/):
 #     auto-open a PR that runs sync-upstream so the change lands in front of a
 #     human reviewer. Idempotent: reruns reuse the same branch + open PR.
 #  2. **Wire-shape file drift** (freebuff-trust.ts, foreign-client-signals.ts,
@@ -103,6 +103,37 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat "$DRIFT_REPORT" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  codegen-parity:
+    name: Generated files match wiregen output
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          cache: false
+
+      - name: Regenerate from snapshots and diff
+        run: |
+          # The manifest SHA is the source of truth: cmd/wiregen refuses any
+          # other -upstream value, so regen here always uses the committed
+          # snapshots. A diff means someone edited a _gen file by hand or
+          # re-pinned snapshots without regenerating.
+          sha=$(jq -r .upstream_sha backend/internal/wirefacts/testdata/wire/snapshots.json)
+          go run ./backend/cmd/wiregen -upstream "$sha"
+          git diff --exit-code -- \
+            backend/internal/wirefacts/wirefacts_gen.go \
+            backend/internal/modelcat/catalog_gen.go \
+            backend/internal/upstream/wirecodes_gen.go \
+            backend/internal/upstream/notices_gen.go \
+            backend/internal/convert/toolnames_gen.go \
+          || { echo "::error::Generated files are stale - run 'go run ./backend/cmd/wiregen -upstream $sha' (or go generate ./...) and commit the result."; exit 1; }
 
   open-drift-pr:
     name: Open sync PR (registry drift)

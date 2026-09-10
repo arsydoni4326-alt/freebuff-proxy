@@ -218,13 +218,16 @@ test.describe("account maturity", () => {
     await expect(
       page.getByRole("heading", { name: "Account Maturity" }),
     ).toBeVisible();
-    // Timelines render with the always-expanded cards.
+    // Timeline folds by default: latest event visible, older events behind
+    // the expander (capped at 5 recent).
     const timeline = page.getByRole("list", {
       name: "Maturity history for Account #1",
     });
     await expect(timeline).toBeVisible();
-    await expect(timeline.getByText("admit ok")).toBeVisible();
     await expect(timeline.getByText("enabled target=7")).toBeVisible();
+    await expect(timeline.getByText("admit ok")).toBeHidden();
+    await page.getByRole("button", { name: "Show 1 more" }).click();
+    await expect(timeline.getByText("admit ok")).toBeVisible();
   });
   test("maturity card offers the per-token touch model select", async ({
     page,
@@ -254,8 +257,8 @@ test.describe("account maturity", () => {
     const options = await picker.locator("option").allTextContents();
     // Served models labeled with their server-reported cost class.
     expect(options).toContain("upstage/solar-pro4 (0 Freebucks/hr)");
-    expect(options).toContain("openai/gpt-5.6-luna (premium pool)");
-    // Cheapest-Freebucks-cost first, premium pool last.
+    expect(options).toContain("openai/gpt-5.6-luna (20 Freebucks/hr)");
+    // Cheapest-Freebucks-cost first, priced rows last.
     const solarIdx = options.findIndex((o) =>
       o.startsWith("upstage/solar-pro4"),
     );
@@ -266,6 +269,58 @@ test.describe("account maturity", () => {
     expect(lunaIdx).toBeGreaterThan(solarIdx);
     // No mode select: the Touch box is model-select-only, mode rides the save.
     await expect(page.getByLabel("Touch mode for Account #1")).toHaveCount(0);
+  });
+  test("maturity touch select names the global default and links to its Settings row", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(maturityTokens()),
+      });
+    });
+    await page.unroute("**/admin/api/config");
+    await page.route("**/admin/api/config", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          env_content: "AUTH_TOKENS=a,b\nMATURITY_ENABLED=true\n",
+          has_env_file: true,
+          effective: [
+            { key: "MATURITY_ENABLED", value: "true", secret: false },
+            {
+              key: "MATURITY_TOUCH_MODEL",
+              value: "z-ai/glm-5.3-flash",
+              secret: false,
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto("http://127.0.0.1:4173/admin/#maturity");
+    const picker = page.getByLabel("Touch model for Account #1");
+    await expect(picker).toBeVisible();
+    // The effective global is visible inline, not buried in a tooltip.
+    await expect(picker.locator("option").first()).toHaveText(
+      "Global default (z-ai/glm-5.3-flash)",
+    );
+
+    // The jump link lands on the exact Settings row and focuses its control.
+    await page
+      .getByRole("link", {
+        name: "Settings → Advanced → Maturity Touch Model",
+      })
+      .first()
+      .click();
+    await expect(page).toHaveURL(/admin\/#settings/);
+    await expect(page.locator("#setting-MATURITY_TOUCH_MODEL")).toBeVisible();
+    await expect(page.getByLabel("MATURITY_TOUCH_MODEL")).toBeFocused();
   });
 
   test("maturity cards render expanded with no toggle", async ({ page }) => {
@@ -327,6 +382,7 @@ test.describe("account maturity", () => {
       name: "Maturity history for Account #1",
     });
     await expect(timeline).toBeVisible();
+    await page.getByRole("button", { name: "Show 1 more" }).click();
     await expect(timeline.getByText("admit ok")).toBeVisible();
     // Long descriptions must wrap instead of clipping header actions
     // (Pips 0/7 case): no card header may overflow horizontally.
