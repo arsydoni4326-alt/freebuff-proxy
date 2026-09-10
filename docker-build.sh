@@ -65,7 +65,6 @@ case "$choice" in
     -v "$(pwd)/.freebuff-session-state.json:/app/.freebuff-session-state.json" \
     -v "$(pwd)/config.json:/app/config.json" \
     -v "$(pwd)/data:/app/data" \
-    ghcr.io/arsydoni4326-alt/freebuff-proxy:latest 
     --network host \
     $IMAGE_NAME
     ;;

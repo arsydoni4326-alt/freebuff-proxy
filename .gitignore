@@ -109,3 +109,4 @@ skills-lock.json
 # Windows build backups (rename-aside of locked exe)
 *.exe~
 API_Keys*
+data
