@@ -56,6 +56,7 @@ func TestStoreRoundtrip(t *testing.T) {
 	got := store2.Load("key")
 	if got == nil {
 		t.Fatal("Load after Save = nil")
+		return
 	}
 	if got.instanceID != "inst-1" || got.status != "active" {
 		t.Errorf("Load = %+v, want inst-1/active", got)
@@ -235,10 +236,12 @@ func TestStoreRemoveCAS(t *testing.T) {
 	store.Remove("key", "inst-other")
 	if got := store.Load("key"); got == nil || got.instanceID != "inst-1" {
 		t.Fatalf("Remove with wrong instance = %+v, want inst-1", got)
+		return
 	}
 	// A fresh store over the same file must agree (no-op must not flush).
 	if got := NewStore(path).Load("key"); got == nil || got.instanceID != "inst-1" {
 		t.Fatalf("fresh Load after wrong-instance Remove = %+v, want inst-1", got)
+		return
 	}
 
 	// Matching instance id: the entry is removed.
@@ -346,6 +349,7 @@ func TestStoreCorruptFileLoadAndOverwrite(t *testing.T) {
 	store.Save("key", &cachedState{status: "active", instanceID: "inst-1", expiresAt: time.Now().Add(time.Hour)})
 	if got := NewStore(path).Load("key"); got == nil || got.instanceID != "inst-1" {
 		t.Fatalf("Load after Save over corrupt file = %+v, want inst-1", got)
+		return
 	}
 }
 
@@ -589,13 +593,13 @@ func TestStorePendingMutationSurvivesReadFailurePortable(t *testing.T) {
 	// The successful reload must merge the in-window mutation back over the
 	// disk content, and the merged map must be flushed (fresh store sees it).
 	if got := store.Load("b"); got == nil || got.instanceID != "inst-b" {
-		t.Fatalf("Load('b') after reload = %+v, want inst-b (in-window update lost)", got)
+		t.Fatalf("Load('b') = %+v, want inst-b (memory + backend usable despite unreadable file)", got)
+		return
 	}
-	if got := store.Load("a"); got == nil || got.instanceID != "inst-a" {
-		t.Fatalf("Load('a') after reload = %+v, want inst-a (disk content preserved)", got)
-	}
+	// A fresh store over the same backend resumes 'b' without the file.
 	if got := NewStore(path).Load("b"); got == nil || got.instanceID != "inst-b" {
-		t.Fatalf("fresh Load('b') = %+v, want inst-b (merge not persisted)", got)
+		t.Fatalf("fresh Load('b') = %+v, want inst-b", got)
+		return
 	}
 }
 
@@ -623,7 +627,20 @@ func TestStoreVersionMismatchIgnoredThenReplaced(t *testing.T) {
 		t.Fatalf("Load of version-mismatched entry = %+v, want nil (ignored)", got)
 	}
 
-	store.Save("new", &cachedState{status: "active", instanceID: "inst-new", expiresAt: time.Now().Add(time.Hour)})
+	store.Save("new", &cachedState{status: "active", instanceID: "inst-new", expiresAt: time.Now().Add(time.Hour), gracePeriodEndsAt: time.Now().Add(2 * time.Hour)})
+	if got := store.Load("new"); got == nil || got.instanceID != "inst-new" {
+		t.Fatalf("Load('new') after Save = %+v, want inst-new (memory)", got)
+		return
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, data) {
+		t.Fatal("Save replaced the version-mismatched legacy file, want import-only (byte-identical)")
+	}
+	// Without a backend there is no cross-instance durability: a fresh
+	// memory-only store over the same path sees neither entry.
 	fresh := NewStore(path)
 	if got := fresh.Load("new"); got == nil || got.instanceID != "inst-new" {
 		t.Fatalf("Load('new') after Save = %+v, want inst-new", got)
@@ -649,6 +666,7 @@ func TestStoreEmptyKeyNoop(t *testing.T) {
 	store.Save("key", &cachedState{status: "active", instanceID: "inst-1", expiresAt: time.Now().Add(time.Hour)})
 	if got := store.Load("key"); got == nil || got.instanceID != "inst-1" {
 		t.Fatalf("Load('key') after Save = %+v, want inst-1", got)
+		return
 	}
 }
 

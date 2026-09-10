@@ -1,6 +1,6 @@
 <script>
   import StatusBadge from "./StatusBadge.svelte";
-  import PremiumQuotaBar from "./PremiumQuotaBar.svelte";
+  import FreebucksQuotaBar from "./FreebucksQuotaBar.svelte";
   import { formatLocalDate } from "../utils/format.js";
   import { tr } from "../i18n.js";
 
@@ -112,10 +112,10 @@
     </p>
   {/if}
 
-  {#if card.premium_quota}
-    <PremiumQuotaBar
-      quota={card.premium_quota}
-      title={$tr("Premium pool")}
+  {#if card.freebucks}
+    <FreebucksQuotaBar
+      freebucks={card.freebucks}
+      title={$tr("Shared pool")}
       {now}
     />
   {/if}

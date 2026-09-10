@@ -39,8 +39,8 @@ func TestSessionControlCalls(t *testing.T) {
 		t.Errorf("poll status = %q", polled.Status)
 	}
 
-	// end + tolerated 404
-	if err := client.EndSession(context.Background()); err != nil {
+	// end + tolerated 404 (DELETE carries the held instance id).
+	if err := client.EndSession(context.Background(), "inst-abc-123"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -193,6 +193,7 @@ func TestProbeAccount(t *testing.T) {
 		_, err := client.ProbeAccount(context.Background())
 		if err == nil {
 			t.Fatal("ProbeAccount returned nil error for closed server")
+			return
 		}
 	})
 }
@@ -432,7 +433,7 @@ func TestGetSessionWithOptsHeaders(t *testing.T) {
 		t.Errorf("headers: compact=%q, instance=%q (want 1 / inst-1)", gotCompact, gotInstance)
 	}
 	// Gap #2: the CLI never beats — x-freebuff-heartbeat is Desktop-only
-	// (reference/freebuff freebuff-models.ts:1212-1215), so a compact poll
+	// (upstream/freebuff freebuff-models.ts:1212-1215), so a compact poll
 	// must NOT carry it.
 	if gotHeartbeat != "" {
 		t.Errorf("x-freebuff-heartbeat = %q, want absent on compact polls", gotHeartbeat)
@@ -542,7 +543,7 @@ func TestEndSession404Tolerated(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := client.EndSession(context.Background()); err != nil {
+		if err := client.EndSession(context.Background(), "inst-1"); err != nil {
 			t.Errorf("EndSession 404 = %v, want nil", err)
 		}
 	})
@@ -558,8 +559,68 @@ func TestEndSession404Tolerated(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := client.EndSession(context.Background()); err == nil {
+		if err := client.EndSession(context.Background(), "inst-1"); err == nil {
 			t.Error("EndSession 500 succeeded, want error")
+		}
+	})
+}
+
+// TestEndSessionInstanceHeader pins the DELETE instance-id contract: the
+// client sends x-freebuff-instance-id when it holds one and omits the
+// header when the id is empty (the caller holds no slot).
+func TestEndSessionInstanceHeader(t *testing.T) {
+	t.Run("carries header when id known", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		var got string
+		var sawDelete bool
+		mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodDelete {
+				sawDelete = true
+				got = r.Header.Get("x-freebuff-instance-id")
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":"ended"}`)
+		}
+		client, err := New("tok", testConfig(mock.URL(), nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := client.EndSession(context.Background(), "inst-held-1"); err != nil {
+			t.Fatal(err)
+		}
+		if !sawDelete {
+			t.Fatal("no DELETE reached the mock")
+		}
+		if got != "inst-held-1" {
+			t.Errorf("DELETE x-freebuff-instance-id = %q, want inst-held-1", got)
+		}
+	})
+	t.Run("omits header when id empty", func(t *testing.T) {
+		mock := testutil.NewMock()
+		defer mock.Close()
+		var got = "unset"
+		var sawDelete bool
+		mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodDelete {
+				sawDelete = true
+				got = r.Header.Get("x-freebuff-instance-id")
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":"ended"}`)
+		}
+		client, err := New("tok", testConfig(mock.URL(), nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := client.EndSession(context.Background(), ""); err != nil {
+			t.Fatal(err)
+		}
+		if !sawDelete {
+			t.Fatal("no DELETE reached the mock")
+		}
+		if got != "" {
+			t.Errorf("DELETE x-freebuff-instance-id = %q, want absent", got)
 		}
 	})
 }

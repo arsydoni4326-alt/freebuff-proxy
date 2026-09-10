@@ -20,7 +20,11 @@ test.describe("real-world data", () => {
     ).toBeVisible();
     await expect(page.getByText("DeepSeek peak pricing active")).toBeVisible();
     await expect(page.getByText("Peak Window (19h 0m left)")).toBeVisible();
-    await expect(page.getByText("http://127.0.0.1:3457/v1")).toBeVisible();
+    await expect(
+      page
+        .getByLabel("Client integration")
+        .getByText("http://127.0.0.1:3457/v1"),
+    ).toBeVisible();
   });
 
   test("peak badge ticks live instead of freezing at the fetch value", async ({
@@ -77,7 +81,8 @@ test.describe("real-world data", () => {
     ).toBeVisible();
     await expect(page.getByText("Requests 37")).toBeVisible();
     await expect(page.getByText("SPEND TODAY")).toHaveCount(2);
-    await expect(page.getByText("Used 2 / Limit 4")).toBeVisible();
+    // Bridge cards render the Freebucks bar now (session quota bars gone).
+    await expect(page.getByText("Daily").first()).toBeVisible();
     await expect(page.getByText("Banned — TEMPORARY")).toBeVisible();
     // Drawer: standing + session + pinned models for the trusted account.
     await page.locator("table tbody tr button[aria-expanded]").first().click();
@@ -136,9 +141,10 @@ test.describe("real-world data", () => {
     page,
   }) => {
     await mockDashboard(page, loadFixtures(RW));
-    await page.goto(admin("quota"));
+    await page.goto(admin("catalog"));
+    await page.getByRole("button", { name: "Allowances" }).click();
     await expect(
-      page.getByRole("heading", { name: "Quota Tracker", exact: true }),
+      page.getByRole("heading", { name: "Catalog", exact: true }),
     ).toBeVisible();
     await expect(page.getByText("5 day streak")).toBeVisible();
     await expect(page.getByText("Active today")).toBeVisible();
@@ -165,7 +171,7 @@ test.describe("real-world data", () => {
     ).toBeVisible();
   });
 
-  test("quota: served rows carry the metered vs unmetered word", async ({
+  test("quota: served rows show bare ids plus priced Freebucks suffix", async ({
     page,
   }) => {
     const f = loadFixtures(RW);
@@ -177,16 +183,21 @@ test.describe("real-world data", () => {
       { id: "upstage/solar-pro4", name: "Solar Pro 4" },
     ];
     await mockDashboard(page, f, { tokens });
-    await page.goto(admin("quota"));
+    await page.goto(admin("catalog"));
+    await page.getByRole("button", { name: "Allowances" }).click();
     await expect(page.getByText("Served models").first()).toBeVisible();
-    await expect(page.getByText("Unmetered").first()).toBeVisible();
-    await expect(page.getByText("Metered").first()).toBeVisible();
+    // Cost-class badge is gone: no Free/Premium word renders on served rows.
+    await expect(page.getByText("Free", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Premium", { exact: true })).toHaveCount(0);
+    // Bare ids render with the priced Freebucks suffix where a price exists.
+    await expect(page.getByText("upstage/solar-pro4").first()).toBeVisible();
+    await expect(page.getByText("0 Freebucks/hr").first()).toBeVisible();
   });
   test("models/logs/traces/metrics render production rows", async ({
     page,
   }) => {
     await mockDashboard(page, loadFixtures(RW));
-    await page.goto(admin("models"));
+    await page.goto(admin("catalog"));
     await expect(page.getByText("Fast & Direct").first()).toBeVisible();
     await expect(page.getByText("0 Freebucks/hr").first()).toBeVisible();
     await expect(page.getByText("20 Freebucks/hr").first()).toBeVisible();
@@ -195,7 +206,7 @@ test.describe("real-world data", () => {
     await expect(page.getByText("referral", { exact: true })).toHaveCount(2);
     await expect(page.getByText("low/high/max").first()).toBeVisible();
     await expect(page.getByText("Price").first()).toBeVisible();
-    await page.goto(admin("logs"));
+    await page.goto(admin("activity"));
     await expect(page.getByText("2 model requests")).toBeVisible();
     await expect(page.getByText("502").first()).toBeVisible();
     await page.getByRole("button", { name: "Table" }).click();
@@ -203,11 +214,16 @@ test.describe("real-world data", () => {
       page.getByText("error handling request 1: upstream timeout"),
     ).toBeVisible();
     await expect(page.getByText("req_id=req-bbb2")).toHaveCount(4);
-    await page.goto(admin("traces"));
-    await expect(page.getByText("deepseek/deepseek-v4-flash")).toBeVisible();
-    await expect(page.getByText("upstream timeout").first()).toBeVisible();
-    await expect(page.getByText("acquire_ms")).toBeVisible();
-    await page.goto(admin("metrics"));
+    await page.goto(admin("activity"));
+    await page.getByRole("button", { name: "Traces" }).click();
+    const traceTable = page.locator("table");
+    await expect(
+      traceTable.getByText("deepseek/deepseek-v4-flash"),
+    ).toBeVisible();
+    await expect(traceTable.getByText("upstream timeout")).toBeVisible();
+    await expect(traceTable.getByText("acquire_ms")).toBeVisible();
+    await page.goto(admin("activity"));
+    await page.getByRole("button", { name: "Metrics" }).click();
     await expect(page.getByText("HIGH")).toBeVisible();
   });
 
@@ -221,9 +237,9 @@ test.describe("real-world data", () => {
     ).toBeVisible();
     await expect(page.getByText("MAX_REQUESTS_PER_MINUTE")).toBeVisible();
     await expect(page.getByText("MAX_REQUESTS_PER_DAY")).toBeVisible();
-    await page.goto(admin("setup"));
+    await page.goto(admin("overview"));
     await expect(
-      page.getByRole("heading", { name: "Setup", exact: true }),
+      page.getByRole("heading", { name: "Client Setup" }),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "mimo/mimo-v2.5 default" }),

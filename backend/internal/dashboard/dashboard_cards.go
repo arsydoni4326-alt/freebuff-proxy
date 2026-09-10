@@ -68,6 +68,7 @@ type tokenCard struct {
 	Email         string `json:"email,omitempty"`
 	AccountID     string `json:"account_id,omitempty"`
 	SessionStatus string `json:"session_status"`
+	AccessTier    string `json:"access_tier,omitempty"`
 	QueuePosition int    `json:"queue_position"`
 	QueueDepth    int    `json:"queue_depth"`
 	ActiveRuns    int    `json:"active_runs"`
@@ -115,12 +116,6 @@ type tokenCard struct {
 	// Freebucks (issue #232): balance + daily/weekly/monthly windows +
 	// bindingWindow + prices. Nil when the session has not reported it.
 	Freebucks *freebucksCard `json:"freebucks,omitempty"`
-	// FreeWindows (issue #319): free-tier session-pool day/week/month
-	// windows. Display-only; nil when the session has not reported it.
-	FreeWindows *freeWindowsCard `json:"free_windows,omitempty"`
-	// Subscription (issue #319): subscriber usage rings + provider spend,
-	// rollout-audience only; nil otherwise.
-	Subscription *subscriptionCard `json:"subscription,omitempty"`
 	// AllowedModels is the slot's MODEL_LOCKS allowlist (issue #325); nil
 	// when unlocked. Config-static: rides the full fetch, cached by the SPA.
 	AllowedModels   []string `json:"allowed_models,omitempty"`
@@ -204,40 +199,6 @@ type freebucksWalletCard struct {
 type freebucksSpendCard struct {
 	LimitUsd float64 `json:"limit_usd"`
 	ResetAt  string  `json:"reset_at,omitempty"`
-}
-
-// freeWindowsCard is the dashboard view of upstream.FreeWindowsInfo
-// (issue #319): free-tier session-pool day/week/month used/limit windows.
-type freeWindowsCard struct {
-	DayUsed      float64 `json:"day_used"`
-	DayLimit     float64 `json:"day_limit"`
-	WeekUsed     float64 `json:"week_used"`
-	WeekLimit    float64 `json:"week_limit"`
-	MonthUsed    float64 `json:"month_used"`
-	MonthLimit   float64 `json:"month_limit"`
-	DayResetAt   string  `json:"day_reset_at,omitempty"`
-	MonthResetAt string  `json:"month_reset_at,omitempty"`
-}
-
-// subscriptionCard is the dashboard view of upstream.SubscriptionInfo
-// (issue #319): subscriber day / five-day / month usage rings + provider
-// spend USD. Rollout-audience only. The month_*_spend_usd pair is deprecated
-// upstream (abd1eed4a omits it): zero reads as "not reported".
-type subscriptionCard struct {
-	DayUsed            float64  `json:"day_used"`
-	DayLimit           float64  `json:"day_limit"`
-	FiveDayUsed        float64  `json:"five_day_used"`
-	FiveDayLimit       float64  `json:"five_day_limit"`
-	MonthUsed          float64  `json:"month_used"`
-	MonthLimit         float64  `json:"month_limit"`
-	DayPremiumUsed     float64  `json:"day_premium_used"`
-	DayPremiumLimit    float64  `json:"day_premium_limit"`
-	DayResetAt         string   `json:"day_reset_at,omitempty"`
-	PeriodEndsAt       string   `json:"period_ends_at,omitempty"`
-	MonthSpendUsd      float64  `json:"month_spend_usd"`
-	MonthSpendLimitUsd float64  `json:"month_spend_limit_usd"`
-	FreeDayUsed        *float64 `json:"free_day_used,omitempty"`
-	FreeDayLimit       *float64 `json:"free_day_limit,omitempty"`
 }
 
 // standingStepCard is one dashboard-ready earn-back action
@@ -781,11 +742,13 @@ type aliasRow struct {
 	Real  string `json:"real"`
 }
 
-// quotaFor returns the meter label for a model row, Freebucks-based like the
+// quotaFor returns the price label for a model row, Freebucks-based like the
 // CLI picker (cli/src/utils/freebucks.ts): the wire prices map is the only
-// source of cost, unpriced rows are unmetered. Session-count caps are retired
-// upstream (see ADR-0027), so no label renders used/limit counts or the word
-// session. Referral GLM 5.2 keeps "referral +1/day".
+// source of cost. Priced rows render "<n> Freebucks/hr", referral GLM 5.2
+// keeps "referral +1/day", all other rows return "" so tables render the
+// existing em-dash fallback and pickers render bare ids. Session-count caps
+// are retired upstream (see ADR-0027), so no label renders used/limit counts
+// or the word session.
 func (d *Dashboard) quotaFor(id string) string {
 	if id == modelcat.Glm52ModelID {
 		return "referral +1/day"
@@ -795,10 +758,7 @@ func (d *Dashboard) quotaFor(id string) string {
 			return freebucksPriceLabel(p)
 		}
 	}
-	if modelcat.IsPremium(id) {
-		return "metered"
-	}
-	return "unmetered"
+	return ""
 }
 
 // freebucksPriceLabel renders one wire price as "<n> Freebucks/hr" (0 reads

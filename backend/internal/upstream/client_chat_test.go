@@ -237,6 +237,7 @@ func TestErrorClassification(t *testing.T) {
 			_, err = client.ChatCompletions(context.Background(), ChatOptions{Model: "m", RunID: "r"}, []byte(`{"model":"m"}`))
 			if err == nil {
 				t.Fatal("expected error")
+				return
 			}
 			if _, isUpstream := tc.want.(*UpstreamError); isUpstream {
 				var upErr *UpstreamError
@@ -763,6 +764,7 @@ func TestChatNonObjectBodyAndGzipError(t *testing.T) {
 		_, err = client.ChatCompletions(context.Background(), ChatOptions{Model: "m"}, []byte(`[1,2,3]`))
 		if err == nil {
 			t.Fatal("array chat body accepted, want envelope error")
+			return
 		}
 		if !strings.Contains(err.Error(), "envelope") {
 			t.Errorf("err = %v, want an envelope error", err)
@@ -854,7 +856,7 @@ func TestFullChatLifecycleChained(t *testing.T) {
 	if err := client.FinishRun(ctx, runID, "completed", 3, nil, ""); err != nil {
 		t.Fatalf("FinishRun: %v", err)
 	}
-	if err := client.EndSession(ctx); err != nil {
+	if err := client.EndSession(ctx, st.InstanceID); err != nil {
 		t.Fatalf("EndSession: %v", err)
 	}
 

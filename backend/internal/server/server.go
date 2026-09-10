@@ -291,8 +291,6 @@ func (s *Server) adminHandler(r dashboard.AdminRoute) http.Handler {
 		return http.HandlerFunc(s.admin.handleAdminLogin)
 	case "POST /admin/login":
 		return http.HandlerFunc(s.admin.handleAdminLogin)
-	case "GET /admin/logout":
-		return http.HandlerFunc(s.admin.handleAdminLogout)
 	case "POST /admin/logout":
 		return http.HandlerFunc(s.admin.handleAdminLogout)
 	case "GET /admin/api/overview":
@@ -333,8 +331,6 @@ func (s *Server) adminHandler(r dashboard.AdminRoute) http.Handler {
 		return s.dash.APIHandler("metrics")
 	case "GET /admin/api/version":
 		return http.HandlerFunc(s.dash.APIVersion)
-	case "GET /admin/api/upstream-drift":
-		return s.dash.APIHandler("upstream")
 	case "GET /admin/api/auth/status":
 		return http.HandlerFunc(s.admin.handleAdminAuthStatus)
 	case "GET /admin/api/notices":

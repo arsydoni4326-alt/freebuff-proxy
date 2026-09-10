@@ -105,6 +105,7 @@ func TestNormalizeRequestInvalidBody(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := NormalizeRequest([]byte(body), ""); err == nil {
 				t.Fatalf("expected error for body %q", body)
+				return
 			}
 		})
 	}
@@ -531,7 +532,7 @@ func TestClampReasoningEffort(t *testing.T) {
 func TestEffortsForModel(t *testing.T) {
 	// Every id the ServedModels gate serves, plus paused rows with frozen
 	// ladders, with its upstream-verified ladder
-	// (reference/freebuff/common/src/constants/freebuff-models.ts,
+	// (upstream/freebuff/common/src/constants/freebuff-models.ts,
 	// modelcat catalog, pinned 92c4f5e: 1.3 withdrawn 2026-09-07, 1.2 served
 	// in its place).
 	for model, want := range map[string][]string{

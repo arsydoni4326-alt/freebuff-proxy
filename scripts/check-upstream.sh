@@ -75,8 +75,8 @@ if [[ -n "${2:-}" ]]; then
 	CLONE_DIR="$2"
 elif [[ -n "${FREEBUFF_REFERENCE_DIR:-}" ]]; then
 	CLONE_DIR="$FREEBUFF_REFERENCE_DIR"
-elif [[ -d "$REPO_ROOT/reference/freebuff/.git" ]]; then
-	CLONE_DIR="$REPO_ROOT/reference/freebuff"
+elif [[ -d "$REPO_ROOT/upstream/freebuff/.git" ]]; then
+	CLONE_DIR="$REPO_ROOT/upstream/freebuff"
 else
 	CLONE_DIR="$REPO_ROOT/../freebuff-reference"
 fi
