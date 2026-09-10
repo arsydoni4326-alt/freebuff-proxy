@@ -597,7 +597,7 @@ func TestStorePendingMutationSurvivesReadFailurePortable(t *testing.T) {
 		return
 	}
 	// A fresh store over the same backend resumes 'b' without the file.
-	if got := NewStoreWithBackend(path, fb).Load("b"); got == nil || got.instanceID != "inst-b" {
+	if got := NewStore(path).Load("b"); got == nil || got.instanceID != "inst-b" {
 		t.Fatalf("fresh Load('b') = %+v, want inst-b", got)
 		return
 	}

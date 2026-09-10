@@ -75,6 +75,8 @@ func (r *Registry) Refresh(ctx context.Context) error {
 	r.agentModels = agentModels
 	r.modelToAgent = modelToAgent
 	r.allModels = allModels
+	r.lastRefreshAt = time.Now()
+	r.usingFallback = false
 	agents, models := len(agentModels), len(allModels)
 	r.mu.Unlock()
 	// T18: the success path was silent (the failure path logs in main.go) —
@@ -126,6 +128,7 @@ func (r *Registry) LoadFallback() {
 	r.agentModels = agents
 	r.modelToAgent = modelToAgent
 	r.allModels = allModels
+	r.usingFallback = true
 	r.mu.Unlock()
 }
 

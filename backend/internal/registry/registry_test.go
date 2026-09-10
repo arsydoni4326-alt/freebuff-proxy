@@ -1052,6 +1052,9 @@ func TestFreshnessTracking(t *testing.T) {
 	}
 	if got := r.LastRefreshAt(); got.IsZero() {
 		t.Errorf("LastRefreshAt after re-LoadFallback = zero, want preserved (historical record)")
+	}
+}
+
 // TestPausedModelPolicy pins the withdrawn-model policy (vendor 5951772,
 // freebuff-models.ts FREEBUFF_PAUSED_FREE_MODEL_IDS): minimax/minimax-m3,
 // deepseek/deepseek-v4-pro and stealth/ox-alpha are recognized upstream but
