@@ -5,7 +5,7 @@ import (
 )
 
 // Maturity defaults: automation on (probes in dry-run mode), dry-run on,
-// unmetered flash touch, 7-day target, no premium touches.
+// empty touch-model (= auto: cheapest served unmetered row), 7-day target.
 func TestMaturityDefaults(t *testing.T) {
 	clearEnv(t)
 	cfg, err := Load("")
@@ -18,8 +18,8 @@ func TestMaturityDefaults(t *testing.T) {
 	if !cfg.MaturityDryRun {
 		t.Error("MaturityDryRun = false, want true (probe-only until proven)")
 	}
-	if cfg.MaturityTouchModel != "deepseek/deepseek-v4-flash" {
-		t.Errorf("MaturityTouchModel = %q, want unmetered flash default", cfg.MaturityTouchModel)
+	if cfg.MaturityTouchModel != "" {
+		t.Errorf("MaturityTouchModel = %q, want empty default (= auto)", cfg.MaturityTouchModel)
 	}
 	if cfg.MaturityTargetDays != 7 {
 		t.Errorf("MaturityTargetDays = %d, want 7", cfg.MaturityTargetDays)
@@ -52,5 +52,10 @@ func TestMaturityValidation(t *testing.T) {
 	t.Setenv("MATURITY_TOUCH_MODEL", "not-a-model")
 	if _, err := Load(""); err == nil {
 		t.Error("MATURITY_TOUCH_MODEL without provider/ rejected, want shape error")
+	}
+	clearEnv(t)
+	t.Setenv("MATURITY_TOUCH_MODEL", "auto")
+	if _, err := Load(""); err != nil {
+		t.Errorf("MATURITY_TOUCH_MODEL=auto rejected: %v, want accepted sentinel", err)
 	}
 }

@@ -124,16 +124,11 @@
     if (v === "") return (entry?.default ?? "true") !== "false";
     return v !== "false";
   }
-  // Deep-link focus from cross-page jump links (Maturity Touch Model):
-  // the link stashes a catalog key in sessionStorage, then routes here.
-  // Meta loads async, so consume the key once the rows exist, scroll the
-  // row into view, and focus its control (visible accent focus ring).
-  // $state + rows-first read: the effect must subscribe to BOTH, whatever
-  // order onMount/meta/fetch resolve in (an early return before reading a
-  // source never re-fires on that source).
+  // Deep-link focus from cross-page jump links: a link stashes a catalog
+  // key in sessionStorage, then routes here.
   let pendingFocusKey = $state("");
   // Served-model catalog for the global MATURITY_TOUCH_MODEL select: same
-  // option source as the per-token Touch Model select on the Maturity page
+  // option source as the Streak Maintenance global Touch Model select
   // (shared utils/touchModels.js, priced labels kept). Fetched here so the
   // generic catalog row can render a dropdown instead of a raw text input.
   let modelRows = $state([]);
@@ -252,10 +247,9 @@
                 />
               {/snippet}
               {#if entry.key === "MATURITY_TOUCH_MODEL"}
-                <!-- Global touch default: same priced options as the per-token
-                Touch Model select (shared helper). No empty option — this IS
-                the global value; the current value (or catalog default)
-                stays selected. Saves through the existing row path. -->
+                <!-- Global touch default: Auto plus the same priced options
+                as the Streak Maintenance global select (shared helper).
+                Saves through the existing row path. -->
                 <select
                   class="fp-select"
                   value={val(entry.key, entry)}
@@ -263,6 +257,7 @@
                   title={val(entry.key, entry)}
                   onchange={(e) => onField(entry.key, e.currentTarget.value)}
                 >
+                  <option value="auto">Auto (cheapest unmetered)</option>
                   {#each globalTouchOpts(entry) as opt (opt.id)}
                     <option value={opt.id}>{touchLabel(opt)}</option>
                   {/each}

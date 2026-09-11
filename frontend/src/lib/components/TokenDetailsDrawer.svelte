@@ -9,7 +9,11 @@
     Lock,
   } from "@lucide/svelte";
   import Button from "./Button.svelte";
-  import { fallbackModelOptions, fetchModelOptions } from "../modelOptions.js";
+  import {
+    fallbackModelOptions,
+    fetchModelOptions,
+    cheapestFreeOption,
+  } from "../modelOptions.js";
   import { fetchAPI, postForm } from "../api/client.js";
   import { adminApi, adminActions } from "../api/paths.js";
   import { refreshTokens } from "../stores/tokens.js";
@@ -49,7 +53,7 @@
   // options disable in place; the Make Session button refuses a paywalled
   // pick where the balance is already on screen.
   let selectedIntent = $derived(
-    spawnIntent(token, spawnModel || "mimo/mimo-v2.5"),
+    spawnIntent(token, spawnModel || cheapestFreeOption(modelOptions)),
   );
   // --- Per-token model-lock editor (MODEL_LOCKS slot syntax) ---
   // Reads/writes the canonical .env through the existing config endpoints
@@ -206,7 +210,8 @@
                 balance: token?.freebucks?.balance ?? 0,
               })
             : $tr("Make Session")}
-          onclick={() => onSpawn?.(spawnModel || "mimo/mimo-v2.5")}
+          onclick={() =>
+            onSpawn?.(spawnModel || cheapestFreeOption(modelOptions))}
         >
           <Zap size={12} />
           <span>{$tr("Make Session")}</span>
@@ -267,6 +272,28 @@
       >
         <span>{$tr("Drop Session")}</span>
       </Button>
+    </div>
+  {/if}
+  {#if token.maturity}
+    {@const mm = token.maturity}
+    <div class="mb-2 px-2 py-1.5 rounded bg-[var(--fp-bg)]/40">
+      <div
+        class="flex items-center justify-between gap-2 text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider mb-1"
+      >
+        <span>{$tr("Warming")}</span>
+        {#if mm.badge}
+          <span class="fp-num normal-case font-medium text-[var(--fp-dim)]"
+            >{mm.badge}</span
+          >
+        {/if}
+      </div>
+      <p class="fp-num text-xs text-[var(--fp-dim)]">
+        {mm.last_action
+          ? `${mm.last_action} → ${mm.last_result ?? "?"}`
+          : $tr("no touch yet")}{mm.last_touch
+          ? ` · ${new Date(mm.last_touch).toLocaleString()}`
+          : ""}
+      </p>
     </div>
   {/if}
   {#if token.has_standing}

@@ -399,6 +399,41 @@
           "degraded": {
             "type": "boolean"
           },
+          "migrate": {
+            "nullable": true,
+            "properties": {
+              "applied": {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "from_version": {
+                "type": "integer"
+              },
+              "marker": {
+                "type": "boolean"
+              },
+              "noop": {
+                "type": "boolean"
+              },
+              "to_version": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "applied",
+              "fresh",
+              "from_version",
+              "marker",
+              "noop",
+              "to_version"
+            ],
+            "type": "object"
+          },
           "settings": {
             "items": {
               "properties": {
@@ -1435,7 +1470,16 @@
                 "maturity": {
                   "nullable": true,
                   "properties": {
+                    "auto_touch_model": {
+                      "type": "string"
+                    },
+                    "auto_touch_reason": {
+                      "type": "string"
+                    },
                     "badge": {
+                      "type": "string"
+                    },
+                    "effective_touch_model": {
                       "type": "string"
                     },
                     "enabled": {
@@ -1462,8 +1506,14 @@
                     "slot": {
                       "type": "string"
                     },
+                    "slot_day": {
+                      "type": "string"
+                    },
                     "target": {
                       "type": "integer"
+                    },
+                    "touch_day": {
+                      "type": "string"
                     },
                     "touch_model": {
                       "type": "string"

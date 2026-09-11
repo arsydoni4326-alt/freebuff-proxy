@@ -43,15 +43,21 @@ type Config struct {
 	// The only safe value is the token's own account id. (True CLI parity —
 	// auto-deriving each token's own id once via GET /api/v1/me — is
 	// deferred; see the gap analysis item 24.)
-	ActingUserID    string
-	TLSFingerprint  string // "" (plain Go transport) | chrome120 | chrome126 | safari17 | safari18 | firefox120 | firefox128 | edge126 | random | auto
-	RegistryRefresh time.Duration
-	DebugDump       bool
-	DevToolsEnabled bool
-	LogFile         string
-	LogLevel        string // "" (use -v/default) or debug|info|warn|error|trace
-	LogFormat       string // "text" (default) or "json"
-	LogAccess       bool   // true = per-request access log lines (LOG_ACCESS; default true, an empty .env line keeps it enabled)
+	ActingUserID string
+	// AutoDiscoverToken records the effective AUTO_DISCOVER_TOKEN knob
+	// (default true): process env wins, else the DB overlay, else enabled.
+	// When false, an empty AUTH_TOKENS pool stays empty (bridge mode) and
+	// the CLI-credential discovery hook never fires; ADOPT_CLI_SESSION can
+	// still opt into discovery on its own.
+	AutoDiscoverToken bool
+	TLSFingerprint    string // "" (plain Go transport) | chrome120 | chrome126 | safari17 | safari18 | firefox120 | firefox128 | edge126 | random | auto
+	RegistryRefresh   time.Duration
+	DebugDump         bool
+	DevToolsEnabled   bool
+	LogFile           string
+	LogLevel          string // "" (use -v/default) or debug|info|warn|error|trace
+	LogFormat         string // "text" (default) or "json"
+	LogAccess         bool   // true = per-request access log lines (LOG_ACCESS; default true, an empty .env line keeps it enabled)
 	// LogRingSize is the bounded in-memory log ring capacity behind the
 	// dashboard log viewer (LOG_RING_SIZE; default 500, validated 50..5000).
 	LogRingSize       int
@@ -172,15 +178,12 @@ type Config struct {
 	FallbackAfter time.Duration
 	// FallbackModels maps a requested model to the model served instead
 	// when the queue wait reaches FallbackAfter (issue #100,
-	// only when FALLBACK_MODEL is unset): the daily premium free-catalog rows
-	// (deepseek-v4-pro, gpt-5.6-luna) → deepseek/deepseek-v4-flash.
+	// FALLBACK_MODEL; default empty = no fallback). Operators opt in with
+	// their own pairs (e.g. meta/muse-spark-1.2-contributor=openai/gpt-5.6-luna).
 	// Referral-gated models (z-ai/glm-5.2) are handled via QUOTA_FALLBACK_MODELS.
 	// The proxy path fires only when the pool surfaces a waiting-room/queue delay ≥ FallbackAfter
 	// for the requested model (issue #100) — 429 quota exhaustion NEVER
-	// falls back (anti-ban invariant §10). The premium→flash targets
-	// mirror the CLI's getRecommendedFreebuffModelId hero pick; the
-	// muse→deepseek-v4-pro target mirrors the upstream
-	// MUSE_SPARK_FALLBACK_MODEL_ID.
+	// falls back (anti-ban invariant §10).
 	FallbackModels map[string]string
 	// QuotaFallbackModels maps a model to its fallback model when its session
 	// quota is exhausted or unentitled (QUOTA_FALLBACK_MODELS; comma-separated k=v pairs).
@@ -207,19 +210,33 @@ type Config struct {
 	// session probe and never claim a session slot. Turn it off only after
 	// the dry-run log lines prove slots, skips and throttles behave.
 	MaturityDryRun bool
-	// MaturityTouchModel is the unmetered model the maturity touch admits
-	// (MATURITY_TOUCH_MODEL; default deepseek/deepseek-v4-flash). Must be a
-	// served, unpriced catalog row so the touch never spends Freebucks.
+	// MaturityTouchModel is the touch-model fallback for maturity touches
+	// (MATURITY_TOUCH_MODEL; default "" = auto). "" (or "auto") resolves
+	// the cheapest served unmetered catalog row per token; an explicit
+	// provider/model id overrides auto. Either way the touch never spends
+	// Freebucks (fail-closed on priced rows).
 	MaturityTouchModel string
 	// MaturityTargetDays is the default streak target for newly-enabled
 	// tokens (MATURITY_TARGET_DAYS; default 7, valid 1..28). A token whose
 	// streak reaches its target auto-releases its administrative lock.
 	MaturityTargetDays int
-	// QuotaAutoProbe enables the quota auto-probe scheduler (ADR-0022,
-	// QUOTA_AUTO_PROBE; default true): each pooled token is probed once per
-	// Pacific day at a deterministic jittered slot in the 2h window before
-	// its known quota reset. False restores exact pre-scheduler behavior.
+	// QuotaAutoProbe is the master switch for the activity-aware quota
+	// prober (QUOTA_AUTO_PROBE; default true): a busy pool probes every
+	// QuotaProbeActiveInterval, a warming pool every 5m, an idle pool once
+	// plus the QuotaProbeIdleHeartbeat heartbeat. False restores
+	// pre-scheduler behavior (manual probes only).
 	QuotaAutoProbe bool
+	// QuotaProbeActiveInterval is how often each pooled token is
+	// quota-probed while the pool is busy (traffic <2m ago;
+	// QUOTA_PROBE_ACTIVE_INTERVAL; default 60s). Zero-tolerant like
+	// BURST_WINDOW: empty or non-positive values fall back to the default.
+	QuotaProbeActiveInterval time.Duration
+	// QuotaProbeIdleHeartbeat is how often each pooled token is
+	// quota-probed while the pool sits idle (no traffic for 15m+;
+	// QUOTA_PROBE_IDLE_HEARTBEAT; default 30m, also the ceiling for
+	// 429-backoff doubling). Zero-tolerant like BURST_WINDOW: empty or
+	// non-positive values fall back to the default.
+	QuotaProbeIdleHeartbeat time.Duration
 	// WaitingRoomChain, when enabled (WAITING_ROOM_CHAIN=false default),
 	// fires the reference ad-chain + streak requests before the next
 	// session create after an upstream 428 waiting_room_required (issue
@@ -453,7 +470,7 @@ func parseMap(value string) map[string]string {
 
 // parseModelLocks parses MODEL_LOCKS (issue #325): semicolon/newline
 // separated slot entries, each "<slot-index>:<model>[,<model>...]", e.g.
-// "0:z-ai/glm-5.2;1:deepseek/deepseek-v4-flash,mimo/mimo-v2.5". Slot indexes
+// "0:z-ai/glm-5.2;1:upstage/solar-pro4,mimo/mimo-v2.5". Slot indexes
 // address AUTH_TOKENS positions. Empty input yields nil (feature off).
 // Malformed entries (missing colon, bad index, empty model list) are an
 // error: a silently-ignored lock would route quota to the wrong account.

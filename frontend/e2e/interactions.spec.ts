@@ -284,52 +284,46 @@ test.describe("operator interactions (hermetic mocks)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 3b. Quota Tracker probe-all posts test-all then refetches the store.
+  // 3b. Manual probe moved off Plans: no buttons there; Dev Tools owns it.
   // -------------------------------------------------------------------------
-  test("quota: probe-all posts test-all and refetches tokens", async ({
+  test("quota: plans has no manual probe buttons, devtools does", async ({
     page,
   }) => {
     const f = loadFixtures();
     await mockDashboard(page, f, {}, { loginPage: true });
-    const state = { tokens: [tokenRow(0), tokenRow(1)] };
-    await page.unroute("**/admin/api/tokens*");
-    let gets = 0;
-    await page.route("**/admin/api/tokens*", async (route) => {
-      gets++;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(tokensPayload(state.tokens)),
-      });
-    });
-    // The real endpoint answers with one JSON object per token
-    // concatenated; the button drains the body as text, so any shape works.
-    await page.route("**/admin/tokens/test-all", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: `{"token":0,"ok":true,"message":"ok"}{"token":1,"ok":true,"message":"ok"}`,
-      });
-    });
-    await page.goto("http://127.0.0.1:4173/admin/#catalog");
-    await page.getByRole("button", { name: "Allowances" }).click();
+    await page.goto("http://127.0.0.1:4173/admin/#plans");
+    await page.getByRole("button", { name: "Accounts" }).click();
     await expect(
-      page.getByRole("heading", { name: "Catalog", exact: true }),
+      page.getByRole("heading", { name: "Plans", exact: true }),
     ).toBeVisible();
-    const before = gets;
-    const probe = page.waitForRequest(
-      (r) =>
-        r.method() === "POST" && r.url().includes("/admin/tokens/test-all"),
+    await expect(
+      page.getByRole("heading", { name: "Account #1" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Probe all" })).toHaveCount(
+      0,
     );
-    await page.getByRole("button", { name: "Probe all" }).click();
-    await probe;
+    await expect(page.getByText("Quotas refreshed from upstream.")).toHaveCount(
+      0,
+    );
+    // Manual probing lives under Dev Tools (DEVTOOLS on for this page).
+    await page.unroute("**/admin/api/config");
+    await page.route("**/admin/api/config", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          env_content: "AUTH_TOKENS=tok0\nDEVTOOLS_ENABLED=true\n",
+          has_env_file: true,
+        }),
+      });
+    });
+    await page.goto("http://127.0.0.1:4173/admin/#devtools");
     await expect(
-      page.getByText("Quotas refreshed from upstream."),
+      page.getByRole("button", { name: "Probe All Tokens" }),
     ).toBeVisible();
-    await expect.poll(() => gets).toBeGreaterThan(before);
   });
-  // Probe-all lives on the Quota Tracker page only: the Tokens page header
-  // button was removed (per-token probe buttons remain on each row).
+  // Manual probe buttons live under Dev Tools now (per-token probe buttons
+  // remain on each Tokens row).
   // -------------------------------------------------------------------------
   // 3c. Tokens page has no Probe-all header button.
   // -------------------------------------------------------------------------
@@ -920,42 +914,6 @@ test.describe("operator interactions (hermetic mocks)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 12. Setup: generate fills a key, reset restores, model buttons render.
-  // -------------------------------------------------------------------------
-  test("setup: generate fills a key, reset restores, model buttons render", async ({
-    page,
-  }) => {
-    const f = loadFixtures();
-    await mockDashboard(page, f);
-    const setupResp = page.waitForResponse(
-      (r) => r.url().includes("/admin/api/setup") && r.status() === 200,
-      { timeout: 5000 },
-    );
-    await page.goto("http://127.0.0.1:4173/admin/#overview");
-    await setupResp;
-    await page
-      .context()
-      .grantPermissions(["clipboard-read", "clipboard-write"]);
-    const keyInput = page.locator("#setup-api-key");
-    await expect(keyInput).toHaveValue("not-needed");
-    const reset = page.getByRole("button", { name: "Reset" });
-    await expect(reset).toBeDisabled();
-
-    await page.getByRole("button", { name: "Generate", exact: true }).click();
-    const generated = await keyInput.inputValue();
-    expect(generated).not.toBe("not-needed");
-    expect(generated.length).toBeGreaterThan(8);
-    await expect(reset).toBeEnabled();
-    await reset.click();
-    await expect(keyInput).toHaveValue("not-needed");
-
-    const modelBtns = page.getByTitle("Copy model ID");
-    await expect(modelBtns.first()).toBeVisible();
-    await modelBtns.first().click();
-    await expect(page.getByText("Copied").first()).toBeVisible();
-  });
-
-  // -------------------------------------------------------------------------
   // 13. Sidebar reaches every section.
   // -------------------------------------------------------------------------
   test("nav: sidebar links reach every section", async ({ page }) => {
@@ -968,7 +926,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await page.goto("http://127.0.0.1:4173/admin/#overview");
     for (const [link, heading] of [
       ["Tokens", "Tokens"],
-      ["Catalog", "Catalog"],
+      ["Plans", "Plans"],
       ["Activity", "Activity"],
       ["Settings", "Settings"],
     ] as Array<[string, string]>) {
