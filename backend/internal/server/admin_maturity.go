@@ -119,14 +119,14 @@ func (a *adminHandlers) handleTokenMaturity(w http.ResponseWriter, r *http.Reque
 			err = errors.New("missing enabled (true/false)")
 		}
 	}
-	if err == nil && params.hasGoal && (params.target < 1 || params.target > 28) {
-		err = errors.New("target must be between 1 and 28")
+	if err == nil && params.hasGoal && (params.target < 0 || params.target > 28) {
+		err = errors.New("target must be between 0 and 28 (0 = global MATURITY_TARGET_DAYS default)")
 	}
 	if err == nil && params.mode != "" && params.mode != "unmetered" && params.mode != "premium-short" {
 		err = errors.New("mode must be unmetered or premium-short")
 	}
 	if err == nil && params.touchModel != "" && !strings.Contains(params.touchModel, "/") {
-		err = errors.New("touch_model must be a provider/model id (e.g. deepseek/deepseek-v4-flash)")
+		err = errors.New("touch_model must be a provider/model id (e.g. upstage/solar-pro4)")
 	}
 	if err == nil {
 		err = a.pool.SetMaturity(id, params.enabled, params.target, params.mode, params.touchModel)
