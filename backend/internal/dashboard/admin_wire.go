@@ -154,8 +154,29 @@ type SettingsEntry struct {
 
 // SettingsListResponse is the GET /admin/api/settings answer.
 type SettingsListResponse struct {
-	Degraded bool            `json:"degraded"`
-	Settings []SettingsEntry `json:"settings"`
+	Degraded bool               `json:"degraded"`
+	Settings []SettingsEntry    `json:"settings"`
+	Migrate  *MigrateStatusInfo `json:"migrate,omitempty"`
+}
+
+// MigrateStatusInfo is the boot-time smart-migration report carried on the
+// settings payload (read-cheap: the store captures it once at Open, the
+// handler serves it from memory plus the already-fetched settings rows —
+// no per-request migration work). FromVersion is the detected PRAGMA
+// user_version stamp before migration (0: fresh init, no DB file); Applied
+// lists the goose versions that actually executed that boot (empty on a
+// strict no-op re-boot); Marker reports the env-to-DB marker row
+// (config:migrated_env_v1) being present; Noop reports zero boot writes
+// (goose chain already at latest and the marker already set). Regenerate
+// data/openapi.json via go generate ./backend/internal/dashboard/ after
+// touching this shape (the emitter inlines it into SettingsListResponse).
+type MigrateStatusInfo struct {
+	FromVersion int   `json:"from_version"`
+	ToVersion   int   `json:"to_version"`
+	Applied     []int `json:"applied"`
+	Fresh       bool  `json:"fresh"`
+	Marker      bool  `json:"marker"`
+	Noop        bool  `json:"noop"`
 }
 
 // SettingsPostRequest is the POST /admin/api/settings body.
@@ -351,7 +372,6 @@ func AdminAPIPaths() []AdminAPIPath {
 		{Method: "POST", Path: "/admin/tokens/{id}/unlock-lock", OperationID: "tokenUnlockLock", Summary: "Unlock then immediately re-lock (cooldown reset)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/maturity", OperationID: "tokenMaturity", Summary: "Set per-token streak-maturity automation", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: MaturityUpdateRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/maturity/touch", OperationID: "tokenMaturityTouch", Summary: "Fire one manual maturity touch outside the daily slot", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
-		{Method: "POST", Path: "/admin/tokens/{id}/maturity/warn-reset", OperationID: "tokenMaturityWarnReset", Summary: "Clear one token's non-advance warning (re-arms the daily loop)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/bridge-tokens/{key}/lock", OperationID: "bridgeTokenLock", Summary: "Lock one bridge-mode entry", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/bridge-tokens/{key}/unlock", OperationID: "bridgeTokenUnlock", Summary: "Unlock one bridge-mode entry", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/finish", OperationID: "tokenFinish", Summary: "FINISH one token's upstream runs", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},

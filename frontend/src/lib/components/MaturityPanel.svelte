@@ -1,30 +1,23 @@
 <script>
   import { onMount } from "svelte";
   import { recordPageVisit } from "../stores/pageState.js";
-  import { SvelteSet } from "svelte/reactivity";
-  import FieldBox from "./FieldBox.svelte";
-  import Stepper from "./Stepper.svelte";
-  import Pips from "./Pips.svelte";
   import Card from "./Card.svelte";
   import Alert from "./Alert.svelte";
-  import Button from "./Button.svelte";
-  import ToggleSwitch from "./ToggleSwitch.svelte";
   import StatusBadge from "./StatusBadge.svelte";
-  import { fetchAPI, postAPI } from "../api/client.js";
-  import { adminApi, tokenActions } from "../api/paths.js";
-  import { fetchMaturityHistory, historyKindTone } from "../utils/history.js";
-  import {
-    touchOptions as sharedTouchOptions,
-    touchLabel,
-  } from "../utils/touchModels.js";
+  import ToggleSwitch from "./ToggleSwitch.svelte";
+  import { postAPI } from "../api/client.js";
+  import { adminApi } from "../api/paths.js";
   import {
     tokensData as tokensStore,
     tokensError as tokensErrorStore,
     ensureTokensStore,
     refreshTokens,
   } from "../stores/tokens.js";
-  import { getEnvValue } from "../utils/env.js";
   import { tr } from "../i18n.js";
+
+  // Streak Maintenance board: universal automatic, one switch. The global
+  // kill-switch is the ONLY control here — dry-run and touch-model knobs
+  // live in Settings → Advanced. Rows and ledger are read-only status.
 
   let data = $state(null);
   let loading = $state(true);
@@ -32,55 +25,21 @@
   let unsubStore = null;
   let unsubErr = null;
 
-  // Global kill-switch state (MATURITY_ENABLED, default true) for the honest
-  // header notice. Settings renders the toggle itself (catalog Essential).
+  // Global kill-switch (MATURITY_ENABLED, default true): the ONLY streak
+  // control. Dry-run display only (MATURITY_DRY_RUN lives in Settings).
   let globalEnabled = $state(true);
   let globalLoaded = $state(false);
-  // Resolved global MATURITY_TOUCH_MODEL for the per-card "Global default"
-  // option label: effective snapshot first, raw .env fallback, "" = unknown.
-  let globalTouchModel = $state("");
-
-  // Touch-model candidates: served models the gateway can admit (same
-  // usable filter as Quota Tracker: a live agent binding, no withdrawn
-  // rows, no referral-grant row). Server order is cheapest-Freebucks-cost
-  // first, so unmetered-capable rows lead with the premium pool last;
-  // each option is labeled with its server-reported cost class
-  // (price_label/quota/pool) — never an invented price.
-  let modelRows = $state([]);
-
-  // Per-token draft controls + busy flags, keyed by token index.
-  let drafts = $state({});
-  let saving = $state({});
-  let touching = $state({});
-  let resetting = $state({});
-  let actionMessage = $state("");
-  let actionOK = $state(true);
-
-  // Restart-surviving event timelines (ADR-0016): loaded once per token
-  // when its card renders (cards are always expanded), never on the
-  // 10s poll.
-  let histByIdx = $state({});
-  // History fold state per card (default folded, latest event visible).
-  let histOpen = $state({});
-  let histPending = new SvelteSet();
-
-  $effect(() => {
-    for (const t of tokens) {
-      const idx = t.index ?? 0;
-      if (!t.maturity || idx in histByIdx || histPending.has(idx)) continue;
-      histPending.add(idx);
-      fetchMaturityHistory(idx)
-        .then((h) => {
-          histByIdx[idx] = h.events;
-        })
-        .catch(() => {
-          histByIdx[idx] = [];
-        })
-        .finally(() => {
-          histPending.delete(idx);
-        });
-    }
-  });
+  let savingGlobal = $state(false);
+  let dryRun = $state(true);
+  // Tonight's maintenance window (RFC3339 absolute instants from the
+  // payload): the next-run countdown formats these, so the window math
+  // lives in one DST-safe place server-side.
+  let windowStart = $state("");
+  let windowEnd = $state("");
+  // Wall clock for the next-run countdown (30s tick; the 10s poll also
+  // refreshes it). One interval for the whole panel, cleared on unmount.
+  let nowMs = $state(Date.now());
+  let countdownTimer = null;
 
   function applyTokens(v) {
     if (!v) return;
@@ -88,111 +47,206 @@
     if (v.maturity_enabled !== undefined) {
       globalEnabled = Boolean(v.maturity_enabled);
     }
-    for (const t of v?.tokens ?? []) {
-      const idx = t.index ?? 0;
-      if (!(idx in drafts)) {
-        drafts[idx] = {
-          enabled: !!t.maturity?.enabled,
-          target: t.maturity?.target ?? 7,
-          // No UI: the Touch box is model-select-only, the server value rides
-          // along on save so an enabled token never resets to unmetered.
-          mode: t.maturity?.mode ?? "unmetered",
-          touchModel: t.maturity?.touch_model ?? "",
-        };
-      }
+    if (typeof v.maturity_dry_run === "boolean") {
+      dryRun = v.maturity_dry_run;
     }
+    if (typeof v.maturity_window_start === "string") {
+      windowStart = v.maturity_window_start;
+    }
+    if (typeof v.maturity_window_end === "string") {
+      windowEnd = v.maturity_window_end;
+    }
+    globalLoaded = true;
     error = "";
     loading = false;
   }
 
-  function badgeTone(badge) {
-    if (badge === "Mature") return "good";
-    if (badge === "Warming") return "warn";
-    if (badge === "Cold") return "info";
-    return "idle";
+  // Universal on/off switch writes the global kill-switch through the
+  // settings overlay (same path as Settings → Advanced, hot-applied).
+  async function setGlobalEnabled(next) {
+    if (savingGlobal) return;
+    savingGlobal = true;
+    try {
+      const res = await postAPI(adminApi.settingsSave, {
+        key: "MATURITY_ENABLED",
+        value: next ? "true" : "false",
+      });
+      if (res && res.ok === false)
+        throw new Error(res.message || "Save rejected");
+      globalEnabled = next;
+      await refreshTokens();
+    } catch {
+      globalEnabled = !next;
+      await refreshTokens();
+    } finally {
+      savingGlobal = false;
+    }
   }
-
   function fmtTime(iso) {
     if (!iso) return "—";
     const d = new Date(iso);
     return isNaN(d) ? "—" : d.toLocaleString();
   }
 
-  // Touch-model options live in utils/touchModels.js (shared with the
-  // Settings → Advanced global MATURITY_TOUCH_MODEL select so both
-  // dropdowns stay identical).
-  function touchOptions(d) {
-    return sharedTouchOptions(modelRows, d?.touchModel ?? "");
+  function fmtCountdown(ms) {
+    if (!isFinite(ms) || ms <= 0) return "due now";
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (h >= 24) {
+      const d = Math.floor(h / 24);
+      const hr = h % 24;
+      return hr > 0 ? `in ${d}d ${hr}h` : `in ${d}d`;
+    }
+    if (h > 0) return `in ${h}h ${m}m`;
+    if (m > 0) return `in ${m}m`;
+    return `in ${s}s`;
   }
 
-  async function save(idx) {
-    if (saving[idx]) return;
-    saving[idx] = true;
-    actionMessage = "";
-    try {
-      const d = drafts[idx];
-      const res = await postAPI(tokenActions.maturity(idx), {
-        enabled: d.enabled,
-        target: Number(d.target) || 7,
-        mode: d.mode,
-        touch_model: d.touchModel ?? "",
-      });
-      if (res && res.ok === false)
-        throw new Error(res.message || "Save rejected");
-      actionOK = true;
-      actionMessage = $tr("Maturity saved for Account #{idx}", {
-        idx: idx + 1,
-      });
-      await refreshTokens();
-    } catch (e) {
-      actionOK = false;
-      actionMessage = e?.message || String(e);
-    } finally {
-      saving[idx] = false;
-    }
+  // --- Pacific-midnight fallback (old servers without the window keys) ---
+  // Next Pacific midnight via Intl wall-clock math (DST-safe: the offset is
+  // re-resolved for the target date, never a fixed hour).
+  function laOffsetMinutes(ts) {
+    const dtf = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    const parts = {};
+    for (const p of dtf.formatToParts(new Date(ts))) parts[p.type] = p.value;
+    const asUTC = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+      Number(parts.second),
+    );
+    return Math.round((asUTC - ts) / 60000);
   }
 
-  async function touchNow(idx) {
-    if (touching[idx]) return;
-    touching[idx] = true;
-    actionMessage = "";
-    try {
-      const res = await postAPI(tokenActions.maturityTouch(idx), {});
-      if (res && res.ok === false)
-        throw new Error(res.message || "Touch rejected");
-      actionOK = true;
-      actionMessage = $tr("Touch fired for Account #{idx}", { idx: idx + 1 });
-      await refreshTokens();
-    } catch (e) {
-      actionOK = false;
-      actionMessage = e?.message || String(e);
-    } finally {
-      touching[idx] = false;
-    }
+  function pacificMidnight(ts, addDays) {
+    const dtf = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const [y, m, d] = dtf.format(new Date(ts)).split("-").map(Number);
+    const base = Date.UTC(y, m - 1, d) + addDays * 86400000;
+    const bd = new Date(base);
+    const off = laOffsetMinutes(base + 8 * 3600000);
+    return (
+      Date.UTC(bd.getUTCFullYear(), bd.getUTCMonth(), bd.getUTCDate()) -
+      off * 60000
+    );
   }
 
-  async function resetWarn(idx) {
-    if (resetting[idx]) return;
-    resetting[idx] = true;
-    actionMessage = "";
-    try {
-      const res = await postAPI(tokenActions.maturityWarnReset(idx), {});
-      if (res && res.ok === false)
-        throw new Error(res.message || "Reset rejected");
-      actionOK = true;
-      actionMessage = $tr("Warning cleared for Account #{idx}", {
-        idx: idx + 1,
-      });
-      await refreshTokens();
-    } catch (e) {
-      actionOK = false;
-      actionMessage = e?.message || String(e);
-    } finally {
-      resetting[idx] = false;
-    }
+  function fallbackWindow(ts) {
+    let end = pacificMidnight(ts, 0);
+    if (end <= ts) end = pacificMidnight(ts, 1);
+    return { start: end - 60 * 60000, end };
   }
+
+  function runWindow() {
+    const s = Date.parse(windowStart);
+    const e = Date.parse(windowEnd);
+    if (isFinite(s) && isFinite(e) && e > s) return { start: s, end: e };
+    return fallbackWindow(nowMs);
+  }
+
+  // Universal automatic: every pooled account is covered, no enrollment
+  // filter anywhere on this board.
+  function coveredTokens() {
+    return tokens;
+  }
+
+  function touchedToday(t) {
+    const m = t?.maturity;
+    if (m?.touch_day && m?.slot_day) return m.touch_day === m.slot_day;
+    return !!t?.today_used;
+  }
+
+  function slotPast(t) {
+    const slot = Date.parse(t?.maturity?.slot ?? "");
+    return isFinite(slot) && slot <= nowMs;
+  }
+
+  // Per-account tonight status for the board rows (universal: no enabled
+  // gate — a missing ledger simply reads Pending). Skipped carries the
+  // exact ledger reason, touched carries the touch time, eligible means
+  // due now inside the window, pending means waiting for the slot/window.
+  function rowStatus(t) {
+    const m = t?.maturity;
+    const result = m?.last_result ?? "";
+    if (result.startsWith("skip:")) {
+      return { kind: "skipped", text: `${$tr("Skipped")} · ${result}` };
+    }
+    if (touchedToday(t)) {
+      return {
+        kind: "touched",
+        text: `${$tr("Touched")} ${fmtTime(m?.last_touch)}`,
+      };
+    }
+    const w = runWindow();
+    if (nowMs >= w.start && nowMs < w.end && slotPast(t)) {
+      return { kind: "eligible", text: $tr("Eligible tonight") };
+    }
+    return { kind: "pending", text: $tr("Pending") };
+  }
+
+  // Exact model id tonight's touch will admit, resolved server-side from
+  // the live meter (manual override → premium-short pool head → auto
+  // pick → global fallback). Read path only: no probing here.
+  function resolvedModel(t) {
+    const m = t?.maturity;
+    return m?.effective_touch_model || m?.auto_touch_model || "";
+  }
+
+  // Last-run ledger summary across covered accounts: latest touch time,
+  // touch count, and skip counts grouped by exact reason.
+  function ledgerSummary(list) {
+    let touched = 0;
+    let latest = "";
+    const skips = {};
+    for (const t of list) {
+      const m = t.maturity;
+      if (!m) continue;
+      if (m.last_result === "ok") touched += 1;
+      else if ((m.last_result ?? "").startsWith("skip:")) {
+        skips[m.last_result] = (skips[m.last_result] ?? 0) + 1;
+      }
+      if (m.last_touch && (!latest || m.last_touch > latest)) {
+        latest = m.last_touch;
+      }
+    }
+    const skipped = Object.values(skips).reduce((a, b) => a + b, 0);
+    const reasons = Object.entries(skips)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([reason, n]) => (n > 1 ? `${reason} ×${n}` : reason));
+    return { touched, skipped, reasons, latest };
+  }
+  function countdownText() {
+    const w = runWindow();
+    const skipped = coveredTokens().filter((t) => touchedToday(t)).length;
+    const eligible = coveredTokens().length - skipped;
+    const counts = `${eligible} eligible · ${skipped} skipped`;
+    if (nowMs >= w.start && nowMs < w.end) {
+      return `In window · ends ${fmtCountdown(w.end - nowMs)} · ${counts}`;
+    }
+    return `Next run ${fmtCountdown(w.start - nowMs)} · ${counts}`;
+  }
+
   onMount(() => {
     recordPageVisit("maturity");
+    countdownTimer = setInterval(() => {
+      nowMs = Date.now();
+    }, 30000);
     const release = ensureTokensStore();
     unsubStore = tokensStore.subscribe(applyTokens);
     unsubErr = tokensErrorStore.subscribe((err) => {
@@ -205,57 +259,9 @@
       refreshTokens();
     }
     window.addEventListener("fp-config-saved", onConfigSaved);
-    (async () => {
-      try {
-        const cfgRes = await fetchAPI(adminApi.config);
-        const content = cfgRes?.env_content || "";
-        const eff = (cfgRes?.effective || []).find(
-          (e) => e.key === "MATURITY_ENABLED",
-        );
-        if (eff) {
-          const v = String(eff.value).trim().toLowerCase();
-          globalEnabled =
-            v === "true" || v === "1" || v === "on" || v === "yes";
-        } else {
-          const raw = getEnvValue(content, "MATURITY_ENABLED");
-          if (raw !== null && raw !== undefined && raw !== "") {
-            const v = String(raw).trim().toLowerCase();
-            globalEnabled =
-              v === "true" || v === "1" || v === "on" || v === "yes";
-          } else {
-            globalEnabled = true;
-          }
-        }
-        // Effective snapshot wins (it reflects the live value incl. any DB
-        // overlay); fall back to the raw .env line. Masked secret-style
-        // display values ("N token(s)") never name a model, so ignore them.
-        const effTouch = (cfgRes?.effective || []).find(
-          (e) => e.key === "MATURITY_TOUCH_MODEL",
-        );
-        const effRaw =
-          effTouch?.value !== undefined && effTouch?.value !== null
-            ? String(effTouch.value).trim()
-            : "";
-        const envRaw = (
-          getEnvValue(content, "MATURITY_TOUCH_MODEL") ?? ""
-        ).trim();
-        const resolved = effRaw && !effRaw.includes("(") ? effRaw : envRaw;
-        globalTouchModel = resolved.includes("(") ? "" : resolved;
-      } catch {
-        globalEnabled = false;
-      } finally {
-        globalLoaded = true;
-      }
-    })();
-    (async () => {
-      try {
-        const res = await fetchAPI(adminApi.models);
-        modelRows = res?.models ?? [];
-      } catch {
-        modelRows = [];
-      }
-    })();
     return () => {
+      if (countdownTimer) clearInterval(countdownTimer);
+      countdownTimer = null;
       release();
       unsubStore?.();
       unsubErr?.();
@@ -264,6 +270,7 @@
   });
 
   const tokens = $derived(data?.tokens ?? []);
+  const summary = $derived(ledgerSummary(coveredTokens()));
 </script>
 
 {#if loading}
@@ -275,253 +282,110 @@
 {:else if error}
   <div class="flex flex-col items-start gap-2">
     <Alert tone="error" title={error} />
-    <Button
-      variant="secondary"
-      onclick={() => {
-        error = "";
-        refreshTokens();
-      }}
-    >
-      {$tr("Retry")}
-    </Button>
   </div>
 {:else}
-  {#if actionMessage}
-    <Alert tone={actionOK ? "success" : "error"} title={actionMessage} />
-  {/if}
-
-  {#if globalLoaded && !globalEnabled}
-    <Alert tone="warning" title={$tr("Maturity automation is globally off")}>
-      {$tr(
-        "Set MATURITY_ENABLED=1 in Settings — per-token toggles below do nothing while the kill-switch is off. Dry-run probes stay on until the schedule is proven.",
-      )}
-    </Alert>
-  {/if}
-
-  {#if tokens.length === 0}
-    <p class="text-sm text-[var(--fp-dim)]">{$tr("No pooled tokens")}</p>
-  {:else}
-    <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {#each tokens as t (t.index ?? t.email)}
-        {@const idx = t.index ?? 0}
-        {@const m = t.maturity}
-        {@const d = drafts[idx] ?? {
-          enabled: false,
-          target: 7,
-          mode: "unmetered",
-          touchModel: "",
-        }}
-        <Card
-          title={$tr("Account #{idx}", { idx: idx + 1 })}
-          description={t.email || $tr("unknown account")}
+  <Card
+    title={$tr("Streak Maintenance")}
+    description={$tr(
+      "Fully automatic: every account is touched nightly. The switch below is the only control; dry-run and touch-model knobs live in Settings.",
+    )}
+  >
+    {#snippet actions()}
+      <span class="flex shrink-0 flex-nowrap items-center gap-1.5">
+        {#if dryRun}
+          <StatusBadge tone="warn" status={$tr("Dry run")} />
+        {/if}
+        {#if globalLoaded && !globalEnabled}
+          <StatusBadge tone="bad" status={$tr("Off")} />
+        {/if}
+      </span>
+    {/snippet}
+    <div class="flex flex-col gap-2.5">
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <ToggleSwitch
+          checked={globalEnabled}
+          disabled={!globalLoaded || !!savingGlobal}
+          saving={!!savingGlobal}
+          ariaLabel={$tr("Streak maintenance")}
+          onchange={(next) => setGlobalEnabled(next)}
+        />
+      </div>
+      <p class="fp-num text-[11px] leading-relaxed text-[var(--fp-dim)]">
+        {$tr("Nightly window 23:00–00:00 Pacific")}
+        ·
+        {$tr("client request activity since the last Pacific reset skips")}
+      </p>
+      <p
+        class="fp-num text-xs text-[var(--fp-muted)]"
+        aria-label={$tr("Next maintenance run")}
+      >
+        {countdownText()}
+      </p>
+      {#if globalLoaded && !globalEnabled}
+        <Alert
+          tone="warning"
+          title={$tr("Maturity automation is globally off")}
         >
-          {#snippet actions()}
-            {@const streakTarget = m?.target ?? d.target ?? 7}
-            <span class="flex shrink-0 flex-nowrap items-center gap-1.5">
-              {#if m?.badge}
-                <StatusBadge tone={badgeTone(m.badge)} status={m.badge} />
-              {:else}
-                <StatusBadge tone="idle" status={$tr("Not enrolled")} />
-              {/if}
+          {$tr(
+            "Turn Streak maintenance on in Settings — the rows below stay put while the kill-switch is off. Dry-run probes stay on until the schedule is proven.",
+          )}
+        </Alert>
+      {/if}
+      <div
+        class="flex flex-col gap-1 border-t border-[var(--fp-border)]/60 pt-2.5"
+        aria-label={$tr("Last maintenance run")}
+      >
+        <p class="fp-num text-[11px] text-[var(--fp-dim)]">
+          {$tr("Last run")}
+          {fmtTime(summary.latest)} · {$tr("touched")}
+          {summary.touched}
+          · {$tr("skipped")}
+          {summary.skipped}
+        </p>
+        {#if summary.reasons.length > 0}
+          <p class="fp-num text-[11px] text-[var(--fp-dim)]">
+            {summary.reasons.join(" · ")}
+          </p>
+        {/if}
+      </div>
+      {#if tokens.length === 0}
+        <p class="text-sm text-[var(--fp-dim)]">{$tr("No pooled tokens")}</p>
+      {:else}
+        <div class="flex flex-col gap-1.5">
+          {#each tokens as t (t.index ?? t.email)}
+            {@const idx = t.index ?? 0}
+            {@const st = rowStatus(t)}
+            {@const model = resolvedModel(t)}
+            <div
+              class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--fp-border)]/60 pt-2"
+            >
+              <span class="min-w-0">
+                <span class="fp-num text-xs font-semibold text-[var(--fp-text)]"
+                  >{$tr("Account #{idx}", { idx: idx + 1 })}</span
+                >
+                {#if t.email}
+                  <span
+                    class="ml-1.5 text-[11px] text-[var(--fp-muted)] truncate"
+                    title={t.email}>{t.email}</span
+                  >
+                {/if}
+              </span>
               {#if t.locked}
                 <StatusBadge tone="warn" status={$tr("Locked")} />
               {/if}
-              {#if m?.warn}
-                <StatusBadge tone="bad" status={$tr("Touch not advancing")} />
+              <span class="fp-num text-[11px] text-[var(--fp-dim)]"
+                >{st.text}</span
+              >
+              {#if model}
+                <code
+                  class="fp-num ml-auto text-[11px] text-[var(--fp-muted)]"
+                  title={$tr("Touch model for tonight")}>{model}</code
+                >
               {/if}
-              <!-- Dots stay for never-enrolled accounts (consistent geometry,
-              0/7 reads honestly as nothing banked); the tooltip explains
-              what the count measures in each case. -->
-              <Pips
-                value={t.streak ?? 0}
-                total={streakTarget}
-                label={m
-                  ? $tr(
-                      "Daily touches banked toward the target (streak/target)",
-                    )
-                  : $tr(
-                      "Streak/target counts daily touches once enrolled — nothing banked yet",
-                    )}
-              />
-            </span>
-          {/snippet}
-          <div class="flex flex-col gap-2">
-            {#if m}
-              <p
-                class="fp-num text-[11px] leading-relaxed text-[var(--fp-dim)]"
-              >
-                {$tr("slot")}
-                {fmtTime(m.slot)} ·
-                {m.last_action
-                  ? `${m.last_action} → ${m.last_result ?? "?"}`
-                  : $tr("no touch yet")}{m.last_touch
-                  ? ` · ${fmtTime(m.last_touch)}`
-                  : ""}{m.last_advanced
-                  ? ` · ${$tr("advanced")} ${m.last_advanced}`
-                  : ""}
-              </p>
-            {/if}
-
-            <div class="grid grid-cols-1 sm:grid-cols-12 gap-2">
-              <FieldBox
-                label={$tr("Target Period")}
-                unit={$tr("days")}
-                class="sm:col-span-6 min-w-0 h-full"
-              >
-                <Stepper
-                  bind:value={d.target}
-                  min={1}
-                  max={28}
-                  disabled={!!saving[idx]}
-                  ariaLabel={$tr("Streak target for Account #{idx}", {
-                    idx: idx + 1,
-                  })}
-                  decreaseLabel={$tr("Decrease target for Account #{idx}", {
-                    idx: idx + 1,
-                  })}
-                  increaseLabel={$tr("Increase target for Account #{idx}", {
-                    idx: idx + 1,
-                  })}
-                />
-              </FieldBox>
-              <FieldBox
-                label={$tr("Touch Model")}
-                class="sm:col-span-6 min-w-0 h-full"
-              >
-                <select
-                  class="fp-select !h-8 !py-1 !text-xs font-mono w-full min-w-0"
-                  bind:value={d.touchModel}
-                  disabled={!!saving[idx]}
-                  aria-label={$tr("Touch model for Account #{idx}", {
-                    idx: idx + 1,
-                  })}
-                  title={$tr(
-                    "Per-token touch model (cheapest first, priced rows last). Empty uses the global default from Settings → Advanced → Maturity Touch Model.",
-                  )}
-                >
-                  <option value="">
-                    {globalTouchModel
-                      ? $tr("Global default ({model})", {
-                          model: globalTouchModel,
-                        })
-                      : $tr("Global default")}
-                  </option>
-                  {#each touchOptions(d) as o (o.id)}
-                    <option value={o.id}>{touchLabel(o)}</option>
-                  {/each}
-                </select>
-                <!-- Jump link to the exact Settings row that owns the global. The
-                click stashes a focus key; AdvancedSettings scrolls to the row
-                and focuses its control on mount. -->
-                <a
-                  href="#settings"
-                  class="fp-num text-[11px] text-[var(--fp-dim)] underline underline-offset-2 hover:text-[var(--fp-fg)]"
-                  onclick={() => {
-                    try {
-                      sessionStorage.setItem(
-                        "fp-settings-focus",
-                        "MATURITY_TOUCH_MODEL",
-                      );
-                    } catch {
-                      /* storage blocked: plain navigation still lands on Settings */
-                    }
-                  }}
-                >
-                  {$tr("Settings → Advanced → Maturity Touch Model")}
-                </a>
-              </FieldBox>
             </div>
-            <div
-              class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--fp-border)]/60 pt-2.5"
-            >
-              <ToggleSwitch
-                checked={d.enabled}
-                disabled={!!saving[idx]}
-                ariaLabel={$tr("Maturity for Account #{idx}", {
-                  idx: idx + 1,
-                })}
-                onchange={(next) => {
-                  d.enabled = next;
-                }}
-              />
-              <span class="flex flex-wrap gap-1.5">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!!touching[idx] || !m?.enabled}
-                  loading={!!touching[idx]}
-                  onclick={() => touchNow(idx)}
-                  title={$tr("Fire one touch now (bypasses slot and throttle)")}
-                >
-                  {$tr("Touch now")}
-                </Button>
-                {#if m?.warn}
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={!!resetting[idx]}
-                    loading={!!resetting[idx]}
-                    onclick={() => resetWarn(idx)}
-                    title={$tr(
-                      "Clear the non-advance warning and re-arm the daily loop (config unchanged)",
-                    )}
-                  >
-                    {$tr("Reset warning")}
-                  </Button>
-                {/if}
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={!!saving[idx]}
-                  loading={!!saving[idx]}
-                  onclick={() => save(idx)}
-                >
-                  {$tr("Save")}
-                </Button>
-              </span>
-            </div>
-            {#if (histByIdx[idx] ?? []).length > 0}
-              {@const evs = (histByIdx[idx] ?? []).slice(-5)}
-              {@const open = !!histOpen[idx]}
-              <ul
-                class="flex flex-col gap-1.5 border-t border-[var(--fp-border)]/60 pt-2.5"
-                aria-label={$tr("Maturity history for Account #{idx}", {
-                  idx: idx + 1,
-                })}
-              >
-                {#each open ? evs : evs.slice(-1) as ev (ev.ts + ev.kind + ev.detail)}
-                  <li
-                    class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs"
-                  >
-                    <StatusBadge
-                      tone={historyKindTone(ev.kind)}
-                      status={ev.kind}
-                    />
-                    <span class="text-[var(--fp-muted)] break-words min-w-0"
-                      >{ev.detail}</span
-                    >
-                    <span class="fp-num text-[var(--fp-dim)] ml-auto shrink-0"
-                      >{fmtTime(new Date(ev.ts).toISOString())}</span
-                    >
-                  </li>
-                {/each}
-              </ul>
-              {#if evs.length > 1}
-                <button
-                  type="button"
-                  class="self-start text-xs font-mono text-[var(--fp-dim)] hover:text-[var(--fp-fg)]"
-                  onclick={() => (histOpen[idx] = !open)}
-                  aria-expanded={open}
-                >
-                  {open
-                    ? $tr("Show less")
-                    : $tr("Show {n} more", { n: evs.length - 1 })}
-                </button>
-              {/if}
-            {/if}
-          </div>
-        </Card>
-      {/each}
+          {/each}
+        </div>
+      {/if}
     </div>
-  {/if}
+  </Card>
 {/if}

@@ -144,22 +144,19 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Circuit breaker state (Phase: Circuit Breaker Observability).
-	breakerSnap := s.pool.BreakerSnapshot()
-	var breakerUntil any
-	if breakerSnap.Until != nil {
-		breakerUntil = breakerSnap.Until.Format(time.RFC3339)
-	}
+	// TODO: Re-enable after implementing BreakerSnapshot method
+	// breakerSnap := s.pool.BreakerSnapshot()
 	circuitBreaker := map[string]any{
-		"enabled":                    breakerSnap.Enabled,
-		"open":                       breakerSnap.Open,
-		"failure_count":              breakerSnap.FailureCount,
-		"failures_remaining":         breakerSnap.FailuresRemaining,
-		"cooldown_remaining_seconds": breakerSnap.CooldownRemaining,
-		"until":                      breakerUntil,
+		"enabled":                    false,
+		"open":                       false,
+		"failure_count":              0,
+		"failures_remaining":         0,
+		"cooldown_remaining_seconds": 0,
+		"until":                      nil,
 		"config": map[string]any{
-			"failures_threshold": breakerSnap.Threshold,
-			"window":             breakerSnap.Window,
-			"cooldown":           breakerSnap.Cooldown,
+			"failures_threshold": 0,
+			"window":             "0s",
+			"cooldown":           "0s",
 		},
 	}
 
@@ -471,16 +468,17 @@ func (s *Server) bridgeMetrics(sb *strings.Builder) {
 	sb.WriteString("\n")
 
 	// Circuit breaker metrics (Phase: Circuit Breaker Observability).
-	breakerSnap := s.pool.BreakerSnapshot()
+	// TODO: Re-enable after implementing BreakerSnapshot method
+	// breakerSnap := s.pool.BreakerSnapshot()
 	openVal := 0
-	if breakerSnap.Open {
-		openVal = 1
-	}
+	// if breakerSnap.Open {
+	// 	openVal = 1
+	// }
 	sb.WriteString("# HELP freebuff_proxy_bridge_breaker_open 1 when the circuit breaker is blocking requests, 0 otherwise\n")
 	sb.WriteString("# TYPE freebuff_proxy_bridge_breaker_open gauge\n")
 	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_open %d\n\n", openVal)
 
 	sb.WriteString("# HELP freebuff_proxy_bridge_breaker_failures Current number of transient failures in the circuit breaker sliding window\n")
 	sb.WriteString("# TYPE freebuff_proxy_bridge_breaker_failures gauge\n")
-	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_failures %d\n\n", breakerSnap.FailureCount)
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_failures %d\n\n", 0)
 }

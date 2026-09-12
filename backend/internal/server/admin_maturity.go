@@ -106,10 +106,10 @@ func parseMaturityBool(s string) bool {
 	return false
 }
 
-// handleTokenMaturity sets per-token streak-maturity automation
-// (POST /admin/tokens/{id}/maturity). Enabling also applies the
-// administrative lock so the warming account leaves rotation; hitting the
-// streak target auto-releases it. Disabling never unlocks.
+// handleTokenMaturity stores per-token streak-maintenance preferences
+// (POST /admin/tokens/{id}/maturity, compat API). The run is universal
+// automatic: the enabled flag is stored but ignored by eligibility, and
+// the lock is never touched.
 func (a *adminHandlers) handleTokenMaturity(w http.ResponseWriter, r *http.Request) {
 	id, err := tokenActionID(r)
 	var params maturityParams
@@ -119,14 +119,14 @@ func (a *adminHandlers) handleTokenMaturity(w http.ResponseWriter, r *http.Reque
 			err = errors.New("missing enabled (true/false)")
 		}
 	}
-	if err == nil && params.hasGoal && (params.target < 1 || params.target > 28) {
-		err = errors.New("target must be between 1 and 28")
+	if err == nil && params.hasGoal && (params.target < 0 || params.target > 28) {
+		err = errors.New("target must be between 0 and 28 (0 = global MATURITY_TARGET_DAYS default)")
 	}
 	if err == nil && params.mode != "" && params.mode != "unmetered" && params.mode != "premium-short" {
 		err = errors.New("mode must be unmetered or premium-short")
 	}
 	if err == nil && params.touchModel != "" && !strings.Contains(params.touchModel, "/") {
-		err = errors.New("touch_model must be a provider/model id (e.g. deepseek/deepseek-v4-flash)")
+		err = errors.New("touch_model must be a provider/model id (e.g. upstage/solar-pro4)")
 	}
 	if err == nil {
 		err = a.pool.SetMaturity(id, params.enabled, params.target, params.mode, params.touchModel)
@@ -137,11 +137,11 @@ func (a *adminHandlers) handleTokenMaturity(w http.ResponseWriter, r *http.Reque
 	}
 	if params.enabled {
 		a.logfunc().Info("dashboard token maturity enabled", "token", id, "target", params.target, "mode", params.mode, "touch_model", params.touchModel)
-		a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" maturity on — locked for warming; auto-releases at its streak target.")
+		a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" maturity prefs saved — the universal run ignores the enabled flag.")
 		return
 	}
 	a.logfunc().Info("dashboard token maturity disabled", "token", id)
-	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" maturity off — automation stopped (lock unchanged).")
+	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" maturity prefs saved — the universal run ignores the enabled flag (lock unchanged).")
 }
 
 // handleTokenMaturityTouch fires one manual maturity touch outside the daily
@@ -160,22 +160,4 @@ func (a *adminHandlers) handleTokenMaturityTouch(w http.ResponseWriter, r *http.
 	}
 	a.logfunc().Info("dashboard token maturity touched", "token", id, "action", action, "result", result)
 	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" touch: "+action+" → "+result+".")
-}
-
-// handleTokenMaturityWarnReset clears one token's non-advance warning
-// (POST /admin/tokens/{id}/maturity/warn-reset): the dashboard Reset warning
-// lever. Additive: only the warn loop resets (warn + day counters drop, the
-// daily touch re-arms); enabled/target/mode/touch_model are untouched, so
-// this never locks, unlocks, or reconfigures the token.
-func (a *adminHandlers) handleTokenMaturityWarnReset(w http.ResponseWriter, r *http.Request) {
-	id, err := tokenActionID(r)
-	if err == nil {
-		err = a.pool.ClearMaturityWarn(id)
-	}
-	if err != nil {
-		a.dash.RenderConfigResult(w, r, false, "Maturity warn reset failed: "+err.Error())
-		return
-	}
-	a.logfunc().Info("dashboard token maturity warning cleared", "token", id)
-	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" maturity warning cleared — daily loop re-armed.")
 }

@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"time"
 
 	"freebuff-proxy/backend/internal/config"
@@ -150,10 +149,8 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		return entry, nil
 	}
 
+	entry := &bridgeEntry{token: clientToken, client: client, ledger: newAccountLedger(), admissionGate: make(chan struct{})}
 	cfg := p.cfg.Load()
-	entry := &bridgeEntry{token: clientToken, client: client, ledger: newAccountLedger(), spend: newSpendLedger(), admissionGate: make(chan struct{}),
-		rateLimitRate: cfg.BridgeRateLimitPerToken,
-	}
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
@@ -186,40 +183,6 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		}
 	}
 	return entry, nil
-}
-
-// rateLimitAllow implements a simple per-entry token-bucket rate limiter.
-// Returns true if the request is allowed, false if rate limited.
-// The bucket refills linearly over time; capacity is at least one request
-// (burst), so a slowed client can always make an immediate request. Guarded
-// by entry.mu which is held during AcquireBridge's cooldown/limit checks
-// anyway.
-func (e *bridgeEntry) rateLimitAllow() bool {
-	if e.rateLimitRate <= 0 {
-		return true // unlimited
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	// Burst capacity = at least one request (so the first request always
-	// has a token), matching the per-IP limiter's burst default.
-	capacity := math.Max(1.0, e.rateLimitRate)
-	now := time.Now()
-	if e.rateLimitLastRefill.IsZero() {
-		// First request: fill bucket to capacity.
-		e.rateLimitTokens = capacity
-		e.rateLimitLastRefill = now
-	} else if elapsed := now.Sub(e.rateLimitLastRefill).Seconds(); elapsed > 0 {
-		// Refill based on elapsed time.
-		e.rateLimitTokens = math.Min(capacity, e.rateLimitTokens+elapsed*e.rateLimitRate)
-		e.rateLimitLastRefill = now
-	}
-	if e.rateLimitTokens >= 1.0 {
-		e.rateLimitTokens -= 1.0
-		e.rateLimitHits.Add(1)
-		return true
-	}
-	e.rateLimitMisses.Add(1)
-	return false
 }
 
 // bridgeTouch moves clientToken to the newest end of the LRU order.
@@ -336,73 +299,6 @@ func bridgeTokenLabel(entry *bridgeEntry) string {
 	return "token-" + entry.client.TokenKey()[:8]
 }
 
-// BreakerSnapshot contains the circuit breaker's current state for the
-// health endpoint and Prometheus metrics. Exposed via BreakerSnapshot().
-type BreakerSnapshot struct {
-	Enabled           bool       // true when BRIDGE_CIRCUIT_BREAKER_FAILURES > 0
-	Open              bool       // true when the breaker is blocking requests
-	FailureCount      int        // current failures in the sliding window
-	FailuresRemaining int        // failures before trip (clamped to 0)
-	CooldownRemaining float64    // seconds left in cooldown (0 when closed)
-	Until             *time.Time // when the breaker will close (nil when closed/disabled)
-	Threshold         int        // configured BRIDGE_CIRCUIT_BREAKER_FAILURES
-	Window            string     // configured window duration (e.g. "30s")
-	Cooldown          string     // configured cooldown duration (e.g. "10s")
-}
-
-// BreakerSnapshot returns the current circuit breaker state. Safe for
-// concurrent use; takes a brief bridgeMu lock.
-func (p *Pool) BreakerSnapshot() BreakerSnapshot {
-	cfg := p.cfg.Load()
-
-	snap := BreakerSnapshot{
-		Threshold: cfg.BridgeCircuitBreakerFailures,
-		Window:    cfg.BridgeCircuitBreakerWindow.String(),
-		Cooldown:  cfg.BridgeCircuitBreakerCooldown.String(),
-	}
-
-	if cfg.BridgeCircuitBreakerFailures <= 0 {
-		return snap // disabled
-	}
-	snap.Enabled = true
-
-	p.bridgeMu.Lock()
-	now := time.Now()
-
-	// Count failures in the sliding window (entries older than cutoff are reaped
-	// by breakerRecordLocked; all remaining entries are within the window).
-	cutoff := now.Add(-cfg.BridgeCircuitBreakerWindow)
-	count := 0
-	for _, f := range p.breakerFailures {
-		if !f.After(cutoff) {
-			break // past the window boundary
-		}
-		count++
-	}
-	snap.FailureCount = count
-
-	remaining := cfg.BridgeCircuitBreakerFailures - count
-	if remaining < 0 {
-		remaining = 0
-	}
-	snap.FailuresRemaining = remaining
-
-	// Check if breaker is open.
-	if !p.breakerUntil.IsZero() && now.Before(p.breakerUntil) {
-		snap.Open = true
-		cooldownLeft := time.Until(p.breakerUntil).Seconds()
-		if cooldownLeft < 0 {
-			cooldownLeft = 0
-		}
-		snap.CooldownRemaining = cooldownLeft
-		t := p.breakerUntil
-		snap.Until = &t
-	}
-
-	p.bridgeMu.Unlock()
-	return snap
-}
-
 // BridgeSnapshot returns a snapshot of all active bridge entries for the
 // dashboard. The snapshot is taken under bridgeMu but returned for external
 // reads (#187).
@@ -487,10 +383,6 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 			Freebucks:         sess.Freebucks,
 			BanType:           banType,
 			BannedUntil:       bannedUntil,
-			DeadToken:         banType == "hard",
-			RateLimitHits:     e.rateLimitHits.Load(),
-			RateLimitMisses:   e.rateLimitMisses.Load(),
-			RateLimitRate:     e.rateLimitRate,
 		})
 	}
 	return snaps
