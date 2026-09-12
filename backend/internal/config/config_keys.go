@@ -103,6 +103,8 @@ type rawConfig struct {
 	MaturityTouchModel               string                  `json:"MATURITY_TOUCH_MODEL"`
 	MaturityTargetDays               *int                    `json:"MATURITY_TARGET_DAYS"`
 	QuotaAutoProbe                   bool                    `json:"QUOTA_AUTO_PROBE"`
+	QuotaProbeActiveInterval         string                  `json:"QUOTA_PROBE_ACTIVE_INTERVAL"`
+	QuotaProbeIdleHeartbeat          string                  `json:"QUOTA_PROBE_IDLE_HEARTBEAT"`
 	BurstBalanceEnabled              bool                    `json:"BURST_BALANCE_ENABLED"`
 	BurstWindow                      string                  `json:"BURST_WINDOW"`
 	BurstThreshold                   *int                    `json:"BURST_THRESHOLD"`

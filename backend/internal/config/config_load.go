@@ -31,9 +31,13 @@ type LoadOptions struct {
 	// Overlay is the DB settings overlay (ADR-0019): canonical KEY -> raw
 	// VALUE pairs applied after the .env file and before the process
 	// environment, so UI-persisted knobs beat the file without rewriting
-	// it while explicit process env keeps winning. Blocked keys (secrets,
-	// UPSTREAM_BASE_URL, DB_PATH) are filtered, never applied. Nil or empty
-	// behaves like Load.
+	// it while explicit process env keeps winning. Since the env-to-DB
+	// migration every catalog key is overlay-addressable, secrets included
+	// (the DB file holds them at mode 0600); AUTH_TOKENS applies with
+	// presence semantics (an empty row pins bridge mode and suppresses CLI
+	// auto-discovery, mirroring the .env tier), and AUTO_DISCOVER_TOKEN is
+	// honored from the overlay only when the process environment leaves it
+	// unset. Nil or empty behaves like Load.
 	Overlay map[string]string
 }
 
@@ -138,6 +142,8 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideString(&raw.MaturityTouchModel, "MATURITY_TOUCH_MODEL")
 	overrideInt(&raw.MaturityTargetDays, "MATURITY_TARGET_DAYS")
 	overrideBool(&raw.QuotaAutoProbe, "QUOTA_AUTO_PROBE")
+	overrideString(&raw.QuotaProbeActiveInterval, "QUOTA_PROBE_ACTIVE_INTERVAL")
+	overrideString(&raw.QuotaProbeIdleHeartbeat, "QUOTA_PROBE_IDLE_HEARTBEAT")
 	overrideBool(&raw.BurstBalanceEnabled, "BURST_BALANCE_ENABLED")
 	overrideString(&raw.BurstWindow, "BURST_WINDOW")
 	overrideInt(&raw.BurstThreshold, "BURST_THRESHOLD")
@@ -492,20 +498,16 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	// an empty map applied silently was dead machinery).
 	modelAliases := parseMap(raw.ModelAliases)
 
-	// FALLBACK_MODEL defaults (issue #100): when unset, the premium free-
-	// catalog rows fall back to the always-available flash model once their
-	// queue wait passes FALLBACK_AFTER_MS (mirrors the CLI hero flip,
-	// reference freebuff-models.ts getRecommendedFreebuffModelId: premium
-	// exhausted → unlimited flash). Operators extend with their own
-	// capacity-gated rows (e.g. meta/muse-spark-* → deepseek-v4-pro per the
-	// reference MUSE_SPARK_FALLBACK_MODEL_ID).
+	// FALLBACK_MODEL (issue #100): explicit operator pairs only; empty
+	// default = no queue-wait fallback. Operators extend with their own
+	// pairs (e.g. meta/muse-spark-1.2-contributor=openai/gpt-5.6-luna).
 	fallbackModels := parseMap(raw.FallbackModels)
 	if len(fallbackModels) == 0 {
 		fallbackModels = defaultFallbackModels()
 	}
 
-	// QUOTA_FALLBACK_MODELS defaults (issue #155): when a model's session
-	// quota is exhausted, fall back to an unlimited model (flash → mimo).
+	// QUOTA_FALLBACK_MODELS (issue #155): explicit operator pairs only;
+	// empty default = quota exhaustion surfaces an honest 429.
 	quotaFallbackModels := parseMap(string(raw.QuotaFallbackModels))
 	if len(quotaFallbackModels) == 0 && string(raw.QuotaFallbackModels) == "" {
 		quotaFallbackModels = defaultQuotaFallbackModels()
@@ -557,10 +559,10 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	if raw.MaturityTargetDays != nil {
 		maturityTargetDays = *raw.MaturityTargetDays
 	}
+	// MATURITY_TOUCH_MODEL defaults to "" (= auto): the cheapest served
+	// unmetered row per token. "auto" is accepted as an explicit alias;
+	// an explicit provider/model id overrides auto.
 	maturityTouchModel := strings.TrimSpace(raw.MaturityTouchModel)
-	if maturityTouchModel == "" {
-		maturityTouchModel = "deepseek/deepseek-v4-flash"
-	}
 	// BURST_WINDOW is zero-tolerant: "" falls back to the 1m default (a zero
 	// window would trip on every admission past the threshold count of zero
 	// history); an explicit non-positive value falls back the same way.
@@ -572,6 +574,29 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		}
 		if burstWindow <= 0 {
 			burstWindow = time.Minute
+		}
+	}
+	// Probe cadences are zero-tolerant like BURST_WINDOW: "" falls back to
+	// the documented default, and an explicit non-positive value falls back
+	// the same way (a zero cadence would probe on every tick).
+	quotaProbeActiveInterval := 60 * time.Second
+	if v := strings.TrimSpace(raw.QuotaProbeActiveInterval); v != "" {
+		quotaProbeActiveInterval, err = parseDuration(v, "QUOTA_PROBE_ACTIVE_INTERVAL")
+		if err != nil {
+			return Config{}, err
+		}
+		if quotaProbeActiveInterval <= 0 {
+			quotaProbeActiveInterval = 60 * time.Second
+		}
+	}
+	quotaProbeIdleHeartbeat := 30 * time.Minute
+	if v := strings.TrimSpace(raw.QuotaProbeIdleHeartbeat); v != "" {
+		quotaProbeIdleHeartbeat, err = parseDuration(v, "QUOTA_PROBE_IDLE_HEARTBEAT")
+		if err != nil {
+			return Config{}, err
+		}
+		if quotaProbeIdleHeartbeat <= 0 {
+			quotaProbeIdleHeartbeat = 30 * time.Minute
 		}
 	}
 	// BURST_THRESHOLD defaults to 20; BURST_MAX_TOKENS defaults to 2 (an
@@ -649,6 +674,8 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		MaturityTouchModel:               maturityTouchModel,
 		MaturityTargetDays:               maturityTargetDays,
 		QuotaAutoProbe:                   raw.QuotaAutoProbe,
+		QuotaProbeActiveInterval:         quotaProbeActiveInterval,
+		QuotaProbeIdleHeartbeat:          quotaProbeIdleHeartbeat,
 		BurstBalanceEnabled:              raw.BurstBalanceEnabled,
 		BurstWindow:                      burstWindow,
 		BurstThreshold:                   burstThreshold,
@@ -682,11 +709,19 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	// also opts into discovery: the operator explicitly asked to run like
 	// the CLI, so AUTO_DISCOVER_TOKEN=false must not silently leave the
 	// pool empty.
+	// AUTO_DISCOVER_TOKEN resolves process env > DB overlay > default true,
+	// like every other knob (the overlay only counts when the environment
+	// leaves it unset). It records on the config so the dashboard and the
+	// env-to-DB migration export the effective value instead of hardcoding
+	// it.
+	autoDiscover := true
+	if v, ok := os.LookupEnv("AUTO_DISCOVER_TOKEN"); ok {
+		autoDiscover = !isFalseWord(v)
+	} else if v, ok := opts.Overlay["AUTO_DISCOVER_TOKEN"]; ok {
+		autoDiscover = !isFalseWord(v)
+	}
+	cfg.AutoDiscoverToken = autoDiscover
 	if opts.DiscoverCLIToken != nil {
-		autoDiscover := true
-		if v := strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_DISCOVER_TOKEN"))); v == "false" || v == "0" || v == "off" || v == "no" {
-			autoDiscover = false
-		}
 		if (autoDiscover || cfg.AdoptCLISession) && len(cfg.AuthTokens) == 0 && !raw.AuthTokensSet {
 			if token, email, srcPath, ok := opts.DiscoverCLIToken(); ok {
 				cfg.AuthTokens = []string{token}
@@ -858,6 +893,8 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideStringFrom(&raw.MaturityTouchModel, get, "MATURITY_TOUCH_MODEL")
 	overrideIntFrom(&raw.MaturityTargetDays, get, "MATURITY_TARGET_DAYS")
 	overrideBoolFrom(&raw.QuotaAutoProbe, get, "QUOTA_AUTO_PROBE")
+	overrideStringFrom(&raw.QuotaProbeActiveInterval, get, "QUOTA_PROBE_ACTIVE_INTERVAL")
+	overrideStringFrom(&raw.QuotaProbeIdleHeartbeat, get, "QUOTA_PROBE_IDLE_HEARTBEAT")
 	overrideBoolFrom(&raw.BurstBalanceEnabled, get, "BURST_BALANCE_ENABLED")
 	overrideStringFrom(&raw.BurstWindow, get, "BURST_WINDOW")
 	overrideIntFrom(&raw.BurstThreshold, get, "BURST_THRESHOLD")
@@ -896,6 +933,18 @@ func parseBool(s string) (bool, bool) {
 		return false, true
 	}
 	return false, false
+}
+
+// isFalseWord reports whether s disables a flag in the AUTO_DISCOVER_TOKEN
+// convention: "false"/"0"/"off"/"no" (case-insensitive, trimmed). Anything
+// else — including blank — leaves the flag enabled, matching the loader's
+// long-standing reading of the variable.
+func isFalseWord(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "false", "0", "off", "no":
+		return true
+	}
+	return false
 }
 
 // parseCSV splits a comma-separated value via splitList.

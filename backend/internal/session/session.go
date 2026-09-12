@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"freebuff-proxy/backend/internal/modelcat"
 	"freebuff-proxy/backend/internal/upstream"
 )
 
@@ -35,11 +36,37 @@ const (
 	// a pathological upstream (always-expired or never-advancing queue)
 	// cannot spin forever.
 	maxOuterIterations = 10
-	// DefaultFallbackModel is the guaranteed-available model used when a
-	// requested model is temporarily unavailable upstream, and the default
-	// probe target for token tests / smoke: every account can use it, unlike
-	// an alphabetical-first catalog pick.
-	DefaultFallbackModel = "deepseek/deepseek-v4-flash"
+)
+
+// DefaultFallbackModelFor resolves the guaranteed-available fallback
+// model at call time: the cheapest served 0-Freebucks row for the
+// live meter (prices/exempt), else the picker-lead catalog default,
+// else the first SERVED row in catalog order. Never a pinned id and
+// never an unserved row: the Served gate applies at every step.
+//
+// Callers pass the admitting token's live Freebucks meter (nil prices =
+// no live meter yet: every static unmetered served row is a candidate).
+func DefaultFallbackModelFor(prices map[string]float64, exempt bool) string {
+	if m, _ := modelcat.AutoUnmeteredTouchModel(prices, exempt); m != "" {
+		return m
+	}
+	if modelcat.IsServed(modelcat.DefaultModelID) {
+		return modelcat.DefaultModelID
+	}
+	if ids := modelcat.ServedIDs(); len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
+}
+
+// DefaultFallbackModel is the static (no live meter) fallback model: the
+// cheapest served unmetered catalog row. Resolved at call time so the
+// default tracks the served catalog, never a pinned model id.
+func DefaultFallbackModel() string {
+	return DefaultFallbackModelFor(nil, false)
+}
+
+const (
 	// asyncReAdmitTimeout bounds the background pre-emptive re-admit
 	// (issue #99) so a hung upstream never leaks a goroutine.
 	asyncReAdmitTimeout = time.Minute
@@ -186,8 +213,10 @@ type Manager struct {
 type snapshotState struct {
 	savedQuota map[string]upstream.ModelQuota
 	// savedQuotaStale marks quota restored from the on-disk entry after a
-	// restart (no live admission yet this process); savedQuotaAt is when
-	// that entry was last polled. Cleared by the first live quota commit.
+	// restart (no live admission yet this process); savedQuotaAt is the
+	// last quota refresh — the on-disk poll time after a restore, the
+	// probe time after a boot seed, the write time after a live probe
+	// commit. Cleared by the first live quota commit.
 	savedQuotaStale bool
 	savedQuotaAt    time.Time
 	// savedQuotaSrcAt records, per model, the source time (Unix millis) of
@@ -643,15 +672,17 @@ func (m *Manager) Snapshot() SessionSnapshot {
 			}
 		}
 		return SessionSnapshot{
-			Refreshing:   m.refreshing,
-			QuotaByModel: quota,
-			QuotaStale:   m.snap.savedQuotaStale && len(quota) > 0,
-			QuotaSavedAt: m.snap.savedQuotaAt,
-			GlmPromo:     m.snap.savedGlmPromo,
-			RemainingMs:  m.snap.savedRemainingMs,
-			Referral:     m.snap.savedReferral,
-			AccessTier:   m.snap.savedAccessTier,
-			Freebucks:    m.snap.savedFreebucks,
+			Refreshing:    m.refreshing,
+			QuotaByModel:  quota,
+			QuotaStale:    m.snap.savedQuotaStale && len(quota) > 0,
+			QuotaSavedAt:  m.snap.savedQuotaAt,
+			GlmPromo:      m.snap.savedGlmPromo,
+			RemainingMs:   m.snap.savedRemainingMs,
+			Referral:      m.snap.savedReferral,
+			AccessTier:    m.snap.savedAccessTier,
+			Freebucks:     m.snap.savedFreebucks,
+			LastRefund:    m.lastRefund,
+			PendingRefund: m.pendingRefund,
 		}
 	}
 	quota := make(map[string]QuotaSnapshot, len(m.state.quotaByModel))
@@ -700,6 +731,8 @@ func (m *Manager) Snapshot() SessionSnapshot {
 		Freebucks:     m.state.freebucks,
 		UpgradeHint:   m.state.upgradeHint,
 		ServerMessage: m.state.serverMessage,
+		LastRefund:    m.lastRefund,
+		PendingRefund: m.pendingRefund,
 	}
 }
 
@@ -771,6 +804,9 @@ func (m *Manager) UpdateQuotaFromProbe(st *upstream.SessionState) {
 		// re-stamps the source times, so a later boot seed compares
 		// against this write (never downgrades it with an older row).
 		m.snap.savedQuotaStale = false
+		// The pool's staleness gate reads QuotaSavedAt as the last-probe
+		// timestamp (issue #484): a live probe is a last probe.
+		m.snap.savedQuotaAt = m.now()
 		m.stampQuotaSourceLocked(m.now())
 		if m.state != nil {
 			m.state.quotaByModel = st.RateLimitsByModel
