@@ -162,7 +162,7 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 	case "HTTP2_UPSTREAM":
 		return strconv.FormatBool(c.HTTP2Upstream), false
 	case "AUTO_DISCOVER_TOKEN":
-		return "true", false
+		return strconv.FormatBool(c.AutoDiscoverToken), false
 	case "DEVTOOLS_ENABLED":
 		return strconv.FormatBool(c.DevToolsEnabled), false
 	case "ADOPT_CLI_SESSION":
@@ -179,6 +179,10 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 		return strconv.Itoa(c.MaturityTargetDays), false
 	case "QUOTA_AUTO_PROBE":
 		return strconv.FormatBool(c.QuotaAutoProbe), false
+	case "QUOTA_PROBE_ACTIVE_INTERVAL":
+		return c.QuotaProbeActiveInterval.String(), false
+	case "QUOTA_PROBE_IDLE_HEARTBEAT":
+		return c.QuotaProbeIdleHeartbeat.String(), false
 	case "BURST_BALANCE_ENABLED":
 		return strconv.FormatBool(c.BurstBalanceEnabled), false
 	case "BURST_WINDOW":

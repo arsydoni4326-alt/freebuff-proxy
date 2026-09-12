@@ -2,6 +2,10 @@ package pool
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +54,34 @@ func maturityResult(p *Pool, token int) (action, result string) {
 	return e.maturity.lastAction, e.maturity.lastResult
 }
 
+// windowNow returns a clock inside tonight's maintenance window for firing
+// tests: the real clock when already in-window with room to spare, else
+// 30m before the next Pacific midnight. Test offsets (+1m/+10m ticks) stay
+// inside the window either way.
+func windowNow() time.Time {
+	now := time.Now()
+	if maturityInWindow(now) {
+		if _, end := maturityWindowFor(now); now.Before(end.Add(-5 * time.Minute)) {
+			return now
+		}
+	}
+	_, end := maturityWindowFor(now)
+	return end.Add(-30 * time.Minute)
+}
+
+// seedStreak caches a fresh streak reading as of now (what backfillLoop
+// maintains in prod), so window-gated firing tests don't trip the
+// streak-stale guard when the window clock runs ahead of wall time.
+func seedStreak(p *Pool, token int, streak int, todayUsed bool, now time.Time) {
+	toks := p.roster.Load()
+	(*toks)[token].SetStreak(&upstream.StreakInfo{
+		Streak:    streak,
+		TodayUsed: todayUsed,
+		TimeZone:  "America/Los_Angeles",
+		UpdatedAt: now,
+	})
+}
+
 func streakBody(streak int, todayUsed bool) map[string]any {
 	return map[string]any{
 		"streak":    streak,
@@ -62,9 +94,9 @@ func streakBody(streak int, todayUsed bool) map[string]any {
 func TestMaturityDryRunProbeOnly(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
 	p := newMaturityPool(t, mock, true)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -84,19 +116,33 @@ func TestMaturityDryRunProbeOnly(t *testing.T) {
 	}
 }
 
-// A live touch admits the unmetered touch model through the token's own
-// session manager — even though the warming token is locked out of serving.
-func TestMaturityLiveAdmitsWhileLocked(t *testing.T) {
+// Enrollment never locks: the account stays leasable in serving rotation
+// while automation touches it. A live touch admits the unmetered touch
+// model through the token's own session manager.
+func TestMaturityEnrollStaysLeasable(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
 	p := newMaturityPool(t, mock, false)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if !p.Snapshot()[0].Locked {
-		t.Fatal("SetMaturity(true) did not lock the token out of serving")
+	if p.Snapshot()[0].Locked {
+		t.Fatal("SetMaturity(true) locked the token out of serving")
+	}
+	// Acquire eligibility ignores maturity state: the enrolled token is
+	// in the lease order.
+	toks := p.roster.Load()
+	order, _ := p.acquireOrder(toks, 0, modelB)
+	found := false
+	for _, idx := range order {
+		if idx == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("acquire order = %v, want token 0 eligible right after enroll", order)
 	}
 	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
 
@@ -109,19 +155,55 @@ func TestMaturityLiveAdmitsWhileLocked(t *testing.T) {
 	if action != "admit" || result != "ok" {
 		t.Errorf("last touch = %q/%q, want admit/ok", action, result)
 	}
-	// The lock still holds: warming accounts never serve client traffic.
-	if !p.Snapshot()[0].Locked {
-		t.Error("live touch unlocked the token before its target")
+	// Still leasable after the touch: the run never locks.
+	if p.Snapshot()[0].Locked {
+		t.Error("live touch locked the token out of serving")
 	}
 }
 
-// Active days cost zero extra traffic: todayUsed skips the touch.
+// An operator-manually-locked token stays out of the nightly run: no touch
+// fires, the ledger records skip:locked, and the lock survives the pass.
+func TestMaturitySkipsLockedStaysLocked(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newMaturityPool(t, mock, false)
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
+	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	toks := p.roster.Load()
+	(*toks)[0].locked.Store(true) // operator lock, not enrollment
+	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
+
+	p.maturityTickAt(context.Background(), now)
+
+	if got := mock.SessionCreatesSnapshot(); got != 0 {
+		t.Errorf("SessionCreates = %d, want 0 (locked account)", got)
+	}
+	if got := mock.SessionProbesSnapshot(); got != 0 {
+		t.Errorf("SessionProbes = %d, want 0 (locked account)", got)
+	}
+	if _, result := maturityResult(p, 0); result != "skip:locked" {
+		t.Errorf("result = %q, want skip:locked", result)
+	}
+	snap := p.Snapshot()[0]
+	if !snap.Locked {
+		t.Error("run unlocked the operator-locked token")
+	}
+	if snap.Maturity == nil || !snap.Maturity.Enabled {
+		t.Errorf("maturity snapshot = %+v, want still enabled (skip, not disable)", snap.Maturity)
+	}
+}
+
+// Active days cost zero extra traffic: the upstream todayUsed flag skips
+// the touch (restart-safe idempotency, upstream half).
 func TestMaturitySkipsTodayUsed(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(3, true)
 	p := newMaturityPool(t, mock, false)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 3, true, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -144,13 +226,13 @@ func TestMaturitySkipsTodayUsed(t *testing.T) {
 func TestMaturitySkipsFutureSlot(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
 	p := newMaturityPool(t, mock, true)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	setMaturitySlot(p, 0, now.Add(2*time.Hour), laDay(now))
+	setMaturitySlot(p, 0, now.Add(10*time.Minute), laDay(now))
 
 	p.maturityTickAt(context.Background(), now)
 
@@ -162,29 +244,30 @@ func TestMaturitySkipsFutureSlot(t *testing.T) {
 	}
 }
 
-// The 6h throttle makes a restart (which re-rolls the slot) idempotent: a
-// second pass right after a firing touches nothing.
-func TestMaturityThrottleIdempotent(t *testing.T) {
+// Restart-safe idempotency: a reboot inside the window re-rolls the slot,
+// but the persisted touchDay bounds the worst case — the second pass
+// records skip:today-used instead of double-touching.
+func TestMaturityRestartIdempotent(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
 	p := newMaturityPool(t, mock, true)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
 
 	p.maturityTickAt(context.Background(), now)
-	// Restart re-rolls the slot to "now" — the throttle must still hold.
+	// Restart re-rolls the slot to "now" — touchDay must still hold.
 	setMaturitySlot(p, 0, now, laDay(now))
 	p.maturityTickAt(context.Background(), now.Add(time.Minute))
 
 	if got := mock.SessionProbesSnapshot(); got != 1 {
-		t.Errorf("SessionProbes = %d, want 1 (throttle blocks the re-fire)", got)
+		t.Errorf("SessionProbes = %d, want 1 (touchDay blocks the re-fire)", got)
 	}
-	if _, result := maturityResult(p, 0); result != "skip:throttle" {
-		t.Errorf("result = %q, want skip:throttle", result)
+	if _, result := maturityResult(p, 0); result != "skip:today-used" {
+		t.Errorf("result = %q, want skip:today-used", result)
 	}
 }
 
@@ -211,8 +294,10 @@ func TestMaturityGlobalKillSwitch(t *testing.T) {
 	}
 }
 
-// Target reached on a healthy account auto-releases the lock and stops.
-func TestMaturityAutoReleaseAtTarget(t *testing.T) {
+// Universal automatic: the old target disables nothing. A streak at/above
+// the stored target leaves the token enabled + leasable, and a stored
+// disabled flag is ignored — the window tick still fires.
+func TestMaturityUniversalIgnoresTarget(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.StreakBody = streakBody(7, false)
@@ -221,26 +306,38 @@ func TestMaturityAutoReleaseAtTarget(t *testing.T) {
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if !p.Snapshot()[0].Locked {
-		t.Fatal("warming token must start locked")
-	}
 
 	p.maturityTickAt(context.Background(), now)
 
 	snap := p.Snapshot()[0]
 	if snap.Locked {
-		t.Error("target reached but the lock still holds")
+		t.Error("token is locked, want leasable")
 	}
-	if snap.Maturity == nil || snap.Maturity.Enabled {
-		t.Fatalf("maturity snapshot = %+v, want disabled after release", snap.Maturity)
-		return
+	if snap.Maturity == nil || !snap.Maturity.Enabled {
+		t.Fatalf("maturity snapshot = %+v, want still enabled (target disables nothing)", snap.Maturity)
 	}
-	if snap.Maturity.Badge != "Mature" {
-		t.Errorf("badge = %q, want Mature", snap.Maturity.Badge)
+}
+
+// A stored disabled flag is dead input: the window tick fires anyway.
+func TestMaturityUniversalIgnoresDisabledFlag(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newMaturityPool(t, mock, true)
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
+	if err := p.SetMaturity(0, false, 0, "", ""); err != nil {
+		t.Fatal(err)
 	}
-	// Release is local state: no touch fires on the release pass.
-	if got := mock.SessionProbesSnapshot(); got != 0 {
-		t.Errorf("SessionProbes = %d, want 0 (release needs no touch)", got)
+	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
+
+	p.maturityTickAt(context.Background(), now)
+
+	if got := mock.SessionProbesSnapshot(); got != 1 {
+		t.Errorf("SessionProbes = %d, want 1 (disabled flag ignored)", got)
+	}
+	action, result := maturityResult(p, 0)
+	if action != "probe" || result != "ok" {
+		t.Errorf("last touch = %q/%q, want probe/ok", action, result)
 	}
 }
 
@@ -248,14 +345,14 @@ func TestMaturityAutoReleaseAtTarget(t *testing.T) {
 func TestMaturitySkipsCooling(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
 	p := newMaturityPool(t, mock, true)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
-	p.CooldownToken(0, time.Hour)
+	p.CooldownToken(0, time.Until(now)+time.Hour)
 
 	p.maturityTickAt(context.Background(), now)
 
@@ -264,45 +361,6 @@ func TestMaturitySkipsCooling(t *testing.T) {
 	}
 	if _, result := maturityResult(p, 0); result != "skip:cooling" {
 		t.Errorf("result = %q, want skip:cooling", result)
-	}
-}
-
-// Three consecutive non-advancing days raise the warning and stop firing.
-func TestMaturityNoAdvanceWarnStops(t *testing.T) {
-	mock := testutil.NewMock()
-	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
-	p := newMaturityPool(t, mock, true)
-	now := time.Now()
-	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
-		t.Fatal(err)
-	}
-	day := now
-	setMaturitySlot(p, 0, day.Add(-time.Hour), laDay(day))
-	p.maturityTickAt(context.Background(), day) // day 1: probe fires
-
-	for i := 1; i <= 3; i++ {
-		day = day.Add(24 * time.Hour)
-		// Streak stuck at 2 while touches fire daily.
-		setMaturitySlot(p, 0, day.Add(-time.Hour), day.In(maturityLocation("America/Los_Angeles")).Format("2006-01-02"))
-		p.maturityTickAt(context.Background(), day)
-	}
-
-	snap := p.Snapshot()[0]
-	if snap.Maturity == nil || !snap.Maturity.Warn {
-		t.Fatalf("maturity snapshot = %+v, want warn after 3 flat days", snap.Maturity)
-		return
-	}
-	if snap.Maturity.NoAdvanceDays != 3 {
-		t.Errorf("NoAdvanceDays = %d, want 3", snap.Maturity.NoAdvanceDays)
-	}
-	probes := mock.SessionProbesSnapshot()
-	// One more day: warned tokens never fire again.
-	day = day.Add(24 * time.Hour)
-	setMaturitySlot(p, 0, day.Add(-time.Hour), day.In(maturityLocation("America/Los_Angeles")).Format("2006-01-02"))
-	p.maturityTickAt(context.Background(), day)
-	if got := mock.SessionProbesSnapshot(); got != probes {
-		t.Errorf("SessionProbes grew %d → %d after warn, want no more firing", probes, got)
 	}
 }
 
@@ -315,6 +373,17 @@ func TestSetMaturityValidation(t *testing.T) {
 	p := newMaturityPool(t, mock, true)
 	if err := p.SetMaturity(0, true, 29, "", ""); err == nil {
 		t.Error("target 29 accepted, want range error")
+	}
+	if err := p.SetMaturity(0, true, -1, "", ""); err == nil {
+		t.Error("target -1 accepted, want range error")
+	}
+	// Target 0 is the global default (the dashboard enrolls with target 0:
+	// per-account targets are gone).
+	if err := p.SetMaturity(0, true, 0, "", ""); err != nil {
+		t.Errorf("target 0 rejected, want global-default acceptance: %v", err)
+	}
+	if got := p.Snapshot()[0].Maturity.Target; got != 7 {
+		t.Errorf("target-0 snapshot target = %d, want 7 (global default)", got)
 	}
 	if err := p.SetMaturity(0, true, 7, "turbo", ""); err == nil {
 		t.Error("mode turbo accepted, want unknown-mode error")
@@ -466,55 +535,71 @@ func TestSetMaturityTouchModel(t *testing.T) {
 	}
 }
 
-// The enable-time slot seed follows the account timezone, never UTC: a UTC
-// instant whose calendar day disagrees with the account day must seed the
-// account day. Non-Pacific zones prove no Pacific hardcode; the DST cases
-// prove the slot stays inside the (23h/25h) account day.
-func TestMaturitySeedSlotFollowsAccountTZ(t *testing.T) {
-	// 2026-09-08 02:30 UTC == 2026-09-07 22:30 EDT.
-	now := time.Date(2026, 9, 8, 2, 30, 0, 0, time.UTC)
-	slot, day := seedMaturitySlot("", now, "America/New_York")
-	if day != "2026-09-07" {
-		t.Errorf("seed day = %q, want 2026-09-07 (account day, not UTC)", day)
+// The nightly window ends at Pacific midnight wall-clock, never a fixed
+// UTC offset: July (PDT, UTC-7) ends at 07:00Z, January (PST, UTC-8) at
+// 08:00Z. A fixed-offset implementation would pin one of them wrong.
+func TestMaturityWindowFollowsPacific(t *testing.T) {
+	// July noon Pacific: tonight's window ends at July midnight PDT.
+	julyNoon := time.Date(2026, 7, 15, 12, 0, 0, 0, time.FixedZone("PDT", -7*3600))
+	start, end := maturityWindowFor(julyNoon)
+	if want := time.Date(2026, 7, 16, 7, 0, 0, 0, time.UTC); !end.Equal(want) {
+		t.Errorf("july window end = %v, want %v (midnight PDT)", end, want)
 	}
-	ny := maturityLocation("America/New_York")
-	mid := time.Date(2026, 9, 7, 0, 0, 0, 0, ny)
-	if slot.Before(mid) || !slot.Before(mid.Add(24*time.Hour)) {
-		t.Errorf("slot = %v, want within the NY day", slot)
+	if end.Sub(start) != maturityRunWindow {
+		t.Errorf("july window length = %v, want %v", end.Sub(start), maturityRunWindow)
 	}
-	// Tokyo (UTC+9, no DST): 2026-09-07 20:00 UTC == 2026-09-08 05:00 JST.
-	tokyoNow := time.Date(2026, 9, 7, 20, 0, 0, 0, time.UTC)
-	if _, tokyoDay := seedMaturitySlot("", tokyoNow, "Asia/Tokyo"); tokyoDay != "2026-09-08" {
-		t.Errorf("tokyo seed day = %q, want 2026-09-08", tokyoDay)
+	// January noon Pacific: tonight's window ends at January midnight PST.
+	janNoon := time.Date(2026, 1, 15, 12, 0, 0, 0, time.FixedZone("PST", -8*3600))
+	_, jend := maturityWindowFor(janNoon)
+	if want := time.Date(2026, 1, 16, 8, 0, 0, 0, time.UTC); !jend.Equal(want) {
+		t.Errorf("january window end = %v, want %v (midnight PST)", jend, want)
 	}
 }
 
-func TestMaturitySeedSlotDSTBounds(t *testing.T) {
-	// Spring forward (23h day): 2026-03-08 07:30 UTC == 03:30 EDT.
-	ny := maturityLocation("America/New_York")
-	spring := time.Date(2026, 3, 8, 7, 30, 0, 0, time.UTC)
-	slot, day := seedMaturitySlot("", spring, "America/New_York")
-	if day != "2026-03-08" {
-		t.Errorf("spring-forward seed day = %q, want 2026-03-08", day)
+// DST Sundays keep a full 60m window ending at Pacific midnight: the 23h
+// spring-forward day and the 25h fall-back day both end at the right
+// instant (LA transitions at 02:00, never at midnight).
+func TestMaturityWindowDSTBounds(t *testing.T) {
+	// Spring forward 2026-03-08 (clocks jump 02:00 → 03:00 PDT).
+	springEve := time.Date(2026, 3, 7, 12, 0, 0, 0, time.FixedZone("PST", -8*3600))
+	sstart, send := maturityWindowFor(springEve)
+	if want := time.Date(2026, 3, 8, 8, 0, 0, 0, time.UTC); !send.Equal(want) {
+		t.Errorf("spring-forward window end = %v, want %v (midnight PST→PDT day)", send, want)
 	}
-	mid := time.Date(2026, 3, 8, 0, 0, 0, 0, ny)
-	if slot.Before(mid) || !slot.Before(mid.Add(24*time.Hour)) {
-		t.Errorf("spring-forward slot = %v, want within [midnight, midnight+24h)", slot)
+	if send.Sub(sstart) != maturityRunWindow {
+		t.Errorf("spring-forward window length = %v, want %v", send.Sub(sstart), maturityRunWindow)
 	}
-	// Fall back (25h day): 2026-11-01 05:30 UTC == 01:30 EDT (first pass).
-	fall := time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC)
-	fslot, fday := seedMaturitySlot("", fall, "America/New_York")
-	if fday != "2026-11-01" {
-		t.Errorf("fall-back seed day = %q, want 2026-11-01", fday)
+	// Fall back 2026-11-01 (clocks repeat 01:00–02:00, back to PST).
+	fallEve := time.Date(2026, 10, 31, 12, 0, 0, 0, time.FixedZone("PDT", -7*3600))
+	fstart, fend := maturityWindowFor(fallEve)
+	if want := time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC); !fend.Equal(want) {
+		t.Errorf("fall-back window end = %v, want %v (midnight PDT→PST day)", fend, want)
 	}
-	fmid := time.Date(2026, 11, 1, 0, 0, 0, 0, ny)
-	if fslot.Before(fmid) || !fslot.Before(fmid.Add(24*time.Hour)) {
-		t.Errorf("fall-back slot = %v, want within [midnight, midnight+24h)", fslot)
+	if fend.Sub(fstart) != maturityRunWindow {
+		t.Errorf("fall-back window length = %v, want %v", fend.Sub(fstart), maturityRunWindow)
 	}
-	// Empty/unknown zone keeps the existing fallback chain (never panics,
-	// never UTC-seeds blindly): day falls back to the resolved location.
-	if _, fday := seedMaturitySlot("", fall, ""); fday == "" {
-		t.Error("empty-tz seed day is empty, want fallback day")
+	// In-window membership brackets the 60m exactly.
+	if !maturityInWindow(sstart) || !maturityInWindow(send.Add(-time.Second)) {
+		t.Error("window edges not in-window (start inclusive, end-exclusive)")
+	}
+	if maturityInWindow(sstart.Add(-time.Second)) || maturityInWindow(send) {
+		t.Error("outside instants report in-window")
+	}
+}
+
+// Slots roll inside tonight's window: staggered across the 60m, never at
+// or past the reset.
+func TestMaturitySlotRollsInWindow(t *testing.T) {
+	now := windowNow()
+	start, end := maturityWindowFor(now)
+	for range 25 {
+		slot, day := rollMaturitySlotInWindow(pacificDayKey(now), now)
+		if slot.Before(start) || !slot.Before(end) {
+			t.Fatalf("slot = %v, want within [%v, %v)", slot, start, end)
+		}
+		if day != pacificDayKey(now) {
+			t.Fatalf("slot day = %q, want %q", day, pacificDayKey(now))
+		}
 	}
 }
 
@@ -524,9 +609,9 @@ func TestMaturitySeedSlotDSTBounds(t *testing.T) {
 func TestMaturityTickGuardsTouchModel(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	mock.StreakBody = streakBody(2, false)
 	p := newMaturityPool(t, mock, false)
-	now := time.Now()
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -557,5 +642,139 @@ func TestMaturityTickGuardsTouchModel(t *testing.T) {
 	}
 	if got := mock.SessionCreatesSnapshot(); got != 0 {
 		t.Errorf("SessionCreates = %d, want still 0", got)
+	}
+}
+
+// Outside the nightly window nothing fires and the last-run ledger is
+// untouched: bookkeeping (release/advance) stays fresh, but skips never
+// overwrite last night's outcome with all-day spam.
+func TestMaturityOutsideWindowNoFire(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newMaturityPool(t, mock, true)
+	start, _ := maturityWindowFor(time.Now())
+	now := start.Add(-2 * time.Hour) // provably outside any window
+	seedStreak(p, 0, 2, false, now)
+	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	setMaturitySlot(p, 0, now.Add(-time.Hour), pacificDayKey(now))
+
+	p.maturityTickAt(context.Background(), now)
+
+	if got := mock.SessionProbesSnapshot(); got != 0 {
+		t.Errorf("SessionProbes = %d, want 0 (outside the window)", got)
+	}
+	if got := mock.SessionCreatesSnapshot(); got != 0 {
+		t.Errorf("SessionCreates = %d, want 0 (outside the window)", got)
+	}
+	if action, result := maturityResult(p, 0); action != "" || result != "" {
+		t.Errorf("ledger = %q/%q, want untouched outside the window", action, result)
+	}
+}
+
+// Client traffic since the last Pacific reset skips the nightly touch: the
+// account is already alive today. The signal is the local Pacific-day
+// ledger, fed ONLY by the Chat success path — internal probes and warming
+// touches never record here, so automation can never self-skip.
+func TestMaturitySkipsClientActive(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newMaturityPool(t, mock, false)
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
+	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
+	// One successful client chat today (real-now ledger: same Pacific day
+	// as tonight's window by construction).
+	toks := p.roster.Load()
+	p.recordChatEntry((*toks)[0])
+
+	p.maturityTickAt(context.Background(), now)
+
+	if got := mock.SessionCreatesSnapshot(); got != 0 {
+		t.Errorf("SessionCreates = %d, want 0 (client-active account)", got)
+	}
+	if got := mock.SessionProbesSnapshot(); got != 0 {
+		t.Errorf("SessionProbes = %d, want 0 (client-active account)", got)
+	}
+	if _, result := maturityResult(p, 0); result != "skip:client-active" {
+		t.Errorf("result = %q, want skip:client-active", result)
+	}
+}
+
+// A warming touch never counts as client activity: dry-run probes and live
+// touches bypass the Chat ledger, so a touched account is still eligible
+// tomorrow (only touchDay/todayUsed gate the same night).
+func TestMaturityTouchNotClientActivity(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newMaturityPool(t, mock, false)
+	now := windowNow()
+	seedStreak(p, 0, 2, false, now)
+	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	setMaturitySlot(p, 0, now.Add(-time.Hour), laDay(now))
+
+	p.maturityTickAt(context.Background(), now)
+
+	if got := mock.SessionCreatesSnapshot(); got != 1 {
+		t.Fatalf("SessionCreates = %d, want 1 (live touch fired)", got)
+	}
+	if got := p.dayRequestCount(0); got != 0 {
+		t.Errorf("dayRequestCount = %d, want 0 (touches never feed the activity ledger)", got)
+	}
+}
+
+// A rate-limited touch aborts the nightly walk and backs off: the next
+// token stays untouched and no retry fires inside the backoff window.
+func TestMaturityRateLimitAbortsWalk(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var posts atomic.Int64
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts.Add(1)
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"status":"rate_limited","limit":3,"recentCount":3,"period":"pacific_day","retryAfterMs":900000}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"active"}`)
+	}
+	p := newTestPoolCfg(t, func(cfg *config.Config) {
+		cfg.MaturityEnabled = true
+		cfg.MaturityDryRun = false
+		cfg.MaturityTouchModel = modelB
+		cfg.MaturityTargetDays = 7
+	}, mock, mock)
+	now := windowNow()
+	for i := range 2 {
+		seedStreak(p, i, 2, false, now)
+		if err := p.SetMaturity(i, true, 7, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		setMaturitySlot(p, i, now.Add(-time.Hour), laDay(now))
+	}
+
+	p.maturityTickAt(context.Background(), now)
+
+	if got := posts.Load(); got != 1 {
+		t.Errorf("session POSTs = %d, want 1 (walk aborts on first 429)", got)
+	}
+	if _, result := maturityResult(p, 0); !strings.HasPrefix(result, "error:") {
+		t.Errorf("token0 result = %q, want 429 error", result)
+	}
+	if action, result := maturityResult(p, 1); action != "" || result != "" {
+		t.Errorf("token1 ledger = %q/%q, want untouched (walk aborted)", action, result)
+	}
+	// Inside the backoff the walk stays paused (token1 would otherwise be
+	// due immediately: its slot is already past).
+	p.maturityTickAt(context.Background(), now.Add(time.Minute))
+	if got := posts.Load(); got != 1 {
+		t.Errorf("session POSTs = %d, want still 1 (429 backoff holds)", got)
 	}
 }

@@ -892,23 +892,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/admin/tokens/{id}/maturity/warn-reset": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Clear one token's non-advance warning (re-arms the daily loop) */
-    post: operations["tokenMaturityWarnReset"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/admin/tokens/{id}/session": {
     parameters: {
       query?: never;
@@ -1105,6 +1088,14 @@ export interface components {
     };
     SettingsListResponse: {
       degraded: boolean;
+      migrate?: {
+        applied: number[];
+        fresh: boolean;
+        from_version: number;
+        marker: boolean;
+        noop: boolean;
+        to_version: number;
+      } | null;
       settings: {
         key: string;
         restart_only: boolean;
@@ -1378,18 +1369,21 @@ export interface components {
         last_usage?: string;
         locked: boolean;
         maturity?: {
+          auto_touch_model?: string;
+          auto_touch_reason?: string;
           badge?: string;
+          effective_touch_model?: string;
           enabled: boolean;
           last_action?: string;
           last_advanced?: string;
           last_result?: string;
           last_touch?: string;
           mode: string;
-          no_advance_days?: number;
           slot?: string;
+          slot_day?: string;
           target: number;
+          touch_day?: string;
           touch_model?: string;
-          warn?: boolean;
         } | null;
         messages_24h: number;
         queue_depth: number;
@@ -2796,28 +2790,6 @@ export interface operations {
     requestBody?: never;
     responses: {
       /** @description Fire one manual maturity touch outside the daily slot */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ResultEnvelope"];
-        };
-      };
-    };
-  };
-  tokenMaturityWarnReset: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Clear one token's non-advance warning (re-arms the daily loop) */
       200: {
         headers: {
           [name: string]: unknown;

@@ -439,6 +439,45 @@ aggressive round-robin.** The documentation explicitly prohibits:
 - **Sequential SSE Content Blocks**: Never interleave unclosed blocks
 - **Circuit Breaker**: Only trips on transient upstream failures (5xx/network); classified errors never trip
 
+## 2026-09-11: Merge conflict resolution preserving database persistence feature
+
+**Symptom**: Merge conflict between commit b586525 (with database persistence) and upstream/main resulted in build errors with missing fields (`lastRefund`, `pendingRefund` in session Manager) and duplicate struct/function declarations.
+
+**Root cause**: Merge created duplicate `Manager` struct definition in `session.go` that was missing the refund-tracking fields (`lastRefund`, `pendingRefund`) which exist in `session_manager.go`. Additionally, various pool and server files had conflicts between the database persistence feature (b586525) and upstream changes.
+
+**Resolution**:
+1. **Session package**: Removed duplicate `Manager` struct, `NewManager`, `NewManagerWithStore`, `EnsureSession`, and `EnsureSessionForModel` from `session.go`. The correct definitions remain in `session_manager.go` with all required fields including `lastRefund` and `pendingRefund` for refund tracking.
+
+2. **Config package**: 
+   - Resolved merge conflict in `config_keys.go` by adding missing `QuotaProbeActiveInterval` and `QuotaProbeIdleHeartbeat` fields to `rawConfig` struct.
+   - Used HEAD version (--ours) which includes all latest features.
+
+3. **Pool package**: 
+   - Restored complete file set from b586525 to preserve database persistence features (`stateStore`, `healthTracker`, `probeResults` fields).
+   - Copied: `pool.go`, `lifecycle.go`, `maturity.go`, `quota.go`, `quota_bootseed.go`, `pool_lifecycle.go`, `acquire_order.go`, `snapshot.go`, `health.go`, `health_warn.go`, `bridge_breaker.go`, `quota_autoprobe.go`, `quota_visitprobe.go`, `token_probe.go`.
+   - Removed conflicting upstream files: `quota_smartprobe.go`, `quota_smartprobe_test.go`, `quota_smartprobe_fleet_test.go`.
+   - Added missing fields to `TokenSnapshot`: `TokenValue`, `HealthScore`, `HealthScoreLabel`.
+   - Added missing fields to `Pool`: `stateStore`, `healthTracker`, `probeResults`, `breakerFailures`, `breakerUntil`.
+
+4. **Dashboard package**: Restored `dashboard.go`, `dashboard_cards.go`, `dashboard_helpers.go` from b586525 to maintain compatibility with pool changes.
+
+5. **Server package**: 
+   - Restored `health.go` from b586525.
+   - Commented out `BreakerSnapshot()` calls (method doesn't exist in b586525) as temporary workaround until proper implementation.
+
+6. **Removed obsolete files**: `admin_tokens_ops.go`, `admin_tokens_routes.go` (consolidated into `admin_tokens.go`), `bridge_hardening_test.go` (removed in upstream).
+
+**Verification**: Build successful with `go build ./backend/cmd/freebuff-proxy`.
+
+**Persistent features preserved**:
+- SQLite token database with `session_state` table for session persistence
+- Token state store for operational state (locks, quarantines, cooldowns, ledgers)
+- Health tracking and scoring system
+- Refund tracking (`lastRefund`, `pendingRefund`) in session manager
+- Quota auto-probe system from b586525
+
+**Note**: Circuit breaker observability in healthz/metrics endpoints temporarily disabled (returns zeros) until `BreakerSnapshot()` method is implemented.
+
 ## 2026-09-10: Fix merge-resurrected stale sources blocking Docker build
 
 **Symptom**: `docker build` failed at `go build` with mass redeclarations

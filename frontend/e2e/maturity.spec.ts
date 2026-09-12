@@ -1,53 +1,18 @@
 import { test, expect } from "@playwright/test";
 import { loadFixtures, mockDashboard } from "./mocks.js";
 
-/**
- * In-memory pages_state backend (mirrors page-state.spec.ts): GET returns
- * the seeded snapshot ({} when absent); PUT stores {data} verbatim. The
- * returned map lets tests assert what the SPA persisted.
- */
-async function mockPageState(
-  page: Parameters<typeof mockDashboard>[0],
-  seed: Record<string, unknown> = {},
-) {
-  const state = new Map<string, unknown>(Object.entries(seed));
-  await page.route("**/admin/api/pages/*", async (route) => {
-    const id = new URL(route.request().url()).pathname.split("/").pop() ?? "";
-    if (route.request().method() === "GET") {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: state.get(id) ?? {} }),
-      });
-    } else {
-      let data: unknown = {};
-      try {
-        data = JSON.parse(route.request().postData() ?? "{}").data ?? {};
-      } catch {
-        data = {};
-      }
-      state.set(id, data);
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: true,
-          message: "Page state saved.",
-          code: "page_saved",
-        }),
-      });
-    }
-  });
-  return state;
-}
-function maturityTokens() {
+function maintenanceTokens() {
   return {
     mode: "pooled",
     in_bridge: false,
     show_bridge: false,
     bridge_tokens: 0,
-    token_count: 2,
+    token_count: 3,
     has_tokens: true,
+    maturity_enabled: true,
+    maturity_dry_run: true,
+    maturity_window_start: "2026-09-12T06:00:00Z",
+    maturity_window_end: "2026-09-12T07:00:00Z",
     tokens: [
       {
         index: 0,
@@ -62,10 +27,15 @@ function maturityTokens() {
           mode: "unmetered",
           badge: "Warming",
           slot: "2026-09-05T07:30:00Z",
-          last_touch: "2026-09-04T07:31:00Z",
+          slot_day: "2026-09-05",
+          last_touch: "2026-09-05T07:31:00Z",
+          touch_day: "2026-09-05",
           last_action: "probe",
           last_result: "ok",
           last_advanced: "yes",
+          effective_touch_model: "mimo/mimo-v2.5",
+          auto_touch_model: "mimo/mimo-v2.5",
+          auto_touch_reason: "auto:unmetered",
         },
       },
       {
@@ -74,12 +44,59 @@ function maturityTokens() {
         session_status: "active",
         locked: false,
       },
+      {
+        index: 2,
+        email: "cool@example.com",
+        session_status: "active",
+        locked: false,
+        streak: 1,
+        today_used: false,
+        maturity: {
+          enabled: true,
+          target: 7,
+          mode: "unmetered",
+          badge: "Warming",
+          slot: "2026-09-05T07:30:00Z",
+          slot_day: "2026-09-05",
+          last_touch: "2026-09-06T07:31:00Z",
+          touch_day: "2026-09-04",
+          last_action: "",
+          last_result: "skip:cooling",
+          effective_touch_model: "mimo/mimo-v2.5",
+          auto_touch_model: "mimo/mimo-v2.5",
+          auto_touch_reason: "auto:unmetered",
+        },
+      },
     ],
   };
 }
 
-test.describe("account maturity", () => {
-  test("maturity page renders badges, controls, and fires save + touch", async ({
+function maintenanceConfig() {
+  return {
+    env_content: "AUTH_TOKENS=a,b\nMATURITY_ENABLED=true\n",
+    has_env_file: true,
+    effective: [
+      { key: "MATURITY_ENABLED", value: "true", secret: false },
+      { key: "MATURITY_TOUCH_MODEL", value: "auto", secret: false },
+      { key: "MATURITY_DRY_RUN", value: "true", secret: false },
+    ],
+  };
+}
+
+async function gotoWarming(page) {
+  await page.goto("http://127.0.0.1:4173/admin/#tokens");
+  await page.getByRole("button", { name: "Warming" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Tokens", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+}
+
+test.describe("streak maintenance", () => {
+  test("board carries the universal switch and nothing else", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -89,7 +106,7 @@ test.describe("account maturity", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
+        body: JSON.stringify(maintenanceTokens()),
       });
     });
     await page.unroute("**/admin/api/config");
@@ -97,72 +114,83 @@ test.describe("account maturity", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          env_content: "AUTH_TOKENS=a,b\nMATURITY_ENABLED=true\n",
-          has_env_file: true,
-        }),
+        body: JSON.stringify(maintenanceConfig()),
+      });
+    });
+
+    await gotoWarming(page);
+    await expect(page.getByText("Streak Maintenance")).toBeVisible();
+    // The universal on/off switch is the ONLY control: no touch-model
+    // select, no Touch-now buttons anywhere on the board.
+    await expect(
+      page.getByRole("switch", { name: "Streak maintenance" }),
+    ).toBeVisible();
+    await expect(page.getByLabel("Global touch model")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Touch now" })).toHaveCount(
+      0,
+    );
+    // Fixed pre-reset window copy + read-only dry-run badge + countdown.
+    await expect(
+      page.getByText("Nightly window 23:00–00:00 Pacific"),
+    ).toBeVisible();
+    await expect(page.getByText("Dry run")).toBeVisible();
+    await expect(page.getByLabel("Next maintenance run")).toBeVisible();
+    await expect(page.getByText(/Next run|In window/)).toBeVisible();
+    // One row per account: touched with the resolved model id, skipped
+    // with the exact ledger reason, pending without a ledger.
+    await expect(page.getByText("Touched").first()).toBeVisible();
+    await expect(page.getByText("mimo/mimo-v2.5").first()).toBeVisible();
+    await expect(page.getByText("Skipped · skip:cooling")).toBeVisible();
+    await expect(page.getByText("Pending").first()).toBeVisible();
+    // Last-run ledger summary: time, touched, skipped with reasons.
+    await expect(page.getByLabel("Last maintenance run")).toContainText(
+      /touched\s+1/,
+    );
+    await expect(page.getByLabel("Last maintenance run")).toContainText(
+      /skipped\s+1/,
+    );
+    await expect(page.getByLabel("Last maintenance run")).toContainText(
+      "skip:cooling",
+    );
+  });
+
+  test("universal switch writes the global kill-switch", async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(maintenanceTokens()),
       });
     });
 
     const posts: Array<{ url: string; body: string }> = [];
-    for (const suffix of ["maturity", "maturity/touch"]) {
-      await page.route(`**/admin/tokens/0/${suffix}`, async (route) => {
+    await page.route("**/admin/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
         posts.push({
           url: route.request().url(),
           body: route.request().postData() ?? "",
         });
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, message: "done." }),
-        });
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, message: "saved." }),
       });
-    }
+    });
 
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    await expect(page.getByText("Warming").first()).toBeVisible();
-    await expect(page.getByText("Not enrolled").first()).toBeVisible();
-    await expect(page.getByText("Locked").first()).toBeVisible();
-
-    // Cards render expanded: controls are interactive immediately.
-
-    // Save posts the drafted target/mode/touch-model/enabled for Account #1.
+    await gotoWarming(page);
     const saveReq = page.waitForRequest(
-      (r) =>
-        r.method() === "POST" && r.url().includes("/admin/tokens/0/maturity"),
+      (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
     );
-    await page.getByLabel("Streak target for Account #1").fill("14");
-    await page
-      .getByLabel("Touch model for Account #1")
-      .selectOption("mimo/mimo-v2.5");
-    await page
-      .getByRole("button", { name: "Save", exact: true })
-      .first()
-      .click();
+    await page.getByRole("switch", { name: "Streak maintenance" }).click();
     await saveReq;
-    expect(posts[0].body).toContain("14");
-    expect(posts[0].body).toContain('"touch_model":"mimo/mimo-v2.5"');
-
-    // Touch now bypasses slot/throttle via the manual endpoint.
-    const touchReq = page.waitForRequest(
-      (r) =>
-        r.method() === "POST" &&
-        r.url().includes("/admin/tokens/0/maturity/touch"),
-    );
-    await page.getByRole("button", { name: "Touch now" }).first().click();
-    await touchReq;
-    await expect(page.getByText("Touch fired for Account #1")).toBeVisible();
+    expect(posts[0].body).toContain("MATURITY_ENABLED");
   });
 
-  test("maturity page warns while the global kill-switch is off", async ({
+  test("accounts rows carry no maturity controls or chips", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -172,7 +200,80 @@ test.describe("account maturity", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
+        body: JSON.stringify(maintenanceTokens()),
+      });
+    });
+
+    // Accounts tab (default): rows show serving status only — no maturity
+    // toggle, no Touch-now, no Cold/Warming/Not-enrolled chip. The streak
+    // day count stays as pure info where shown.
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await expect(
+      page.getByRole("heading", { name: "Tokens", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("switch", { name: "Maturity for Account #1" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("switch", { name: "Maturity for Account #2" }),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Touch now" })).toHaveCount(
+      0,
+    );
+    await expect(page.getByText("Locked").first()).toBeVisible();
+  });
+
+  test("settings advanced wires the dry-run toggle and touch model", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.goto("http://127.0.0.1:4173/admin/#settings");
+    await expect(
+      page.getByRole("heading", { name: "Settings", exact: true }),
+    ).toBeVisible();
+    // Pool knobs live here now: MATURITY_DRY_RUN as a switch,
+    // MATURITY_TOUCH_MODEL as the Auto select.
+    await expect(
+      page.getByRole("switch", { name: "MATURITY_DRY_RUN" }),
+    ).toBeVisible();
+    await expect(page.getByLabel("MATURITY_TOUCH_MODEL")).toBeVisible();
+  });
+
+  test("no per-account target stepper or model select remains", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(maintenanceTokens()),
+      });
+    });
+    await gotoWarming(page);
+    await expect(page.getByLabel("Streak target for Account #1")).toHaveCount(
+      0,
+    );
+    await expect(page.getByLabel("Touch model for Account #1")).toHaveCount(0);
+    await expect(page.getByLabel("Touch model for Account #2")).toHaveCount(0);
+  });
+
+  test("maintenance warns while the global kill-switch is off", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      const body = maintenanceTokens();
+      body.maturity_enabled = false;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
       });
     });
     await page.unroute("**/admin/api/config");
@@ -183,164 +284,20 @@ test.describe("account maturity", () => {
         body: JSON.stringify({
           env_content: "AUTH_TOKENS=a,b\nMATURITY_ENABLED=false\n",
           has_env_file: true,
+          effective: [
+            { key: "MATURITY_ENABLED", value: "false", secret: false },
+          ],
         }),
       });
     });
 
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
+    await gotoWarming(page);
     await expect(
       page.getByText("Maturity automation is globally off"),
     ).toBeVisible();
   });
-  test("maturity card renders the restart-surviving event timeline", async ({
-    page,
-  }) => {
-    const f = loadFixtures();
-    await mockDashboard(page, f);
-    await page.unroute("**/admin/api/tokens*");
-    await page.route("**/admin/api/tokens*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
-      });
-    });
-    await page.route("**/admin/api/maturity/history*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          enabled: true,
-          token: 0,
-          events: [
-            { ts: 1785900000000, kind: "touch", detail: "admit ok" },
-            { ts: 1785903600000, kind: "config", detail: "enabled target=7" },
-          ],
-        }),
-      });
-    });
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    // Timeline folds by default: latest event visible, older events behind
-    // the expander (capped at 5 recent).
-    const timeline = page.getByRole("list", {
-      name: "Maturity history for Account #1",
-    });
-    await expect(timeline).toBeVisible();
-    await expect(timeline.getByText("enabled target=7")).toBeVisible();
-    await expect(timeline.getByText("admit ok")).toBeHidden();
-    await page.getByRole("button", { name: "Show 1 more" }).click();
-    await expect(timeline.getByText("admit ok")).toBeVisible();
-  });
-  test("maturity card offers the per-token touch model select", async ({
-    page,
-  }) => {
-    const f = loadFixtures();
-    await mockDashboard(page, f);
-    await page.unroute("**/admin/api/tokens*");
-    await page.route("**/admin/api/tokens*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
-      });
-    });
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    // The page-header touch model picker is gone (per-card selects only).
-    await expect(page.getByLabel("Economy touch model")).toHaveCount(0);
-    // Cards render expanded: the per-card select is visible immediately.
-    const picker = page.getByLabel("Touch model for Account #1");
-    await expect(picker).toBeVisible();
-    // Empty value = global MATURITY_TOUCH_MODEL fallback.
-    await expect(picker).toHaveValue("");
-    await expect(picker.locator("option").first()).toHaveText("Global default");
-    const options = await picker.locator("option").allTextContents();
-    // Served models labeled with their server-reported cost class.
-    expect(options).toContain("upstage/solar-pro4 (0 Freebucks/hr)");
-    expect(options).toContain("openai/gpt-5.6-luna (20 Freebucks/hr)");
-    // Cheapest-Freebucks-cost first, priced rows last.
-    const solarIdx = options.findIndex((o) =>
-      o.startsWith("upstage/solar-pro4"),
-    );
-    const lunaIdx = options.findIndex((o) =>
-      o.startsWith("openai/gpt-5.6-luna"),
-    );
-    expect(solarIdx).toBeGreaterThan(0);
-    expect(lunaIdx).toBeGreaterThan(solarIdx);
-    // No mode select: the Touch box is model-select-only, mode rides the save.
-    await expect(page.getByLabel("Touch mode for Account #1")).toHaveCount(0);
-  });
-  test("maturity touch select names the global default and links to its Settings row", async ({
-    page,
-  }) => {
-    const f = loadFixtures();
-    await mockDashboard(page, f);
-    await page.unroute("**/admin/api/tokens*");
-    await page.route("**/admin/api/tokens*", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
-      });
-    });
-    await page.unroute("**/admin/api/config");
-    await page.route("**/admin/api/config", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          env_content: "AUTH_TOKENS=a,b\nMATURITY_ENABLED=true\n",
-          has_env_file: true,
-          effective: [
-            { key: "MATURITY_ENABLED", value: "true", secret: false },
-            {
-              key: "MATURITY_TOUCH_MODEL",
-              value: "z-ai/glm-5.3-flash",
-              secret: false,
-            },
-          ],
-        }),
-      });
-    });
 
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
-    const picker = page.getByLabel("Touch model for Account #1");
-    await expect(picker).toBeVisible();
-    // The effective global is visible inline, not buried in a tooltip.
-    await expect(picker.locator("option").first()).toHaveText(
-      "Global default (z-ai/glm-5.3-flash)",
-    );
-
-    // The jump link lands on the exact Settings row and focuses its control.
-    await page
-      .getByRole("link", {
-        name: "Settings → Advanced → Maturity Touch Model",
-      })
-      .first()
-      .click();
-    await expect(page).toHaveURL(/admin\/#settings/);
-    await expect(page.locator("#setting-MATURITY_TOUCH_MODEL")).toBeVisible();
-    await expect(page.getByLabel("MATURITY_TOUCH_MODEL")).toBeFocused();
-  });
-
-  test("maturity cards render expanded with no toggle", async ({ page }) => {
+  test("board renders rows without any event timeline", async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
     await page.unroute("**/admin/api/tokens*");
@@ -348,27 +305,25 @@ test.describe("account maturity", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
+        body: JSON.stringify(maintenanceTokens()),
       });
     });
-    await mockPageState(page, {});
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
+    await gotoWarming(page);
+    // No per-account event list anywhere on the board.
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    // Controls render with no click; no expand toggle exists.
-    await expect(page.getByLabel("Streak target for Account #1")).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: /Expand details|Collapse details/ }),
+      page.getByRole("list", { name: "Maturity history for Account #1" }),
     ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /Show \d+ more|Show less/ }),
+    ).toHaveCount(0);
+    // Rows, statuses, and the operator lock stay readable (no badge chips).
+    await expect(page.getByText("Touched").first()).toBeVisible();
+    await expect(page.getByText("Pending").first()).toBeVisible();
+    await expect(page.getByText("Locked").first()).toBeVisible();
+    await expect(page.getByText("mimo/mimo-v2.5").first()).toBeVisible();
   });
 
-  test("maturity ignores stale expanded snapshot", async ({ page }) => {
+  test("board shows the last-run ledger summary", async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
     await page.unroute("**/admin/api/tokens*");
@@ -376,48 +331,31 @@ test.describe("account maturity", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(maturityTokens()),
+        body: JSON.stringify(maintenanceTokens()),
       });
     });
-    await mockPageState(page, { maturity: { expanded: [1] } });
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    // No fold state exists: every card renders regardless of the snapshot.
-    await expect(page.getByLabel("Touch model for Account #2")).toBeVisible();
-    await expect(page.getByLabel("Touch model for Account #1")).toBeVisible();
+    await gotoWarming(page);
+    // Last-run ledger: time, touched, skipped with exact reasons.
+    const ledger = page.getByLabel("Last maintenance run");
+    await expect(ledger).toContainText(/touched\s+1/);
+    await expect(ledger).toContainText(/skipped\s+1/);
+    await expect(ledger).toContainText("skip:cooling");
   });
 
-  test("shared harness renders the seeded maturity timeline without clipping", async ({
+  test("shared harness renders the seeded board without clipping", async ({
     page,
   }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
-    await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    await page.getByRole("button", { name: "Warming" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    await gotoWarming(page);
     // Token #1 carries a maturity object in the shared tokens fixture, so
-    // the restart-surviving timeline renders with no bespoke mocks.
-    const timeline = page.getByRole("list", {
-      name: "Maturity history for Account #1",
-    });
-    await expect(timeline).toBeVisible();
-    await page.getByRole("button", { name: "Show 1 more" }).click();
-    await expect(timeline.getByText("admit ok")).toBeVisible();
-    // Long descriptions must wrap instead of clipping header actions
-    // (Pips 0/7 case): no card header may overflow horizontally.
+    // the board renders with no bespoke mocks — and no event timeline.
+    await expect(
+      page.getByRole("list", { name: "Maturity history for Account #1" }),
+    ).toHaveCount(0);
+    await expect(page.getByLabel("Last maintenance run")).toBeVisible();
+    // Long model ids must wrap instead of clipping header actions:
+    // no card header may overflow horizontally.
     const overflow = await page.evaluate(
       () =>
         Array.from(document.querySelectorAll("section.fp-card header")).filter(
