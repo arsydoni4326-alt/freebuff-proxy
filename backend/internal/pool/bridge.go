@@ -10,8 +10,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"unicode"
-
 	"freebuff-proxy/backend/internal/phasetiming"
 	"freebuff-proxy/backend/internal/runs"
 	"freebuff-proxy/backend/internal/session"
@@ -21,42 +19,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-// maxClientTokenLen is the maximum allowed length of a client-supplied
-// FreeBuff token (after trimming). FreeBuff tokens are short opaque
-// credentials; a wildly oversized value is either malformed or a header-
-// smuggling attempt. The limit bounds memory and prevents pathological
-// upstream echo. Generous enough for any legitimate token.
-const maxClientTokenLen = 4096
-
-// validateClientToken validates a trimmed bridge-mode client token without
-// contacting the upstream. It enforces:
-//
-//   - Non-empty.
-//   - No interior whitespace or control characters (a FreeBuff token is a
-//     single opaque credential — embedded whitespace indicates a malformed
-//     or injected header).
-//   - Length within maxClientTokenLen.
-//
-// Returns nil on valid, or an error explaining the rejection.
-func validateClientToken(tok string) error {
-	if tok == "" {
-		return errors.New("bridge: empty client token")
-	}
-	if len(tok) > maxClientTokenLen {
-		return fmt.Errorf("bridge: client token too long (%d bytes)", len(tok))
-	}
-	for _, r := range tok {
-		// Reject all control characters (0x00–0x1f including tab, newline,
-		// carriage return) and DEL (0x7f). Printable space (0x20) is
-		// checked separately: a space that survived TrimSpace is interior
-		// whitespace, never part of a valid opaque token.
-		if unicode.IsControl(r) || r == ' ' {
-			return errors.New("bridge: invalid client token")
-		}
-	}
-	return nil
-}
 
 // bridgeEntry is one lazily-created client-token slot in bridge mode: the
 // upstream client, session manager, and run manager for a single client-
@@ -73,12 +35,6 @@ type bridgeEntry struct {
 	// ledger is the entry's usage + spend state (issue #263); guarded by
 	// Pool.bridgeMu like lastUsed.
 	ledger *AccountLedger
-	// usage is the rolling 24h successful-chat timestamps
-	// (MAX_MESSAGES_PER_DAY); guarded by Pool.bridgeMu like lastUsed.
-	usage []time.Time
-	// spend is the per-client-token spend ledger (issue #87); guarded by
-	// Pool.bridgeMu like usage.
-	spend *spendLedger
 	// nextPollAt / pollFailures carry the session-liveness poll schedule;
 	// touched only by the maintain goroutine (bridgeSessionPollTick).
 	nextPollAt   time.Time
@@ -87,20 +43,6 @@ type bridgeEntry struct {
 	// leasing runs to this entry (#187). Set/cleared by LockBridgeEntry/
 	// UnlockBridgeEntry; in-flight leases are unaffected.
 	locked atomic.Bool
-
-	// rateLimitTokens / rateLimitLastRefill implement a simple per-entry
-	// token-bucket rate limiter (BRIDGE_RATE_LIMIT_PER_TOKEN config).
-	// Guarded by mu. rateLimitTokens holds the current token balance;
-	// rateLimitLastRefill is the last refill timestamp. rateLimitRate
-	// is the configured tokens/sec (0 = unlimited, set once at creation).
-	rateLimitTokens     float64
-	rateLimitLastRefill time.Time
-	rateLimitRate       float64
-
-	// rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
-	// rateLimitHits counts allowed requests; rateLimitMisses counts denied requests.
-	rateLimitHits   atomic.Int64
-	rateLimitMisses atomic.Int64
 
 	// admissionGate serializes session creation per entry: the first
 	// request creates the session; concurrent requests block on the
@@ -140,11 +82,10 @@ func (e *tokenEntry) accountLedger() *AccountLedger { return e.ledger }
 // is returned as-is. Registry misses pass through.
 func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*Lease, error) {
 	clientToken = strings.TrimSpace(clientToken)
-	if err := validateClientToken(clientToken); err != nil {
-		return nil, err
-	}
 	cfg := p.cfg.Load()
-
+	if clientToken == "" {
+		return nil, errors.New("bridge: empty client token")
+	}
 	// QUOTA_FALLBACK_MODELS recursion backstop (mirrors the pooled path in
 	// Acquire): the bridge fallback chain is bounded by a depth counter
 	// carried in ctx, so a fallback cycle degrades to an error instead of a
@@ -170,29 +111,6 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, fmt.Errorf("bridge: credential matches a pooled AUTH_TOKENS entry; use an API_KEYS key for pooled access or a different client token")
 	}
 
-	// Bridge circuit breaker (BRIDGE_CIRCUIT_BREAKER_*): when the breaker
-	// is open, short-circuit admission to a 503 upstream_retryable instead
-	// of hammering a batch-down upstream. The breaker is tripped by a burst
-	// of transient upstream 5xx/network failures within the sliding window;
-	// classified errors (auth/rate-limit/ban/country/ip_capped) never trip it.
-	if cfg.BridgeCircuitBreakerFailures > 0 {
-		p.bridgeMu.Lock()
-		broken := p.breakerOpenLocked(cfg)
-		p.bridgeMu.Unlock()
-		if broken {
-			remaining := time.Until(p.breakerUntil)
-			if remaining <= 0 {
-				remaining = cfg.BridgeCircuitBreakerCooldown
-			}
-			return nil, &upstream.UpstreamError{
-				Status:     503,
-				Body:       fmt.Sprintf("bridge circuit breaker open: upstream unavailable (retry after %s)", remaining.Round(time.Second)),
-				RetryAfter: remaining,
-				Retryable:  true,
-			}
-		}
-	}
-
 	agentID, err := p.reg.AgentForModel(model)
 	if err != nil {
 		return nil, err
@@ -209,16 +127,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, fmt.Errorf("bridge token %s is locked by administrator", tokenKey(clientToken))
 	}
 
-	// Per-token rate limiting (BRIDGE_RATE_LIMIT_PER_TOKEN): independent of
-	// the per-IP rate limiter, this limits requests per bridge token to
-	// prevent a single client from flooding upstream through one token.
-	// Uses a simple token-bucket per bridgeEntry.
-	if !entry.rateLimitAllow() {
-		p.logger.Debug("pool: bridge per-token rate limit exceeded", "token_label", bridgeTokenLabel(entry))
-		return nil, fmt.Errorf("bridge: token rate limit exceeded (%.1f req/s)", entry.rateLimitRate)
-	}
-
-	// B5: Global bridge daily limit check — before per-entry check, reject
+	// Global bridge daily limit check — before per-entry check, reject
 	// if the total across ALL bridge entries exceeds BRIDGE_DAILY_LIMIT.
 	if cfg.BridgeDailyLimit > 0 {
 		// TOCTOU: snapshot read, then compare after unlock. Worst case: one
@@ -393,13 +302,6 @@ admitRetry:
 		if be := c.banned; be != nil {
 			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
-		if cbe := asCountryBlocked(err); cbe != nil {
-			entry.runs.CooldownCountryBlocked(cbe)
-		}
-		// Record transient upstream failures for the circuit breaker. Only
-		// genuine 5xx/network outages trip it (classified errors already
-		// returned above never record).
-		p.breakerRecordFailureClass(cfg, err)
 		return nil, err
 	}
 	entry.mu.Unlock()
@@ -495,12 +397,6 @@ sessionReady:
 		if be := c.banned; be != nil {
 			p.notifyBan(0, model) // issue #48: alert on admission-path bans
 		}
-		if cbe := asCountryBlocked(err); cbe != nil {
-			entry.runs.CooldownCountryBlocked(cbe)
-		}
-		// Record transient upstream failures for the circuit breaker (run
-		// acquire path). Classified errors never trip it.
-		p.breakerRecordFailureClass(cfg, err)
 		return nil, err
 	}
 

@@ -10,17 +10,15 @@ import (
 
 // freebucksCapped reports whether the token's Freebucks allowance is exhausted
 // for model (issue #321 wire drift: balance is now the server-computed
-// spendable = daily.remaining + wallet.balance; vendor af898dc adds eligible
-// earned grants admission may convert, so the gate uses Spendable() =
-// balance + claimableGrantFreebucks, mirroring getFreebucksModelMeter).
-// When Freebucks is absent or the model has no price, the token is not
-// capped. The token is capped when spendable < price, or when the monthly
-// dollar allowance is spent (wire drift 2026-09-04, issue #330 — fresh
-// sessions stop upstream regardless of the daily balance). RetryAfter is the
-// earliest future recovery instant among the applicable windows. When every
-// recovery instant is past or unknown, the stored numbers are self-declared
-// stale and the token is NOT capped — one admission revalidates live truth
-// (polls never carry Freebucks, so nothing else could refresh them).
+// spendable = daily.remaining + wallet.balance). When Freebucks is absent or
+// the model has no price, the token is not capped. The token is capped when
+// balance < price, or when the monthly dollar allowance is spent (wire drift
+// 2026-09-04, issue #330 — fresh sessions stop upstream regardless of the
+// daily balance). RetryAfter is the earliest future recovery instant among
+// the applicable windows. When every recovery instant is past or unknown,
+// the stored numbers are self-declared stale and the token is NOT capped —
+// one admission revalidates live truth (polls never carry Freebucks, so
+// nothing else could refresh them).
 func freebucksCapped(acc tokenAccount, model string) (bool, time.Duration) {
 	return freebucksCappedForSnapshot(acc.sessionMgr().Snapshot(), model)
 }
@@ -48,9 +46,7 @@ func freebucksCappedForSnapshot(snap session.SessionSnapshot, model string) (boo
 	if fb.QuotaExempt && !monthlySpent {
 		return false, 0
 	}
-	// Claimable earned grants count toward canStart (vendor af898dc
-	// getFreebucksModelMeter: balance + claimableGrantFreebucks >= price).
-	if fb.Spendable() >= price && !monthlySpent {
+	if fb.Balance >= price && !monthlySpent {
 		return false, 0
 	}
 	// Capped. Recovery signals: the daily pool refill, the plan's next
@@ -101,10 +97,9 @@ func freebucksLimitErrorForSnapshot(snap session.SessionSnapshot, model string) 
 	capped, retryAfter := freebucksCappedForSnapshot(snap, model)
 	_ = capped
 	body := "freebucks balance insufficient for model"
-	// Surface price vs spendable in the diagnostic body when available
-	// (spendable = balance + claimable grants, the gated amount).
+	// Surface price vs balance in the diagnostic body when available.
 	if fb != nil {
-		body = body + " (spendable " + formatFreebucksBalance(fb.Spendable()) + " < price " + formatFreebucksBalance(price) + ")"
+		body = body + " (balance " + formatFreebucksBalance(fb.Balance) + " < price " + formatFreebucksBalance(price) + ")"
 		if fb.Monthly != nil && fb.Monthly.RemainingUsd <= 0 {
 			body = "freebucks monthly allowance exhausted for model"
 		}

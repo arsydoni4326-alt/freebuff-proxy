@@ -108,16 +108,14 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 			return isAdmA
 		}
 
-		// Freebucks ordering: drain smallest spendable first (preserve
-		// fuller Freebucks allowances). Spendable counts claimable earned
-		// grants (vendor af898dc), not just the server balance. Only applies
-		// when both tokens price the model.
+		// Freebucks ordering: drain smallest balance first (preserve
+		// fuller Freebucks allowances). Only applies when both tokens
+		// price the model.
 		if snapA.Freebucks != nil && snapB.Freebucks != nil {
 			if _, okA := snapA.Freebucks.Prices[model]; okA {
 				if _, okB := snapB.Freebucks.Prices[model]; okB {
-					sa, sb := snapA.Freebucks.Spendable(), snapB.Freebucks.Spendable()
-					if sa != sb {
-						return sa < sb
+					if snapA.Freebucks.Balance != snapB.Freebucks.Balance {
+						return snapA.Freebucks.Balance < snapB.Freebucks.Balance
 					}
 				}
 			}
@@ -309,10 +307,9 @@ func leastUsedOrder(toks *[]*tokenEntry, model string, eligible func(int) bool) 
 	return eligibleTokens
 }
 
-// freebucksBalance reports the token's Freebucks spendable amount for
+// freebucksBalance reports the token's Freebucks spendable balance for
 // model: false when the snapshot carries no Freebucks block or the model
-// has no price (unpriced rows never rank by balance). Spendable counts
-// claimable earned grants (vendor af898dc), not just the server balance.
+// has no price (unpriced rows never rank by balance).
 func freebucksBalance(tok *tokenEntry, model string) (float64, bool) {
 	snap := tok.session.Snapshot()
 	fb := snap.Freebucks
@@ -322,7 +319,7 @@ func freebucksBalance(tok *tokenEntry, model string) (float64, bool) {
 	if _, ok := fb.Prices[model]; !ok {
 		return 0, false
 	}
-	return fb.Spendable(), true
+	return fb.Balance, true
 }
 
 // tokenAvailable reports whether tok can serve model right now, for ordering
