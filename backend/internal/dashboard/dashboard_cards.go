@@ -77,7 +77,6 @@ type tokenCard struct {
 	Requests            int     `json:"requests"`
 	Messages24h         int     `json:"messages_24h"`
 	RequestsPerDay      int     `json:"requests_per_day"`
-	RiskLevel           string  `json:"risk_level"`
 	CooldownActive      bool    `json:"cooldown_active"`
 	CooldownUntil       string  `json:"cooldown_until"`
 	Locked              bool    `json:"locked"`
@@ -910,12 +909,11 @@ type metricTrend struct {
 }
 
 type perTokenMetrics struct {
-	Token                int    `json:"token"`
-	Requests24h          int    `json:"requests_24h"`
-	TransientRetries     int64  `json:"transient_retries"`
-	FingerprintRotations int64  `json:"fingerprint_rotations"`
-	SpendDay             int64  `json:"spend_day"`
-	RiskLevel            string `json:"risk_level"`
+	Token                int   `json:"token"`
+	Requests24h          int   `json:"requests_24h"`
+	TransientRetries     int64 `json:"transient_retries"`
+	FingerprintRotations int64 `json:"fingerprint_rotations"`
+	SpendDay             int64 `json:"spend_day"`
 }
 
 type metricsData struct {
@@ -977,7 +975,6 @@ func (d *Dashboard) metricsData() metricsData {
 			TransientRetries:     tok.TransientRetries,
 			FingerprintRotations: tok.FingerprintRotations,
 			SpendDay:             tok.SpendDay,
-			RiskLevel:            tok.RiskLevel,
 		})
 	}
 	return md
