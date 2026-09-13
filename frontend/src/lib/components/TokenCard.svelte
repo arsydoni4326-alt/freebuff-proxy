@@ -3,6 +3,7 @@
     ChevronUp,
     ChevronDown,
     ChevronRight,
+    Flame,
     Unlock,
     Lock,
     Trash2,
@@ -14,6 +15,7 @@
   import {
     statusFor,
     riskBadgeFor,
+    streakBadgeFor,
     cooldownLabel,
   } from "../utils/tokenStatus.js";
   import { tr } from "../i18n.js";
@@ -65,6 +67,7 @@
   // Risk chip (moved from the standalone At-risk cards): shown when the
   // account carries a risk flag and no ban badge already claims the row.
   const riskBadge = $derived(riskBadgeFor(token));
+  const streak = $derived(streakBadgeFor(token));
 
   // Live session countdown (freebuff TUI parity). Anchor to the server's
   // ABSOLUTE expiry when the snapshot carries one (issue: a relative
@@ -169,6 +172,15 @@
           {token.email || token.account_id}
         </span>
       {/if}
+      <span
+        class="inline-flex items-center gap-1 text-[11px] {streak.active
+          ? 'text-[var(--fp-accent)]'
+          : 'text-[var(--fp-dim)]'}"
+        aria-label={streak.aria}
+      >
+        <Flame size={11} aria-hidden="true" />
+        {streak.label}
+      </span>
     </div>
   </td>
   <td>
@@ -230,21 +242,6 @@
         >
         · reqs
         <span class="fp-num text-[var(--fp-text)]">{token.requests}</span>
-        {#if token.requests_per_minute_limit > 0 || token.requests_per_day_limit > 0}
-          <span class="text-[10px] text-[var(--fp-muted)]">
-            ({#if token.requests_per_minute_limit > 0}<span
-                title={$tr(
-                  "Admitted requests in the last 60s / per-minute cap",
-                )}
-                >{token.requests_per_minute}/{token.requests_per_minute_limit}m</span
-              >{/if}{#if token.requests_per_minute_limit > 0 && token.requests_per_day_limit > 0}
-              ·
-            {/if}{#if token.requests_per_day_limit > 0}<span
-                title={$tr("Successful requests today / per-day cap")}
-                >{token.requests_per_day}/{token.requests_per_day_limit}d</span
-              >{/if})
-          </span>
-        {/if}
       </span>
     </div>
   </td>

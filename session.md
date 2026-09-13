@@ -1,5 +1,49 @@
 # Session: SQLite Token Database + UI
 
+## Latest: merge upstream/main smart routing (step 1) into feature/upstream-smart-routing
+
+- **Merge resolved** (branch `feature/upstream-smart-routing`, HEAD 8364ba9 +
+  upstream/main 7df4476 = smart routing step 1 #505 / refund refresh #504 /
+  dashboard refunds #503). All 5 conflict files resolved and staged; no commit
+  made (per repo rule: never commit unless asked).
+- **Direction confirmed by the merged tree**: our quota implementation won the
+  auto-merge (`quota.go`, `quota_bootseed.go`, maintain-tick
+  `quotaAutoProbeTick`) — so the resolution keeps ADR-0022/0024 autoprobe and
+  takes upstream's *new* features (smart routing, refund refresh, dashboard UI).
+- **Per-file resolutions**:
+  - `config/config_keys.go`: our full default map kept + upstream's
+    `RoutingSmart`/`TokenMaxConcurrent`/`QueueWait`/`QueueDepth` inserted after
+    `BurstMaxTokens`; `QuotaProbeActiveInterval`/`QuotaProbeIdleHeartbeat`
+    mirrored as reserved surface (struct fields exist from upstream).
+    `MaturityTouchModel` stays `deepseek/deepseek-v4-flash` (ours, cost-0).
+  - `pool/pool_lifecycle.go`: `Start` now calls `p.RestorePoolPersist()` (restores
+    `pool_state`: admissions/burst/bridge/ledgers) + keeps the ADR-0024
+    `quotaBootAt` anchor. Our `RestorePoolPersist` is nil-safe/warn-only.
+  - `pool/quota_smartprobe.go` + `smartprobe_persist_test.go` + upstream's
+    smarrtprobe tests: kept deleted (autoprobe stays). `pool_persist.go` kept
+    ours (reverted upstream's smart-probe blob/quota-cache rows).
+  - `server/admin_tokens_routes.go`: kept deleted (consolidated
+    `admin_tokens.go`); ported `handleTokenRefundRefresh` (upstream #504 route)
+    into the consolidated file.
+  - `server/server_models_test.go`: took upstream's codex strict-ModelInfo tests;
+    added missing `"bytes"` import (was a merge-introduced build break).
+- **Test alignment (only non-pre-existing fix)**: `config/maturity_test.go`
+  `TestMaturityDefaults` now asserts `deepseek/deepseek-v4-flash` (matches our
+  shipped default; upstream's "" assertion was stale on our lineage).
+- **Verification**: `go build ./backend/...` green; `config` package tests green;
+  `server` (10), `session` (8), `pool`+`dashboard` test-build (stale maturity
+  test fields `AutoTouchModel`/`SlotDay`/…) reproduced byte-identical on pristine
+  develop worktree 8364ba9 → all pre-existing, none merge-introduced.
+  `go vet ./backend/...` fails only on those same pre-existing test files.
+- **Frontend**: `npm run build`/`check` not runnable on this box (node_modules
+  incomplete — missing `svelte-check`, `@fontsource/*`). Merged `src` has no
+  dangling imports to upstream-deleted components (checked manually); dist bundle
+  staged from the merge is what the binary serves; CI `frontend` job is the gate.
+- **TODO (pre-existing, out of scope)**: reconcile stale maturity test fields
+  (`AutoTouchModel`, `SlotDay`, `TouchDay`, `EffectiveTouchModel`) in
+  `pool/maturity_auto_test.go` + `dashboard/dashboard_maturity_test.go`, and the
+  documented `server`/`session` behavioral failures on the develop lineage.
+
 ## Latest: Phase 4 — SESSION_PERSIST State in SQLite (full durability, no JSON files)
 
 - **Phase 4** completes the program: when the SQLite token DB is active AND
