@@ -58,7 +58,8 @@ export const adminActions = {
 
 /**
  * Per-token action endpoints: /admin/tokens/{idx}/{action}.
- * Actions: unlock, unlock-lock, lock, finish, test, session, maturity.
+ * Actions: unlock, unlock-lock, lock, finish, test, session, maturity,
+ * refund-refresh.
  */
 export const tokenActions = {
   unlock: (idx) => `/admin/tokens/${idx}/unlock`,
@@ -66,6 +67,7 @@ export const tokenActions = {
   lock: (idx) => `/admin/tokens/${idx}/lock`,
   finish: (idx) => `/admin/tokens/${idx}/finish`,
   dropSession: (idx) => `/admin/tokens/${idx}/drop-session`,
+  refundRefresh: (idx) => `/admin/tokens/${idx}/refund-refresh`,
   test: (idx) => `/admin/tokens/${idx}/test`,
   session: (idx) => `/admin/tokens/${idx}/session`,
   maturity: (idx) => `/admin/tokens/${idx}/maturity`,

@@ -108,6 +108,21 @@ test.describe("dashboard hermetic mocks", () => {
     expect(pageErrors).toEqual([]);
   });
 
+  test("Tokens rows show the streak badge per account", async ({ page }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    const table = page.locator("table.fp-table");
+    await expect(table.getByText("Account #1")).toBeVisible({ timeout: 10000 });
+    // Fixture token 0 carries streak 7; token 1 carries none.
+    const first = table.locator("tbody tr").filter({ hasText: "Account #1" });
+    await expect(first.getByLabel("Streak 7 days")).toBeVisible();
+    await expect(first.getByLabel("Streak 7 days")).toContainText("7d streak");
+    const second = table.locator("tbody tr").filter({ hasText: "Account #2" });
+    await expect(second.getByLabel("No streak")).toBeVisible();
+  });
+
   test("Tokens drawer shows pinned models for locked slots", async ({
     page,
   }) => {
@@ -313,6 +328,121 @@ test.describe("dashboard hermetic mocks", () => {
     await expect(header).toContainText("20 in wallet");
     await expect(header).not.toContainText("resets in");
     await expect(page.getByTestId("reset-strip")).toContainText("resets in");
+  });
+
+  test("Accounts row renders the tier prefix and pending-refund line", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    // Full-tier account with a parked release: the header carries the
+    // server-driven tier plus the daily fraction, and the refund line
+    // renders once for the parked account only.
+    const refundTokens = JSON.parse(JSON.stringify(f.tokens));
+    refundTokens.tokens[0].access_tier = "full";
+    refundTokens.tokens[0].freebucks = {
+      balance: 50,
+      daily: { remaining: 95, limit: 100, reset_at: "2030-01-01T00:00:00Z" },
+      wallet: { balance: 2.5 },
+      prices: {},
+    };
+    refundTokens.tokens[0].pending_refund = "inst-abc-123";
+    await mockDashboard(page, f, { tokens: refundTokens });
+
+    await page.goto("http://127.0.0.1:4173/admin/#plans");
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Account #1" }),
+    ).toBeVisible();
+    const header = page.getByTestId("freebucks-header").first();
+    await expect(header).toContainText("FULL");
+    await expect(header).toContainText("95/100 Freebucks daily");
+    const refund = page.getByTestId("refund-line");
+    await expect(refund).toHaveCount(1);
+    await expect(refund).toContainText("awaiting final usage");
+  });
+
+  test("Accounts pending refund replays to a settled line on refresh", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    const state = JSON.parse(JSON.stringify(f.tokens));
+    state.tokens[0].pending_refund = "inst-abc-123";
+    delete state.tokens[0].last_refund;
+    await mockDashboard(page, f, { tokens: state });
+    // Mutable tokens payload: the refund-refresh replay settles the parked
+    // release, and the next tokens fetch carries the receipt.
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(state),
+      });
+    });
+    await page.route("**/admin/tokens/0/refund-refresh", async (route) => {
+      delete state.tokens[0].pending_refund;
+      state.tokens[0].last_refund = 1.5;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          message: "Token 0 refund settled: 1.5 Freebucks returned to wallet.",
+        }),
+      });
+    });
+    const replayed = page.waitForRequest(
+      (r) =>
+        r.method() === "POST" &&
+        r.url().includes("/admin/tokens/0/refund-refresh"),
+    );
+    await page.goto("http://127.0.0.1:4173/admin/#plans");
+    await page.getByRole("button", { name: "Accounts" }).click();
+    // The pending line fires one automatic refresh on first render (pinned
+    // by the sibling test); the mock settles fast, so assert the replay
+    // POST plus the settled line replacing the pending one.
+    await replayed;
+    await expect(page.getByTestId("refund-settled-line")).toContainText(
+      "1.5 Freebucks returned to your wallet.",
+    );
+    await expect(page.getByTestId("refund-line")).toHaveCount(0);
+  });
+
+  test("Accounts settled zero refund renders the zero line", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    // A zero receipt is settled, not unknown: last_refund 0 renders.
+    const zeroTokens = JSON.parse(JSON.stringify(f.tokens));
+    zeroTokens.tokens[0].last_refund = 0;
+    await mockDashboard(page, f, { tokens: zeroTokens });
+    await page.goto("http://127.0.0.1:4173/admin/#plans");
+    await page.getByRole("button", { name: "Accounts" }).click();
+    await expect(page.getByTestId("refund-settled-line").first()).toContainText(
+      "0 Freebucks returned to your wallet.",
+    );
+  });
+
+  test("Models rows render NEW markers and training warnings", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+
+    await page.goto("http://127.0.0.1:4173/admin/#plans");
+    await page.getByRole("button", { name: "Models" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Plans", exact: true }),
+    ).toBeVisible();
+    // Vendor-catalog copy renders verbatim: the freshness marker, the
+    // data-training warning, and the single-label reasoning chip.
+    await expect(page.getByText("NEW", { exact: true }).first()).toBeVisible();
+    await expect(
+      page.getByText("May use data for AI training").first(),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Reasoning: max*", { exact: true }).first(),
+    ).toBeVisible();
   });
 
   test("Settings renders catalog groups and saves a toggled bool into the .env", async ({
@@ -987,6 +1117,52 @@ test.describe("dashboard hermetic mocks", () => {
       traceCards.getByText("deepseek/deepseek-v4-flash"),
     ).toBeVisible();
     await expect(traceCards.getByText("upstream timeout")).toBeVisible();
+  });
+
+  test("Traces tab survives duplicate timestamps and phase names", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.unroute("**/admin/api/traces");
+    const dup = {
+      enabled: true,
+      traces: [
+        {
+          time: "2026-08-27T10:00:00Z",
+          token: "0",
+          model: "dup-model-a",
+          status: "ok",
+          ms: "10ms",
+          phases: [
+            { name: "proxy", ms: 1 },
+            { name: "proxy", ms: 2 },
+          ],
+        },
+        {
+          time: "2026-08-27T10:00:00Z",
+          token: "1",
+          model: "dup-model-b",
+          status: "ok",
+          ms: "20ms",
+          phases: [{ name: "proxy", ms: 3 }],
+        },
+      ],
+    };
+    await page.route("**/admin/api/traces", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(dup),
+      });
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.goto("http://127.0.0.1:4173/admin/#activity");
+    await page.getByRole("button", { name: "Traces" }).click();
+    await expect(page.locator("table tbody tr")).toHaveCount(2);
+    await expect(page.locator("table").getByText("dup-model-b")).toBeVisible();
+    expect(errors.join("\n")).not.toContain("each_key_duplicate");
   });
 
   test("Traces error shows a titled alert with retry", async ({ page }) => {

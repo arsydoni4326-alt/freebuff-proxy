@@ -18,8 +18,8 @@ func TestMaturityDefaults(t *testing.T) {
 	if !cfg.MaturityDryRun {
 		t.Error("MaturityDryRun = false, want true (probe-only until proven)")
 	}
-	if cfg.MaturityTouchModel != "" {
-		t.Errorf("MaturityTouchModel = %q, want empty default (= auto)", cfg.MaturityTouchModel)
+	if cfg.MaturityTouchModel != "deepseek/deepseek-v4-flash" {
+		t.Errorf("MaturityTouchModel = %q, want deepseek/deepseek-v4-flash (unmetered default: never spends Freebucks)", cfg.MaturityTouchModel)
 	}
 	if cfg.MaturityTargetDays != 7 {
 		t.Errorf("MaturityTargetDays = %d, want 7", cfg.MaturityTargetDays)

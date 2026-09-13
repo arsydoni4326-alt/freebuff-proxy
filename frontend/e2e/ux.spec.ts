@@ -226,12 +226,13 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     // The exact token value traveled as JSON {token: ...}.
     expect(JSON.parse(postedBody)).toEqual({ token: validToken });
     // Success alert renders and the form is cleared.
-    await expect(
-      page.getByText("Token added to pool and saved to .env."),
-    ).toBeVisible();
+    const success = page.getByText("Token added to pool and saved to .env.");
+    await expect(success).toBeVisible();
     await expect(input).toHaveValue("");
+    // Alert auto-dismisses: still up mid-window, gone after the 10s fade.
+    await expect(success).toBeVisible({ timeout: 5000 });
+    await expect(success).toBeHidden({ timeout: 15000 });
   });
-
   // ---------------------------------------------------------------------------
   // 5. REGRESSION: removing a middle (non-last) row posts its token value and
   //    the previously-last token remains. This pins the SQLite-safe removal
