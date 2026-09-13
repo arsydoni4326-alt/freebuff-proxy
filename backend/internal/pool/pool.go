@@ -83,6 +83,12 @@ type Lease struct {
 	// LeaseRelease/LeaseAbandon via the entry pointer, never by index. Nil
 	// when the caps are off (unlimited) or the lease is synthetic.
 	chat *chatPermit
+	// routeSlot is the smart-routing per-token live-turn slot held for
+	// this lease (route_smart.go, TOKEN_MAX_CONCURRENT). Set at grant
+	// time on the smart path only; released through the lease by
+	// LeaseRelease/LeaseAbandon. Nil on the legacy path (ROUTING_SMART
+	// off), when the caps are off, or for synthetic leases.
+	routeSlot *routeSlotPermit
 	// AcquiredAt is when this lease was handed out (per acquire attempt,
 	// not per run — a chat retry re-acquires and gets a fresh timestamp).
 	// The chat success path uses it to clear unfit marks that PREDATE this
@@ -184,6 +190,14 @@ type TokenSnapshot struct {
 	// Freebucks is the upstream Freebucks allowance block (issue #232); nil until
 	// the session reports it.
 	Freebucks *upstream.FreebucksInfo `json:"freebucks,omitempty"`
+	// LastRefund is the last settled session-DELETE freebucksRefund (vendor
+	// af898dc); nil when no DELETE receipt carried one. PendingRefund is
+	// the instance id of a release whose receipt reported
+	// freebucksRefundPending ("" when none): replayed by RefreshRefund.
+	// Both mirror session.SessionSnapshot so the dashboard token card can
+	// render the pending-refund line.
+	LastRefund    *float64 `json:"last_refund,omitempty"`
+	PendingRefund string   `json:"pending_refund,omitempty"`
 	// UpgradeHint is the upstream upgradeHint block ({url, message})
 	// broadcast by the session server; nil when absent.
 	UpgradeHint *upstream.SessionUpgradeHint `json:"upgrade_hint,omitempty"`
@@ -315,6 +329,12 @@ type Pool struct {
 	// current idle stretch. Guarded by lastActiveMu.
 	sessionsEnded bool
 
+	// refundMu + refundInflight cap concurrent pending-refund refreshes per
+	// account (single-flight): concurrent RefreshTokenRefund calls for the
+	// same slot join the in-flight replay instead of re-DELETEing. Guarded
+	// by refundMu; entries are deleted when the flight lands.
+	refundMu       sync.Mutex
+	refundInflight map[int]*refundFlight
 	// Bridge mode (no AUTH_TOKENS): lazily-created per-client-token entries.
 	// bridgeOrder keeps the LRU order, oldest first. Guarded by bridgeMu.
 	bridgeMu    sync.RWMutex
@@ -456,6 +476,17 @@ type Pool struct {
 	// randMu and randGen support stochastic rotation ("random" TokenRotation mode)
 	randMu  sync.Mutex
 	randGen *rand.Rand
+
+	// Smart routing state (route_smart.go, step 1): per-token live-turn
+	// slot semaphores with FIFO waiter queues (routeSlots, keyed by entry
+	// pointer so dashboard reorders never merge lanes) plus the
+	// consecutive-turn anti-clump cursor (routePrev). Guarded by routeMu.
+	// In-memory only: a restart resets every counter to zero (same
+	// discipline as the probe scheduler's transient flags) — no
+	// pool_state rows, no SQL.
+	routeMu    sync.Mutex
+	routeSlots map[*tokenEntry]*routeSlotState
+	routePrev  *tokenEntry
 }
 
 // admissionGate is the per-model leader election gate: the leader creates
@@ -518,6 +549,22 @@ type tokenEntry struct {
 	quarantine  atomic.Pointer[quarantineState]
 	streak      atomic.Pointer[upstream.StreakInfo]
 	streakFetch atomic.Bool
+	// routeSmooth is the smart-routing smooth weighted-round-robin
+	// accumulator (route_smart.go): bumped by each pick's effective
+	// weight, debited by the round total on a win, so near-equal
+	// candidates rotate instead of clumping. On the entry (not in a
+	// pool map) so dashboard reorders and slot rebuilds cannot
+	// misattribute it; entry rebuilds reset it (fresh account, fresh
+	// smoothing). In-memory only (zero on restart).
+	routeSmooth atomic.Int64
+	// routeLastLease is the last smart-path grant time (unixnano) for
+	// the idle-longest tiebreak (zero = never served = longest idle).
+	routeLastLease atomic.Int64
+	// routeTransientCount/At record recent transport-transient failures
+	// for the decaying scorer penalty (routeNoteTransient): the count
+	// arms the penalty, At (unixnano) drives the 1m-full/5m-half decay.
+	routeTransientCount atomic.Int64
+	routeTransientAt    atomic.Int64
 	// maturityMu guards maturity, the streak-maturity automation state
 	// (docs/maturity-plan.md PR2). Zero value = disabled; entry rebuilds
 	// (SetConfig slot changes) drop it — re-enable after a token swap.

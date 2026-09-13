@@ -121,6 +121,12 @@ func pollSession(ctx context.Context, sess *session.Manager, cfg *config.Config,
 // nothing else.
 func (p *Pool) Start(ctx context.Context) {
 	p.once.Do(func() {
+		// Restore persisted pool runtime state first (pool_state): live
+		// admissions, burst hits, bridge usage and account ledgers survive
+		// restarts through the DB-backed store. A missing row is a fresh
+		// boot, a nil store is a no-op, and restore never fails the boot
+		// (warn-only).
+		p.RestorePoolPersist()
 		// ADR-0024: anchor the staggered boot-probe slots before the
 		// maintain loop launches (spawn happens-before the first tick).
 		p.quotaBootAt = time.Now()

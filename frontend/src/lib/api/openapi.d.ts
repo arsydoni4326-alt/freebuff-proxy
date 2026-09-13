@@ -892,6 +892,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/admin/tokens/{id}/refund-refresh": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Replay one token's parked pending-refund DELETE (same instance; drops the result if the account changed) */
+    post: operations["tokenRefundRefresh"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/admin/tokens/{id}/session": {
     parameters: {
       query?: never;
@@ -1366,6 +1383,7 @@ export interface components {
         has_referral: boolean;
         has_standing: boolean;
         index: number;
+        last_refund?: number | null;
         last_usage?: string;
         locked: boolean;
         maturity?: {
@@ -1386,6 +1404,7 @@ export interface components {
           touch_model?: string;
         } | null;
         messages_24h: number;
+        pending_refund?: string;
         queue_depth: number;
         queue_position: number;
         referral_code?: string;
@@ -1437,6 +1456,9 @@ export interface components {
         has_wire_drift: boolean;
         releases_url: string;
         upstream_sha: string;
+        vendor_version?: string;
+        vendor_version_pinned?: string;
+        version_changed: boolean;
       } | null;
       uptime: string;
     };
@@ -1524,7 +1546,10 @@ export interface components {
       chat_max_inflight_unmetered: number;
       has_tokens: boolean;
       in_bridge: boolean;
+      maturity_dry_run: boolean;
       maturity_enabled: boolean;
+      maturity_window_end?: string;
+      maturity_window_start?: string;
       mode: string;
       rate_limit_failover: boolean;
       show_bridge: boolean;
@@ -2790,6 +2815,28 @@ export interface operations {
     requestBody?: never;
     responses: {
       /** @description Fire one manual maturity touch outside the daily slot */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ResultEnvelope"];
+        };
+      };
+    };
+  };
+  tokenRefundRefresh: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Replay one token's parked pending-refund DELETE (same instance; drops the result if the account changed) */
       200: {
         headers: {
           [name: string]: unknown;

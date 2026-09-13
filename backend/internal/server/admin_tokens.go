@@ -158,6 +158,42 @@ func (a *adminHandlers) handleTokenDropSession(w http.ResponseWriter, r *http.Re
 	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" session dropped — next request will re-admit fresh.")
 }
 
+// handleTokenRefundRefresh replays one token's parked pending-refund DELETE
+// on demand (pool.RefreshTokenRefund): the dashboard renders the pending line
+// only after it settles, so a manual refresh plus the on-view trigger both
+// land here. Same-instance + current-account guards live in the pool.
+func (a *adminHandlers) handleTokenRefundRefresh(w http.ResponseWriter, r *http.Request) {
+	id, err := tokenActionID(r)
+	if err == nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		var res pool.RefundRefreshResult
+		res, err = a.pool.RefreshTokenRefund(ctx, id)
+		if err == nil {
+			switch {
+			case res.Settled:
+				unit := "Freebucks"
+				if res.Amount == 1 {
+					unit = "Freebuck"
+				}
+				a.logfunc().Info("dashboard token refund settled", "token", id, "amount", res.Amount)
+				a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" refund settled: "+strconv.FormatFloat(res.Amount, 'f', -1, 64)+" "+unit+" returned to wallet.")
+			case res.Dropped:
+				a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" account changed during refresh — result dropped.")
+			case res.Pending:
+				a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" refund still awaiting final usage.")
+			default:
+				a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" has no pending refund.")
+			}
+			return
+		}
+	}
+	if err != nil {
+		a.dash.RenderConfigResult(w, r, false, "Refund refresh failed: "+err.Error())
+		return
+	}
+}
+
 // spawnModelFromRequest reads the spawn model id from a form field or a JSON
 // body (SessionSpawnPanel posts JSON via postAPI; Go FormValue never parses
 // a JSON body, so without the fallback the picker was silently ignored and

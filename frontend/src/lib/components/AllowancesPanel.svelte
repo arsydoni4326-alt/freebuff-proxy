@@ -12,6 +12,7 @@
   import Button from "./Button.svelte";
   import Alert from "./Alert.svelte";
   import EmptyState from "./EmptyState.svelte";
+  import RefundLines from "./RefundLines.svelte";
   import {
     tokensData,
     tokensError,
@@ -74,15 +75,19 @@
     return { limit, remaining, spent };
   }
 
-  // One-line account summary: daily fraction, wallet, monthly remainder.
-  // The "resets in" countdown is intentionally absent here — it renders once
-  // in the global strip above, shared for all accounts.
+  // One-line account summary: access tier (server-driven per account —
+  // full vs limited pools differ in cap and price), daily fraction,
+  // wallet, monthly remainder. The "resets in" countdown is intentionally
+  // absent here — it renders once in the global strip above, shared for
+  // all accounts.
   function accountHeaderLine(token) {
     const fb = token.freebucks;
     if (!fb?.daily) return "";
-    const parts = [
+    const parts = [];
+    if (token.access_tier) parts.push(String(token.access_tier).toUpperCase());
+    parts.push(
       `${formatFreebucks(fb.daily.remaining)}/${formatFreebucks(fb.daily.limit)} ${$tr("Freebucks daily")}`,
-    ];
+    );
     const walletBalance = fb.wallet?.balance ?? 0;
     if (walletBalance > 0) {
       parts.push(`${formatFreebucks(walletBalance)} ${$tr("in wallet")}`);
@@ -276,6 +281,11 @@
             {$tr("No Freebucks data — run a request or Probe all to populate.")}
           </p>
         {/if}
+        <RefundLines
+          {token}
+          pendingClass="text-xs text-[var(--fp-warning)]"
+          settledClass="text-xs text-[var(--fp-success)]"
+        />
       </li>
     {/each}
   </ul>
