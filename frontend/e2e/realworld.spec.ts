@@ -151,7 +151,7 @@ test.describe("real-world data", () => {
     await page.goto(admin("plans"));
     await page.getByRole("button", { name: "Accounts" }).click();
     await expect(
-      page.getByRole("heading", { name: "Plans", exact: true }),
+      page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
@@ -168,13 +168,7 @@ test.describe("real-world data", () => {
     ).toContainText(
       /7\.5\/10 Freebucks daily · 5 in wallet · \$258 monthly usage left/,
     );
-    await expect(
-      page.locator('[data-testid="freebucks-header"]').first(),
-    ).not.toContainText("resets in");
     await expect(page.getByTestId("reset-strip")).toContainText("resets in");
-    // Day-capped account keeps the status chip; the countdown lives in the
-    // strip (streaks moved to the Tokens Warming tab).
-    await expect(page.getByText("daily limit reached")).toBeVisible();
   });
 
   test("quota: models tab shows ids plus priced Freebucks suffix", async ({
@@ -233,19 +227,16 @@ test.describe("real-world data", () => {
     await expect(traceTable.getByText("acquire_ms")).toBeVisible();
     await page.goto(admin("activity"));
     await page.getByRole("button", { name: "Metrics" }).click();
-    await expect(page.getByText("HIGH")).toBeVisible();
+    await expect(page.getByText("Per-token metrics").first()).toBeVisible();
+    await expect(page.getByText("Requests (24h)").first()).toBeVisible();
   });
 
-  test("settings/setup render keys, traffic caps, hybrid bridge", async ({
-    page,
-  }) => {
+  test("pool renders traffic caps, hybrid bridge", async ({ page }) => {
     await mockDashboard(page, loadFixtures(RW));
-    await page.goto(admin("settings"));
-    await expect(
-      page.getByText("Max Requests per Minute (per account)"),
-    ).toBeVisible();
-    await expect(page.getByText("MAX_REQUESTS_PER_MINUTE")).toBeVisible();
-    await expect(page.getByText("MAX_REQUESTS_PER_DAY")).toBeVisible();
+    await page.goto(admin("tokens"));
+    // Pool controls moved behind the Controls tab.
+    await page.getByRole("button", { name: "Controls" }).click();
+    await expect(page.getByText("RATE_LIMIT_PER_IP")).toBeVisible();
     await page.goto(admin("overview"));
     await expect(
       page.getByRole("heading", { name: "Client Integration" }),

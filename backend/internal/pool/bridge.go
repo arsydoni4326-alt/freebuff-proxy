@@ -18,7 +18,44 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
+
+// maxClientTokenLen is the maximum allowed length of a client-supplied
+// FreeBuff token (after trimming). FreeBuff tokens are short opaque
+// credentials; a wildly oversized value is either malformed or a header-
+// smuggling attempt. The limit bounds memory and prevents pathological
+// upstream echo. Generous enough for any legitimate token.
+const maxClientTokenLen = 4096
+
+// validateClientToken validates a trimmed bridge-mode client token without
+// contacting the upstream. It enforces:
+//
+//   - Non-empty.
+//   - No interior whitespace or control characters (a FreeBuff token is a
+//     single opaque credential — embedded whitespace indicates a malformed
+//     or injected header).
+//   - Length within maxClientTokenLen.
+//
+// Returns nil on valid, or an error explaining the rejection.
+func validateClientToken(tok string) error {
+	if tok == "" {
+		return errors.New("bridge: empty client token")
+	}
+	if len(tok) > maxClientTokenLen {
+		return fmt.Errorf("bridge: client token too long (%d bytes)", len(tok))
+	}
+	for _, r := range tok {
+		// Reject all control characters (0x00-0x1f including tab, newline,
+		// carriage return) and DEL (0x7f). Printable space (0x20) is
+		// checked separately: a space that survived TrimSpace is interior
+		// whitespace, never part of a valid opaque token.
+		if unicode.IsControl(r) || r == ' ' {
+			return errors.New("bridge: invalid client token")
+		}
+	}
+	return nil
+}
 
 // bridgeEntry is one lazily-created client-token slot in bridge mode: the
 // upstream client, session manager, and run manager for a single client-
@@ -43,6 +80,20 @@ type bridgeEntry struct {
 	// leasing runs to this entry (#187). Set/cleared by LockBridgeEntry/
 	// UnlockBridgeEntry; in-flight leases are unaffected.
 	locked atomic.Bool
+
+	// rateLimitTokens / rateLimitLastRefill implement a simple per-entry
+	// token-bucket rate limiter (BRIDGE_RATE_LIMIT_PER_TOKEN config).
+	// Guarded by mu. rateLimitTokens holds the current token balance;
+	// rateLimitLastRefill is the last refill timestamp. rateLimitRate
+	// is the configured tokens/sec (0 = unlimited, set once at creation).
+	rateLimitTokens     float64
+	rateLimitLastRefill time.Time
+	rateLimitRate       float64
+
+	// rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
+	// rateLimitHits counts allowed requests; rateLimitMisses counts denied requests.
+	rateLimitHits   atomic.Int64
+	rateLimitMisses atomic.Int64
 
 	// admissionGate serializes session creation per entry: the first
 	// request creates the session; concurrent requests block on the
@@ -127,18 +178,13 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		return nil, fmt.Errorf("bridge token %s is locked by administrator", tokenKey(clientToken))
 	}
 
-	// Global bridge daily limit check — before per-entry check, reject
-	// if the total across ALL bridge entries exceeds BRIDGE_DAILY_LIMIT.
-	if cfg.BridgeDailyLimit > 0 {
-		// TOCTOU: snapshot read, then compare after unlock. Worst case: one
-		// extra request past the limit. Acceptable for a best-effort cap.
-		p.bridgeMu.Lock()
-		total := p.bridgeDailyUsage
-		p.bridgeMu.Unlock()
-		if total >= cfg.BridgeDailyLimit {
-			p.logger.Debug("pool: bridge global daily limit reached", "limit", cfg.BridgeDailyLimit, "used", total)
-			return nil, fmt.Errorf("bridge: global daily limit %d reached (%d used)", cfg.BridgeDailyLimit, total)
-		}
+	// Per-token rate limiting (BRIDGE_RATE_LIMIT_PER_TOKEN): independent of
+	// the per-IP rate limiter, this limits requests per bridge token to
+	// prevent a single client from flooding upstream through one token.
+	// Uses a simple token-bucket per bridgeEntry.
+	if !entry.rateLimitAllow() {
+		p.logger.Debug("pool: bridge per-token rate limit exceeded", "token_label", bridgeTokenLabel(entry))
+		return nil, fmt.Errorf("bridge: token rate limit exceeded (%.1f req/s)", entry.rateLimitRate)
 	}
 
 	// Cooldown: skip the entry during its window; surface the remembered
@@ -166,21 +212,46 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 	}
 
-	// Daily rolling cap, per client token (mirrors the fixed-token path).
-	if cfg.MaxMessagesPerDay > 0 && p.bridgeUsageCount(entry) >= cfg.MaxMessagesPerDay {
-		p.logger.Debug("pool: bridge entry daily message limit", "limit", cfg.MaxMessagesPerDay)
-		return nil, p.bridgeDailyLimitError(entry)
+	// Smart-routing live-turn slot (route_smart.go, TOKEN_MAX_CONCURRENT):
+	// the bridge entry gets the same hard wall as a pooled token — one
+	// live-turn lane per entry with a FIFO queue, keyed by the entry
+	// pointer exactly like the pooled lanes. It is taken BEFORE any
+	// upstream session or run work so a queued request never burns a
+	// session slot or a run START while it waits. Overflow and QUEUE_WAIT
+	// expiry return the same 429 rate-limit shape the pooled path uses
+	// (bridge has no failover, so it goes straight back to the client);
+	// the caller's own ctx expiry passes through. The permit rides the
+	// lease and is released by LeaseRelease/LeaseAbandon; the deferred
+	// release below is the error-path net, disarmed once a lease owns it.
+	// Skipped entirely when ROUTING_SMART is off: bridge then keeps its
+	// per-entry single-flight as the only pacing.
+	var routeSlot *routeSlotPermit
+	if cfg.RoutingSmart {
+		// TOKEN_MAX_CONCURRENT=0 skips slot gating entirely: no counter,
+		// no queue — the upstream quota/429 is the brake.
+		if slotCap, slotDepth, slotWait := routeSlotParams(cfg); slotCap > 0 {
+			permit, _, slotErr := p.routeSlotAcquire(ctx, entry, 0, slotCap, slotDepth, slotWait)
+			if slotErr != nil {
+				if routeIsQueueExhausted(slotErr) {
+					p.logger.Debug("pool: bridge live-turn queue exhausted", "token", bridgeTokenLabel(entry), "err", slotErr)
+					return nil, routeQueueRateLimit(slotErr.(*routeQueueExhaustedError), model, slotCap, p.routeSlotLive(entry))
+				}
+				return nil, slotErr
+			}
+			routeSlot = permit
+		}
 	}
-	// Per-minute request cap (MAX_REQUESTS_PER_MINUTE), per client token.
-	if cfg.MaxRequestsPerMinute > 0 && p.bridgeRpmCount(entry) >= cfg.MaxRequestsPerMinute {
-		p.logger.Debug("pool: bridge entry per-minute request limit", "limit", cfg.MaxRequestsPerMinute)
-		return nil, p.bridgeRpmLimitError(entry)
-	}
-	// Daily request cap (MAX_REQUESTS_PER_DAY), per client token: unlocks at
-	// the next Pacific midnight (the official daily reset instant).
-	if cfg.MaxRequestsPerDay > 0 && p.bridgeDayRequestCount(entry) >= cfg.MaxRequestsPerDay {
-		p.logger.Debug("pool: bridge entry daily request limit", "limit", cfg.MaxRequestsPerDay)
-		return nil, p.bridgeDayRequestLimitError(entry)
+	// slotLeased disarms the error-path release below: set once the lease
+	// (or an explicit release) owns the permit. The defer is registered
+	// only when a permit was actually taken, so the off-path and
+	// unlimited-cap calls carry no deferred work at all.
+	slotLeased := false
+	if routeSlot != nil {
+		defer func() {
+			if !slotLeased {
+				routeSlot.Release()
+			}
+		}()
 	}
 
 	// Per-entry single-flight: concurrent requests for the same bridge
@@ -228,15 +299,6 @@ admitRetry:
 				entry.mu.Unlock()
 			}()
 
-			// Session-create admission gate (issue #86): global + per-model
-			// concurrency limiter.
-			permit, gerr := p.gate.acquire(ctx, model)
-			if gerr != nil {
-				entry.mu.Lock()
-				entry.admissionErr = gerr
-				entry.mu.Unlock()
-				return
-			}
 			// Issue #94(b): WAITING_ROOM_CHAIN gate — when the upstream last
 			// refused this bridge token with 428 waiting_room_required, fire
 			// the reference pre-session ad-chain + streak flow (best-effort,
@@ -249,7 +311,6 @@ admitRetry:
 			}
 			sessionStart := time.Now()
 			_, serr := entry.session.EnsureSessionForModel(ctx, model)
-			permit.Release()
 			phasetiming.FromContext(ctx).Since(phasetiming.SessionRefreshMS, sessionStart)
 			entry.mu.Lock()
 			entry.admissionErr = serr
@@ -281,6 +342,11 @@ admitRetry:
 			if isQuotaExhaustedError(rle) {
 				if fb := cfg.QuotaFallbackModels[model]; fb != "" && fb != model {
 					p.logger.Info("pool: bridge token quota exhausted on admission, falling back", "token", bridgeTokenLabel(entry), "requested", model, "fallback", fb)
+					// Drop this model's live-turn slot BEFORE the recursive
+					// acquire: the fallback contends the same bridge entry's
+					// lane, and holding it would park the child behind its
+					// parent until QUEUE_WAIT (a 429 at cap 1).
+					routeSlot.Release()
 					fbLease, fbErr := p.AcquireBridge(ctx, clientToken, fb)
 					if fbLease != nil {
 						fbLease.FallbackReason = "quota_exhausted"
@@ -400,37 +466,19 @@ sessionReady:
 		return nil, err
 	}
 
-	// Per-(entry,model) in-flight chat lease cap (burst queue), mirroring
-	// the pooled grant: park until a slot frees or the context expires
-	// (wait-or-503). Metering follows the entry's Freebucks prices. An
-	// eviction racing the wait aborts retryable instead of leasing a dead
-	// entry. The permit rides the lease (released via LeaseRelease/
-	// LeaseAbandon through the entry pointer).
-	chatPermit, _, err := p.chatGate.acquire(ctx, entry, effectiveModel, chatCap(cfg, chatBridgeMetered(ss, effectiveModel)))
-	if err != nil {
-		entry.runs.Release(run)
-		return nil, err
-	}
+	// The live-turn slot was taken before admission; re-check the entry is
+	// still cached before leasing (an eviction racing the admission window
+	// aborts retryable instead of leasing a dead entry). The deferred
+	// release above returns the slot on every error path.
 	p.bridgeMu.RLock()
 	evictedDuringWait := p.bridge[tokenKey(clientToken)] != entry
 	p.bridgeMu.RUnlock()
 	if evictedDuringWait {
 		entry.runs.Release(run)
-		chatPermit.Release()
 		return nil, fmt.Errorf("bridge: entry evicted during admission; retry the request")
 	}
 	p.logger.Debug("pool: bridge lease acquired", "model", effectiveModel, "agent", effectiveAgentID, "instance_id", ss.InstanceID,
 		"country", ss.CountryCode)
-	// MAX_REQUESTS_PER_MINUTE admission enforced atomically at grant time,
-	// mirroring Acquire: the pre-filter above only reads the window, and a
-	// concurrent burst must not pass the cap before any record lands.
-	// Admission is always recorded (even with cap 0 = unlimited) so the
-	// bridge snapshot counters stay meaningful.
-	if !p.bridgeTryAdmitRequest(entry) {
-		p.LeaseRelease(&Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: ss.InstanceID,
-			Bridge: entry, chat: chatPermit, AcquiredAt: time.Now()})
-		return nil, p.bridgeRpmLimitError(entry)
-	}
 	// Track the activity and end any idle-maintenance pause, mirroring
 	// Acquire: without this, IDLE_ROTATION_TIMEOUT was dead config in
 	// bridge mode — lastActive stayed zero forever, so the pool never
@@ -441,8 +489,9 @@ sessionReady:
 	p.idleFinished = false
 	p.sessionsEnded = false
 	p.lastActiveMu.Unlock()
+	slotLeased = true // the lease owns the slot now; the defer must not release it
 	return &Lease{Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: ss.InstanceID,
-		Bridge: entry, chat: chatPermit, AcquiredAt: time.Now()}, nil
+		Bridge: entry, routeSlot: routeSlot, AcquiredAt: time.Now()}, nil
 }
 
 // ProbeNewToken validates a NOT-yet-added token against upstream with a

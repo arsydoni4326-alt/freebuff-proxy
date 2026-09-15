@@ -1,6 +1,102 @@
 # Session: SQLite Token Database + UI
 
-## Latest: merge upstream/main smart routing (step 1) into feature/upstream-smart-routing
+## Latest: merge upstream/main (settings live pages) into bugfix/settings-live — merge 2 of 2026-09-15
+
+- **Merge resolved and staged** (branch `bugfix/settings-live`, HEAD 048c10f
+  = v1.8.12-arsydoni4326-alt merge, + upstream/main 66e68f9 = settings live
+  pages #544/#543/#542, risk_level removal #515, cap deletion #510, bridge
+  lease pacing #508, burst-balance removal #507, throttles→unlimited #506).
+  All 11 conflict files resolved and staged; **no commit made** (repo rule:
+  never commit unless asked).
+- **Direction**: upstream retired several superseded layers (caps →
+  unlimited, burst-balance layer, risk_level display, premium_quota metric
+  families per ADR-0027); our lineage added DB persistence (pool_state
+  ledgers/admissions, token_state, session_state), health scoring,
+  bridge circuit breaker, per-token bridge rate limit, quota autoprobe
+  (ADR-0022/0024). Resolution keeps BOTH: upstream's retirements + the
+  persistence/observability features that upstream never had.
+- **Per-file resolutions**:
+  - `pool/pool.go`: kept bridge circuit-breaker fields
+    (breakerFailures/breakerUntil); dropped bridgeDailyUsage/
+    bridgeSurvivors (BRIDGE_DAILY_LIMIT retired upstream #506/#510 —
+    nothing writes them). Constructor = upstream's + our healthTracker/
+    probeResults init (token_probe.go calls probeResults.Set — nil would
+    panic) + upstream's probeCtx/probeCancel. Restored upstream's
+    maturityBackoffMu/Until fields. Removed dead ClearMaturityWarn (no
+    caller anywhere; warn system retired upstream).
+  - `pool/pool_lifecycle.go`: kept quotaAutoProbeTick (ADR-0022) + dropped
+    burstPruneAt (burst layer gone); did NOT take upstream smartProbeTick
+    (quota_smartprobe.go is deleted; our autoprobe is the quota path).
+  - `pool/pool_persist.go`: UNION of both persistence surfaces — our
+    ledger/admissions write-through + upstream's NEW live quota-cache rows
+    (pool/probe/quota/<sha>, restoreProbeQuota → session.SeedQuota,
+    poolQuotaBlob/poolQuotaRow) with liveQuotas orphan pruning. Dropped:
+    pool/burst, pool/bridge/usage, pool/bridge/survivors rows (features
+    retired), pool/probe/scheduler + poolSmartProbeBlob (smartprobe is
+    deleted; restoreSmartProbe would reference nonexistent state).
+  - `pool/maturity.go`: took upstream's nightly-window rewrite wholesale
+    (15m pre-reset window, 429 backoff, maturityAutoFor, SlotDay/TouchDay,
+    EffectiveTouchModel/AutoTouchModel). Our only-ours symbols
+    (maturityEffectiveModel/seedMaturitySlot/rollMaturitySlotFor,
+    noAdvance/relock counters) had zero callers outside the file and the
+    staged tests are all upstream-flavored.
+  - `pool/snapshot.go`: kept cfg.MaxSpendPerDay (health-score input),
+    dropped dailyLimit (MAX_MESSAGES_PER_DAY retired); re-added our
+    BridgeTokenSnapshot.SpendPct field.
+  - `pool/bridge_cache.go`: restored SpendPct + DeadToken population in
+    BridgeSnapshot (DeadToken = banType=="hard"; TestBridgeDeadToken and
+    /healthz dead-token metrics depend on it); restored rateLimitAllow()
+    token-bucket + rateLimitRate init + validateClientToken hook in
+    bridgeEntryFor.
+  - `pool/bridge.go`: restored validateClientToken + maxClientTokenLen
+    (1f8ecb0 deleted impl but pool_bridge_test still tests it) + per-token
+    rate-limit hook in AcquireBridge (BRIDGE_RATE_LIMIT_PER_TOKEN).
+  - `pool/roster.go`, `pool/quota.go`, `pool/pool_ledger.go`: restored
+    usageResetIn chain (AccountLedger→roster→Pool; state_store_test
+    asserts restored usageResetIn > 0). ledger_persist: Reqs no longer
+    maps l.requests (field retired) — kept as empty for blob compat.
+  - `pool/quota.go`: took upstream's Spendable() gate (balance +
+    claimableGrantFreebucks, vendor af898dc) + spendable diagnostics;
+    kept our recordChat → persistTokenIndex persistence hooks.
+  - `config/config.go|config_keys.go|config_load.go|config_validate.go`:
+    upstream's key list minus retired caps/risk/burst/chat-gate knobs;
+    re-added our live keys (BRIDGE_RATE_LIMIT_PER_TOKEN,
+    BRIDGE_CIRCUIT_BREAKER_*, MAX_SPEND_PER_DAY, AUTO_ROTATE_ON_EXHAUSTION,
+    EXHAUSTION_WARNING_THRESHOLD, HEALTH_SCORE_ENABLED, TOKEN_HEALTH_PROBES,
+    TOKEN_PROBE_INTERVAL) in struct + defaults; removed risk-threshold
+    parse/validate. Restored MaturityTouchModel default
+    deepseek/deepseek-v4-flash (config/maturity_test.go asserts it).
+  - `dashboard/dashboard_cards.go` + `dashboard_helpers.go`: upstream's
+    maturity card (SlotDay/TouchDay/Effective/Auto, no NoAdvanceDays/Warn)
+    + upstream tokensData (MaturityDryRun + MaturityWindow via
+    pool.MaturityWindow()); BurstEnabled/ChatMaxMetered/Unmetered dropped
+    (retired features).
+  - `dashboard/dashboard.go`: restored upstream's version-gate parse
+    (VendorVersion/VendorVersionPinned/VersionChanged + derivation when
+    bool absent) — TestParseUpstreamSyncVersionChanged.
+  - `server/health.go`: kept spend_pct/dead_token bridge healthz fields;
+    implemented the missing pool.BreakerSnapshot (new type in
+    bridge_breaker.go) and wired it into /healthz circuit_breaker and
+    /metrics breaker gauges — completes the TODO that had zeroed both.
+  - `server/admin_tokens.go`: restored DEVTOOLS_ENABLED gate on
+    handleTokenSpawnSession (TestDevToolsDisabledGate); handleModeSwitch
+    switched to upstream's dualWrite/tokenMarkerDelta version (dual-layer
+    .env + settings overlay, TestDualWriteModeSwitch* / TestModeSwitch*).
+  - `server/admin_tokens_routes.go`: deleted (consolidated into
+    admin_tokens.go; refund-refresh route lives there).
+  - `server/server_models_test.go`: dropped 4 retired premium_quota
+    families from the metrics contract (ADR-0027; upstream's list).
+- **Verification**: `go build ./backend/...` green; `go vet ./backend/...`
+  clean; full `env -u AUTH_TOKENS -u ADMIN_TOKEN go test -count=1
+  -timeout 10m ./backend/...`: ALL packages ok except server
+  (TestConcurrentReloadAndChat) and session (8 store failures) — both
+  reproduced byte-identical on pristine 048c10f worktree → pre-existing,
+  not merge-introduced.
+- **TODO (pre-existing, out of scope)**: session store JSON-file failures
+  (store.go refactor deferred since Phase 4) and the racy
+  TestConcurrentReloadAndChat on the develop lineage.
+
+## Previous: merge upstream/main smart routing (step 1) into feature/upstream-smart-routing
 
 - **Merge resolved** (branch `feature/upstream-smart-routing`, HEAD 8364ba9 +
   upstream/main 7df4476 = smart routing step 1 #505 / refund refresh #504 /

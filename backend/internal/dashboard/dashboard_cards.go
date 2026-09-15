@@ -30,7 +30,6 @@ type overviewData struct {
 	ModelCount           int               `json:"model_count"`
 	Uptime               string            `json:"uptime"`
 	SafeMode             bool              `json:"safe_mode"`
-	MaxMessagesPerDay    int               `json:"max_messages_per_day"`
 	TransientRetries     int64             `json:"transient_retries"`
 	FingerprintRotations int64             `json:"fingerprint_rotations"`
 	Tokens               []tokenCard       `json:"tokens"`
@@ -47,13 +46,16 @@ type overviewData struct {
 // backend/internal/dashboard/data/upstream_drift.json. Computed once at request
 // time; cheap.
 type upstreamSync struct {
-	UpstreamSHA  string         `json:"upstream_sha"`            // short SHA, "(not yet reported)" before first CI run
-	CheckedAt    string         `json:"checked_at"`              // RFC3339
-	HasDrift     bool           `json:"has_drift"`               // any non-SAME file
-	HasRegistry  bool           `json:"has_registry_drift"`      // 6 pinned files
-	HasWire      bool           `json:"has_wire_drift"`          // wire files MISSING_UPSTREAM
-	DriftedFiles []upstreamFile `json:"drifted_files,omitempty"` // the actual changes
-	ReleasesURL  string         `json:"releases_url"`            // where to update
+	UpstreamSHA         string         `json:"upstream_sha"`                    // short SHA, "(not yet reported)" before first CI run
+	CheckedAt           string         `json:"checked_at"`                      // RFC3339
+	HasDrift            bool           `json:"has_drift"`                       // any non-SAME file
+	HasRegistry         bool           `json:"has_registry_drift"`              // 6 pinned files
+	HasWire             bool           `json:"has_wire_drift"`                  // wire files MISSING_UPSTREAM
+	DriftedFiles        []upstreamFile `json:"drifted_files,omitempty"`         // the actual changes
+	ReleasesURL         string         `json:"releases_url"`                    // where to update
+	VendorVersion       string         `json:"vendor_version,omitempty"`        // live npm freebuff version (empty when unknown)
+	VendorVersionPinned string         `json:"vendor_version_pinned,omitempty"` // scripts/vendor-version.txt pin (empty when unknown)
+	VersionChanged      bool           `json:"version_changed"`                 // true only on positively-confirmed pinned != live
 }
 
 type upstreamFile struct {
@@ -64,41 +66,30 @@ type upstreamFile struct {
 	Status    string `json:"status"` // DRIFT | MISSING_UPSTREAM | SAME
 }
 type tokenCard struct {
-	Index         int    `json:"index"`
-	Email         string `json:"email,omitempty"`
-	AccountID     string `json:"account_id,omitempty"`
-	SessionStatus string `json:"session_status"`
-	AccessTier    string `json:"access_tier,omitempty"`
-	QueuePosition int    `json:"queue_position"`
-	QueueDepth    int    `json:"queue_depth"`
-	ActiveRuns    int    `json:"active_runs"`
-	Requests      int    `json:"requests"`
-	Messages24h   int    `json:"messages_24h"`
-	DailyLimit    int    `json:"daily_limit"`
-	UsagePct      int    `json:"usage_pct"`
-	// Per-token request limits (issue: RPD/RPM): live counters + configured
-	// caps (0 = unlimited) + time until the next Pacific midnight (the
-	// official daily reset) in seconds, so the dashboard can show usage and
-	// lock state per account.
-	RequestsPerMinute      int     `json:"requests_per_minute"`
-	RequestsPerDay         int     `json:"requests_per_day"`
-	RequestsPerMinuteLimit int     `json:"requests_per_minute_limit"`
-	RequestsPerDayLimit    int     `json:"requests_per_day_limit"`
-	RequestsPerDayResetIn  int     `json:"requests_per_day_reset_in"` // seconds
-	RiskLevel              string  `json:"risk_level"`
-	CooldownActive         bool    `json:"cooldown_active"`
-	CooldownUntil          string  `json:"cooldown_until"`
-	Locked                 bool    `json:"locked"`
-	BanType                string  `json:"ban_type,omitempty"`
-	BannedUntil            string  `json:"banned_until,omitempty"`
-	TransientRetries       int64   `json:"transient_retries"`
-	AllowlistSkips         int64   `json:"allowlist_skips,omitempty"`
-	HasStanding            bool    `json:"has_standing"`
-	StandingLevel          string  `json:"standing_level"`
-	StandingLabel          string  `json:"standing_label"`
-	StandingScore          float64 `json:"standing_score"`
-	StandingNextLevel      string  `json:"standing_next_level"`
-	StandingNextLevelAt    string  `json:"standing_next_level_at"`
+	Index               int     `json:"index"`
+	Email               string  `json:"email,omitempty"`
+	AccountID           string  `json:"account_id,omitempty"`
+	SessionStatus       string  `json:"session_status"`
+	AccessTier          string  `json:"access_tier,omitempty"`
+	QueuePosition       int     `json:"queue_position"`
+	QueueDepth          int     `json:"queue_depth"`
+	ActiveRuns          int     `json:"active_runs"`
+	Requests            int     `json:"requests"`
+	Messages24h         int     `json:"messages_24h"`
+	RequestsPerDay      int     `json:"requests_per_day"`
+	CooldownActive      bool    `json:"cooldown_active"`
+	CooldownUntil       string  `json:"cooldown_until"`
+	Locked              bool    `json:"locked"`
+	BanType             string  `json:"ban_type,omitempty"`
+	BannedUntil         string  `json:"banned_until,omitempty"`
+	TransientRetries    int64   `json:"transient_retries"`
+	AllowlistSkips      int64   `json:"allowlist_skips,omitempty"`
+	HasStanding         bool    `json:"has_standing"`
+	StandingLevel       string  `json:"standing_level"`
+	StandingLabel       string  `json:"standing_label"`
+	StandingScore       float64 `json:"standing_score"`
+	StandingNextLevel   string  `json:"standing_next_level"`
+	StandingNextLevelAt string  `json:"standing_next_level_at"`
 	// Standing cap + earn-back hints (issue #140, FreebuffStandingInfo):
 	// cappedBy/cappedReason name the trust cap holding the level, blurb is
 	// upstream's human explanation, nextSteps the suggested actions.
@@ -137,22 +128,26 @@ type tokenCard struct {
 }
 
 // maturityCard is the dashboard view of pool.MaturitySnapshot: automation
-// toggle + streak target + touch mode + badge + today's slot + last touch
-// (time, action, result, advance) + non-advance warning. Nil when the token
-// never opted in.
+// toggle + streak target + touch mode + badge + today's slot (slot/slot_day)
+// + last touch (time/touch_day, action, result, advance) + resolved
+// effective/auto touch models. Nil when the token never
+// opted in. All new keys are omitempty so old payloads keep their shape.
 type maturityCard struct {
-	Enabled       bool   `json:"enabled"`
-	Target        int    `json:"target"`
-	Mode          string `json:"mode"`
-	TouchModel    string `json:"touch_model,omitempty"`
-	Badge         string `json:"badge,omitempty"`
-	Slot          string `json:"slot,omitempty"`
-	LastTouch     string `json:"last_touch,omitempty"`
-	LastAction    string `json:"last_action,omitempty"`
-	LastResult    string `json:"last_result,omitempty"`
-	LastAdvanced  string `json:"last_advanced,omitempty"`
-	Warn          bool   `json:"warn,omitempty"`
-	NoAdvanceDays int    `json:"no_advance_days,omitempty"`
+	Enabled             bool   `json:"enabled"`
+	Target              int    `json:"target"`
+	Mode                string `json:"mode"`
+	TouchModel          string `json:"touch_model,omitempty"`
+	Badge               string `json:"badge,omitempty"`
+	Slot                string `json:"slot,omitempty"`
+	SlotDay             string `json:"slot_day,omitempty"`
+	LastTouch           string `json:"last_touch,omitempty"`
+	TouchDay            string `json:"touch_day,omitempty"`
+	LastAction          string `json:"last_action,omitempty"`
+	LastResult          string `json:"last_result,omitempty"`
+	LastAdvanced        string `json:"last_advanced,omitempty"`
+	EffectiveTouchModel string `json:"effective_touch_model,omitempty"`
+	AutoTouchModel      string `json:"auto_touch_model,omitempty"`
+	AutoTouchReason     string `json:"auto_touch_reason,omitempty"`
 }
 
 // freebucksWindowCard is one window of the Freebucks allowance (issue #232):
@@ -230,7 +225,6 @@ type bridgeTokenCard struct {
 	CooldownUntil string         `json:"cooldown_until"`
 	SessionActive bool           `json:"session_active"`
 	SpendDay      float64        `json:"spend_day"`
-	SpendPct      int            `json:"spend_pct"`
 	BanType       string         `json:"ban_type,omitempty"`
 	BannedUntil   string         `json:"banned_until,omitempty"`
 	Freebucks     *freebucksCard `json:"freebucks,omitempty"`
@@ -257,7 +251,6 @@ func bridgeCardFromSnapshot(snap pool.BridgeTokenSnapshot) bridgeTokenCard {
 		CooldownUntil: shortTime(snap.CooldownUntil),
 		SessionActive: snap.SessionActive,
 		SpendDay:      snap.SpendDay,
-		SpendPct:      snap.SpendPct,
 		BanType:       snap.BanType,
 		BannedUntil:   bannedUntil,
 		Freebucks:     freebucksCardFromInfo(snap.Freebucks),
@@ -346,7 +339,6 @@ func (d *Dashboard) overviewData(r *http.Request) overviewData {
 		ModelCount:           len(servedModels(d.reg)),
 		Uptime:               humanDuration(time.Since(d.started)),
 		SafeMode:             cfg.SafeMode,
-		MaxMessagesPerDay:    cfg.MaxMessagesPerDay,
 		TransientRetries:     ps.TransientRetries,
 		FingerprintRotations: ps.FingerprintRotations,
 		BridgeTokens:         d.pool.BridgeCount(),
@@ -372,9 +364,9 @@ func (d *Dashboard) overviewData(r *http.Request) overviewData {
 
 // overviewLiveData is the hot-poll subset of overviewData (issue #322):
 // live numbers only. Restart/deploy-only fields (base_url, mode, models,
-// safe_mode, max_messages_per_day, transient_retries, upstream_sync) and
-// account-stable card fields ride the once-per-mount full fetch; the SPA
-// merges them back over this shape.
+// safe_mode, transient_retries, upstream_sync) and account-stable card
+// fields ride the once-per-mount full fetch; the SPA merges them back over
+// this shape.
 type overviewLiveData struct {
 	Uptime           string            `json:"uptime"`
 	Tokens           []tokenLiveCard   `json:"tokens"`
@@ -421,9 +413,15 @@ type tokensData struct {
 	TokenRotation     string         `json:"token_rotation,omitempty"`
 	RateLimitFailover bool           `json:"rate_limit_failover"`
 	MaturityEnabled   bool           `json:"maturity_enabled"`
-	BurstEnabled      bool           `json:"burst_balance_enabled"`
-	ChatMaxMetered    int            `json:"chat_max_inflight_metered"`
-	ChatMaxUnmetered  int            `json:"chat_max_inflight_unmetered"`
+	// MaturityDryRun mirrors MATURITY_DRY_RUN for the Streak Maintenance
+	// dry-run badge (probe-only, zero session slots claimed).
+	MaturityDryRun bool `json:"maturity_dry_run"`
+	// MaturityWindowStart/End are tonight's maintenance window (the 60
+	// minutes before the Pacific-midnight reset, RFC3339 absolute
+	// instants): the SPA formats the next-run countdown from these, so
+	// the window math lives in one DST-safe place (pool.MaturityWindow).
+	MaturityWindowStart string `json:"maturity_window_start,omitempty"`
+	MaturityWindowEnd   string `json:"maturity_window_end,omitempty"`
 }
 
 // tokenSessionQuota is the per-token session + quota block, identical on the
@@ -485,9 +483,12 @@ func (d *Dashboard) tokensData() tokensData {
 		TokenRotation:     cfg.TokenRotation,
 		RateLimitFailover: cfg.RateLimitFailover,
 		MaturityEnabled:   cfg.MaturityEnabled,
-		BurstEnabled:      cfg.BurstBalanceEnabled,
-		ChatMaxMetered:    cfg.ChatMaxInflightMetered,
-		ChatMaxUnmetered:  cfg.ChatMaxInflightUnmetered,
+		MaturityDryRun:    cfg.MaturityDryRun,
+	}
+	wStart, wEnd := d.pool.MaturityWindow()
+	if !wStart.IsZero() && !wEnd.IsZero() {
+		td.MaturityWindowStart = wStart.Format(time.RFC3339)
+		td.MaturityWindowEnd = wEnd.Format(time.RFC3339)
 	}
 	// client cards. Pure bridge hides the (empty) pooled table; pure pooled
 	// has no bridge cards.
@@ -620,8 +621,8 @@ func (d *Dashboard) sessionQuotaFor(t pool.TokenSnapshot, sample bool) tokenSess
 
 // tokenLiveDetail is the hot-poll subset of tokenDetail (issue #322): the
 // live card plus the shared session/quota block. Account-stable card fields
-// (email, account_id, daily_limit, standing_*, referral_*) ride the
-// once-per-mount full fetch; the SPA merges them back by index.
+// (email, account_id, standing_*, referral_*) ride the once-per-mount full
+// fetch; the SPA merges them back by index.
 type tokenLiveDetail struct {
 	tokenLiveCard
 	tokenSessionQuota
@@ -637,9 +638,6 @@ type tokensLiveData struct {
 	TokenRotation     string            `json:"token_rotation,omitempty"`
 	RateLimitFailover bool              `json:"rate_limit_failover"`
 	MaturityEnabled   bool              `json:"maturity_enabled"`
-	BurstEnabled      bool              `json:"burst_balance_enabled"`
-	ChatMaxMetered    int               `json:"chat_max_inflight_metered"`
-	ChatMaxUnmetered  int               `json:"chat_max_inflight_unmetered"`
 }
 
 // tokensLiveData builds the 10s hot-poll payload directly from pool
@@ -655,9 +653,6 @@ func (d *Dashboard) tokensLiveData() tokensLiveData {
 		TokenRotation:     cfg.TokenRotation,
 		RateLimitFailover: cfg.RateLimitFailover,
 		MaturityEnabled:   cfg.MaturityEnabled,
-		BurstEnabled:      cfg.BurstBalanceEnabled,
-		ChatMaxMetered:    cfg.ChatMaxInflightMetered,
-		ChatMaxUnmetered:  cfg.ChatMaxInflightUnmetered,
 	}
 	showBridge := mode == "bridge" || mode == "hybrid"
 	live.BridgeTokenCards = d.bridgeCards(showBridge)
@@ -914,12 +909,11 @@ type metricTrend struct {
 }
 
 type perTokenMetrics struct {
-	Token                int    `json:"token"`
-	Requests24h          int    `json:"requests_24h"`
-	TransientRetries     int64  `json:"transient_retries"`
-	FingerprintRotations int64  `json:"fingerprint_rotations"`
-	SpendDay             int64  `json:"spend_day"`
-	RiskLevel            string `json:"risk_level"`
+	Token                int   `json:"token"`
+	Requests24h          int   `json:"requests_24h"`
+	TransientRetries     int64 `json:"transient_retries"`
+	FingerprintRotations int64 `json:"fingerprint_rotations"`
+	SpendDay             int64 `json:"spend_day"`
 }
 
 type metricsData struct {
@@ -981,7 +975,6 @@ func (d *Dashboard) metricsData() metricsData {
 			TransientRetries:     tok.TransientRetries,
 			FingerprintRotations: tok.FingerprintRotations,
 			SpendDay:             tok.SpendDay,
-			RiskLevel:            tok.RiskLevel,
 		})
 	}
 	return md
@@ -1071,10 +1064,14 @@ type NoticeItem struct {
 }
 
 // NoticesResponse is the payload returned by GET /admin/api/notices.
+// UpstreamSHA is the upstream commit the notice copy was extracted from
+// (wiregen-stamped NoticeUpstreamSHA): the copy's pin age, served without
+// a live upstream call.
 type NoticesResponse struct {
-	Notices   []NoticeItem                     `json:"notices"`
-	PeakHours upstream.DeepSeekPeakHoursWindow `json:"peak_hours"`
-	Count     int                              `json:"count"`
+	Notices     []NoticeItem                     `json:"notices"`
+	PeakHours   upstream.DeepSeekPeakHoursWindow `json:"peak_hours"`
+	Count       int                              `json:"count"`
+	UpstreamSHA string                           `json:"upstream_sha"`
 }
 
 // noticesData aggregates upstream static announcements, live DeepSeek peak
@@ -1137,8 +1134,9 @@ func (d *Dashboard) noticesData() NoticesResponse {
 	}
 
 	return NoticesResponse{
-		Notices:   list,
-		PeakHours: peak,
-		Count:     len(list),
+		Notices:     list,
+		PeakHours:   peak,
+		Count:       len(list),
+		UpstreamSHA: upstream.NoticeUpstreamSHA,
 	}
 }

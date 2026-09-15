@@ -164,3 +164,50 @@ func (p *Pool) breakerRecordFailureClass(cfg *config.Config, err error) bool {
 	p.bridgeMu.Unlock()
 	return true
 }
+
+// BreakerSnapshot is the observability view of the bridge circuit breaker
+// (docs/circuit-breaker-observability.md): open/closed state, the in-window
+// failure count, the cooldown instant, and the effective config. Used by
+// /healthz and /metrics; safe on any mode (bridge breaker state simply stays
+// zero when the pool never records bridge failures).
+type BreakerSnapshot struct {
+	Enabled              bool      `json:"enabled"`
+	Open                 bool      `json:"open"`
+	FailureCount         int       `json:"failure_count"`
+	FailuresRemaining    int       `json:"failures_remaining"`
+	CooldownRemainingSec float64   `json:"cooldown_remaining_seconds"`
+	Until                time.Time `json:"until,omitempty"`
+	FailuresThreshold    int       `json:"failures_threshold"`
+	Window               string    `json:"window"`
+	Cooldown             string    `json:"cooldown"`
+}
+
+// BreakerSnapshot renders the current breaker state for the server layer.
+func (p *Pool) BreakerSnapshot(cfg *config.Config) BreakerSnapshot {
+	p.bridgeMu.Lock()
+	defer p.bridgeMu.Unlock()
+	snap := BreakerSnapshot{
+		Enabled:           cfg.BridgeCircuitBreakerFailures > 0,
+		FailuresThreshold: cfg.BridgeCircuitBreakerFailures,
+		Window:            cfg.BridgeCircuitBreakerWindow.String(),
+		Cooldown:          cfg.BridgeCircuitBreakerCooldown.String(),
+		FailureCount:      len(p.breakerFailures),
+	}
+	if !snap.Enabled {
+		return snap
+	}
+	open := p.breakerOpenLocked(cfg)
+	snap.Open = open
+	if snap.FailureCount >= snap.FailuresThreshold {
+		snap.FailuresRemaining = 0
+	} else {
+		snap.FailuresRemaining = snap.FailuresThreshold - snap.FailureCount
+	}
+	if !p.breakerUntil.IsZero() {
+		if remaining := time.Until(p.breakerUntil); remaining > 0 {
+			snap.CooldownRemainingSec = remaining.Seconds()
+			snap.Until = p.breakerUntil
+		}
+	}
+	return snap
+}

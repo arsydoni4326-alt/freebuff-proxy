@@ -2,7 +2,6 @@ package pool
 
 import (
 	"freebuff-proxy/backend/internal/session"
-	"freebuff-proxy/backend/internal/upstream"
 	"math/rand/v2"
 	"sort"
 	"time"
@@ -33,7 +32,7 @@ import (
 // round-robin so the loop still records every reason. The fallback branch
 // in Acquire only runs after that loop completed without a lease and every
 // rate-limited error it recorded is a quota exhaustion.
-func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int, []*upstream.RateLimitError) {
+func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int, []rateLimitEntry) {
 	// eligible mirrors the per-token checks the failover loop applies:
 	// not cooling down, under the daily message cap, and not
 	// Freebucks-capped for the requested model (ADR-0027: session-count
@@ -178,17 +177,6 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 		order = append(order, coldTokens...)
 		order = append(order, mismatchedHot...)
 	}
-	// Burst balance (ADR-0023, opt-in): while this model's sliding-window
-	// admission count exceeds its threshold, THAT model's order switches to
-	// least_used among healthy tokens, capped at BURST_MAX_TOKENS distinct
-	// accounts. Disabled or below-threshold: order untouched (the default
-	// path is byte-identical). The availability sort below still applies,
-	// so demoted over-cap tokens are reached when the spread set fails.
-	if cfg := p.cfg.Load(); cfg != nil && cfg.BurstBalanceEnabled {
-		if plan := p.burstPlanForModel(cfg, model, time.Now()); plan.active {
-			order = plan.apply(leastUsedOrder(toks, model, eligible))
-		}
-	}
 
 	// Phase 5.2: AUTO_ROTATE_ON_EXHAUSTION — deprioritise exhausted tokens
 	// by moving them to the end of the order. The exhausted token remains
@@ -268,13 +256,13 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 	for _, idx := range order {
 		inOrder[idx] = struct{}{}
 	}
-	var quotaLimited []*upstream.RateLimitError
+	var quotaLimited []rateLimitEntry
 	for idx := range *toks {
 		if _, ok := inOrder[idx]; ok {
 			continue
 		}
 		if capped, _ := freebucksCapped((*toks)[idx], model); capped {
-			quotaLimited = append(quotaLimited, freebucksLimitError((*toks)[idx], model))
+			quotaLimited = appendRateLimitEntry(quotaLimited, freebucksLimitError((*toks)[idx], model), idx)
 		}
 	}
 	return order, quotaLimited
@@ -282,9 +270,7 @@ func (p *Pool) acquireOrder(toks *[]*tokenEntry, start int, model string) ([]int
 
 // leastUsedOrder ranks eligible token indexes with the LARGEST Freebucks
 // balance first (preserve balance; ADR-0027: session-count remaining is
-// envelope data, never ranking input). Shared by the "least_used" strategy
-// and the burst-balance override (ADR-0023) so the two rankings cannot
-// drift.
+// envelope data, never ranking input).
 func leastUsedOrder(toks *[]*tokenEntry, model string, eligible func(int) bool) []int {
 	var eligibleTokens []int
 	for idx := range *toks {

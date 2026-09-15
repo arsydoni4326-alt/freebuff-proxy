@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"time"
 
 	"freebuff-proxy/backend/internal/config"
@@ -28,19 +29,6 @@ const maxBridgeEntries = 32
 // churn — fewer admission requests, fewer fingerprints — while dead tokens
 // are still evicted immediately by B6.
 const defaultBridgeIdleEvict = 72 * time.Hour
-
-// maxBridgeSurvivors bounds the survivor list: evictions are rare relative
-// to the maintain passes that prune it, and each survivor is a few bytes.
-const maxBridgeSurvivors = 256
-
-// bridgeSurvivor is one evicted bridge entry's 24h-window chat count,
-// carried until it ages out of the BRIDGE_DAILY_LIMIT window (review
-// 2026-08-31 P3): a recompute that only sums live entries would let an
-// eviction reset an active client's contribution to the global cap.
-type bridgeSurvivor struct {
-	count   int
-	evicted time.Time // eviction time; the survivor expires one window later
-}
 
 // tokenKey returns a 32-char hex string derived from the SHA-256 hash of the
 // raw client token. Bridge map keys use this non-reversible form so raw tokens
@@ -74,6 +62,14 @@ func (p *Pool) BridgeCount() int {
 // client tokens are never stored as map keys in memory.
 func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	key := tokenKey(clientToken)
+
+	// Token format validation (docs/bridge-mode.md hardening): reject
+	// empty, oversized, or whitespace/control-char-laden tokens before any
+	// cache lookup or upstream contact — an embedded tab/space is a
+	// header-injection vector, never a valid opaque credential.
+	if err := validateClientToken(clientToken); err != nil {
+		return nil, err
+	}
 
 	// Fast path: entry already cached.
 	p.bridgeMu.Lock()
@@ -149,8 +145,10 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 		return entry, nil
 	}
 
-	entry := &bridgeEntry{token: clientToken, client: client, ledger: newAccountLedger(), admissionGate: make(chan struct{})}
 	cfg := p.cfg.Load()
+	entry := &bridgeEntry{token: clientToken, client: client, ledger: newAccountLedger(), admissionGate: make(chan struct{}),
+		rateLimitRate: cfg.BridgeRateLimitPerToken,
+	}
 	entry.session = session.NewManagerWithStore(client, p.store)
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
@@ -185,6 +183,40 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	return entry, nil
 }
 
+// rateLimitAllow implements a simple per-entry token-bucket rate limiter.
+// Returns true if the request is allowed, false if rate limited.
+// The bucket refills linearly over time; capacity is at least one request
+// (burst), so a slowed client can always make an immediate request. Guarded
+// by entry.mu which is held during AcquireBridge's cooldown/limit checks
+// anyway.
+func (e *bridgeEntry) rateLimitAllow() bool {
+	if e.rateLimitRate <= 0 {
+		return true // unlimited
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Burst capacity = at least one request (so the first request always
+	// has a token), matching the per-IP limiter's burst default.
+	capacity := math.Max(1.0, e.rateLimitRate)
+	now := time.Now()
+	if e.rateLimitLastRefill.IsZero() {
+		// First request: fill bucket to capacity.
+		e.rateLimitTokens = capacity
+		e.rateLimitLastRefill = now
+	} else if elapsed := now.Sub(e.rateLimitLastRefill).Seconds(); elapsed > 0 {
+		// Refill based on elapsed time.
+		e.rateLimitTokens = math.Min(capacity, e.rateLimitTokens+elapsed*e.rateLimitRate)
+		e.rateLimitLastRefill = now
+	}
+	if e.rateLimitTokens >= 1.0 {
+		e.rateLimitTokens -= 1.0
+		e.rateLimitHits.Add(1)
+		return true
+	}
+	e.rateLimitMisses.Add(1)
+	return false
+}
+
 // bridgeTouch moves clientToken to the newest end of the LRU order.
 func (p *Pool) bridgeTouch(clientToken string) {
 	for i, tok := range p.bridgeOrder {
@@ -197,33 +229,6 @@ func (p *Pool) bridgeTouch(clientToken string) {
 		}
 	}
 	p.bridgeOrder = append(p.bridgeOrder, clientToken)
-}
-
-// bridgeRecordSurvivorLocked folds an evicted entry's in-window usage into
-// the survivor list so its contribution to the global BRIDGE_DAILY_LIMIT
-// survives the eviction (review 2026-08-31 P3). Timestamps already outside
-// the window are not carried — the prune at capture mirrors the recompute.
-// Caller holds bridgeMu.
-func (p *Pool) bridgeRecordSurvivorLocked(entry *bridgeEntry, now time.Time) {
-	if entry == nil {
-		return
-	}
-	count := 0
-	cutoff := now.Add(-usageWindow)
-	for _, at := range entry.ledger.usage {
-		if !at.Before(cutoff) {
-			count++
-		}
-	}
-	if count == 0 {
-		return
-	}
-	if len(p.bridgeSurvivors) >= maxBridgeSurvivors {
-		// Drop the oldest survivors to stay bounded.
-		p.bridgeSurvivors = p.bridgeSurvivors[len(p.bridgeSurvivors)-maxBridgeSurvivors+1:]
-	}
-	p.bridgeSurvivors = append(p.bridgeSurvivors, bridgeSurvivor{count: count, evicted: now})
-	p.markPersistDirty()
 }
 
 // bridgeEvictLocked evicts the oldest bridge entries while the cache is
@@ -258,7 +263,6 @@ func (p *Pool) bridgeEvictLocked(keep *bridgeEntry) []*bridgeEntry {
 				continue
 			}
 			victims = append(victims, entry)
-			p.bridgeRecordSurvivorLocked(entry, time.Now())
 			delete(p.bridge, oldest)
 			p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, oldest)
 			p.logger.Debug("pool: bridge entry evicted (cache full)", "bridge_entries", len(p.bridge))
@@ -309,10 +313,7 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		entry    *bridgeEntry
 		lastUsed time.Time
 		spend    spendView
-		rpm      int
-		rpd      int
 	}
-	now := time.Now()
 	entries := make([]keyEntry, 0, len(p.bridge))
 	for k, e := range p.bridge {
 		// Copy lastUsed AND the spend view while the lock is held:
@@ -320,8 +321,7 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		// spend ledger under bridgeMu, so unlocked reads here would race
 		// (torn values under -race). ledgerView rolls the ledger window —
 		// a write — so it must run under bridgeMu like the recorders do.
-		// Same for rpmCount/dayRequestCount: both prune/roll in place.
-		entries = append(entries, keyEntry{key: k, entry: e, lastUsed: e.lastUsed, spend: e.ledger.spendSnapshot(), rpm: e.ledger.rpmCount(now), rpd: e.ledger.dayRequestCount(now)})
+		entries = append(entries, keyEntry{key: k, entry: e, lastUsed: e.lastUsed, spend: e.ledger.spendSnapshot()})
 	}
 	p.bridgeMu.Unlock()
 
@@ -366,23 +366,22 @@ func (p *Pool) BridgeSnapshot() []BridgeTokenSnapshot {
 		}
 		banType, bannedUntil := banView(eRuns.BanError, eRuns.BannedUntil)
 		snaps = append(snaps, BridgeTokenSnapshot{
-			Key:               ke.key,
-			LastUsed:          ke.lastUsed,
-			ActiveRuns:        eRuns.ActiveRuns,
-			Requests:          eRuns.Requests,
-			Locked:            e.locked.Load(),
-			CooldownUntil:     cooldownUntil,
-			SessionActive:     sess.Status == "active",
-			AccessTier:        sess.AccessTier,
-			Model:             model,
-			QuotaByModel:      quotaByModel,
-			SpendDay:          float64(spend.Day),
-			SpendPct:          spendPct,
-			RequestsPerMinute: ke.rpm,
-			RequestsPerDay:    ke.rpd,
-			Freebucks:         sess.Freebucks,
-			BanType:           banType,
-			BannedUntil:       bannedUntil,
+			Key:           ke.key,
+			LastUsed:      ke.lastUsed,
+			ActiveRuns:    eRuns.ActiveRuns,
+			Requests:      eRuns.Requests,
+			Locked:        e.locked.Load(),
+			CooldownUntil: cooldownUntil,
+			SessionActive: sess.Status == "active",
+			AccessTier:    sess.AccessTier,
+			Model:         model,
+			QuotaByModel:  quotaByModel,
+			SpendDay:      float64(spend.Day),
+			Freebucks:     sess.Freebucks,
+			BanType:       banType,
+			BannedUntil:   bannedUntil,
+			DeadToken:     banType == "hard",
+			SpendPct:      spendPct,
 		})
 	}
 	return snaps
@@ -457,7 +456,6 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 		}
 		if now.Sub(entry.lastUsed) > idleEvict {
 			toEvict = append(toEvict, entry)
-			p.bridgeRecordSurvivorLocked(entry, now)
 			delete(p.bridge, token)
 			p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, token)
 			p.logger.Debug("pool: bridge entry evicted (idle)", "bridge_entries", len(p.bridge))
@@ -465,39 +463,8 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			toMaintain = append(toMaintain, entry)
 		}
 	}
-
-	// Recompute bridgeDailyUsage from live entries: each entry's usage
-	// slice is pruned to the 24h window, so summing their lengths gives
-	// the correct rolling total (mirrors bridgeUsageCount per-entry).
-	// Evicted entries' in-window usage is folded back in from the bounded
-	// survivor list (review 2026-08-31 P3): without it, evicting an active
-	// client's entry would reset its contribution to the global cap.
-	total := 0
-	for _, entry := range p.bridge {
-		cutoff := now.Add(-usageWindow)
-		history := entry.ledger.usage
-		first := 0
-		for first < len(history) && history[first].Before(cutoff) {
-			first++
-		}
-		entry.ledger.usage = history[first:]
-		total += len(entry.ledger.usage)
-	}
-	// Fold in unexpired survivors and prune the expired ones in the same
-	// pass (each survivor ages out one usage window after its eviction).
-	kept := p.bridgeSurvivors[:0]
-	for _, s := range p.bridgeSurvivors {
-		if now.Sub(s.evicted) < usageWindow {
-			kept = append(kept, s)
-			total += s.count
-		}
-	}
-	p.bridgeSurvivors = kept
-	p.bridgeDailyUsage = total
-
 	p.bridgeMu.Unlock()
 	p.markPersistDirty()
-
 	for _, entry := range toEvict {
 		// Mirror the shutdown drain: FINISH the runs AND end the entry's
 		// upstream session, so a dropped idle entry does not leak its
@@ -552,7 +519,6 @@ func (p *Pool) bridgeEvictToken(rawToken string) {
 		p.bridgeMu.Unlock()
 		return
 	}
-	p.bridgeRecordSurvivorLocked(entry, time.Now())
 	delete(p.bridge, key)
 	p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, key)
 	p.logger.Debug("pool: bridge entry evicted (dead token)", "token_label", bridgeTokenLabel(entry))

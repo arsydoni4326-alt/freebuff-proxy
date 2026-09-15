@@ -11,7 +11,7 @@ function maintenanceTokens() {
     has_tokens: true,
     maturity_enabled: true,
     maturity_dry_run: true,
-    maturity_window_start: "2026-09-12T06:00:00Z",
+    maturity_window_start: "2026-09-12T06:45:00Z",
     maturity_window_end: "2026-09-12T07:00:00Z",
     tokens: [
       {
@@ -87,7 +87,7 @@ async function gotoWarming(page) {
   await page.goto("http://127.0.0.1:4173/admin/#tokens");
   await page.getByRole("button", { name: "Warming" }).click();
   await expect(
-    page.getByRole("heading", { name: "Tokens", exact: true }),
+    page.getByRole("heading", { name: "Pool", exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
     "aria-pressed",
@@ -131,7 +131,7 @@ test.describe("streak maintenance", () => {
     );
     // Fixed pre-reset window copy + read-only dry-run badge + countdown.
     await expect(
-      page.getByText("Nightly window 23:00–00:00 Pacific"),
+      page.getByText("Nightly window 23:45–00:00 Pacific"),
     ).toBeVisible();
     await expect(page.getByText("Dry run")).toBeVisible();
     await expect(page.getByLabel("Next maintenance run")).toBeVisible();
@@ -170,7 +170,7 @@ test.describe("streak maintenance", () => {
           has_tokens: true,
           maturity_enabled: true,
           maturity_dry_run: true,
-          maturity_window_start: "2026-09-12T06:00:00Z",
+          maturity_window_start: "2026-09-12T06:45:00Z",
           maturity_window_end: "2026-09-12T07:00:00Z",
           tokens: [
             {
@@ -199,11 +199,74 @@ test.describe("streak maintenance", () => {
       });
     });
     await gotoWarming(page);
-    const row = page.getByText("Account #1").locator("..").locator("..");
+    const row = page
+      .getByText("Account #1")
+      .locator("..")
+      .locator("..")
+      .locator("..");
     await expect(row.getByText(/day already used/)).toBeVisible();
     await expect(row.getByText(/last activity Sep 11/)).toBeVisible();
     await expect(row.getByText(/used outside this proxy/)).toBeVisible();
     await expect(row.getByText(/skip:today-used/)).toBeVisible();
+    // Reset-anchored countdown and Pacific-day last run.
+    await expect(page.getByLabel("Next maintenance run")).toContainText(
+      /reset in/,
+    );
+    await expect(page.getByLabel("Last maintenance run")).toContainText(
+      /Sep 10 Pacific day/,
+    );
+  });
+
+  test("touch-only rows read as automation, not outside use", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    await mockDashboard(page, f);
+    await page.unroute("**/admin/api/tokens*");
+    await page.route("**/admin/api/tokens*", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode: "pooled",
+          token_count: 1,
+          has_tokens: true,
+          maturity_enabled: true,
+          maturity_dry_run: true,
+          maturity_window_start: "2026-09-12T06:45:00Z",
+          maturity_window_end: "2026-09-12T07:00:00Z",
+          tokens: [
+            {
+              index: 0,
+              email: "auto@example.com",
+              session_status: "active",
+              locked: false,
+              requests_per_day: 0,
+              maturity: {
+                enabled: true,
+                target: 7,
+                mode: "unmetered",
+                badge: "Warming",
+                slot: "2026-09-11T06:30:00Z",
+                slot_day: "2026-09-11",
+                last_touch: "2026-09-11T06:56:00Z",
+                last_action: "probe",
+                last_result: "skip:today-used",
+                effective_touch_model: "upstage/solar-pro4",
+                auto_touch_model: "upstage/solar-pro4",
+              },
+            },
+          ],
+        }),
+      });
+    });
+    await gotoWarming(page);
+    const row = page
+      .getByText("Account #1")
+      .locator("..")
+      .locator("..")
+      .locator("..");
+    await expect(row.getByText(/nightly touch only/)).toBeVisible();
     // Reset-anchored countdown and Pacific-day last run.
     await expect(page.getByLabel("Next maintenance run")).toContainText(
       /reset in/,
@@ -268,7 +331,7 @@ test.describe("streak maintenance", () => {
     // day count stays as pure info where shown.
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("switch", { name: "Maturity for Account #1" }),
@@ -282,17 +345,15 @@ test.describe("streak maintenance", () => {
     await expect(page.getByText("Locked").first()).toBeVisible();
   });
 
-  test("settings advanced wires the dry-run toggle and touch model", async ({
+  test("pool controls tab wires the dry-run toggle and touch model", async ({
     page,
   }) => {
     const f = loadFixtures();
     await mockDashboard(page, f);
-    await page.goto("http://127.0.0.1:4173/admin/#settings");
-    await expect(
-      page.getByRole("heading", { name: "Settings", exact: true }),
-    ).toBeVisible();
-    // Pool knobs live here now: MATURITY_DRY_RUN as a switch,
-    // MATURITY_TOUCH_MODEL as the Auto select.
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await page.getByRole("button", { name: "Controls" }).click();
+    // Pool knobs moved to the Pool Controls tab: MATURITY_DRY_RUN as a
+    // switch, MATURITY_TOUCH_MODEL as the Auto select.
     await expect(
       page.getByRole("switch", { name: "MATURITY_DRY_RUN" }),
     ).toBeVisible();

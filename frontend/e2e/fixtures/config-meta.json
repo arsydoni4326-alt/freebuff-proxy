@@ -104,6 +104,16 @@
     "description": "Log one access line per HTTP request (healthz/metrics/OPTIONS are rate-limited to 1/min regardless)."
   },
   {
+    "key": "LOG_CONSOLE_WINDOW",
+    "group": "general",
+    "kind": "text",
+    "default": "1h",
+    "restart_only": false,
+    "secret": false,
+    "essential": false,
+    "description": "Default time window of the Activity console (Go duration, e.g. 15m, 1h, 24h). VIEW ONLY: it bounds which history rows the console asks for and never changes what is stored, so widening it reveals older entries without any reload. Zero or invalid falls back to 1h."
+  },
+  {
     "key": "LOG_FILE",
     "group": "general",
     "kind": "text",
@@ -156,6 +166,16 @@
     "description": "In-memory log ring capacity behind the dashboard log viewer (50-5000). Restart-only: the ring is allocated once at boot and a reload never resizes it."
   },
   {
+    "key": "LOG_TABLE_RETENTION",
+    "group": "general",
+    "kind": "text",
+    "default": "168h",
+    "restart_only": false,
+    "secret": false,
+    "essential": false,
+    "description": "Storage retention for the log_entries and request_records history tables (Go duration; default 168h = 7 days). This is what the purge actually deletes: rows older than this are gone for good, so keep it at least as long as the console window you want to read. Quota and maturity history keep their own 90-day retention. Zero or invalid falls back to 168h."
+  },
+  {
     "key": "SAFE_MODE",
     "group": "general",
     "kind": "bool",
@@ -195,7 +215,7 @@
     "secret": true,
     "essential": false,
     "hidden": true,
-    "description": "Comma-separated upstream FreeBuff tokens. Managed in the Tokens page and Device Login."
+    "description": "Comma-separated upstream FreeBuff tokens. Managed in the Pool page and Device Login."
   },
   {
     "key": "BRIDGE_ENABLED",
@@ -216,68 +236,6 @@
     "secret": false,
     "essential": false,
     "description": "How long a bridge entry may sit unused before its runs are FINISHed and it is evicted from the cache (sliding TTL; zero or invalid → 72h)."
-  },
-  {
-    "key": "BURST_BALANCE_ENABLED",
-    "group": "pool",
-    "kind": "bool",
-    "default": "true",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Spread one model's request burst across up to BURST_MAX_TOKENS accounts once BURST_THRESHOLD same-model admissions land inside BURST_WINDOW. Applies live on reload; false restores drain-only selection. ANTI-BAN TRADEOFF: spreading looks less like single-user traffic than drain — set false only when strict single-account sequencing matters more than burst throughput."
-  },
-  {
-    "key": "BURST_MAX_TOKENS",
-    "group": "pool",
-    "kind": "int",
-    "default": "2",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Cap on the distinct accounts one model's burst spreads across (minimum 2). Applies live on reload. Keep small: every extra account in the burst widens the multi-account fingerprint."
-  },
-  {
-    "key": "BURST_THRESHOLD",
-    "group": "pool",
-    "kind": "int",
-    "default": "20",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Same-model admissions inside BURST_WINDOW that trip burst spreading for that model (other models keep the configured strategy). Applies live on reload. Lower values spread sooner — and look less single-user sooner."
-  },
-  {
-    "key": "BURST_WINDOW",
-    "group": "pool",
-    "kind": "text",
-    "default": "1m",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Sliding window for counting same-model admissions toward BURST_THRESHOLD (Go duration, e.g. 30s, 1m, 5m). Applies live on reload. Shorter windows trip on sharper spikes; longer windows ride sustained load."
-  },
-  {
-    "key": "CHAT_MAX_INFLIGHT_METERED",
-    "group": "pool",
-    "kind": "int",
-    "default": "1",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "hidden": true,
-    "description": "Cap on concurrent in-flight chat requests per token on metered (priced Freebucks) models (0 = unlimited)."
-  },
-  {
-    "key": "CHAT_MAX_INFLIGHT_UNMETERED",
-    "group": "pool",
-    "kind": "int",
-    "default": "3",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "hidden": true,
-    "description": "Cap on concurrent in-flight chat requests per token on unmetered (unpriced) models (0 = unlimited)."
   },
   {
     "key": "IDLE_ROTATION_TIMEOUT",
@@ -496,28 +454,6 @@
     "description": "Bounded deferred-FINISH worker queue for rotated/drained runs (full queue falls back to a synchronous FINISH)."
   },
   {
-    "key": "SESSION_CREATE_MAX_PARALLEL_GLOBAL",
-    "group": "pool",
-    "kind": "int",
-    "default": "128",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "hidden": true,
-    "description": "Cap on concurrent in-flight session admissions (wait-or-503) across all models."
-  },
-  {
-    "key": "SESSION_CREATE_MAX_PARALLEL_PER_MODEL",
-    "group": "pool",
-    "kind": "int",
-    "default": "32",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "hidden": true,
-    "description": "Per-model cap on concurrent in-flight session admissions."
-  },
-  {
     "key": "SESSION_IDLE_END",
     "group": "pool",
     "kind": "text",
@@ -577,7 +513,7 @@
     "restart_only": false,
     "secret": false,
     "essential": false,
-    "description": "Cap on concurrent live turns per pooled token (floor 1: lower values floor to 1, a zero live-turn cap could never serve). A lease is granted only while the token holds fewer live turns; excess waiters park FIFO until QUEUE_WAIT elapses. Applies live on reload. BUNKER PRESET: 1 — fully sequential turns per account, zero parallel fingerprint."
+    "description": "Cap on concurrent live turns per pooled token (default 2, the approved anti-ban pacing; 0 = unlimited, no slot gating at all). A lease is granted only while the token holds fewer live turns; excess waiters park FIFO until QUEUE_WAIT elapses. Applies live on reload. BUNKER PRESET: 1 — fully sequential turns per account, zero parallel fingerprint."
   },
   {
     "key": "TOKEN_ROTATION",
@@ -594,7 +530,7 @@
     "secret": false,
     "essential": false,
     "hidden": true,
-    "description": "Token selection strategy: drain (exhaust a token's session before rotating), round_robin, least_used, or random. Managed interactively on the Tokens page."
+    "description": "Token selection strategy: drain (exhaust a token's session before rotating), round_robin, least_used, or random. Managed interactively on the Pool page."
   },
   {
     "key": "WAITING_ROOM_CHAIN",
@@ -606,16 +542,6 @@
     "essential": false,
     "hidden": true,
     "description": "After an upstream 428 waiting_room_required, fire the reference ad-chain + streak requests before the next session create (best-effort, never blocks)."
-  },
-  {
-    "key": "BRIDGE_DAILY_LIMIT",
-    "group": "quota",
-    "kind": "int",
-    "default": "0",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Global daily chat cap across ALL bridge-mode entries (0 = unlimited)."
   },
   {
     "key": "FALLBACK_AFTER_MS",
@@ -637,46 +563,6 @@
     "essential": false,
     "hidden": true,
     "description": "Map model=fallback (comma-separated) to re-route a request when its queue wait passes FALLBACK_AFTER_MS. Empty default: no fallback."
-  },
-  {
-    "key": "MAX_MESSAGES_PER_DAY",
-    "group": "quota",
-    "kind": "int",
-    "default": "0",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Per-token daily cap on successful chats (0 = unlimited; the upstream 429 lock is the real enforcement)."
-  },
-  {
-    "key": "MAX_REQUESTS_PER_DAY",
-    "group": "quota",
-    "kind": "int",
-    "default": "1500",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Per-token cap on successful chat requests per Pacific day (0 = unlimited). Locks the account until the daily quota reset (Pacific midnight, same instant upstream rolls its windows); capped tokens are skipped and the pool rolls to the next account."
-  },
-  {
-    "key": "MAX_REQUESTS_PER_MINUTE",
-    "group": "quota",
-    "kind": "int",
-    "default": "30",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Per-token cap on admitted chat requests per rolling 60s window (0 = unlimited). Throttles upstream-visible request bursts so each account stays under abuse-detection rates; a runaway loop locks within a minute and the pool rolls to the next account."
-  },
-  {
-    "key": "MAX_SPEND_PER_DAY",
-    "group": "quota",
-    "kind": "int",
-    "default": "0",
-    "restart_only": false,
-    "secret": false,
-    "essential": false,
-    "description": "Advisory per-token Pacific-day spend ceiling in ledger units (0 = unlimited). Never enforced — surfacing only, on /healthz."
   },
   {
     "key": "QUOTA_FALLBACK_MODELS",

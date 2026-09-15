@@ -13,7 +13,6 @@
   import TokenDetailsDrawer from "./TokenDetailsDrawer.svelte";
   import {
     statusFor,
-    riskBadgeFor,
     streakBadgeFor,
     cooldownLabel,
   } from "../utils/tokenStatus.js";
@@ -84,9 +83,6 @@
     Math.max(0, Math.floor((sessionEndsAtMs - nowTick) / 1000)),
   );
 
-  // Risk chip (moved from the standalone At-risk cards): shown when the
-  // account carries a risk flag and no ban badge already claims the card.
-  const riskBadge = $derived(riskBadgeFor(token));
   const streak = $derived(streakBadgeFor(token));
 </script>
 
@@ -118,16 +114,6 @@
         >Account #{idx + 1}</span
       >
       <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
-      {#if riskBadge}
-        <StatusBadge
-          status={riskBadge.label}
-          tone={riskBadge.tone}
-          pulse={riskBadge.pulse}
-        />
-      {/if}
-      {#if token.session_model}
-        <StatusBadge tone="info" status={token.session_model} />
-      {/if}
       {#if token.email || token.account_id}
         <span
           class="text-[11px] text-[var(--fp-muted)] truncate max-w-[160px]"
@@ -186,18 +172,8 @@
     <div class="fp-inset px-2.5 py-2 text-xs">
       <div class="grid grid-cols-2 gap-2">
         <div class="min-w-0 text-[var(--fp-muted)]">
-          {#if token.daily_limit > 0}
-            <span class="fp-num text-[var(--fp-text)]"
-              >{token.messages_24h}/{token.daily_limit}</span
-            >
-            {$tr("msgs today")}
-            (<span class="fp-num">{token.usage_pct}%</span>)
-          {:else}
-            <span class="fp-num text-[var(--fp-text)]"
-              >{token.messages_24h}</span
-            >
-            {$tr("msgs 24h")}
-          {/if}
+          <span class="fp-num text-[var(--fp-text)]">{token.messages_24h}</span>
+          {$tr("msgs 24h")}
         </div>
         <div class="min-w-0 text-[var(--fp-dim)]">
           <span
@@ -285,13 +261,16 @@
     <div class="flex flex-col gap-2">
       <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
         <span class="text-[var(--fp-muted)]">{$tr("Instance")}</span>
-        <span class="min-w-0">
+        <span class="min-w-0 flex flex-col items-start gap-1">
           {#if token.session_instance}
             <code class="fp-num break-all select-all"
               >{token.session_instance}</code
             >
-          {:else}
+          {:else if !token.session_model}
             <span class="text-[var(--fp-dim)]">—</span>
+          {/if}
+          {#if token.session_model}
+            <StatusBadge tone="info" status={token.session_model} />
           {/if}
         </span>
       </div>

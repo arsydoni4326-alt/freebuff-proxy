@@ -77,14 +77,10 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 		return strconv.FormatBool(c.LogAccess), false
 	case "LOG_RING_SIZE":
 		return strconv.Itoa(c.LogRingSize), false
-	case "MAX_MESSAGES_PER_DAY":
-		return strconv.Itoa(c.MaxMessagesPerDay), false
-	case "MAX_REQUESTS_PER_DAY":
-		return strconv.Itoa(c.MaxRequestsPerDay), false
-	case "MAX_REQUESTS_PER_MINUTE":
-		return strconv.Itoa(c.MaxRequestsPerMinute), false
-	case "MAX_SPEND_PER_DAY":
-		return strconv.FormatInt(c.MaxSpendPerDay, 10), false
+	case "LOG_CONSOLE_WINDOW":
+		return c.LogConsoleWindow.String(), false
+	case "LOG_TABLE_RETENTION":
+		return c.LogTableRetention.String(), false
 	case "IDLE_ROTATION_TIMEOUT":
 		return c.IdleRotationTimeout.String(), false
 	case "SAFE_MODE":
@@ -119,8 +115,6 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 		return strconv.FormatBool(c.BridgeEnabled), false
 	case "BRIDGE_IDLE_EVICT":
 		return c.BridgeIdleEvict.String(), false
-	case "BRIDGE_DAILY_LIMIT":
-		return strconv.Itoa(c.BridgeDailyLimit), false
 	case "FALLBACK_AFTER_MS":
 		return strconv.Itoa(int(c.FallbackAfter.Milliseconds())), false
 	case "FALLBACK_MODEL":
@@ -133,14 +127,6 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 		return c.SessionProbeCacheTTL.String(), false
 	case "SESSION_RE_ADMIT_LEAD":
 		return c.SessionReAdmitLead.String(), false
-	case "SESSION_CREATE_MAX_PARALLEL_GLOBAL":
-		return strconv.Itoa(c.SessionCreateMaxParallelGlobal), false
-	case "SESSION_CREATE_MAX_PARALLEL_PER_MODEL":
-		return strconv.Itoa(c.SessionCreateMaxParallelPerModel), false
-	case "CHAT_MAX_INFLIGHT_METERED":
-		return strconv.Itoa(c.ChatMaxInflightMetered), false
-	case "CHAT_MAX_INFLIGHT_UNMETERED":
-		return strconv.Itoa(c.ChatMaxInflightUnmetered), false
 	case "RUN_FINISH_QUEUE_SIZE":
 		return strconv.Itoa(c.RunFinishQueueSize), false
 	case "RUN_FINISH_INLINE_TIMEOUT":
@@ -183,14 +169,6 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 		return c.QuotaProbeActiveInterval.String(), false
 	case "QUOTA_PROBE_IDLE_HEARTBEAT":
 		return c.QuotaProbeIdleHeartbeat.String(), false
-	case "BURST_BALANCE_ENABLED":
-		return strconv.FormatBool(c.BurstBalanceEnabled), false
-	case "BURST_WINDOW":
-		return c.BurstWindow.String(), false
-	case "BURST_THRESHOLD":
-		return strconv.Itoa(c.BurstThreshold), false
-	case "BURST_MAX_TOKENS":
-		return strconv.Itoa(c.BurstMaxTokens), false
 	case "ROUTING_SMART":
 		return strconv.FormatBool(c.RoutingSmart), false
 	case "TOKEN_MAX_CONCURRENT":

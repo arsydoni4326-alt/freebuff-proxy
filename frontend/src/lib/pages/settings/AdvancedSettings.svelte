@@ -3,8 +3,9 @@
   import SettingsCard from "../../components/SettingsCard.svelte";
   import SettingsRow from "../../components/SettingsRow.svelte";
   import ToggleSwitch from "../../components/ToggleSwitch.svelte";
-  import DbBadge from "../../components/DbOverrideBadge.svelte";
   import DbOverrideSave from "../../components/DbOverrideSave.svelte";
+  import NumberStepper from "../../components/NumberStepper.svelte";
+  import DurationPicker from "../../components/DurationPicker.svelte";
   import { SlidersHorizontal } from "@lucide/svelte";
   import { tr } from "../../i18n.js";
   import { parseEnv } from "../../utils/env.js";
@@ -26,12 +27,16 @@
    * @prop {Record<string, string>} formValues
    * @prop {string} rawText
    * @prop {Record<string, string>} [sources] - ADR-0019 source tiers
-   * @prop {(key: string) => Promise<void>} [onReset] - DB override reset
+   * @prop {(key: string) => Promise<void>} [onReset] - saved-value reset
    * @prop {(() => Promise<void>) | null} [onSaved] - parent refetch after a
-   *   per-key DB-overlay save
+   *   per-key save
    * @prop {string} [query] - settings key-search text; hides non-matching rows
    * @prop {(n: number) => void} [onMatchCount] - reports the visible-row count to the parent
    *   global empty state
+   * @prop {Array<string> | null} [onlyGroups] - null renders every group,
+   *   otherwise only the listed catalog group ids (e.g. ["pool"])
+   * @prop {string} [cardTitle] - card heading, translated at render
+   * @prop {string} [cardDescription] - card subheading, translated at render
    */
   let {
     meta = [],
@@ -43,17 +48,17 @@
     onSaved = null,
     query = "",
     onMatchCount = null,
+    onlyGroups = null,
+    cardTitle = "Advanced",
+    cardDescription = "Every remaining tunable with its decided default. Restart-only keys need a container restart; the rest apply on save.",
   } = $props();
 
   // Keys owned by the curated section components above (Gateway, Traffic —
-  // including the Rotation & Burst block — ModelRouting); Advanced shows
-  // everything else the catalog exposes.
+  // including the Rotation block and the Smart routing group — ModelRouting,
+  // Dashboard access); Advanced shows everything else the catalog exposes.
   const COVERED = new Set([
     "BRIDGE_ENABLED",
-    "BURST_BALANCE_ENABLED",
-    "BURST_MAX_TOKENS",
-    "BURST_THRESHOLD",
-    "BURST_WINDOW",
+    "DASHBOARD_REQUIRE_LOGIN",
     "HTTP_READ_TIMEOUT",
     "LOG_LEVEL",
     "MAX_REQUESTS_PER_DAY",
@@ -61,10 +66,14 @@
     "MODELS_ALLOW",
     "MODEL_ALIASES",
     "MODEL_LOCKS",
+    "QUEUE_DEPTH",
+    "QUEUE_WAIT",
     "RATE_LIMIT_FAILOVER",
     "RATE_LIMIT_PER_IP",
     "REASONING_IN_CONTENT",
+    "ROUTING_SMART",
     "SAFE_MODE",
+    "TOKEN_MAX_CONCURRENT",
     "TOKEN_ROTATION",
   ]);
 
@@ -75,11 +84,17 @@
     upstream: "Upstream",
     security: "Security",
   };
-
   let env = $derived(parseEnv(rawText));
+
   let rows = $derived(
     (meta ?? []).filter(
-      (e) => e && e.key && !e.hidden && !e.secret && !COVERED.has(e.key),
+      (e) =>
+        e &&
+        e.key &&
+        !e.hidden &&
+        !e.secret &&
+        !COVERED.has(e.key) &&
+        (!onlyGroups || onlyGroups.includes(e.group)),
     ),
   );
   let groups = $derived.by(() => {
@@ -123,6 +138,21 @@
     const v = val(key, entry);
     if (v === "") return (entry?.default ?? "true") !== "false";
     return v !== "false";
+  }
+  // Duration text-kind catalog keys: a key is a Go duration when its
+  // documented default parses as one (e.g. 30s, 5m, 168h), its description
+  // says so, or its name is temporal (TIMEOUT/TTL/IDLE/...). Catches the
+  // "0 = disabled" idle knobs whose default alone is not a duration;
+  // non-temporal text (CORS origin, file paths, URLs) stays a plain input.
+  const GO_DURATION_RE = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
+  const TEMPORAL_KEY_RE =
+    /(TIMEOUT|TTL|INTERVAL|IDLE|EVICT|RETENTION|WINDOW|HEARTBEAT|EXPIR|WAIT|DELAY|DRAIN|PERIOD|JITTER)/;
+  const DURATION_PRESETS = ["5s", "15s", "30s", "1m", "5m", "15m", "1h"];
+  function isDurationKey(entry) {
+    if (!entry || entry.kind !== "text") return false;
+    if (GO_DURATION_RE.test((entry.default ?? "").trim())) return true;
+    if (/go duration|duration/i.test(entry.description ?? "")) return true;
+    return TEMPORAL_KEY_RE.test(entry.key ?? "");
   }
   // Deep-link focus from cross-page jump links: a link stashes a catalog
   // key in sessionStorage, then routes here.
@@ -172,12 +202,7 @@
 </script>
 
 {#if !q || filtered.length > 0}
-  <SettingsCard
-    title={$tr("Advanced")}
-    description={$tr(
-      "Every remaining tunable with its decided default. Restart-only keys need a container restart; the rest apply on save.",
-    )}
-  >
+  <SettingsCard title={$tr(cardTitle)} description={$tr(cardDescription)}>
     {#snippet icon()}
       <SlidersHorizontal size={20} />
     {/snippet}
@@ -229,12 +254,9 @@
                 {/if}
                 {#if entry.restart_only}
                   <span
-                    class="text-[10px] px-1.5 py-0.5 rounded-[var(--fp-radius-sm)] border border-[var(--fp-warning)]/40 bg-[var(--fp-warning)]/10 text-[var(--fp-warning)] font-semibold uppercase tracking-wider shrink-0"
-                    >{$tr("restart")}</span
+                    class="text-[10px] text-[var(--fp-dim)] lowercase shrink-0"
+                    >{$tr("(needs restart)")}</span
                   >
-                {/if}
-                {#if sources[entry.key] === "db"}
-                  <DbBadge settingKey={entry.key} {onReset} />
                 {/if}
               {/snippet}
               {#snippet extra()}
@@ -242,6 +264,8 @@
                   settingKey={entry.key}
                   value={val(entry.key, entry)}
                   restartOnly={entry.restart_only}
+                  source={sources[entry.key]}
+                  {onReset}
                   {onSaved}
                 />
               {/snippet}
@@ -278,13 +302,19 @@
                   {/each}
                 </select>
               {:else if entry.kind === "int"}
-                <input
-                  type="number"
-                  class="fp-input fp-num"
+                <NumberStepper
                   value={val(entry.key, entry)}
-                  aria-label={entry.key}
+                  ariaLabel={entry.key}
                   placeholder={entry.default ?? ""}
-                  oninput={(e) => onField(entry.key, e.currentTarget.value)}
+                  oninput={(v) => onField(entry.key, v)}
+                />
+              {:else if isDurationKey(entry)}
+                <DurationPicker
+                  value={val(entry.key, entry)}
+                  presets={DURATION_PRESETS}
+                  ariaLabel={entry.key}
+                  placeholder={entry.default ?? ""}
+                  oninput={(v) => onField(entry.key, v)}
                 />
               {:else}
                 <input

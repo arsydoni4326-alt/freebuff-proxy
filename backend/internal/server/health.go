@@ -29,21 +29,15 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"ActiveRuns":           snap.ActiveRuns,
 			"Requests":             snap.Requests,
 			"Messages24h":          snap.Messages24h,
-			"DailyLimit":           snap.DailyLimit,
-			"UsagePct":             snap.UsagePct,
-			// Spend ledger (issue #87/#122): Pacific-day/week/month buckets
-			// plus the advisory MAX_SPEND_PER_DAY ceiling (SpendLimit/
-			// SpendPct, informational — the upstream $ ceilings are
-			// server-enforced) and the spend_limited refusal counter.
+			// Spend ledger: Pacific-day/week/month buckets plus the
+			// spend_limited refusal counter. The upstream $ ceilings are
+			// server-enforced; the ledger only records events.
 			"Spend24h":                  snap.Spend24h,
 			"SpendDay":                  snap.SpendDay,
 			"SpendWeek":                 snap.SpendWeek,
 			"SpendMonth":                snap.SpendMonth,
 			"SpendDayStart":             snap.SpendDayStart,
-			"SpendLimit":                snap.SpendLimit,
-			"SpendPct":                  snap.SpendPct,
 			"SpendLimited":              snap.SpendLimited,
-			"RiskLevel":                 snap.RiskLevel,
 			"country":                   snap.CountryCode,
 			"session_model":             snap.SessionModel,
 			"session_remaining_seconds": snap.SessionRemainingSeconds,
@@ -144,19 +138,22 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Circuit breaker state (Phase: Circuit Breaker Observability).
-	// TODO: Re-enable after implementing BreakerSnapshot method
-	// breakerSnap := s.pool.BreakerSnapshot()
+	breakerSnap := s.pool.BreakerSnapshot(cfg)
+	var breakerUntil any
+	if !breakerSnap.Until.IsZero() {
+		breakerUntil = breakerSnap.Until
+	}
 	circuitBreaker := map[string]any{
-		"enabled":                    false,
-		"open":                       false,
-		"failure_count":              0,
-		"failures_remaining":         0,
-		"cooldown_remaining_seconds": 0,
-		"until":                      nil,
+		"enabled":                    breakerSnap.Enabled,
+		"open":                       breakerSnap.Open,
+		"failure_count":              breakerSnap.FailureCount,
+		"failures_remaining":         breakerSnap.FailuresRemaining,
+		"cooldown_remaining_seconds": breakerSnap.CooldownRemainingSec,
+		"until":                      breakerUntil,
 		"config": map[string]any{
-			"failures_threshold": 0,
-			"window":             "0s",
-			"cooldown":           "0s",
+			"failures_threshold": breakerSnap.FailuresThreshold,
+			"window":             breakerSnap.Window,
+			"cooldown":           breakerSnap.Cooldown,
 		},
 	}
 
@@ -403,6 +400,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 // is inactive so dashboards with pre-provisioned queries get consistent data.
 func (s *Server) bridgeMetrics(sb *strings.Builder) {
 	now := time.Now()
+	cfg := s.cfg.Load()
 	bridgeSnaps := s.pool.BridgeSnapshot()
 
 	sb.WriteString("# HELP freebuff_proxy_bridge_entries_total Current bridge cache entries\n")
@@ -468,17 +466,16 @@ func (s *Server) bridgeMetrics(sb *strings.Builder) {
 	sb.WriteString("\n")
 
 	// Circuit breaker metrics (Phase: Circuit Breaker Observability).
-	// TODO: Re-enable after implementing BreakerSnapshot method
-	// breakerSnap := s.pool.BreakerSnapshot()
+	breakerSnap := s.pool.BreakerSnapshot(cfg)
 	openVal := 0
-	// if breakerSnap.Open {
-	// 	openVal = 1
-	// }
+	if breakerSnap.Open {
+		openVal = 1
+	}
 	sb.WriteString("# HELP freebuff_proxy_bridge_breaker_open 1 when the circuit breaker is blocking requests, 0 otherwise\n")
 	sb.WriteString("# TYPE freebuff_proxy_bridge_breaker_open gauge\n")
 	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_open %d\n\n", openVal)
 
 	sb.WriteString("# HELP freebuff_proxy_bridge_breaker_failures Current number of transient failures in the circuit breaker sliding window\n")
 	sb.WriteString("# TYPE freebuff_proxy_bridge_breaker_failures gauge\n")
-	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_failures %d\n\n", 0)
+	fmt.Fprintf(sb, "freebuff_proxy_bridge_breaker_failures %d\n\n", breakerSnap.FailureCount)
 }

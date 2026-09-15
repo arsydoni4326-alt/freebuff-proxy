@@ -281,12 +281,16 @@
               "window_start_utc"
             ],
             "type": "object"
+          },
+          "upstream_sha": {
+            "type": "string"
           }
         },
         "required": [
           "count",
           "notices",
-          "peak_hours"
+          "peak_hours",
+          "upstream_sha"
         ],
         "type": "object"
       },
@@ -789,6 +793,12 @@
           },
           "msg": {
             "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "window": {
+            "type": "string"
           }
         },
         "required": [
@@ -796,7 +806,9 @@
           "entries",
           "has_filter",
           "level",
-          "msg"
+          "msg",
+          "truncated",
+          "window"
         ],
         "type": "object"
       },
@@ -896,9 +908,6 @@
                 "requests_24h": {
                   "type": "integer"
                 },
-                "risk_level": {
-                  "type": "string"
-                },
                 "spend_day": {
                   "type": "integer"
                 },
@@ -912,7 +921,6 @@
               "required": [
                 "fingerprint_rotations",
                 "requests_24h",
-                "risk_level",
                 "spend_day",
                 "token",
                 "transient_retries"
@@ -1233,9 +1241,6 @@
                 "spend_day": {
                   "type": "number"
                 },
-                "spend_pct": {
-                  "type": "integer"
-                },
                 "status": {
                   "type": "string"
                 }
@@ -1249,7 +1254,6 @@
                 "requests",
                 "session_active",
                 "spend_day",
-                "spend_pct",
                 "status"
               ],
               "type": "object"
@@ -1270,9 +1274,6 @@
           },
           "is_default_admin_token": {
             "type": "boolean"
-          },
-          "max_messages_per_day": {
-            "type": "integer"
           },
           "mode": {
             "type": "string"
@@ -1327,9 +1328,6 @@
                 },
                 "cooldown_until": {
                   "type": "string"
-                },
-                "daily_limit": {
-                  "type": "integer"
                 },
                 "email": {
                   "type": "string"
@@ -1560,21 +1558,6 @@
                 "requests_per_day": {
                   "type": "integer"
                 },
-                "requests_per_day_limit": {
-                  "type": "integer"
-                },
-                "requests_per_day_reset_in": {
-                  "type": "integer"
-                },
-                "requests_per_minute": {
-                  "type": "integer"
-                },
-                "requests_per_minute_limit": {
-                  "type": "integer"
-                },
-                "risk_level": {
-                  "type": "string"
-                },
                 "session_status": {
                   "type": "string"
                 },
@@ -1641,16 +1624,12 @@
                 },
                 "transient_retries": {
                   "type": "integer"
-                },
-                "usage_pct": {
-                  "type": "integer"
                 }
               },
               "required": [
                 "active_runs",
                 "cooldown_active",
                 "cooldown_until",
-                "daily_limit",
                 "has_referral",
                 "has_standing",
                 "index",
@@ -1663,19 +1642,13 @@
                 "referral_sessions_left",
                 "requests",
                 "requests_per_day",
-                "requests_per_day_limit",
-                "requests_per_day_reset_in",
-                "requests_per_minute",
-                "requests_per_minute_limit",
-                "risk_level",
                 "session_status",
                 "standing_label",
                 "standing_level",
                 "standing_next_level",
                 "standing_next_level_at",
                 "standing_score",
-                "transient_retries",
-                "usage_pct"
+                "transient_retries"
               ],
               "type": "object"
             },
@@ -1767,7 +1740,6 @@
           "has_tokens",
           "in_bridge",
           "is_default_admin_token",
-          "max_messages_per_day",
           "mode",
           "model_count",
           "models",
@@ -2054,9 +2026,6 @@
                 "spend_day": {
                   "type": "number"
                 },
-                "spend_pct": {
-                  "type": "integer"
-                },
                 "status": {
                   "type": "string"
                 }
@@ -2070,7 +2039,6 @@
                 "requests",
                 "session_active",
                 "spend_day",
-                "spend_pct",
                 "status"
               ],
               "type": "object"
@@ -2078,15 +2046,6 @@
             "type": "array"
           },
           "bridge_tokens": {
-            "type": "integer"
-          },
-          "burst_balance_enabled": {
-            "type": "boolean"
-          },
-          "chat_max_inflight_metered": {
-            "type": "integer"
-          },
-          "chat_max_inflight_unmetered": {
             "type": "integer"
           },
           "has_tokens": {
@@ -2150,9 +2109,6 @@
         },
         "required": [
           "bridge_tokens",
-          "burst_balance_enabled",
-          "chat_max_inflight_metered",
-          "chat_max_inflight_unmetered",
           "has_tokens",
           "in_bridge",
           "maturity_dry_run",
@@ -2173,14 +2129,23 @@
           "traces": {
             "items": {
               "properties": {
+                "cached": {
+                  "type": "integer"
+                },
                 "error": {
                   "type": "string"
+                },
+                "input": {
+                  "type": "integer"
                 },
                 "model": {
                   "type": "string"
                 },
                 "ms": {
                   "type": "string"
+                },
+                "output": {
+                  "type": "integer"
                 },
                 "phases": {
                   "items": {
@@ -2200,6 +2165,15 @@
                   },
                   "type": "array"
                 },
+                "rate_tokens": {
+                  "type": "string"
+                },
+                "reasoning": {
+                  "type": "integer"
+                },
+                "req_id": {
+                  "type": "string"
+                },
                 "status": {
                   "type": "string"
                 },
@@ -2208,6 +2182,12 @@
                 },
                 "token": {
                   "type": "string"
+                },
+                "total": {
+                  "type": "integer"
+                },
+                "ts_ms": {
+                  "type": "integer"
                 }
               },
               "required": [
@@ -2226,6 +2206,92 @@
         "required": [
           "enabled",
           "traces"
+        ],
+        "type": "object"
+      },
+      "usageData": {
+        "properties": {
+          "entries": {
+            "items": {
+              "properties": {
+                "cached": {
+                  "type": "integer"
+                },
+                "input": {
+                  "type": "integer"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "output": {
+                  "type": "integer"
+                },
+                "reasoning": {
+                  "type": "integer"
+                },
+                "req_id": {
+                  "type": "string"
+                },
+                "total": {
+                  "type": "integer"
+                },
+                "ts_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "cached",
+                "input",
+                "model",
+                "ok",
+                "output",
+                "reasoning",
+                "req_id",
+                "total",
+                "ts_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "range": {
+            "type": "string"
+          },
+          "totals": {
+            "properties": {
+              "cached": {
+                "type": "integer"
+              },
+              "cost": {
+                "type": "number"
+              },
+              "input": {
+                "type": "integer"
+              },
+              "output": {
+                "type": "integer"
+              },
+              "requests": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "cached",
+              "cost",
+              "input",
+              "output",
+              "requests"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "entries",
+          "range",
+          "totals"
         ],
         "type": "object"
       }
@@ -2458,6 +2524,15 @@
             "description": "Message substring filter",
             "in": "query",
             "name": "msg",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "View window override (Go duration, clamped to 1m..168h)",
+            "in": "query",
+            "name": "window",
             "required": false,
             "schema": {
               "type": "string"
@@ -3099,6 +3174,43 @@
           }
         ],
         "summary": "Recent chat traces",
+        "tags": [
+          "views"
+        ]
+      }
+    },
+    "/admin/api/usage": {
+      "get": {
+        "operationId": "getUsage",
+        "parameters": [
+          {
+            "description": "today (default) | 24h | 7d | 30d | 60d",
+            "in": "query",
+            "name": "range",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/usageData"
+                }
+              }
+            },
+            "description": "Token usage log: range totals plus per-entry detail (9Router-style overview)"
+          }
+        },
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "summary": "Token usage log: range totals plus per-entry detail (9Router-style overview)",
         "tags": [
           "views"
         ]

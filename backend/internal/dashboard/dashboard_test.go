@@ -707,9 +707,6 @@ func TestOverviewPageCooldownCard(t *testing.T) {
 	if token["cooldown_active"] != true {
 		t.Errorf("cooldown_active = %v, want true", token["cooldown_active"])
 	}
-	if token["risk_level"] != "high" {
-		t.Errorf("risk_level = %v, want high", token["risk_level"])
-	}
 }
 
 // TestOverviewPageHasTokens pins the #200 regression: df7a16a dropped the
@@ -826,7 +823,7 @@ func TestConfigPageEnvAbsentTemplate(t *testing.T) {
 // TestConfigPageCRLFVerbatim pins the editor fidelity JSON.
 func TestConfigPageCRLFVerbatim(t *testing.T) {
 	t.Chdir(t.TempDir())
-	crlf := "SAFE_MODE=true\r\nMAX_MESSAGES_PER_DAY=7\r\n"
+	crlf := "SAFE_MODE=true\r\nTRANSIENT_RETRIES=3\r\n"
 	if err := os.WriteFile(".env", []byte(crlf), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -841,7 +838,7 @@ func TestConfigPageCRLFVerbatim(t *testing.T) {
 		t.Fatalf("response is not valid JSON: %v", err)
 	}
 	envContent, _ := data["env_content"].(string)
-	if !strings.Contains(envContent, "SAFE_MODE=true\r\nMAX_MESSAGES_PER_DAY=7\r\n") {
+	if !strings.Contains(envContent, "SAFE_MODE=true\r\nTRANSIENT_RETRIES=3\r\n") {
 		t.Errorf("config page did not render CRLF content verbatim in:\n%s", envContent)
 	}
 }

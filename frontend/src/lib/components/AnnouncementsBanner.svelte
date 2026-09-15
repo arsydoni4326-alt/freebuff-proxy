@@ -115,32 +115,34 @@
     role="region"
     aria-label={$tr("Upstream Announcements")}
   >
-    <!-- Header bar -->
+    <!-- Header bar: stacks on mobile so the peak badge drops to its own line -->
     <div
-      class="flex items-center justify-between px-3.5 py-2.5 bg-[var(--fp-surface-2)]/60 border-b border-[var(--fp-border)]/50 gap-2"
+      class="flex flex-col sm:flex-row sm:items-center sm:justify-between px-3.5 py-2.5 bg-[var(--fp-surface-2)]/60 border-b border-[var(--fp-border)]/50 gap-2"
     >
-      <div class="flex items-center gap-2 min-w-0">
+      <div class="flex items-center gap-2 min-w-0 w-full sm:w-auto sm:flex-1">
         <span
           class="flex items-center justify-center w-5 h-5 rounded-sm bg-[var(--fp-accent)]/15 text-[var(--fp-accent)] shrink-0"
         >
           <Megaphone size={13} />
         </span>
         <span
-          class="text-xs font-semibold uppercase tracking-wider text-[var(--fp-muted)]"
+          class="text-xs font-semibold uppercase tracking-wider text-[var(--fp-muted)] min-w-0 truncate"
         >
           {$tr("Upstream Notices & Broadcasts")}
         </span>
         <span
-          class="text-[10px] px-1.5 py-0.2 rounded-full font-mono font-medium bg-[var(--fp-accent)]/10 text-[var(--fp-accent)]"
+          class="text-[10px] px-1.5 py-0.2 rounded-full font-mono font-medium bg-[var(--fp-accent)]/10 text-[var(--fp-accent)] shrink-0"
         >
           {notices.length}
         </span>
       </div>
 
-      <div class="flex items-center gap-1 shrink-0">
+      <div
+        class="flex items-center gap-1 min-w-0 max-w-full w-full sm:w-auto sm:justify-end"
+      >
         {#if peakHours}
           <div
-            class="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono {peakHours.is_peak
+            class="flex min-w-0 w-fit max-w-full items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono break-words {peakHours.is_peak
               ? 'bg-[var(--fp-warning)]/15 text-[var(--fp-warning)] border border-[var(--fp-warning)]/30'
               : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}"
             title={peakHours.is_peak
@@ -153,8 +155,8 @@
                   { local: peakLocal() },
                 )}
           >
-            <Clock size={11} />
-            <span>
+            <Clock size={11} class="shrink-0" />
+            <span class="min-w-0">
               {peakHours.is_peak
                 ? $tr("Peak ends {local} ({in} left)", {
                     local: peakLocal(),
@@ -193,14 +195,14 @@
           </div>
         {:else}
           <div
-            class="p-3 rounded border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 {notice.tone ===
+            class="p-3 rounded border text-xs flex flex-row items-start justify-between gap-2 sm:items-center sm:gap-3 {notice.tone ===
             'accent'
               ? 'bg-[var(--fp-accent)]/10 border-[var(--fp-accent)]/25'
               : notice.tone === 'warning'
                 ? 'bg-[var(--fp-warning)]/10 border-[var(--fp-warning)]/25'
                 : 'bg-[var(--fp-surface-2)]/70 border-[var(--fp-border)]'}"
           >
-            <div class="flex items-start gap-2.5 min-w-0">
+            <div class="flex items-start gap-2.5 min-w-0 flex-1">
               <div class="shrink-0 mt-0.5">
                 {#if notice.type === "peak_hours"}
                   <Clock size={15} class="text-[var(--fp-warning)]" />
@@ -238,7 +240,7 @@
             </div>
 
             <div
-              class="flex items-center gap-1.5 shrink-0 self-end sm:self-center"
+              class="flex items-center gap-1.5 shrink-0 self-start sm:self-center"
             >
               {#if notice.url}
                 <a
