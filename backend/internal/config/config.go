@@ -60,25 +60,22 @@ type Config struct {
 	LogAccess         bool   // true = per-request access log lines (LOG_ACCESS; default true, an empty .env line keeps it enabled)
 	// LogRingSize is the bounded in-memory log ring capacity behind the
 	// dashboard log viewer (LOG_RING_SIZE; default 500, validated 50..5000).
-	LogRingSize       int
-	MaxMessagesPerDay int // 0 = unlimited: per-token cap on successful chats per 24h
-	// MaxRequestsPerDay is the per-token cap on successful chat requests in
-	// the current Pacific day (MAX_REQUESTS_PER_DAY; default 1500, 0 =
-	// unlimited). Enforced in acquire like the daily message cap; resets at
-	// Pacific midnight — the same instant upstream rolls its daily quota
-	// windows — so a locked token unlocks in sync with the official reset.
-	MaxRequestsPerDay int
-	// MaxRequestsPerMinute is the per-token cap on ADMITTED chat requests in
-	// a rolling 60s window (MAX_REQUESTS_PER_MINUTE; default 30, 0 =
-	// unlimited). Admission counting (not success-only) throttles the exact
-	// request rate upstream observes — including retries that later fail —
-	// keeping each account under abuse-detection burst patterns.
-	MaxRequestsPerMinute int
-	// BridgeDailyLimit is the global daily chat cap across ALL bridge-mode
-	// entries (BRIDGE_DAILY_LIMIT; 0 = unlimited). Enforced in AcquireBridge
-	// before the per-entry check so a flood of distinct client tokens cannot
-	// collectively exceed the operator's budget.
-	BridgeDailyLimit int
+
+	LogRingSize int
+	// LogConsoleWindow is the dashboard log console's default VIEW window
+	// (LOG_CONSOLE_WINDOW; default 1h). It only bounds which rows the console
+	// query asks for — it never changes what the spill stores, so shrinking
+	// it hides nothing permanently. A non-positive value falls back to the
+	// default at load.
+	LogConsoleWindow time.Duration
+	// LogTableRetention is the storage retention age applied to log_entries
+	// AND request_records by the history purge (LOG_TABLE_RETENTION; default
+	// 168h = 7d). Quota and maturity history keep their own 90d retention.
+	// A non-positive value falls back to the default at load: a zero age
+	// would delete every history row on the next purge tick.
+	LogTableRetention   time.Duration
+	IdleRotationTimeout time.Duration // 0 = disabled: pause rotation/refresh after this idle period
+	SessionIdleEnd      time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
 	// BridgeRateLimitPerToken is the per-client-token rate limit in requests
 	// per second (BRIDGE_RATE_LIMIT_PER_TOKEN; 0 = unlimited). Independent
 	// of the per-IP rate limiter: each bridge token's requests are throttled
@@ -103,20 +100,7 @@ type Config struct {
 	// (BRIDGE_CIRCUIT_BREAKER_COOLDOWN default 10s). Disabled when
 	// BridgeCircuitBreakerFailures is 0.
 	BridgeCircuitBreakerCooldown time.Duration
-	MaxSpendPerDay               int64         // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $1 elevated [SG/CN since 2026-09, was $5] / $0.50 restricted, plus $7 full / $3 limited paid floor for flagged email/egress reasons since 6341ef3, compose by minimum, server-enforced; restricted reasons take a 2x HARD mid-session cut at FREEBUFF_SPEND_CEILING_HARD_MULTIPLIER) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
-	IdleRotationTimeout          time.Duration // 0 = disabled: pause rotation/refresh after this idle period
-	SessionIdleEnd               time.Duration // 0 = disabled: end upstream sessions after this idle period (SESSION_IDLE_END)
-	SafeMode                     bool          // true = apply recommended anti-ban safe defaults
-	ModelsHideUnavailable        bool          // true = /v1/models prunes models marked unavailable (region/quota/lock)
-	// RiskMediumThreshold is the ban-risk score at or above which the
-	// passive risk engine classifies the verdict as "medium" (RISK_THRESHOLD_MEDIUM;
-	// default 30).  The score range is 0–100; medium must be strictly less
-	// than RiskHighThreshold.
-	RiskMediumThreshold int
-	// RiskHighThreshold is the ban-risk score at or above which the
-	// passive risk engine classifies the verdict as "high" (RISK_THRESHOLD_HIGH;
-	// default 40).  Must be strictly greater than RiskMediumThreshold.
-	RiskHighThreshold int
+	MaxSpendPerDay               int64 // 0 = unlimited: ADVISORY per-token Pacific-day spend ceiling in ledger units (tokens from upstream usage blocks; issue #122). Never blocks — the upstream $ ceilings ($15 full / $5 limited / $1 elevated [SG/CN since 2026-09, was $5] / $0.50 restricted, plus $7 full / $3 limited paid floor for flagged email/egress reasons since 6341ef3, compose by minimum, server-enforced; restricted reasons take a 2x HARD mid-session cut at FREEBUFF_SPEND_CEILING_HARD_MULTIPLIER) are the real gate. Surfaced as SpendLimit/SpendPct on /healthz so operator comparisons align with the Pacific-midnight reset.
 	// BridgeEnabled gates bridge-mode traffic when AUTH_TOKENS are configured
 	// (BRIDGE_ENABLED; default true). When enabled alongside a token pool the
 	// proxy runs in hybrid mode: a request whose credential matches an
@@ -127,7 +111,9 @@ type Config struct {
 	// BridgeIdleEvict is how long a bridge entry may sit unused before the
 	// maintain loop FINISHes its runs, ends its upstream session, and drops it
 	// from the cache (BRIDGE_IDLE_EVICT; default 72h, sliding TTL).
-	BridgeIdleEvict time.Duration
+	BridgeIdleEvict       time.Duration
+	SafeMode              bool // true = apply recommended anti-ban safe defaults
+	ModelsHideUnavailable bool // true = /v1/models prunes models marked unavailable (region/quota/lock)
 	// ModelsAllow is the operator-set model allowlist (MODELS_ALLOW,
 	// comma-separated). When non-empty, /v1/models lists only the allowed
 	// ids and chat/messages/responses requests whose RESOLVED model (after
@@ -150,21 +136,6 @@ type Config struct {
 	TransientRetries int               // max additional attempts after a transient transport failure (0 = disabled; default 1)
 	SessionPersist   bool              // true = persist session state to disk so restart resumes unexpired sessions (SESSION_PERSIST)
 	SessionStateFile string            // path to the session state file (SESSION_STATE_FILE; default .freebuff-session-state.json)
-	// SessionCreateMaxParallelGlobal / SessionCreateMaxParallelPerModel cap
-	// concurrent in-flight session admissions (issue #86): the pool's create
-	// gate returns 503 when a cap is hit instead of hammering upstream.
-	// SESSION_CREATE_MAX_PARALLEL_GLOBAL default 128; _PER_MODEL default 32.
-	SessionCreateMaxParallelGlobal   int
-	SessionCreateMaxParallelPerModel int
-	// ChatMaxInflightMetered / ChatMaxInflightUnmetered cap concurrent
-	// in-flight chat requests per token, split by cost class (chat burst
-	// queue): metered models (a priced Freebucks row) default 1, unmetered
-	// models (no price row) default 3. The pool's chat gate queues excess
-	// admissions instead of hammering upstream. 0 = unlimited, mirroring
-	// the SESSION_CREATE_MAX_PARALLEL convention. Live-apply (atomic
-	// pointer swap, no pool rebuild).
-	ChatMaxInflightMetered   int
-	ChatMaxInflightUnmetered int
 	// RunFinishQueueSize is the bounded deferred-FINISH worker queue size
 	// (issue #90, RUN_FINISH_QUEUE_SIZE default 64): rotated/drained runs
 	// are FINISHed by a background worker; when the queue is full the caller
@@ -331,25 +302,6 @@ type Config struct {
 	// message content for clients that do not render a reasoning channel
 	// (REASONING_IN_CONTENT; default "" = off). See CompressPrompt.
 	ReasoningInContent string
-	// BurstBalanceEnabled opts into per-model burst spreading (ADR-0023,
-	// BURST_BALANCE_ENABLED; default true): while one model's sliding-window
-	// admissions exceed BURST_THRESHOLD, that model's selection switches to
-	// least_used across at most BURST_MAX_TOKENS accounts. False restores
-	// exact drain-only selection. Live-apply (atomic pointer swap, no pool
-	// rebuild).
-	BurstBalanceEnabled bool
-	// BurstWindow is the sliding window for counting same-model admissions
-	// toward BURST_THRESHOLD (BURST_WINDOW; default 1m). Zero = unset (the
-	// pool normalizes to its default); negative is rejected in Validate.
-	BurstWindow time.Duration
-	// BurstThreshold is the same-model admission count inside BurstWindow
-	// that trips spreading for that model (BURST_THRESHOLD; default 20).
-	// Zero = unset; negative is rejected in Validate.
-	BurstThreshold int
-	// BurstMaxTokens caps the distinct accounts one model's burst spreads
-	// across (BURST_MAX_TOKENS; default 2, minimum 2 — enforced in
-	// Validate). Zero = unset.
-	BurstMaxTokens int
 	// RoutingSmart is the master switch for smart pool routing
 	// (ROUTING_SMART; default true): per-token live-turn slot semaphore
 	// with a FIFO waiter queue plus the unified scorer over eligible
@@ -357,12 +309,13 @@ type Config struct {
 	// Live-apply (atomic pointer swap, no pool rebuild).
 	RoutingSmart bool
 	// TokenMaxConcurrent caps concurrent live turns per pooled token
-	// (TOKEN_MAX_CONCURRENT; default 2, floor 1): a token leases a new
-	// turn only while fewer than this many are live on that account, so
-	// one account never fans out past the cap no matter how many models
-	// share it. Values below 1 floor to 1 (a zero live-turn cap could
-	// never serve). The strictest anti-ban posture is 1 (bunker: fully
-	// sequential turns per account). Live-apply (read per Acquire).
+	// (TOKEN_MAX_CONCURRENT; default 2, the approved anti-ban pacing): a
+	// token leases a new turn only while fewer than this many are live on
+	// that account, so one account never fans out past the cap no matter
+	// how many models share it. 0 = unlimited (no slot gating at all, for
+	// full operator control); negative values floor to 0. The strictest
+	// anti-ban posture is 1 (bunker: fully sequential turns per account).
+	// Live-apply (read per Acquire).
 	TokenMaxConcurrent int
 	// QueueWait bounds how long one Acquire parks on a full token's FIFO
 	// slot queue before failing over (QUEUE_WAIT; default 30s).
@@ -379,6 +332,14 @@ type Config struct {
 
 // DefaultAdminToken is the default dashboard admin password ("123456") used when ADMIN_TOKEN is unconfigured or empty.
 const DefaultAdminToken = "123456"
+
+// Defaults for the dashboard log surface. DefaultLogConsoleWindow bounds the
+// console's default view only (nothing is deleted); DefaultLogTableRetention
+// is the age at which log_entries and request_records rows are purged.
+const (
+	DefaultLogConsoleWindow  = time.Hour
+	DefaultLogTableRetention = 168 * time.Hour
+)
 
 // IsDefaultAdminToken reports whether AdminToken matches the factory default credentials ("123456").
 func (c *Config) IsDefaultAdminToken() bool {
@@ -417,7 +378,6 @@ func (c Config) EffectiveMode() string {
 		return "pooled"
 	}
 }
-
 
 // EnvFileCandidates returns the ordered candidate paths for the .env file
 // (issue #39). The working directory wins (./.env), matching the historic

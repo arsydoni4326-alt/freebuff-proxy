@@ -40,15 +40,10 @@ import (
 	"freebuff-proxy/backend/internal/upstream"
 )
 
-// usageWindow is the rolling window for the per-token daily message cap
-// (MAX_MESSAGES_PER_DAY): a token may send at most N successful chat
-// requests per 24h of usage history.
+// usageWindow is the rolling window of per-token successful chat history:
+// it feeds the dashboard's messages_24h display. No local cap reads it —
+// upstream quota/429 is the brake.
 const usageWindow = 24 * time.Hour
-
-// rpmWindow is the rolling window for the per-token per-minute request cap
-// (MAX_REQUESTS_PER_MINUTE): a token may admit at most N chat requests per
-// 60s of admission history.
-const rpmWindow = 60 * time.Second
 
 // shutdownTimeout bounds each token's Shutdown during Pool.Shutdown when the
 // caller's context carries no earlier deadline.
@@ -78,16 +73,12 @@ type Lease struct {
 	// reused by a later AddToken), and a bounds-checked release would leak
 	// the run's inflight or hit an unrelated manager.
 	entry *tokenEntry
-	// chat is the per-(token,model) in-flight chat slot held for this lease
-	// (burst queue). Set at grant time; released through the lease by
-	// LeaseRelease/LeaseAbandon via the entry pointer, never by index. Nil
-	// when the caps are off (unlimited) or the lease is synthetic.
-	chat *chatPermit
-	// routeSlot is the smart-routing per-token live-turn slot held for
-	// this lease (route_smart.go, TOKEN_MAX_CONCURRENT). Set at grant
-	// time on the smart path only; released through the lease by
-	// LeaseRelease/LeaseAbandon. Nil on the legacy path (ROUTING_SMART
-	// off), when the caps are off, or for synthetic leases.
+	// routeSlot is the smart-routing live-turn slot held for this lease
+	// (route_smart.go, TOKEN_MAX_CONCURRENT). Set at grant time on the
+	// smart path only, for pooled AND bridge leases; released through the
+	// lease by LeaseRelease/LeaseAbandon. Nil on the legacy path
+	// (ROUTING_SMART off), when the cap is unlimited, or for synthetic
+	// leases.
 	routeSlot *routeSlotPermit
 	// AcquiredAt is when this lease was handed out (per acquire attempt,
 	// not per run — a chat retry re-acquires and gets a fresh timestamp).
@@ -118,21 +109,11 @@ type TokenSnapshot struct {
 	SessionExpiresAt time.Time `json:"session_expires_at,omitempty"`
 	ActiveRuns       int
 	Requests         int
-	Messages24h      int // successful chats in the last 24h (MAX_MESSAGES_PER_DAY usage)
-	DailyLimit       int // configured MAX_MESSAGES_PER_DAY (0 = unlimited)
-	UsagePct         int // percentage of daily limit used (0 when unlimited)
-	// RequestsPerMinute / RequestsPerDay are the local per-token request
-	// counters (MAX_REQUESTS_PER_MINUTE: admitted chats in the rolling 60s
-	// window; MAX_REQUESTS_PER_DAY: successful chats in the current Pacific
-	// day, rolling at Pacific midnight). The ...Limit fields carry the
-	// configured caps (0 = unlimited) and RequestsPerDayResetIn the time
-	// until the next Pacific midnight (the official daily reset instant).
-	RequestsPerMinute      int           `json:"requests_per_minute"`
-	RequestsPerDay         int           `json:"requests_per_day"`
-	RequestsPerMinuteLimit int           `json:"requests_per_minute_limit"`
-	RequestsPerDayLimit    int           `json:"requests_per_day_limit"`
-	RequestsPerDayResetIn  time.Duration `json:"requests_per_day_reset_in"`
-	RiskLevel              string        // "low", "moderate", "high", "critical" account safety indicator (#6)
+	Messages24h      int // successful chats in the last 24h (dashboard display; upstream quota/429 is the enforcement)
+	// RequestsPerDay is the per-token successful-chat count in the current
+	// Pacific day, rolling at Pacific midnight. Read by the dashboard
+	// per-day display and the maturity client-active skip.
+	RequestsPerDay int `json:"requests_per_day"`
 	// Spend24h / SpendDay / SpendWeek / SpendMonth are the local per-token
 	// spend ledger (issue #87/#122): tokens spent in the rolling 24h window
 	// and the current Pacific day/week/month buckets (with rollover —
@@ -145,15 +126,9 @@ type TokenSnapshot struct {
 	SpendDayStart   time.Time
 	SpendWeekStart  time.Time
 	SpendMonthStart time.Time
-	// SpendLimit is the configured MAX_SPEND_PER_DAY ADVISORY ceiling in
-	// ledger units (0 = unlimited). Never enforced: the upstream $ ceilings
-	// ($15 full / $5 limited / $0.50 restricted, server-enforced, issue
-	// #122) are the real gate and the proxy cannot know the account's
-	// restricted cohort. SpendPct is the Pacific-day bucket's percentage of
-	// SpendLimit (0 when unlimited). SpendLimited counts upstream
-	// spend_limited refusals observed for this token since process start.
-	SpendLimit   int64
-	SpendPct     int
+	// SpendLimited counts upstream spend_limited refusals observed for this
+	// token since process start. The upstream $ ceilings are server-enforced;
+	// the ledger only records the events.
 	SpendLimited int
 	// CountryCode / CountryBlockReason are the token's last known upstream
 	// region-block state. CountryBlockReason is non-empty when the account
@@ -301,22 +276,18 @@ type Pool struct {
 	once   sync.Once
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	// probeCtx roots every detached probe round (upstream issue #484
+	// heritage): rounds run off the maintain goroutine but stay wg-tracked,
+	// and Shutdown cancels this context (then wg-waits), so a wedged probe
+	// can neither outlive the pool nor hold Shutdown open past the round
+	// deadline.
+	probeCtx    context.Context
+	probeCancel context.CancelFunc
 	// draining is set at the START of Shutdown: request-path admissions are
 	// refused from then on, so no session POST or run START can land after
 	// the shutdown drain has released the upstream sessions (post-drain
 	// re-admission gate). Never cleared — Shutdown is terminal.
 	draining atomic.Bool
-
-	// createGate bounds concurrent session admissions (issue #86): per-model
-	// and global in-flight create counters with wait-or-503, wired from
-	// SESSION_CREATE_MAX_PARALLEL_GLOBAL/PER_MODEL.
-	gate *createGate
-	// chatGate bounds concurrent in-flight chat leases per (token, model)
-	// lane (burst queue): per-lane in-flight counters with wait-or-503,
-	// wired from CHAT_MAX_INFLIGHT_METERED/UNMETERED. Caps ride the
-	// per-request config load, so the gate stores no limits and needs no
-	// reload wiring.
-	chatGate *chatGate
 
 	// Idle rotation (IDLE_ROTATION_TIMEOUT): last successful Acquire and
 	// whether the maintain loop already FINISHed all runs for the current
@@ -347,11 +318,6 @@ type Pool struct {
 	// arrive simultaneously.
 	bridgeCreateGate chan struct{}
 
-	// bridgeDailyUsage tracks the total number of successful chats across
-	// ALL bridge entries for the BRIDGE_DAILY_LIMIT global cap.
-	// Guarded by bridgeMu.
-	bridgeDailyUsage int
-
 	// Bridge circuit breaker (BRIDGE_CIRCUIT_BREAKER_*): protects a
 	// batch-down upstream from being hammered by bridge admission. When
 	// configured, a burst of transient upstream 5xx/network failures within
@@ -362,16 +328,10 @@ type Pool struct {
 	// re-closes (zero = closed). All guarded by bridgeMu. Only genuine
 	// transient outages (UpstreamError with Retryable=true) trip it —
 	// classified errors (auth/rate-limit/ban/country/ip_capped) never do.
+	// (Upstream removed the global BRIDGE_DAILY_LIMIT counter and its
+	// eviction survivors in #506/#510 — the breaker stays our guard.)
 	breakerFailures []time.Time
 	breakerUntil    time.Time
-
-	// bridgeSurvivors preserves the 24h-window usage of evicted bridge
-	// entries so an eviction does not reset an active client's contribution
-	// to the global BRIDGE_DAILY_LIMIT between maintain recomputes
-	// (review 2026-08-31 P3). Bounded; survivors expire after one usage
-	// window. Guarded by bridgeMu. Type and helpers live in
-	// bridge_cache.go.
-	bridgeSurvivors []bridgeSurvivor
 
 	// unfit is the per-(egress, model) unfit registry (issue #74): models
 	// refused upstream with limited_ip on this egress are marked unfit for
@@ -394,20 +354,20 @@ type Pool struct {
 	// on different tokens for the same model). Guarded by admissionsMu.
 	admissionsMu sync.Mutex
 	admissions   map[string]int
-	// Burst balance (ADR-0023, opt-in): per-model sliding-window admission
-	// timestamps plus the engaged-episode flags behind one mutex. In-memory
-	// only (a restart starts un-tripped); pruned on the maintain tick.
-	// Guarded by burstMu; nil maps read as empty and are allocated on the
-	// first recorded admission.
-	burstMu   sync.Mutex
-	burstHits map[string][]burstHit
-	burstOn   map[string]bool
 
 	// lastBulkProbe is the pool-scoped timestamp of the last bulk probe
 	// pass (manual Probe-all button or stale visit auto-probe, ADR-0025).
 	// In-memory only (a restart re-probes on the next stale visit); the
 	// slot is claimed before probing so concurrent tabs share one pass.
 	// Guarded by bulkProbeMu.
+	// maturityBackoffUntil is the pool-scoped 429 backoff for the nightly
+	// streak-maintenance run: a rate-limited touch aborts the walk and
+	// pauses further touches until this instant. In-memory only (a restart
+	// clears it; the touchDay/todayUsed idempotency still prevents
+	// double-touches). Guarded by maturityBackoffMu.
+	maturityBackoffMu    sync.Mutex
+	maturityBackoffUntil time.Time
+
 	bulkProbeMu   sync.Mutex
 	lastBulkProbe time.Time
 
@@ -463,9 +423,9 @@ type Pool struct {
 	// token (TOKEN_HEALTH_PROBES). Surfaced in /healthz and dashboard.
 	probeResults *probeState
 	// Runtime persistence (pool_persist.go, DB-unified-storage):
-	// write-through cache of the allowlisted counters (ledger counters,
-	// admissions counts, bridge daily usage + survivors, burst hits)
-	// through the PoolPersist interface. nil disables (in-memory only).
+	// write-through cache of the allowlisted counters (usage and Pacific-day
+	// request ledgers, session spend buckets, admissions counts) through
+	// the PoolPersist interface. nil disables (in-memory only).
 	// persistDirty is set lock-free on every mutation; the maintain tick
 	// plus a best-effort Shutdown pass flush it in the background, so the
 	// request hot path never blocks on the store.
@@ -477,15 +437,16 @@ type Pool struct {
 	randMu  sync.Mutex
 	randGen *rand.Rand
 
-	// Smart routing state (route_smart.go, step 1): per-token live-turn
-	// slot semaphores with FIFO waiter queues (routeSlots, keyed by entry
-	// pointer so dashboard reorders never merge lanes) plus the
-	// consecutive-turn anti-clump cursor (routePrev). Guarded by routeMu.
-	// In-memory only: a restart resets every counter to zero (same
-	// discipline as the probe scheduler's transient flags) — no
+	// Smart routing state (route_smart.go): per-lane live-turn slot
+	// semaphores with FIFO waiter queues (routeSlots, keyed by the lane's
+	// entry pointer — *tokenEntry pooled, *bridgeEntry bridge — so
+	// dashboard reorders and concurrent clients never merge lanes) plus
+	// the consecutive-turn anti-clump cursor (routePrev). Guarded by
+	// routeMu. In-memory only: a restart resets every counter to zero
+	// (same discipline as the probe scheduler's transient flags) — no
 	// pool_state rows, no SQL.
 	routeMu    sync.Mutex
-	routeSlots map[*tokenEntry]*routeSlotState
+	routeSlots map[any]*routeSlotState
 	routePrev  *tokenEntry
 }
 
@@ -729,10 +690,9 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState(), burstHits: make(map[string][]burstHit), burstOn: make(map[string]bool)}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState()}
+	p.probeCtx, p.probeCancel = context.WithCancel(context.Background())
 	p.cfg.Store(cfg)
-	p.gate = newCreateGate(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
-	p.chatGate = newChatGate()
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
 		if sessions[i] == nil || clients[i] == nil {
@@ -773,11 +733,8 @@ func runOptions(cfg *config.Config) runs.Options {
 func (p *Pool) SetConfig(cfg *config.Config) {
 	p.cfg.Store(cfg)
 
-	// Runtime-adjustable knobs: the create gate caps (#86) and the session
-	// re-admit lead / probe cache TTL (#99/#60) follow config reloads.
-	if p.gate != nil {
-		p.gate.setLimits(cfg.SessionCreateMaxParallelGlobal, cfg.SessionCreateMaxParallelPerModel)
-	}
+	// Runtime-adjustable knobs: the session re-admit lead / probe cache TTL
+	// (#99/#60) follow config reloads.
 	toks := p.roster.Load()
 	for _, tok := range *toks {
 		tok.session.SetReAdmitLead(cfg.SessionReAdmitLead)
@@ -1049,6 +1006,7 @@ type ProbeResult struct {
 	Error    string
 	ProbedAt time.Time
 }
+
 // MaturityStore persists per-token maturity automation blobs across
 // restarts. Keyed by the SHA-256 hex of the token value: raw tokens never
 // cross this boundary. stateJSON is the opaque automation blob
@@ -1085,7 +1043,7 @@ func (p *Pool) saveMaturity(idx int, tok *tokenEntry) {
 		return
 	}
 	ms := p.maturityCopy(tok)
-	if !ms.enabled && ms.lastAction == "" && ms.lastResult == "" && ms.releasedTarget <= 0 && ms.touchModel == "" {
+	if !ms.enabled && ms.lastAction == "" && ms.lastResult == "" && ms.touchModel == "" {
 		return
 	}
 	stateJSON, err := ms.marshalMaturity()
@@ -1109,8 +1067,8 @@ func (p *Pool) saveMaturity(idx int, tok *tokenEntry) {
 // RestoreMaturity loads persisted automation state into the roster (boot
 // path; the owner calls it once after SetMaturityStore). Tokens with no row
 // stay never-enrolled; corrupt rows warn and stay never-enrolled (never
-// fatal: automation must not block boot). Re-enabled warming tokens
-// re-lock out of rotation, mirroring SetMaturity.
+// fatal: automation must not block boot). Enrollment never locks: a
+// restored warming token stays leasable.
 func (p *Pool) RestoreMaturity() error {
 	p.maturityStoreMu.Lock()
 	st := p.maturityStore
@@ -1146,30 +1104,7 @@ func (p *Pool) RestoreMaturity() error {
 				tok.SetStreak(&si)
 			}
 		}
-		if ms.enabled {
-			tok.locked.Store(true)
-		}
 	}
-	return nil
-}
-
-// ClearMaturityWarn resets one token's non-advance warning (dashboard Reset
-// warning lever): warn + day counters drop and the daily loop re-arms, while
-// config (enabled/target/mode/touch model) and streak evidence stay
-// untouched. Idempotent: clearing a token with no warning succeeds.
-func (p *Pool) ClearMaturityWarn(token int) error {
-	toks := p.roster.Load()
-	if toks == nil || token < 0 || token >= len(*toks) {
-		return fmt.Errorf("pool: token %d out of range", token)
-	}
-	tok := (*toks)[token]
-	tok.maturityMu.Lock()
-	tok.maturity.warn = false
-	tok.maturity.noAdvanceDays = 0
-	tok.maturity.lastNoAdvanceDay = ""
-	tok.maturityMu.Unlock()
-	p.saveMaturity(token, tok)
-	p.emitMaturity(token, "warn-reset", "warning cleared by operator")
 	return nil
 }
 
@@ -1196,17 +1131,13 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 		return nil, errors.New("pool: chat: invalid lease")
 	}
 	rc, err := t.client.ChatCompletions(ctx, opts, body)
-	// Per-minute request accounting (MAX_REQUESTS_PER_MINUTE) happens at
-	// lease-grant time in Acquire/AcquireBridge — atomically, so a burst
-	// cannot pass the cap before any record lands. Only the success-side
-	// records (daily message cap, Pacific-day request cap) live here.
+	// Only the success-side usage records live here: the rolling 24h chat
+	// history that feeds the dashboard's messages_24h display and the
+	// Pacific-day request count for the per-day display and maturity skip.
+	// Bridge entries keep no local ledger — their pacing is the live-turn
+	// slot plus the FIFO queue. Upstream quota/429 is the enforcement.
 	if err == nil {
-		if t.bridge != nil {
-			// Only chats that actually went upstream count against the
-			// daily cap; errors are not recorded. The Pacific-day request
-			// count (MAX_REQUESTS_PER_DAY) rides the same success path.
-			p.bridgeRecordChat(t.bridge)
-		} else if t.entry != nil {
+		if t.entry != nil {
 			p.recordChatEntry(t.entry)
 		}
 		p.requestsServed.Add(1)

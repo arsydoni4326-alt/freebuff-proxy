@@ -112,6 +112,14 @@ func TestRefreshTokenRefundDropsOnAccountSwitch(t *testing.T) {
 	var deletes atomic.Int64
 	arrived := make(chan struct{}, 8)
 	release := make(chan struct{})
+	// releaseAll unparks the blocked DELETE handlers. It MUST run on every
+	// exit path: a Fatalf below Goexits the test goroutine, and a handler
+	// still parked on <-release keeps its connection open, so the deferred
+	// mock.Close() blocks until the go test timeout and the failure surfaces
+	// as an opaque package timeout instead of the assertion that missed.
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
 	mock.SessionHandler = activeSessionHandler(func(w http.ResponseWriter, _ *http.Request) {
 		n := deletes.Add(1)
 		arrived <- struct{}{}
@@ -141,10 +149,18 @@ func TestRefreshTokenRefundDropsOnAccountSwitch(t *testing.T) {
 		res, err := p.RefreshTokenRefund(ctx, 0)
 		done <- outcome{res, err}
 	}()
+	// consumed tracks arrivals already attributed to counted DELETEs. Each
+	// DELETE sends exactly one arrival, so consuming in order keeps the
+	// channel in sync with the counter: a later wait cannot mistake a
+	// stale buffered arrival for a new DELETE. (The old form seeded from
+	// deletes.Load() but consumed from the channel, so a wait issued
+	// after its DELETEs had already arrived could return on stale
+	// arrivals — e.g. waitDeletes(3) returning with only 2 DELETEs, which
+	// then surfaced as Settled instead of Dropped.)
+	var consumed int64
 	waitDeletes := func(n int64, what string) {
 		t.Helper()
-		seen := deletes.Load()
-		for i := seen; i < n; i++ {
+		for ; consumed < n; consumed++ {
 			select {
 			case <-arrived:
 			case <-time.After(5 * time.Second):
@@ -169,7 +185,7 @@ func TestRefreshTokenRefundDropsOnAccountSwitch(t *testing.T) {
 	// swap precedes the drain, so the replay below runs against the old
 	// account while the slot already resolves to the replacement.
 	waitDeletes(3, "drain")
-	close(release)
+	releaseAll()
 
 	select {
 	case out := <-done:

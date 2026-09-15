@@ -171,6 +171,11 @@
     if (m?.touch_day && m?.slot_day) return m.touch_day === m.slot_day;
     return !!t?.today_used;
   }
+  // Single shared skipped definition for rows AND the header count: any
+  // ledger skip:* code (including skip:touch-model) reads Skipped.
+  function isSkipped(t) {
+    return String(t?.maturity?.last_result ?? "").startsWith("skip:");
+  }
 
   function slotPast(t) {
     const slot = Date.parse(t?.maturity?.slot ?? "");
@@ -191,12 +196,16 @@
   }
 
   // Where today's usage happened: proxy-routed traffic lands in the local
-  // day ledger (requests_per_day), anything else means the account was
-  // used outside this proxy (app, CLI, or direct).
+  // day ledger (requests_per_day); upstream-dated use with none here means
+  // the account was used outside this proxy (app, CLI, or direct). A day
+  // carrying only the nightly touch reads as automation, not outside use:
+  // touches bypass Pool.Chat so they never increment the local ledger.
   function usageSource(t) {
     const n = Number(t?.requests_per_day) || 0;
     if (n > 0) return $tr("used here ({n} today)", { n });
-    return $tr("used outside this proxy");
+    if (t?.last_usage || !t?.maturity?.last_touch)
+      return $tr("used outside this proxy");
+    return $tr("nightly touch only");
   }
 
   function lastActivity(t) {
@@ -211,20 +220,21 @@
   function rowStatus(t) {
     const m = t?.maturity;
     const result = m?.last_result ?? "";
-    if (result === "skip:today-used") {
-      const when = fmtPacificDay(lastActivity(t));
-      return {
-        kind: "skipped",
-        text: `${$tr("Skipped")} · ${$tr("day already used")}${when ? ` · ${$tr("last activity {day}", { day: when })}` : ""} · ${usageSource(t)} · ${result}`,
-      };
-    }
-    if (result === "skip:client-active") {
-      return {
-        kind: "skipped",
-        text: `${$tr("Skipped")} · ${$tr("you used it today via this proxy")} · ${result}`,
-      };
-    }
-    if (result.startsWith("skip:")) {
+    // Shared skipped gate (see isSkipped): every skip:* code reads Skipped.
+    if (isSkipped(t)) {
+      if (result === "skip:today-used") {
+        const when = fmtPacificDay(lastActivity(t));
+        return {
+          kind: "skipped",
+          text: `${$tr("Skipped")} · ${$tr("day already used")}${when ? ` · ${$tr("last activity {day}", { day: when })}` : ""} · ${usageSource(t)} · ${result}`,
+        };
+      }
+      if (result === "skip:client-active") {
+        return {
+          kind: "skipped",
+          text: `${$tr("Skipped")} · ${$tr("you used it today via this proxy")} · ${result}`,
+        };
+      }
       return { kind: "skipped", text: `${$tr("Skipped")} · ${result}` };
     }
     if (touchedToday(t)) {
@@ -277,7 +287,7 @@
   }
   function countdownText() {
     const w = runWindow();
-    const skipped = coveredTokens().filter((t) => touchedToday(t)).length;
+    const skipped = coveredTokens().filter(isSkipped).length;
     const eligible = coveredTokens().length - skipped;
     const counts = `${eligible} eligible · ${skipped} skipped`;
     const reset = ` · ${$tr("reset")} ${fmtCountdown(nextReset() - nowMs)}`;
@@ -356,10 +366,10 @@
         />
       </div>
       <p class="fp-num text-[11px] leading-relaxed text-[var(--fp-dim)]">
-        {$tr("Nightly window 23:00–00:00 Pacific")}
+        {$tr("Nightly window 23:45–00:00 Pacific")}
         ·
         {$tr(
-          "one touch per Pacific day, placed just before reset to rescue the expiring day",
+          "one touch per Pacific day, placed in the final 15 minutes before reset to rescue the expiring day",
         )}
         ·
         {$tr("client request activity since the last Pacific reset skips")}
@@ -408,29 +418,36 @@
             {@const st = rowStatus(t)}
             {@const model = resolvedModel(t)}
             <div
-              class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--fp-border)]/60 pt-2"
+              class="flex flex-col gap-1 border-t border-[var(--fp-border)]/60 pt-2"
             >
-              <span class="min-w-0">
-                <span class="fp-num text-xs font-semibold text-[var(--fp-text)]"
-                  >{$tr("Account #{idx}", { idx: idx + 1 })}</span
-                >
-                {#if t.email}
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span class="min-w-0">
                   <span
-                    class="ml-1.5 text-[11px] text-[var(--fp-muted)] truncate"
-                    title={t.email}>{t.email}</span
+                    class="fp-num text-xs font-semibold text-[var(--fp-text)]"
+                    >{$tr("Account #{idx}", { idx: idx + 1 })}</span
+                  >
+                  {#if t.email}
+                    <span
+                      class="ml-1.5 text-[11px] text-[var(--fp-muted)] truncate"
+                      title={t.email}>{t.email}</span
+                    >
+                  {/if}
+                </span>
+                {#if t.locked}
+                  <StatusBadge tone="warn" status={$tr("Locked")} />
+                {/if}
+                {#if model}
+                  <code
+                    class="fp-num ml-auto text-[11px] text-[var(--fp-muted)]"
+                    title={$tr("Touch model for tonight")}>{model}</code
                   >
                 {/if}
-              </span>
-              {#if t.locked}
-                <StatusBadge tone="warn" status={$tr("Locked")} />
-              {/if}
-              <span class="fp-num text-[11px] text-[var(--fp-dim)]"
-                >{st.text}</span
-              >
-              {#if model}
-                <code
-                  class="fp-num ml-auto text-[11px] text-[var(--fp-muted)]"
-                  title={$tr("Touch model for tonight")}>{model}</code
+              </div>
+              {#if st.kind === "skipped"}
+                <StatusBadge tone="warn" status={st.text} />
+              {:else}
+                <span class="fp-num text-[11px] text-[var(--fp-dim)]"
+                  >{st.text}</span
                 >
               {/if}
             </div>

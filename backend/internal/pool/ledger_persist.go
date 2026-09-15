@@ -84,7 +84,7 @@ func accountSnapshotOf(l *AccountLedger) AccountPersistState {
 	}
 	return AccountPersistState{
 		Usage:   append([]time.Time(nil), l.usage...),
-		Reqs:    append([]time.Time(nil), l.requests...),
+		Reqs:    nil, // request timestamps retired (#506/#510); kept as empty for blob compat
 		DayCnt:  l.reqDayCount,
 		DaySeen: l.reqDayStart,
 	}
@@ -119,7 +119,6 @@ func applyAccountTo(l *AccountLedger, st AccountPersistState) {
 		return
 	}
 	l.usage = st.Usage
-	l.requests = st.Reqs
 	l.reqDayCount = st.DayCnt
 	l.reqDayStart = st.DaySeen
 }

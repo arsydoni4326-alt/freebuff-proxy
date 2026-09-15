@@ -7,14 +7,12 @@
     Unlock,
     Lock,
     Trash2,
-    GripVertical,
   } from "@lucide/svelte";
   import Button from "./Button.svelte";
   import StatusBadge from "./StatusBadge.svelte";
   import TokenDetailsDrawer from "./TokenDetailsDrawer.svelte";
   import {
     statusFor,
-    riskBadgeFor,
     streakBadgeFor,
     cooldownLabel,
   } from "../utils/tokenStatus.js";
@@ -64,9 +62,6 @@
     onDragEnd,
   } = $props();
 
-  // Risk chip (moved from the standalone At-risk cards): shown when the
-  // account carries a risk flag and no ban badge already claims the row.
-  const riskBadge = $derived(riskBadgeFor(token));
   const streak = $derived(streakBadgeFor(token));
 
   // Live session countdown (freebuff TUI parity). Anchor to the server's
@@ -109,13 +104,6 @@
   <td class="w-[84px]">
     <div class="inline-flex items-center gap-1">
       {#if totalTokens > 1}
-        <div
-          class="cursor-grab active:cursor-grabbing p-1 text-[var(--fp-dim)] hover:text-[var(--fp-accent)] rounded select-none hover:bg-[var(--fp-surface-2)] transition-colors"
-          title={$tr("Drag to reorder account position")}
-          aria-label={$tr("Drag to reorder")}
-        >
-          <GripVertical size={15} />
-        </div>
         <div class="flex flex-col shrink-0 -my-1">
           <button
             type="button"
@@ -158,11 +146,20 @@
   </td>
   <td>
     <div class="flex flex-col gap-0.5">
-      <div class="flex items-center gap-1.5">
+      <div class="flex items-center justify-between gap-1.5">
         <span
           class="fp-num text-xs font-semibold whitespace-nowrap text-[var(--fp-text)]"
           >Account #{idx + 1}</span
         >
+        <span
+          class="inline-flex items-center gap-1 text-[11px] whitespace-nowrap shrink-0 {streak.active
+            ? 'text-[var(--fp-accent)]'
+            : 'text-[var(--fp-dim)]'}"
+          aria-label={streak.aria}
+        >
+          <Flame size={11} aria-hidden="true" />
+          {streak.label}
+        </span>
       </div>
       {#if token.email || token.account_id}
         <span
@@ -172,69 +169,39 @@
           {token.email || token.account_id}
         </span>
       {/if}
-      <span
-        class="inline-flex items-center gap-1 text-[11px] {streak.active
-          ? 'text-[var(--fp-accent)]'
-          : 'text-[var(--fp-dim)]'}"
-        aria-label={streak.aria}
-      >
-        <Flame size={11} aria-hidden="true" />
-        {streak.label}
-      </span>
     </div>
   </td>
   <td>
-    <div class="flex flex-col items-start gap-1">
-      <div class="flex flex-wrap items-center gap-1.5">
-        <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
-        {#if riskBadge}
-          <StatusBadge
-            status={riskBadge.label}
-            tone={riskBadge.tone}
-            pulse={riskBadge.pulse}
-          />
-        {/if}
-      </div>
-      <div class="flex flex-wrap items-center gap-1">
-        {#if token.session_model}
-          <StatusBadge tone="info" status={token.session_model} />
-        {/if}
-      </div>
+    <div class="flex flex-wrap items-center gap-1.5">
+      <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
     </div>
   </td>
   <td>
-    {#if token.session_instance}
-      <code
-        class="fp-num text-xs text-[var(--fp-muted)] truncate block max-w-full select-all"
-        title={token.session_instance}>{token.session_instance}</code
-      >
-    {:else}
-      <span class="text-xs text-[var(--fp-dim)]">—</span>
-    {/if}
-  </td>
-  <td class="num">
-    {#if token.cooldown_active}
-      {@const cd = cooldownLabel(token, now)}
-      <span class="fp-num text-xs text-[var(--fp-warning)] whitespace-nowrap">
-        {cd}{#if cd !== "expiring" && cd !== "—"}{" " + $tr("remaining")}{/if}
-      </span>
-    {:else}
-      <span class="fp-num text-xs text-[var(--fp-dim)]">—</span>
-    {/if}
+    <div class="flex flex-col items-start gap-1 min-w-0">
+      {#if token.session_instance}
+        <code
+          class="fp-num text-xs text-[var(--fp-muted)] truncate block max-w-full select-all"
+          title={token.session_instance}>{token.session_instance}</code
+        >
+      {:else if !token.session_model}
+        <span class="text-xs text-[var(--fp-dim)]">—</span>
+      {/if}
+      {#if token.session_model}
+        <StatusBadge tone="info" status={token.session_model} />
+      {/if}
+    </div>
   </td>
   <td class="num">
     <div class="flex flex-col items-end gap-0.5">
+      {#if token.cooldown_active}
+        {@const cd = cooldownLabel(token, now)}
+        <span class="fp-num text-xs text-[var(--fp-warning)] whitespace-nowrap">
+          {cd}{#if cd !== "expiring" && cd !== "—"}{" " + $tr("remaining")}{/if}
+        </span>
+      {/if}
       <span class="text-xs text-[var(--fp-muted)]">
-        {#if token.daily_limit > 0}
-          <span class="fp-num text-[var(--fp-text)]"
-            >{token.messages_24h}/{token.daily_limit}</span
-          >
-          {$tr("msgs today")}
-          (<span class="fp-num text-[var(--fp-text)]">{token.usage_pct}%</span>)
-        {:else}
-          <span class="fp-num text-[var(--fp-text)]">{token.messages_24h}</span>
-          {$tr("msgs 24h")}
-        {/if}
+        <span class="fp-num text-[var(--fp-text)]">{token.messages_24h}</span>
+        {$tr("msgs 24h")}
       </span>
       <span class="text-[11px] text-[var(--fp-dim)]">
         runs <span class="fp-num text-[var(--fp-text)]"
@@ -297,7 +264,7 @@
 </tr>
 {#if expanded}
   <tr>
-    <td colspan="7" class="!p-0">
+    <td colspan="6" class="!p-0">
       <div class="m-2">
         <TokenDetailsDrawer
           {token}

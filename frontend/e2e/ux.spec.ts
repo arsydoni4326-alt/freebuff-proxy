@@ -19,9 +19,6 @@ function tokenRow(
     active_runs: 0,
     requests: 0,
     messages_24h: 0,
-    daily_limit: 0,
-    usage_pct: 0,
-    risk_level: "low",
     cooldown_active: false,
     cooldown_until: "",
     locked: false,
@@ -163,7 +160,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
 
     const input = page.locator("#add-token-input");
@@ -210,7 +207,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
 
     const input = page.locator("#add-token-input");
@@ -401,7 +398,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
 
     const startReq = page.waitForRequest(
@@ -515,7 +512,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     // --- add token (POST /admin/tokens/add) ---
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
     const addToken = "cb_" + "y".repeat(24);
     const addReq = page.waitForRequest(
@@ -602,7 +599,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
 
     // Logout answers ok:true and expires the session cookie (like the Go
@@ -682,25 +679,8 @@ test.describe("operator UX journey (hermetic mocks)", () => {
       f,
       {
         tokens: tokensPayload([
-          tokenRow(0, {
-            has_quota: true,
-            quota: [],
-            requests_per_minute: 2,
-            requests_per_minute_limit: 30,
-            requests_per_day: 5,
-            requests_per_day_limit: 1500,
-            requests_per_day_reset_in: 3600,
-          }),
-          tokenRow(1, {
-            has_quota: true,
-            quota: [],
-            requests_per_minute: 12,
-            requests_per_minute_limit: 30,
-            // Day-capped: the card shows the Pacific-midnight reset countdown.
-            requests_per_day: 1500,
-            requests_per_day_limit: 1500,
-            requests_per_day_reset_in: 3600,
-          }),
+          tokenRow(0, { has_quota: true, quota: [] }),
+          tokenRow(1, { has_quota: true, quota: [] }),
         ]),
       },
       { loginPage: true },
@@ -709,7 +689,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     await page.goto("http://127.0.0.1:4173/admin/#plans");
     await page.getByRole("button", { name: "Accounts" }).click();
     await expect(
-      page.getByRole("heading", { name: "Plans", exact: true }),
+      page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible();
 
     // Accounts are pooled, so per-account cards render (not the empty pool state).
@@ -734,12 +714,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     // The accounting revamp notice is gone from this page (no per-card
     // explainers; the served-models list lives once on the Models tab).
     await expect(page.getByText("Meet Freebucks")).toHaveCount(0);
-    await expect(page.getByText("Unmetered Models")).toHaveCount(0);
-    // Compact rows: one per pooled account; a day-capped account keeps the
-    // status chip while the countdown lives once in the shared strip.
     await expect(page.getByTestId("account-row")).toHaveCount(2);
-    await expect(page.getByText("daily limit reached")).toHaveCount(1);
-    await expect(page.getByTestId("reset-strip")).toHaveCount(0);
   });
 
   // ---------------------------------------------------------------------------
@@ -751,17 +726,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
       page,
       f,
       {
-        tokens: tokensPayload([
-          tokenRow(0, {
-            has_quota: true,
-            quota: [],
-            requests_per_minute: 2,
-            requests_per_minute_limit: 30,
-            requests_per_day: 5,
-            requests_per_day_limit: 1500,
-            requests_per_day_reset_in: 3600,
-          }),
-        ]),
+        tokens: tokensPayload([tokenRow(0, { has_quota: true, quota: [] })]),
       },
       { loginPage: true },
     );
@@ -783,13 +748,6 @@ test.describe("operator UX journey (hermetic mocks)", () => {
               active_runs: 0,
               requests: 0,
               messages_24h: 0,
-              usage_pct: 0,
-              risk_level: "low",
-              requests_per_minute: 2,
-              requests_per_minute_limit: 30,
-              requests_per_day: 5,
-              requests_per_day_limit: 1500,
-              requests_per_day_reset_in: 3600,
               session_instance: "",
               session_model: "",
               session_remaining_seconds: 0,
@@ -849,11 +807,9 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     await expect(page.getByText("running", { exact: true })).toBeVisible();
   });
 
-  // 13. Tokens: Drag and drop handle renders and triggers reorder action
+  // 13. Tokens: rows stay draggable (whole-row handle) and drop triggers reorder
   // ---------------------------------------------------------------------------
-  test("tokens: drag and drop handle renders and triggers move action", async ({
-    page,
-  }) => {
+  test("tokens: row drag and drop triggers move action", async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f, {}, { loginPage: true });
 
@@ -862,8 +818,9 @@ test.describe("operator UX journey (hermetic mocks)", () => {
       page.getByRole("heading", { name: "Pool Tokens" }),
     ).toBeVisible();
 
-    const grips = page.getByLabel("Drag to reorder");
-    await expect(grips.first()).toBeVisible();
+    // No standalone grip handle: the whole row is the drag handle, with
+    // Move Up / Move Down buttons as the explicit reorder path.
+    await expect(page.getByLabel("Drag to reorder")).toHaveCount(0);
 
     // Verify move action POST payload on drop / move
     let swapPayload: Record<string, any> | null = null;

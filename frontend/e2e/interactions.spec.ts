@@ -27,9 +27,6 @@ function tokenRow(
     active_runs: 0,
     requests: 0,
     messages_24h: 0,
-    daily_limit: 0,
-    usage_pct: 0,
-    risk_level: "low",
     cooldown_active: false,
     cooldown_until: "",
     locked: false,
@@ -161,7 +158,6 @@ test.describe("operator interactions (hermetic mocks)", () => {
         tokenRow(0, {
           cooldown_active: true,
           cooldown_until: new Date(Date.now() + 5 * 60_000).toISOString(),
-          risk_level: "high",
         }),
         tokenRow(1),
       ],
@@ -177,7 +173,6 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await page.route("**/admin/tokens/0/unlock", async (route) => {
       state.tokens[0].cooldown_active = false;
       state.tokens[0].cooldown_until = "";
-      state.tokens[0].risk_level = "low";
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -294,7 +289,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await page.goto("http://127.0.0.1:4173/admin/#plans");
     await page.getByRole("button", { name: "Accounts" }).click();
     await expect(
-      page.getByRole("heading", { name: "Plans", exact: true }),
+      page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
@@ -343,7 +338,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     });
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Probe all" })).toHaveCount(
       0,
@@ -474,7 +469,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     });
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Log out" }).click();
     await logout;
@@ -546,7 +541,9 @@ test.describe("operator interactions (hermetic mocks)", () => {
         await route.continue();
       }
     });
-    await page.goto("http://127.0.0.1:4173/admin/#settings");
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    // Pool controls moved behind the Controls tab.
+    await page.getByRole("button", { name: "Controls" }).click();
     const drain = page.getByRole("radio", { name: "Drain (Safest)" });
     const rr = page.getByRole("radio", { name: "Round Robin (1:1)" });
     await expect(drain).toHaveAttribute("aria-checked", "true");
@@ -560,7 +557,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await expect(failover).toHaveAttribute("aria-checked", "true");
     await failover.click();
     await expect(failover).toHaveAttribute("aria-checked", "false");
-    // Traffic edits batch through the Settings .env save (Save/Discard),
+    // Pool edits batch through the shared .env save (Save/Discard),
     // not immediate POSTs: one save persists both keys.
     page.once("dialog", (d) => d.accept());
     await page
@@ -570,119 +567,6 @@ test.describe("operator interactions (hermetic mocks)", () => {
     expect(bodies[bodies.length - 1]).toContain("TOKEN_ROTATION=round_robin");
     expect(bodies[bodies.length - 1]).toContain("RATE_LIMIT_FAILOVER=false");
   });
-  // -------------------------------------------------------------------------
-  // 5b. Burst Balance toggle and steppers persist via the settings overlay.
-  // -------------------------------------------------------------------------
-  test("tokens: burst balance toggle and steppers persist via settings overlay", async ({
-    page,
-  }) => {
-    const f = loadFixtures();
-    await mockDashboard(page, f, {}, { loginPage: true });
-
-    const posted: Array<Record<string, unknown>> = [];
-    // Stateful overlay mock (mirrors the real endpoint): POSTs persist and
-    // later GETs reflect them, so each per-key save's refetch converges
-    // instead of resetting the next control mid-test.
-    const overlay: Record<string, string> = {
-      BURST_BALANCE_ENABLED: "false",
-      BURST_WINDOW: "1m",
-      BURST_THRESHOLD: "20",
-      BURST_MAX_TOKENS: "2",
-    };
-    await page.route("**/admin/api/settings", async (route) => {
-      if (route.request().method() === "GET") {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            settings: Object.entries(overlay).map(([key, value]) => ({
-              key,
-              value,
-              source: "default",
-              restart_only: false,
-              secret: false,
-            })),
-            degraded: false,
-          }),
-        });
-        return;
-      }
-      if (route.request().method() === "POST") {
-        const body = JSON.parse(route.request().postData() ?? "{}");
-        posted.push(body);
-        if (typeof body.key === "string" && body.key in overlay) {
-          overlay[body.key] = String(body.value);
-        }
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            ok: true,
-            message: "BURST saved to the DB overlay and applied live.",
-            code: "setting_saved",
-            restart_only: [],
-          }),
-        });
-        return;
-      }
-      await route.continue();
-    });
-
-    // Burst controls live in the Settings Traffic section now.
-    await page.goto("http://127.0.0.1:4173/admin/#settings");
-    const burst = page.getByRole("region", { name: "Burst Balance" });
-
-    // Toggle flips locally, then its own overlay save persists the key.
-    const toggle = burst.getByRole("switch", { name: "Burst Balance" });
-    await expect(toggle).toHaveAttribute("aria-checked", "false");
-    await toggle.click();
-    await expect(toggle).toHaveAttribute("aria-checked", "true");
-    await burst
-      .getByRole("button", { name: "Save as override" })
-      .nth(0)
-      .click();
-    await expect
-      .poll(() => posted[posted.length - 1]?.key)
-      .toBe("BURST_BALANCE_ENABLED");
-    expect(posted[posted.length - 1]).toMatchObject({
-      key: "BURST_BALANCE_ENABLED",
-      value: "true",
-    });
-
-    // Each stepper persists its own key independently.
-    const threshold = burst.getByRole("spinbutton", {
-      name: "Burst threshold (requests)",
-    });
-    await threshold.fill("25");
-    await burst
-      .getByRole("button", { name: "Save as override" })
-      .nth(2)
-      .click();
-    await expect
-      .poll(() => posted[posted.length - 1]?.key)
-      .toBe("BURST_THRESHOLD");
-    expect(posted[posted.length - 1]).toMatchObject({
-      key: "BURST_THRESHOLD",
-      value: "25",
-    });
-
-    const maxTokens = burst.getByRole("spinbutton", {
-      name: "Burst max tokens",
-    });
-    await maxTokens.fill("3");
-    await burst
-      .getByRole("button", { name: "Save as override" })
-      .nth(3)
-      .click();
-    await expect
-      .poll(() => posted[posted.length - 1]?.key)
-      .toBe("BURST_MAX_TOKENS");
-    expect(posted[posted.length - 1]).toMatchObject({
-      key: "BURST_MAX_TOKENS",
-      value: "3",
-    });
-  });
-
   // -------------------------------------------------------------------------
   // 6. Logs: console/table toggle, auto toggle, refresh and clear console.
   // -------------------------------------------------------------------------
@@ -824,9 +708,9 @@ test.describe("operator interactions (hermetic mocks)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 10. Settings: bridge toggle and rate-limit input persist into the save.
+  // 10. Pool: bridge toggle and rate-limit input persist into the save.
   // -------------------------------------------------------------------------
-  test("settings: bridge toggle and rate-limit input persist into the save", async ({
+  test("pool: bridge toggle and rate-limit input persist into the save", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -835,20 +719,15 @@ test.describe("operator interactions (hermetic mocks)", () => {
       (r) => r.url().includes("/admin/api/config/meta") && r.status() === 200,
       { timeout: 5000 },
     );
-    await page.goto("http://127.0.0.1:4173/admin/#settings");
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await metaResp;
+    // Pool controls moved behind the Controls tab.
+    await page.getByRole("button", { name: "Controls" }).click();
 
     // Absent from .env, the bridge switch defaults to on.
     const bridge = page.getByRole("switch", { name: "BRIDGE_ENABLED" });
-    await expect(bridge).toHaveAttribute("aria-checked", "true");
     await bridge.click();
     await page.locator('input[aria-label="RATE_LIMIT_PER_IP"]').fill("25");
-    // Per-account request limits (MAX_REQUESTS_PER_MINUTE / _PER_DAY) are
-    // user-facing quota rows in the same Pool card.
-    await page
-      .locator('input[aria-label="MAX_REQUESTS_PER_MINUTE"]')
-      .fill("40");
-    await page.locator('input[aria-label="MAX_REQUESTS_PER_DAY"]').fill("800");
 
     let savedBody = "";
     await page.route(/\/admin\/config$/, async (route) => {
@@ -869,8 +748,6 @@ test.describe("operator interactions (hermetic mocks)", () => {
       .click();
     expect(savedBody).toContain("BRIDGE_ENABLED=false");
     expect(savedBody).toContain("RATE_LIMIT_PER_IP=25");
-    expect(savedBody).toContain("MAX_REQUESTS_PER_MINUTE=40");
-    expect(savedBody).toContain("MAX_REQUESTS_PER_DAY=800");
     await expect(page.getByText("Saved.")).toBeVisible();
   });
 
@@ -887,7 +764,9 @@ test.describe("operator interactions (hermetic mocks)", () => {
     );
     await page.goto("http://127.0.0.1:4173/admin/#settings");
     await metaResp;
-    await expect(page.getByRole("heading", { name: "Security" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Security", exact: true }),
+    ).toBeVisible();
 
     // Eye toggles reveal the password text.
     const eyes = page.getByRole("button", { name: "Show password" });
@@ -897,19 +776,25 @@ test.describe("operator interactions (hermetic mocks)", () => {
       page.getByRole("button", { name: "Hide password" }).first(),
     ).toBeVisible();
 
-    // Mismatch surfaces the inline error and keeps submit disabled.
+    // A short password surfaces the min-length note and keeps submit
+    // disabled.
+    const submit = page.getByRole("button", { name: "Update Password" });
+    await expect(submit).toBeDisabled();
+    await page.locator("#sec-new-password").fill("abc");
+    await expect(page.getByText("Minimum 6 characters")).toBeVisible();
+    await expect(submit).toBeDisabled();
+
+    // The factory default is rejected with its own note.
+    await page.locator("#sec-new-password").fill("123456");
+    await expect(
+      page.getByText("Cannot be factory default (123456)"),
+    ).toBeVisible();
+    await expect(submit).toBeDisabled();
+
+    // A valid new password plus the current password enables submit; the
+    // mocked endpoint succeeds and the fields clear.
     await page.locator("#sec-current-password").fill("oldpass1");
     await page.locator("#sec-new-password").fill("newpass123");
-    await page.locator("#sec-confirm-password").fill("different");
-    await expect(page.getByText("Passwords do not match")).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Update Password" }),
-    ).toBeDisabled();
-
-    // Matching passwords enable submit; the mocked endpoint succeeds and the
-    // success alert survives (refetches are silent once mounted).
-    await page.locator("#sec-confirm-password").fill("newpass123");
-    const submit = page.getByRole("button", { name: "Update Password" });
     await expect(submit).toBeEnabled();
     const changeReq = page.waitForRequest(
       (r) =>
@@ -923,8 +808,6 @@ test.describe("operator interactions (hermetic mocks)", () => {
     });
     await expect(page.locator("#sec-current-password")).toHaveValue("");
     await expect(page.locator("#sec-new-password")).toHaveValue("");
-    await expect(page.locator("#sec-confirm-password")).toHaveValue("");
-    await expect(page.getByText("Passwords do not match")).toHaveCount(0);
     await expect(page.getByText("Password changed")).toBeVisible();
   });
 
@@ -940,9 +823,9 @@ test.describe("operator interactions (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#overview");
     for (const [link, heading] of [
-      ["Tokens", "Tokens"],
-      ["Plans", "Plans"],
-      ["Activity", "Activity"],
+      ["Pool", "Pool"],
+      ["Usage", "Usage"],
+      ["Logs", "Logs"],
       ["Settings", "Settings"],
     ] as Array<[string, string]>) {
       await nav.getByRole("link", { name: link }).click();

@@ -13,14 +13,6 @@ import (
 	"time"
 )
 
-// Default per-token request limits (anti-abuse posture, user-mandated
-// 2026-09-05): each account stays well under upstream abuse-detection
-// volume while the multi-token pool rolls capped tokens. 0 = unlimited.
-const (
-	defaultMaxRequestsPerDay    = 1500 // successful chats per Pacific day (resets with the official daily quota)
-	defaultMaxRequestsPerMinute = 30   // admitted chat requests per rolling 60s window
-)
-
 // LoadOptions configures LoadOpts. DiscoverCLIToken, when non-nil, sources
 // an empty AUTH_TOKENS pool from the official CLI login files (issue #283);
 // the cmd entrypoint wires clicreds.DiscoverToken here. A nil value keeps
@@ -101,11 +93,8 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideString(&raw.LogFormat, "LOG_FORMAT")
 	overrideBool(&raw.LogAccess, "LOG_ACCESS")
 	overrideInt(&raw.LogRingSize, "LOG_RING_SIZE")
-	overrideInt(&raw.MaxMessagesPerDay, "MAX_MESSAGES_PER_DAY")
-	overrideInt(&raw.MaxRequestsPerDay, "MAX_REQUESTS_PER_DAY")
-	overrideInt(&raw.MaxRequestsPerMinute, "MAX_REQUESTS_PER_MINUTE")
-	overrideInt(&raw.BridgeDailyLimit, "BRIDGE_DAILY_LIMIT")
-	overrideInt(&raw.MaxSpendPerDay, "MAX_SPEND_PER_DAY")
+	overrideString(&raw.LogConsoleWindow, "LOG_CONSOLE_WINDOW")
+	overrideString(&raw.LogTableRetention, "LOG_TABLE_RETENTION")
 	overrideBool(&raw.BridgeEnabled, "BRIDGE_ENABLED")
 	overrideString(&raw.BridgeIdleEvict, "BRIDGE_IDLE_EVICT")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
@@ -121,10 +110,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideBool(&raw.SessionPersist, "SESSION_PERSIST")
 	overrideString(&raw.SessionStateFile, "SESSION_STATE_FILE")
 	overrideBool(&raw.HTTP2Upstream, "HTTP2_UPSTREAM")
-	overrideInt(&raw.SessionCreateMaxParallelGlobal, "SESSION_CREATE_MAX_PARALLEL_GLOBAL")
-	overrideInt(&raw.SessionCreateMaxParallelPerModel, "SESSION_CREATE_MAX_PARALLEL_PER_MODEL")
-	overrideInt(&raw.ChatMaxInflightMetered, "CHAT_MAX_INFLIGHT_METERED")
-	overrideInt(&raw.ChatMaxInflightUnmetered, "CHAT_MAX_INFLIGHT_UNMETERED")
 	overrideInt(&raw.RunFinishQueueSize, "RUN_FINISH_QUEUE_SIZE")
 	overrideString(&raw.RunFinishInlineTimeout, "RUN_FINISH_INLINE_TIMEOUT")
 	overrideInt(&raw.RunsDrainQueueCap, "RUNS_DRAIN_QUEUE_CAP")
@@ -144,10 +129,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideBool(&raw.QuotaAutoProbe, "QUOTA_AUTO_PROBE")
 	overrideString(&raw.QuotaProbeActiveInterval, "QUOTA_PROBE_ACTIVE_INTERVAL")
 	overrideString(&raw.QuotaProbeIdleHeartbeat, "QUOTA_PROBE_IDLE_HEARTBEAT")
-	overrideBool(&raw.BurstBalanceEnabled, "BURST_BALANCE_ENABLED")
-	overrideString(&raw.BurstWindow, "BURST_WINDOW")
-	overrideInt(&raw.BurstThreshold, "BURST_THRESHOLD")
-	overrideInt(&raw.BurstMaxTokens, "BURST_MAX_TOKENS")
 	overrideBool(&raw.RoutingSmart, "ROUTING_SMART")
 	overrideInt(&raw.TokenMaxConcurrent, "TOKEN_MAX_CONCURRENT")
 	overrideString(&raw.QueueWait, "QUEUE_WAIT")
@@ -155,8 +136,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideBool(&raw.WaitingRoomChain, "WAITING_ROOM_CHAIN")
 	overrideFloat(&raw.RateLimitPerIP, "RATE_LIMIT_PER_IP")
 	overrideInt(&raw.RateLimitBurst, "RATE_LIMIT_BURST")
-	overrideInt(&raw.RiskMediumThreshold, "RISK_THRESHOLD_MEDIUM")
-	overrideInt(&raw.RiskHighThreshold, "RISK_THRESHOLD_HIGH")
 	overrideFloat(&raw.BridgeRateLimitPerToken, "BRIDGE_RATE_LIMIT_PER_TOKEN")
 	overrideInt(&raw.BridgeCircuitBreakerFailures, "BRIDGE_CIRCUIT_BREAKER_FAILURES")
 	overrideString(&raw.BridgeCircuitBreakerWindow, "BRIDGE_CIRCUIT_BREAKER_WINDOW")
@@ -264,26 +243,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 			modelUnavailableCacheTTL = time.Hour
 		}
 	}
-	sessionCreateMaxGlobal := 128
-	if raw.SessionCreateMaxParallelGlobal != nil {
-		sessionCreateMaxGlobal = *raw.SessionCreateMaxParallelGlobal
-	}
-	sessionCreateMaxPerModel := 32
-	if raw.SessionCreateMaxParallelPerModel != nil {
-		sessionCreateMaxPerModel = *raw.SessionCreateMaxParallelPerModel
-	}
-	// CHAT_MAX_INFLIGHT_METERED defaults to 1 (metered models spend
-	// Freebucks, so one in-flight chat per token); _UNMETERED defaults to
-	// 3 (unpriced rows are free, so more parallelism is safe). 0 =
-	// unlimited; explicit values always win.
-	chatMaxInflightMetered := 1
-	if raw.ChatMaxInflightMetered != nil {
-		chatMaxInflightMetered = *raw.ChatMaxInflightMetered
-	}
-	chatMaxInflightUnmetered := 3
-	if raw.ChatMaxInflightUnmetered != nil {
-		chatMaxInflightUnmetered = *raw.ChatMaxInflightUnmetered
-	}
 	runFinishQueueSize := 64
 	if raw.RunFinishQueueSize != nil {
 		runFinishQueueSize = *raw.RunFinishQueueSize
@@ -326,39 +285,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		return Config{}, err
 	}
 
-	// MAX_MESSAGES_PER_DAY defaults to 0 (unlimited): the upstream 429 lock
-	// is the real quota enforcement — rate-limited tokens are locked in
-	// memory until the reset window, so no local cap is needed to prevent
-	// spam traffic. Explicit values always win.
-	maxMessagesPerDay := 0
-	if raw.MaxMessagesPerDay != nil {
-		maxMessagesPerDay = *raw.MaxMessagesPerDay
-	}
-
-	// MAX_REQUESTS_PER_DAY defaults to 1500 (per-token, Pacific-day): sized
-	// for ~6 concurrent agent sessions over a full working day while each
-	// account stays under abuse-detection volume; the pool rolls capped
-	// tokens. 0 = unlimited; explicit values always win.
-	maxRequestsPerDay := defaultMaxRequestsPerDay
-	if raw.MaxRequestsPerDay != nil {
-		maxRequestsPerDay = *raw.MaxRequestsPerDay
-	}
-
-	// MAX_REQUESTS_PER_MINUTE defaults to 30 (per-token, rolling 60s):
-	// ~2-3x the worst realistic minute for 6 parallel subagent sessions
-	// (spawn batches of 6-8 land within seconds) yet tight enough to lock
-	// a runaway loop (>=1 req/s) within a minute. 0 = unlimited.
-	maxRequestsPerMinute := defaultMaxRequestsPerMinute
-	if raw.MaxRequestsPerMinute != nil {
-		maxRequestsPerMinute = *raw.MaxRequestsPerMinute
-	}
-
-	// BRIDGE_DAILY_LIMIT (B5): global daily chat cap across ALL bridge
-	// entries. 0 = unlimited (default). Explicit values always win.
-	bridgeDailyLimit := 0
-	if raw.BridgeDailyLimit != nil {
-		bridgeDailyLimit = *raw.BridgeDailyLimit
-	}
 	// BRIDGE_IDLE_EVICT is zero-tolerant: "" or "0" fall back to the 72h
 	// default (a zero TTL would evict every bridge entry on the first idle
 	// pass, defeating the cache).
@@ -371,16 +297,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		if bridgeIdleEvict <= 0 {
 			bridgeIdleEvict = 72 * time.Hour
 		}
-	}
-
-	// MAX_SPEND_PER_DAY (issue #122): advisory per-token Pacific-day spend
-	// ceiling in ledger units, default 0 (unlimited). Deliberately NOT
-	// enforced — the upstream $ ceilings are server-side and the proxy
-	// cannot know the account's restricted cohort; surfaced as
-	// SpendLimit/SpendPct on /healthz.
-	maxSpendPerDay := int64(0)
-	if raw.MaxSpendPerDay != nil {
-		maxSpendPerDay = int64(*raw.MaxSpendPerDay)
 	}
 
 	// TRANSIENT_RETRIES: nil defaults to 1 (one additional attempt after a
@@ -403,19 +319,12 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	if raw.RateLimitBurst != nil {
 		rateLimitBurst = *raw.RateLimitBurst
 	}
-	// RISK_THRESHOLD_MEDIUM / RISK_THRESHOLD_HIGH (Phase 3.5): passive risk
-	// engine level boundaries on the 0-100 score.  Defaults are 30 (medium)
-	// and 40 (high); an explicit 0/negative falls back to the default (the
-	// "disabled knob" convention used by the other bounded ints).  A pair
-	// that violates medium < high is rejected at Validate time (a silent
-	// inversion would mis-label ban risk).
-	riskMediumThreshold := 30
-	if raw.RiskMediumThreshold != nil && *raw.RiskMediumThreshold > 0 {
-		riskMediumThreshold = *raw.RiskMediumThreshold
-	}
-	riskHighThreshold := 40
-	if raw.RiskHighThreshold != nil && *raw.RiskHighThreshold > 0 {
-		riskHighThreshold = *raw.RiskHighThreshold
+	// MAX_SPEND_PER_DAY (issue #122): ADVISORY per-token Pacific-day spend
+	// ceiling in ledger units. 0 (default) = unlimited; never enforced —
+	// surfaced as SpendLimit/SpendPct on /healthz only.
+	maxSpendPerDay := int64(0)
+	if raw.MaxSpendPerDay != nil {
+		maxSpendPerDay = int64(*raw.MaxSpendPerDay)
 	}
 	// BRIDGE_RATE_LIMIT_PER_TOKEN (security hardening): per-client-token
 	// rate limit in req/s for bridge mode. 0 = unlimited. Independent of
@@ -478,6 +387,32 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 
 	if raw.LogRingSize != nil {
 		logRingSize = *raw.LogRingSize
+	}
+
+	// LOG_CONSOLE_WINDOW / LOG_TABLE_RETENTION are zero-tolerant like
+	// BURST_WINDOW: "" falls back to the documented default, and an explicit
+	// non-positive value falls back the same way. For the console window 0
+	// would show an empty view; for retention 0 would purge every row on the
+	// next tick — neither is ever what an operator meant.
+	logConsoleWindow := DefaultLogConsoleWindow
+	if v := strings.TrimSpace(raw.LogConsoleWindow); v != "" {
+		logConsoleWindow, err = parseDuration(v, "LOG_CONSOLE_WINDOW")
+		if err != nil {
+			return Config{}, err
+		}
+		if logConsoleWindow <= 0 {
+			logConsoleWindow = DefaultLogConsoleWindow
+		}
+	}
+	logTableRetention := DefaultLogTableRetention
+	if v := strings.TrimSpace(raw.LogTableRetention); v != "" {
+		logTableRetention, err = parseDuration(v, "LOG_TABLE_RETENTION")
+		if err != nil {
+			return Config{}, err
+		}
+		if logTableRetention <= 0 {
+			logTableRetention = DefaultLogTableRetention
+		}
 	}
 
 	// FALLBACK_AFTER_MS (issue #100): milliseconds, ""/0 = disabled. Any
@@ -567,20 +502,7 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	// unmetered row per token. "auto" is accepted as an explicit alias;
 	// an explicit provider/model id overrides auto.
 	maturityTouchModel := strings.TrimSpace(raw.MaturityTouchModel)
-	// BURST_WINDOW is zero-tolerant: "" falls back to the 1m default (a zero
-	// window would trip on every admission past the threshold count of zero
-	// history); an explicit non-positive value falls back the same way.
-	burstWindow := time.Minute
-	if v := strings.TrimSpace(raw.BurstWindow); v != "" {
-		burstWindow, err = parseDuration(v, "BURST_WINDOW")
-		if err != nil {
-			return Config{}, err
-		}
-		if burstWindow <= 0 {
-			burstWindow = time.Minute
-		}
-	}
-	// Probe cadences are zero-tolerant like BURST_WINDOW: "" falls back to
+	// Probe cadences are zero-tolerant: "" falls back to
 	// the documented default, and an explicit non-positive value falls back
 	// the same way (a zero cadence would probe on every tick).
 	quotaProbeActiveInterval := 60 * time.Second
@@ -603,28 +525,17 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 			quotaProbeIdleHeartbeat = 30 * time.Minute
 		}
 	}
-	// BURST_THRESHOLD defaults to 20; BURST_MAX_TOKENS defaults to 2 (an
-	// explicit value below 2 is range-checked in Validate).
-	burstThreshold := 20
-	if raw.BurstThreshold != nil {
-		burstThreshold = *raw.BurstThreshold
-	}
-	burstMaxTokens := 2
-	if raw.BurstMaxTokens != nil {
-		burstMaxTokens = *raw.BurstMaxTokens
-	}
-	// TOKEN_MAX_CONCURRENT defaults to 2 with a hard floor of 1: a zero
-	// live-turn cap could never serve, so 0/negative values floor to 1
-	// instead of failing the load (the bunker-strict posture is an
-	// explicit 1).
+	// TOKEN_MAX_CONCURRENT defaults to 2 (the approved anti-ban pacing).
+	// 0 = unlimited: no live-turn slot gating applies at all. Negative
+	// values floor to 0 instead of failing the load.
 	tokenMaxConcurrent := 2
 	if raw.TokenMaxConcurrent != nil {
 		tokenMaxConcurrent = *raw.TokenMaxConcurrent
 	}
-	if tokenMaxConcurrent < 1 {
-		tokenMaxConcurrent = 1
+	if tokenMaxConcurrent < 0 {
+		tokenMaxConcurrent = 0
 	}
-	// QUEUE_WAIT is zero-tolerant like BURST_WINDOW: "" falls back to the
+	// QUEUE_WAIT is zero-tolerant: "" falls back to the
 	// 30s default, and an explicit non-positive value falls back the same
 	// way (a zero wait would never park, defeating the FIFO queue).
 	queueWait := 30 * time.Second
@@ -645,100 +556,89 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	}
 
 	cfg := Config{
-		ListenAddr:                       strings.TrimSpace(raw.ListenAddr),
-		UpstreamBaseURL:                  upstreamBaseURL,
-		AuthTokens:                       dedupeStrings(raw.AuthTokens),
-		RotationInterval:                 rotationInterval,
-		RequestTimeout:                   requestTimeout,
-		HTTPReadTimeout:                  httpReadTimeout,
-		SessionCallTimeout:               sessionCallTimeout,
-		TokenRotation:                    tokenRotation,
-		ModelLocks:                       modelLocks,
-		APIKeys:                          dedupeStrings(raw.APIKeys),
-		AdminToken:                       adminToken,
-		DashboardRequireLogin:            dashboardRequireLogin,
-		HTTP2Upstream:                    raw.HTTP2Upstream,
-		CostMode:                         strings.TrimSpace(raw.CostMode),
-		ActingUserID:                     strings.TrimSpace(raw.ActingUserID),
-		TLSFingerprint:                   strings.TrimSpace(raw.TLSFingerprint),
-		RegistryRefresh:                  registryRefresh,
-		DebugDump:                        raw.DebugDump,
-		DevToolsEnabled:                  raw.DevToolsEnabled,
-		LogFile:                          strings.TrimSpace(raw.LogFile),
-		LogLevel:                         strings.TrimSpace(raw.LogLevel),
-		LogFormat:                        logFormat,
-		LogAccess:                        raw.LogAccess,
-		LogRingSize:                      logRingSize,
-		MaxMessagesPerDay:                maxMessagesPerDay,
-		MaxRequestsPerDay:                maxRequestsPerDay,
-		MaxRequestsPerMinute:             maxRequestsPerMinute,
-		BridgeDailyLimit:                 bridgeDailyLimit,
-		MaxSpendPerDay:                   maxSpendPerDay,
-		BridgeEnabled:                    raw.BridgeEnabled,
-		BridgeIdleEvict:                  bridgeIdleEvict,
-		IdleRotationTimeout:              idleRotationTimeout,
-		SessionIdleEnd:                   sessionIdleEnd,
-		SafeMode:                         raw.SafeMode,
-		ModelsHideUnavailable:            raw.ModelsHideUnavailable,
-		ModelsAllow:                      splitList(string(raw.ModelsAllow)),
-		CORSAllowedOrigin:                strings.TrimSpace(raw.CORSAllowedOrigin),
-		RequestJitter:                    requestJitter,
-		CLIVersion:                       strings.TrimSpace(raw.CLIVersion),
-		ModelAliases:                     modelAliases,
-		TransientRetries:                 transientRetries,
-		SessionPersist:                   raw.SessionPersist,
-		SessionStateFile:                 strings.TrimSpace(raw.SessionStateFile),
-		SessionCreateMaxParallelGlobal:   sessionCreateMaxGlobal,
-		SessionCreateMaxParallelPerModel: sessionCreateMaxPerModel,
-		ChatMaxInflightMetered:           chatMaxInflightMetered,
-		ChatMaxInflightUnmetered:         chatMaxInflightUnmetered,
-		RunFinishQueueSize:               runFinishQueueSize,
-		RunFinishInlineTimeout:           runFinishInlineTimeout,
-		RunsDrainQueueCap:                runsDrainQueueCap,
-		RunsDrainTTL:                     runsDrainTTL,
-		SessionReAdmitLead:               sessionReAdmitLead,
-		SessionProbeCacheTTL:             sessionProbeCacheTTL,
-		ModelUnavailableCacheTTL:         modelUnavailableCacheTTL,
-		WebhookURL:                       strings.TrimSpace(raw.WebhookURL),
-		FallbackAfter:                    fallbackAfter,
-		FallbackModels:                   fallbackModels,
-		AdoptCLISession:                  raw.AdoptCLISession,
-		MaturityEnabled:                  raw.MaturityEnabled,
-		MaturityDryRun:                   raw.MaturityDryRun,
-		MaturityTouchModel:               maturityTouchModel,
-		MaturityTargetDays:               maturityTargetDays,
-		QuotaAutoProbe:                   raw.QuotaAutoProbe,
-		QuotaProbeActiveInterval:         quotaProbeActiveInterval,
-		QuotaProbeIdleHeartbeat:          quotaProbeIdleHeartbeat,
-		BurstBalanceEnabled:              raw.BurstBalanceEnabled,
-		BurstWindow:                      burstWindow,
-		BurstThreshold:                   burstThreshold,
-		BurstMaxTokens:                   burstMaxTokens,
-		RoutingSmart:                     raw.RoutingSmart,
-		TokenMaxConcurrent:               tokenMaxConcurrent,
-		QueueWait:                        queueWait,
-		QueueDepth:                       queueDepth,
-		QuotaFallbackModels:              quotaFallbackModels,
-		WaitingRoomChain:                 raw.WaitingRoomChain,
-		RateLimitPerIP:                   rateLimitPerIP,
-		RateLimitBurst:                   rateLimitBurst,
-		RiskMediumThreshold:              riskMediumThreshold,
-		RiskHighThreshold:                riskHighThreshold,
-		BridgeRateLimitPerToken:          bridgeRateLimitPerToken,
-		BridgeCircuitBreakerFailures:     bridgeCircuitBreakerFailures,
-		BridgeCircuitBreakerWindow:       bridgeCircuitBreakerWindow,
-		BridgeCircuitBreakerCooldown:     bridgeCircuitBreakerCooldown,
-		DashboardEnabled:                 raw.DashboardEnabled,
-		AutoRotateOnExhaustion:           raw.AutoRotateOnExhaustion,
-		ExhaustionWarningThreshold:       exhaustionWarningThreshold,
-		HealthScoreEnabled:               healthScoreEnabled,
-		TokenHealthProbes:                raw.TokenHealthProbes,
-		TokenProbeInterval:               tokenProbeInterval,
-		EnvFile:                          envFileUsed,
-		CompressPrompt:                   parseCompressPrompt(raw.CompressPrompt),
-		CacheControlInjection:            parseCacheControlInjection(raw.CacheControlInjection),
-		ReasoningInContent:               parseReasoningInContent(raw.ReasoningInContent),
-		RateLimitFailover:                raw.RateLimitFailover == nil || *raw.RateLimitFailover,
+
+		ListenAddr:                   strings.TrimSpace(raw.ListenAddr),
+		UpstreamBaseURL:              upstreamBaseURL,
+		AuthTokens:                   dedupeStrings(raw.AuthTokens),
+		RotationInterval:             rotationInterval,
+		RequestTimeout:               requestTimeout,
+		HTTPReadTimeout:              httpReadTimeout,
+		SessionCallTimeout:           sessionCallTimeout,
+		TokenRotation:                tokenRotation,
+		ModelLocks:                   modelLocks,
+		APIKeys:                      dedupeStrings(raw.APIKeys),
+		AdminToken:                   adminToken,
+		DashboardRequireLogin:        dashboardRequireLogin,
+		HTTP2Upstream:                raw.HTTP2Upstream,
+		CostMode:                     strings.TrimSpace(raw.CostMode),
+		ActingUserID:                 strings.TrimSpace(raw.ActingUserID),
+		TLSFingerprint:               strings.TrimSpace(raw.TLSFingerprint),
+		RegistryRefresh:              registryRefresh,
+		DebugDump:                    raw.DebugDump,
+		DevToolsEnabled:              raw.DevToolsEnabled,
+		LogFile:                      strings.TrimSpace(raw.LogFile),
+		LogLevel:                     strings.TrimSpace(raw.LogLevel),
+		LogFormat:                    logFormat,
+		LogAccess:                    raw.LogAccess,
+		LogRingSize:                  logRingSize,
+		LogConsoleWindow:             logConsoleWindow,
+		LogTableRetention:            logTableRetention,
+		BridgeEnabled:                raw.BridgeEnabled,
+		BridgeIdleEvict:              bridgeIdleEvict,
+		IdleRotationTimeout:          idleRotationTimeout,
+		SessionIdleEnd:               sessionIdleEnd,
+		SafeMode:                     raw.SafeMode,
+		ModelsHideUnavailable:        raw.ModelsHideUnavailable,
+		ModelsAllow:                  splitList(string(raw.ModelsAllow)),
+		CORSAllowedOrigin:            strings.TrimSpace(raw.CORSAllowedOrigin),
+		RequestJitter:                requestJitter,
+		CLIVersion:                   strings.TrimSpace(raw.CLIVersion),
+		ModelAliases:                 modelAliases,
+		TransientRetries:             transientRetries,
+		SessionPersist:               raw.SessionPersist,
+		SessionStateFile:             strings.TrimSpace(raw.SessionStateFile),
+		RunFinishQueueSize:           runFinishQueueSize,
+		RunFinishInlineTimeout:       runFinishInlineTimeout,
+		RunsDrainQueueCap:            runsDrainQueueCap,
+		RunsDrainTTL:                 runsDrainTTL,
+		SessionReAdmitLead:           sessionReAdmitLead,
+		SessionProbeCacheTTL:         sessionProbeCacheTTL,
+		ModelUnavailableCacheTTL:     modelUnavailableCacheTTL,
+		WebhookURL:                   strings.TrimSpace(raw.WebhookURL),
+		FallbackAfter:                fallbackAfter,
+		FallbackModels:               fallbackModels,
+		AdoptCLISession:              raw.AdoptCLISession,
+		MaturityEnabled:              raw.MaturityEnabled,
+		MaturityDryRun:               raw.MaturityDryRun,
+		MaturityTouchModel:           maturityTouchModel,
+		MaturityTargetDays:           maturityTargetDays,
+		QuotaAutoProbe:               raw.QuotaAutoProbe,
+		QuotaProbeActiveInterval:     quotaProbeActiveInterval,
+		QuotaProbeIdleHeartbeat:      quotaProbeIdleHeartbeat,
+		RoutingSmart:                 raw.RoutingSmart,
+		TokenMaxConcurrent:           tokenMaxConcurrent,
+		QueueWait:                    queueWait,
+		QueueDepth:                   queueDepth,
+		QuotaFallbackModels:          quotaFallbackModels,
+		WaitingRoomChain:             raw.WaitingRoomChain,
+		RateLimitPerIP:               rateLimitPerIP,
+		RateLimitBurst:               rateLimitBurst,
+		DashboardEnabled:             raw.DashboardEnabled,
+		EnvFile:                      envFileUsed,
+		CompressPrompt:               parseCompressPrompt(raw.CompressPrompt),
+		CacheControlInjection:        parseCacheControlInjection(raw.CacheControlInjection),
+		ReasoningInContent:           parseReasoningInContent(raw.ReasoningInContent),
+		RateLimitFailover:            raw.RateLimitFailover == nil || *raw.RateLimitFailover,
+		MaxSpendPerDay:               maxSpendPerDay,
+		BridgeRateLimitPerToken:      bridgeRateLimitPerToken,
+		BridgeCircuitBreakerFailures: bridgeCircuitBreakerFailures,
+		BridgeCircuitBreakerWindow:   bridgeCircuitBreakerWindow,
+		BridgeCircuitBreakerCooldown: bridgeCircuitBreakerCooldown,
+		AutoRotateOnExhaustion:       raw.AutoRotateOnExhaustion,
+		ExhaustionWarningThreshold:   exhaustionWarningThreshold,
+		HealthScoreEnabled:           healthScoreEnabled,
+		TokenHealthProbes:            raw.TokenHealthProbes,
+		TokenProbeInterval:           tokenProbeInterval,
 	}
 
 	// Auto-discover CLI token if a discovery hook was wired (LoadOpts,
@@ -779,8 +679,7 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	// SafeMode presets: when SAFE_MODE=true, apply recommended defaults for
 	// account-safety knobs that were NOT explicitly configured. Explicit
 	// "0"/disabled values always win (IDLE_ROTATION_TIMEOUT=0 or
-	// REQUEST_JITTER=0 stay disabled). MAX_MESSAGES_PER_DAY is never preset:
-	// it defaults to 0 (unlimited); the upstream 429 lock enforces quotas.
+	// REQUEST_JITTER=0 stay disabled).
 	if cfg.SafeMode {
 		if !idleRotationSet && cfg.IdleRotationTimeout == 0 {
 			cfg.IdleRotationTimeout = 30 * time.Minute
@@ -887,11 +786,8 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideStringFrom(&raw.LogFormat, get, "LOG_FORMAT")
 	overrideBoolFrom(&raw.LogAccess, get, "LOG_ACCESS")
 	overrideIntFrom(&raw.LogRingSize, get, "LOG_RING_SIZE")
-	overrideIntFrom(&raw.MaxMessagesPerDay, get, "MAX_MESSAGES_PER_DAY")
-	overrideIntFrom(&raw.MaxRequestsPerDay, get, "MAX_REQUESTS_PER_DAY")
-	overrideIntFrom(&raw.MaxRequestsPerMinute, get, "MAX_REQUESTS_PER_MINUTE")
-	overrideIntFrom(&raw.BridgeDailyLimit, get, "BRIDGE_DAILY_LIMIT")
-	overrideIntFrom(&raw.MaxSpendPerDay, get, "MAX_SPEND_PER_DAY")
+	overrideStringFrom(&raw.LogConsoleWindow, get, "LOG_CONSOLE_WINDOW")
+	overrideStringFrom(&raw.LogTableRetention, get, "LOG_TABLE_RETENTION")
 	overrideBoolFrom(&raw.BridgeEnabled, get, "BRIDGE_ENABLED")
 	overrideStringFrom(&raw.BridgeIdleEvict, get, "BRIDGE_IDLE_EVICT")
 	overrideStringFrom(&raw.IdleRotationTimeout, get, "IDLE_ROTATION_TIMEOUT")
@@ -910,10 +806,6 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideBoolFrom(&raw.SessionPersist, get, "SESSION_PERSIST")
 	overrideStringFrom(&raw.SessionStateFile, get, "SESSION_STATE_FILE")
 	overrideBoolFrom(&raw.HTTP2Upstream, get, "HTTP2_UPSTREAM")
-	overrideIntFrom(&raw.SessionCreateMaxParallelGlobal, get, "SESSION_CREATE_MAX_PARALLEL_GLOBAL")
-	overrideIntFrom(&raw.SessionCreateMaxParallelPerModel, get, "SESSION_CREATE_MAX_PARALLEL_PER_MODEL")
-	overrideIntFrom(&raw.ChatMaxInflightMetered, get, "CHAT_MAX_INFLIGHT_METERED")
-	overrideIntFrom(&raw.ChatMaxInflightUnmetered, get, "CHAT_MAX_INFLIGHT_UNMETERED")
 	overrideIntFrom(&raw.RunFinishQueueSize, get, "RUN_FINISH_QUEUE_SIZE")
 	overrideStringFrom(&raw.RunFinishInlineTimeout, get, "RUN_FINISH_INLINE_TIMEOUT")
 	overrideIntFrom(&raw.RunsDrainQueueCap, get, "RUNS_DRAIN_QUEUE_CAP")
@@ -933,10 +825,6 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideBoolFrom(&raw.QuotaAutoProbe, get, "QUOTA_AUTO_PROBE")
 	overrideStringFrom(&raw.QuotaProbeActiveInterval, get, "QUOTA_PROBE_ACTIVE_INTERVAL")
 	overrideStringFrom(&raw.QuotaProbeIdleHeartbeat, get, "QUOTA_PROBE_IDLE_HEARTBEAT")
-	overrideBoolFrom(&raw.BurstBalanceEnabled, get, "BURST_BALANCE_ENABLED")
-	overrideStringFrom(&raw.BurstWindow, get, "BURST_WINDOW")
-	overrideIntFrom(&raw.BurstThreshold, get, "BURST_THRESHOLD")
-	overrideIntFrom(&raw.BurstMaxTokens, get, "BURST_MAX_TOKENS")
 	overrideBoolFrom(&raw.RoutingSmart, get, "ROUTING_SMART")
 	overrideIntFrom(&raw.TokenMaxConcurrent, get, "TOKEN_MAX_CONCURRENT")
 	overrideStringFrom(&raw.QueueWait, get, "QUEUE_WAIT")
@@ -1105,7 +993,7 @@ func parseBoolPtr(s string) (*bool, bool) {
 	return new(b), true
 }
 
-// overrideInt sets target from MAX_MESSAGES_PER_DAY-style env vars; unset or
+// overrideInt sets target from int env vars; unset or
 // unparseable values leave the file/default value untouched.
 func overrideInt(target **int, envName string) {
 	override(target, os.Getenv, envName, parseIntPtr)

@@ -164,15 +164,14 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 // leaseFromOrder runs the token failover loop against the given order.
 // Extracted from Acquire so the leader-election follower path can call it
 // with a reordered token list without duplicating the loop.
-func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string, cfg *config.Config, toks *[]*tokenEntry, order []int, quotaLimited []*upstream.RateLimitError) (*Lease, error) {
+func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string, cfg *config.Config, toks *[]*tokenEntry, order []int, quotaLimited []rateLimitEntry) (*Lease, error) {
 	var errs []string
 	var waiting []*session.WaitingRoomError
-	var rateLimited []*upstream.RateLimitError
+	var rateLimited []rateLimitEntry
 	var ipCapped []*upstream.IpCappedError
 	var banned []*upstream.BanError
 	var countryBlocked []*upstream.CountryBlockedError
 	var modelLimited []*upstream.LimitedIpError
-	var dailyLimited []*upstream.RateLimitError
 	for _, idx := range order {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -190,24 +189,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			continue
 		}
 		name := fmt.Sprintf("token-%d", idx+1)
-
-		// Per-minute request cap (MAX_REQUESTS_PER_MINUTE) and daily request
-		// cap (MAX_REQUESTS_PER_DAY): mirrors the direct loop — capped
-		// tokens are skipped so the pool rolls to the next account; the
-		// day-cap error rides the rate-limited bucket with RetryAfter =
-		// next Pacific midnight (the official daily reset instant).
-		if cfg.MaxRequestsPerMinute > 0 && p.rpmCount(idx) >= cfg.MaxRequestsPerMinute {
-			rateLimited = append(rateLimited, p.rpmLimitError(idx))
-			errs = append(errs, fmt.Sprintf("%s: per-minute request limit (%d) reached", name, cfg.MaxRequestsPerMinute))
-			p.logger.Debug("pool: token skipped (per-minute request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerMinute)
-			continue
-		}
-		if cfg.MaxRequestsPerDay > 0 && p.dayRequestCount(idx) >= cfg.MaxRequestsPerDay {
-			rateLimited = append(rateLimited, p.dayRequestLimitError(idx))
-			errs = append(errs, fmt.Sprintf("%s: daily request limit (%d) reached", name, cfg.MaxRequestsPerDay))
-			p.logger.Debug("pool: token skipped (daily request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerDay)
-			continue
-		}
 
 		// Quarantined tokens (terminal account state: banned,
 		// country_blocked, 401 invalid) are permanently skipped — the pool
@@ -295,16 +276,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 					}
 				}
 				if rle := tok.runs.RateLimitError(); rle != nil {
-					dup := false
-					for _, existing := range rateLimited {
-						if existing.Error() == rle.Error() {
-							dup = true
-							break
-						}
-					}
-					if !dup {
-						rateLimited = append(rateLimited, rle)
-					}
+					rateLimited = appendRateLimitEntry(rateLimited, rle, idx)
 				}
 				if ice := tok.runs.IpCappedError(); ice != nil {
 					dup := false
@@ -322,29 +294,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			}
 		}
 
-		// Daily rolling cap: a token that already sent its
-		// MAX_MESSAGES_PER_DAY successful chats in the last 24h is skipped
-		// like a cooldown; when every token is capped, the pool surfaces a
-		// 429 with the earliest window reset.
-		if cfg.MaxMessagesPerDay > 0 && p.usageCount(idx) >= cfg.MaxMessagesPerDay {
-			dailyLimited = append(dailyLimited, p.dailyLimitError(idx))
-			errs = append(errs, fmt.Sprintf("%s: daily message limit (%d) reached", name, cfg.MaxMessagesPerDay))
-			p.logger.Debug("pool: token skipped (daily message limit)", "token", idx+1, "limit", cfg.MaxMessagesPerDay)
-			continue
-		}
-		// No second per-minute pre-filter here: MAX_REQUESTS_PER_MINUTE is
-		// pre-filtered above and enforced atomically at lease grant
-		// (tryAdmitRequest) — nothing between mutates the RPM window.
-		// Daily request cap (MAX_REQUESTS_PER_DAY): a token that already
-		// sent its daily successful-request quota is skipped like the daily
-		// message cap; it unlocks at the next Pacific midnight — the same
-		// instant upstream rolls its daily quota windows.
-		if cfg.MaxRequestsPerDay > 0 && p.dayRequestCount(idx) >= cfg.MaxRequestsPerDay {
-			dailyLimited = append(dailyLimited, p.dayRequestLimitError(idx))
-			errs = append(errs, fmt.Sprintf("%s: daily request limit (%d) reached", name, cfg.MaxRequestsPerDay))
-			p.logger.Debug("pool: token skipped (daily request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerDay)
-			continue
-		}
 		// Smart-routing live-turn slot (TOKEN_MAX_CONCURRENT, route_smart.go):
 		// a lease is granted only while the token holds fewer live turns
 		// than the cap; otherwise the caller parks FIFO until QUEUE_WAIT
@@ -357,25 +306,29 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		var routeSlot *routeSlotPermit
 		if cfg.RoutingSmart {
 			slotCap, slotDepth, slotWait := routeSlotParams(cfg)
-			permit, _, slotErr := p.routeSlotAcquire(ctx, tok, idx+1, slotCap, slotDepth, slotWait)
-			if slotErr != nil {
-				if routeIsQueueExhausted(slotErr) {
-					live := p.routeSlotLive(tok)
-					rateLimited = appendRateLimit(rateLimited, routeQueueRateLimit(slotErr.(*routeQueueExhaustedError), model, slotCap, live))
-					errs = append(errs, fmt.Sprintf("%s: %v", name, slotErr))
-					p.logger.Debug("pool: token skipped (live-turn queue exhausted)", "token", idx+1, "err", slotErr)
-					continue
+			// TOKEN_MAX_CONCURRENT=0 skips slot gating entirely: no
+			// counter, no queue — the upstream quota/429 is the brake.
+			if slotCap > 0 {
+				permit, _, slotErr := p.routeSlotAcquire(ctx, tok, idx+1, slotCap, slotDepth, slotWait)
+				if slotErr != nil {
+					if routeIsQueueExhausted(slotErr) {
+						live := p.routeSlotLive(tok)
+						rateLimited = appendRateLimitEntry(rateLimited, routeQueueRateLimit(slotErr.(*routeQueueExhaustedError), model, slotCap, live), idx)
+						errs = append(errs, fmt.Sprintf("%s: %v", name, slotErr))
+						p.logger.Debug("pool: token skipped (live-turn queue exhausted)", "token", idx+1, "err", slotErr)
+						continue
+					}
+					return nil, slotErr
 				}
-				return nil, slotErr
+				routeSlot = permit
 			}
-			routeSlot = permit
 		}
 
-		// Session-create admission gate (issue #86): concurrent session
-		// creates are bounded globally and per model; when the gate is at
-		// capacity the acquire waits (the caller's deadline surfaces as
-		// 503). The permit is held only for the admission call, never
-		// across the upstream chat.
+		// Session admission: the pre-registered per-model leader slot is
+		// updated with the actual token index so sibling waiters can reuse
+		// the admitted session. The smart-path live-turn slot above is the
+		// only local concurrency bound here (the retired create gate used
+		// to cap concurrent admits).
 		p.admissionsMu.Lock()
 		if p.admissions == nil {
 			p.admissions = make(map[string]int)
@@ -385,17 +338,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		p.admissionsMu.Unlock()
 		p.markPersistDirty()
 
-		permit, err := p.gate.acquire(ctx, model)
-		if err != nil {
-			p.admissionsMu.Lock()
-			if p.admissions != nil && (p.admissions[model] == idx || p.admissions[model] == -1) {
-				delete(p.admissions, model)
-			}
-			p.admissionsMu.Unlock()
-			p.markPersistDirty()
-			routeSlot.Release()
-			return nil, err
-		}
 		// Re-validate the entry is still current BEFORE the admission POST:
 		// a concurrent RemoveLastToken/RemoveAllTokens must never admit a
 		// NEW session for an entry the pool no longer owns — a drained
@@ -423,7 +365,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			tok.client.FireWaitingRoomChain(ctx)
 		}
 		instanceID, err := tok.session.EnsureSessionForModel(ctx, model)
-		permit.Release()
 		p.admissionsMu.Lock()
 		if p.admissions != nil && (p.admissions[model] == idx || p.admissions[model] == -1) {
 			delete(p.admissions, model)
@@ -449,7 +390,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				if rle.Model == "" {
 					rle.Model = model
 				}
-				rateLimited = appendRateLimit(rateLimited, rle)
+				rateLimited = appendRateLimitEntry(rateLimited, rle, idx)
 				// Issue #122: the fresh-admission spend ceiling is the
 				// upstream's primary spend gate, so an admission-path
 				// spend_limited counts on the ledger too (same counter as
@@ -550,7 +491,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				if rle.Model == "" {
 					rle.Model = model
 				}
-				rateLimited = appendRateLimit(rateLimited, rle)
+				rateLimited = appendRateLimitEntry(rateLimited, rle, idx)
 				// Issue #122: count run-start spend_limited refusals on the
 				// ledger (same counter as the chat-path refusal).
 				if c.spendLimited {
@@ -587,45 +528,15 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		}
 		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
 			"country", ss.CountryCode)
-		// Per-(token,model) in-flight chat lease cap (burst queue): at most cap
-		// concurrent leases may hold this token+model lane; excess waiters park
-		// until a slot frees or their context expires (wait-or-503, mirroring
-		// the create gate). Metered vs unmetered follows the Freebucks price
-		// table (nil price = unmetered). The permit rides the lease and is
-		// released through the entry pointer (LeaseRelease/LeaseAbandon), never
-		// by index. A removal racing the wait skips the token (the retired
-		// entry drains on its last release) instead of leasing a dead account.
-		chatPermit, _, err := p.chatGate.acquire(ctx, tok, effectiveModel, chatCap(cfg, chatMetered(tok, effectiveModel)))
-		if err != nil {
-			tok.runs.Release(run)
-			routeSlot.Release()
-			return nil, err
-		}
 		if cur := p.roster.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
 			tok.runs.Release(run)
-			chatPermit.Release()
 			routeSlot.Release()
 			continue
 		}
 		lease := &Lease{Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
-			entry: tok, chat: chatPermit, routeSlot: routeSlot, AcquiredAt: time.Now()}
+			entry: tok, routeSlot: routeSlot, AcquiredAt: time.Now()}
 		if cfg.RoutingSmart {
 			p.routeNoteGranted(tok)
-		}
-		// MAX_REQUESTS_PER_MINUTE admission is enforced atomically HERE at
-		// lease grant. The pre-filter above only reads the rolling window;
-		// recording later (in Chat) raced it — a concurrent burst (agent
-		// spawn batches) all passed the cap before any record landed. On a
-		// full window the run is released and the token counted as
-		// rate-limited so the loop tries the next one. Admission is always
-		// recorded (even with cap 0 = unlimited) so the token snapshot
-		// counters stay meaningful.
-		if !p.tryAdmitRequest(tok) {
-			p.LeaseRelease(lease)
-			rateLimited = appendRateLimit(rateLimited, p.rpmLimitError(idx))
-			errs = append(errs, fmt.Sprintf("%s: per-minute request limit (%d) reached", name, cfg.MaxRequestsPerMinute))
-			p.logger.Debug("pool: token skipped (per-minute request limit)", "token", idx+1, "limit", cfg.MaxRequestsPerMinute)
-			continue
 		}
 		// Track the activity and end any idle-maintenance pause: the next
 		// maintain tick resumes rotation/refresh work.
@@ -640,19 +551,16 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		}
 		p.lastTokenByModel[effectiveModel] = idx
 		p.lastTokenMu.Unlock()
-		// Burst accounting (ADR-0023): one same-model admission lands in
-		// the window. No-op unless the kill-switch is on.
-		p.burstRecord(model, idx)
 		return lease, nil
 	}
 
 	// Failover precedence (PRD §6 error matrix): when buckets are mixed the
 	// highest-precedence non-empty bucket wins — ban > country-blocked >
-	// model-IP-limited > rate-limit > ip-capped > waiting-room > daily cap.
+	// model-IP-limited > rate-limit > ip-capped > waiting-room.
 	// Each bucket contributes its best error (first ban, shortest rate
-	// window, first ip_capped, lowest queue position, earliest daily
-	// reset). Only when every bucket is empty — all tokens failed with
-	// errors outside the matrix — is the generic error surfaced.
+	// window, first ip_capped, lowest queue position). Only when every bucket
+	// is empty — all tokens failed with errors outside the matrix — is the
+	// generic error surfaced.
 	// Freebucks-capped tokens were excluded in acquireOrder (never
 	// attempted); their rate-limit reasons land here so a fully-capped pool
 	// surfaces a real 429 with the earliest window reset instead of a
@@ -679,8 +587,8 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		// refusal, never a cached count — ADR-0027), fall back to the
 		// unlimited model (mimo-v2.5) if configured.
 		allQuotaCapped := true
-		for _, rle := range rateLimited {
-			if !isQuotaExhaustedError(rle) {
+		for _, e := range rateLimited {
+			if !isQuotaExhaustedError(e.err) {
 				allQuotaCapped = false
 				break
 			}
@@ -714,7 +622,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			n.Send(notify.Event{Event: "pool_exhausted", TokenIndex: 0, Model: model,
 				Message: "all tokens are rate-limited; the pool cannot serve the request"})
 		}
-		return nil, bestRateLimit(rateLimited)
+		return nil, bestRateLimitEntry(rateLimited)
 	}
 	if len(ipCapped) > 0 {
 		return nil, ipCapped[0]
@@ -723,9 +631,6 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		wr := bestWaitingRoom(waiting)
 		p.logger.Debug("pool: waiting room surfaced", "position", wr.Position, "queue_depth", wr.QueueDepth, "retry_after", wr.RetryAfter.String())
 		return nil, wr
-	}
-	if len(dailyLimited) > 0 {
-		return nil, bestDailyLimit(dailyLimited)
 	}
 	return nil, fmt.Errorf("unable to acquire run from any token: %s", strings.Join(errs, "; "))
 }
