@@ -102,7 +102,7 @@
       ? 'bg-[var(--fp-accent)]/15 border-y-2 border-[var(--fp-accent)]'
       : ''}"
 >
-  <td class="w-[84px]">
+  <td class="w-[1%] whitespace-nowrap !px-2">
     <div class="inline-flex items-center gap-1">
       {#if totalTokens > 1}
         <div class="flex flex-col shrink-0 -my-1">
@@ -145,8 +145,8 @@
       </button>
     </div>
   </td>
-  <td class="w-[1%]">
-    <div class="flex flex-col gap-0.5">
+  <td>
+    <div class="flex min-w-[200px] flex-col gap-0.5">
       <div class="flex items-center justify-between gap-1.5 whitespace-nowrap">
         <span
           class="fp-num text-xs font-semibold whitespace-nowrap text-[var(--fp-text)]"
@@ -164,7 +164,7 @@
       </div>
       {#if token.email || token.account_id}
         <span
-          class="text-[11px] text-[var(--fp-muted)] truncate max-w-[112px]"
+          class="text-[11px] text-[var(--fp-muted)] truncate max-w-[160px]"
           title={token.email || token.account_id}
         >
           {token.email || token.account_id}
