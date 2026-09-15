@@ -53,7 +53,7 @@ test.describe("per-page persist", () => {
       .poll(() => new URL(page.url()).hash, { timeout: 10_000 })
       .toBe("#tokens");
     await expect(
-      page.getByRole("heading", { name: "Tokens", exact: true }),
+      page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
   });
 
@@ -66,7 +66,7 @@ test.describe("per-page persist", () => {
     // (and the normalized hash wins over the stored lastHash).
     await page.goto(admin("models"));
     await expect(
-      page.getByRole("heading", { name: "Plans", exact: true }),
+      page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible();
     expect(new URL(page.url()).hash).toBe("#plans");
   });
@@ -189,7 +189,7 @@ test.describe("per-page persist", () => {
   });
 });
 
-test.describe("settings DB overlay", () => {
+test.describe("settings saved values", () => {
   type Posted = Array<Record<string, unknown>>;
   async function mockSettings(
     page: Parameters<typeof mockDashboard>[0],
@@ -197,8 +197,8 @@ test.describe("settings DB overlay", () => {
     postStatus = 200,
     opts: { degraded?: boolean } = {},
   ) {
-    // Mutable overlay: DELETE drops a key and later GETs reflect the drop,
-    // so the DbOverrideBadge reset round-trip is actually observable.
+    // Mutable saved values: DELETE drops a key and later GETs reflect the drop,
+    // so the saved-value reset round-trip is actually observable.
     let live: Array<Record<string, unknown>> = [
       {
         key: "LOG_LEVEL",
@@ -239,7 +239,6 @@ test.describe("settings DB overlay", () => {
             contentType: "application/json",
             body: JSON.stringify({
               ok: true,
-              message: "X saved to the DB overlay and applied live.",
               code: "setting_saved",
               restart_only: [],
             }),
@@ -273,7 +272,6 @@ test.describe("settings DB overlay", () => {
         contentType: "application/json",
         body: JSON.stringify({
           ok: true,
-          message: "DB override removed.",
           code: "setting_deleted",
         }),
       });
@@ -281,51 +279,53 @@ test.describe("settings DB overlay", () => {
     return deleted;
   }
 
-  test("model routing rows mount with DB badges and per-key save posts the overlay", async ({
+  test("model routing rows mount with saved-value notes and per-key save posts the setting", async ({
     page,
   }) => {
     await mockDashboard(page, loadFixtures());
     const posted: Posted = [];
     await mockSettings(page, posted);
     await mockPageState(page);
-    await page.goto(admin("settings"));
+    await page.goto(admin("plans"));
     await expect(
-      page.getByRole("heading", { name: "Settings", exact: true }),
+      page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
-    // ModelRoutingSettings mounts (it owns these four inputs) and the
-    // seeded db source renders its override badge.
+    // Controls live behind the Usage Controls tab now.
+    await page.getByRole("button", { name: "Controls" }).click();
     await expect(
       page.locator('input[aria-label="MODEL_ALIASES"]'),
     ).toBeVisible();
-    await expect(page.getByText("DB override").first()).toBeVisible();
-    // First row-level save (SAFE_MODE) posts just that key to the overlay.
-    await page
-      .getByRole("button", { name: "Save as override" })
-      .first()
-      .click();
+    await expect(
+      page.getByText("saved value", { exact: true }).first(),
+    ).toBeVisible();
+    // Row-anchored: the locator binds to the MODEL_ALIASES row itself,
+    // so sibling cards cannot shadow its Save.
+    const row = page.locator("div.py-4", {
+      has: page.locator('input[aria-label="MODEL_ALIASES"]'),
+    });
+    await row.getByRole("button", { name: "Save", exact: true }).click();
     await expect
       .poll(() => posted.length, { timeout: 10_000 })
       .toBeGreaterThan(0);
-    expect(posted[0].key).toBe("SAFE_MODE");
+    expect(posted[0].key).toBe("MODEL_ALIASES");
     expect(typeof posted[0].value).toBe("string");
-    await expect(
-      page.getByText(/saved to the DB overlay/i).first(),
-    ).toBeVisible();
+    await expect(page.getByText("Saved.", { exact: true })).toBeVisible();
   });
 
-  test("a rejected overlay value surfaces inline on the row", async ({
+  test("a rejected saved value surfaces inline on the row", async ({
     page,
   }) => {
     await mockDashboard(page, loadFixtures());
     const posted: Posted = [];
     await mockSettings(page, posted, 400);
     await mockPageState(page);
-    await page.goto(admin("settings"));
+    await page.goto(admin("plans"));
+    await page.getByRole("button", { name: "Controls" }).click();
     await expect(page.locator('input[aria-label="MODEL_ALIASES"]')).toBeVisible(
       { timeout: 10_000 },
     );
     await page
-      .getByRole("button", { name: "Save as override" })
+      .getByRole("button", { name: "Save", exact: true })
       .first()
       .click();
     await expect
@@ -336,36 +336,37 @@ test.describe("settings DB overlay", () => {
     ).toBeVisible();
   });
 
-  test("DB badge reset deletes the overlay key and refetches the form", async ({
+  test("saved-value reset deletes the key and refetches the form", async ({
     page,
   }) => {
     await mockDashboard(page, loadFixtures());
     const posted: Posted = [];
     const deleted = await mockSettings(page, posted);
-    await mockPageState(page);
-    await page.goto(admin("settings"));
+    // Moved keys render inline on their section pages now: LOG_LEVEL on
+    // the Logs Logging tab, MODEL_ALIASES on the Usage Controls tab.
+    // One saved-value note per page.
+    await page.goto(admin("activity"));
+    await page.getByRole("button", { name: "Logging" }).click();
+    await expect(page.getByRole("combobox", { name: "LOG_LEVEL" })).toBeVisible(
+      { timeout: 10_000 },
+    );
+    await expect(page.getByText("saved value", { exact: true })).toHaveCount(1);
+    await page.goto(admin("plans"));
+    await page.getByRole("button", { name: "Controls" }).click();
     await expect(page.locator('input[aria-label="MODEL_ALIASES"]')).toBeVisible(
       { timeout: 10_000 },
     );
-    // Two seeded db rows → two override badges + plural count copy.
-    await expect(page.getByText("DB override", { exact: true })).toHaveCount(2);
-    await expect(
-      page.getByText("2 settings come from the DB overlay"),
-    ).toBeVisible();
+    await expect(page.getByText("saved value", { exact: true })).toHaveCount(1);
+    // Reset on the Usage row drops MODEL_ALIASES and refetches the form.
     const delReq = page.waitForRequest(
       (r) =>
         r.method() === "DELETE" && r.url().includes("/admin/api/settings/"),
     );
-    // First Reset in DOM order drops LOG_LEVEL (Gateway card precedes
-    // Model Routing); the refetch then leaves one badge + singular copy.
     await page.getByRole("button", { name: "Reset" }).first().click();
     await delReq;
-    expect(deleted).toEqual(["LOG_LEVEL"]);
-    await expect(page.getByText("DB override", { exact: true })).toHaveCount(1);
-    await expect(
-      page.getByText("1 setting comes from the DB overlay"),
-    ).toBeVisible();
-    await expect(page.getByText("DB override removed.")).toBeVisible();
+    expect(deleted).toEqual(["MODEL_ALIASES"]);
+    await expect(page.getByText("saved value", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Saved value removed.")).toBeVisible();
   });
 
   test("degraded store banners read-only while the .env form stays usable", async ({
@@ -373,17 +374,20 @@ test.describe("settings DB overlay", () => {
   }) => {
     await mockDashboard(page, loadFixtures());
     await mockSettings(page, [], 200, { degraded: true });
-    await mockPageState(page);
-    await page.goto(admin("settings"));
-    await expect(page.locator('input[aria-label="MODEL_ALIASES"]')).toBeVisible(
+    // Degraded banner + usable .env save render on the Logs Logging tab.
+    await page.goto(admin("activity"));
+    await page.getByRole("button", { name: "Logging" }).click();
+    await expect(page.getByRole("combobox", { name: "LOG_LEVEL" })).toBeVisible(
       { timeout: 10_000 },
     );
     await expect(page.getByText("DB overlay unavailable")).toBeVisible();
-    await expect(page.getByText(/runs live-only/)).toBeVisible();
-    // The .env form keeps working: editing a key enables Save Changes.
+    await expect(
+      page.getByText(/per-key overlay saves are disabled/),
+    ).toBeVisible();
+    // The inline form keeps working: editing a key enables Save Changes.
     await page
-      .locator('input[aria-label="MODEL_ALIASES"]')
-      .fill("gpt-4o:openai/gpt-5.6-luna,x:y");
+      .getByRole("combobox", { name: "LOG_LEVEL" })
+      .selectOption("debug");
     await expect(
       page.getByRole("button", { name: "Save Changes", exact: true }),
     ).toBeEnabled();

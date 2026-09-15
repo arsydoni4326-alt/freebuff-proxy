@@ -26,9 +26,9 @@
   let error = $state("");
 
   // Issue #322: restart/deploy-only fields (mode, model_count, safe_mode,
-  // transient_retries, max_messages_per_day, upstream_sync) and account-stable
-  // card fields (email, standing_*, referral_*) ride a once-per-mount full
-  // fetch; the 15s hot poll hits ?view=live and merges over the cached static
+  // transient_retries, upstream_sync) and account-stable card fields
+  // (email, standing_*, referral_*) ride a once-per-mount full fetch; the
+  // 15s hot poll hits ?view=live and merges over the cached static
   // snapshot. A full refresh every ~5min (or when the cache is empty) picks
   // up mid-session changes (mode switches, trust updates, registry syncs).
   const STATIC_TOP_KEYS = [
@@ -39,7 +39,6 @@
     "models",
     "model_count",
     "safe_mode",
-    "max_messages_per_day",
     "transient_retries",
     "fingerprint_rotations",
     "is_default_admin_token",
@@ -48,7 +47,6 @@
   const STATIC_TOKEN_KEYS = [
     "email",
     "account_id",
-    "daily_limit",
     "has_standing",
     "standing_level",
     "standing_label",
@@ -144,9 +142,12 @@
       releaseQuery?.();
     };
   });
-  // Worst-account callout: single riskiest token (critical > high > medium;
-  // tie-breaks: cooldown active wins, then lowest requests/day headroom).
-  const RISK_RANK = { critical: 0, high: 1, medium: 2 };
+  // Worst-account callout: single token needing attention — banned first,
+  // then cooldown active, then lowest requests/day headroom.
+  function isBanned(t) {
+    if (t.ban_type) return true;
+    return t.session_status === "banned" || t.session_status === "quarantined";
+  }
   function dayHeadroom(t) {
     const limit = t.requests_per_day_limit ?? 0;
     if (!(limit > 0)) return Number.POSITIVE_INFINITY;
@@ -159,10 +160,8 @@
     for (let i = 1; i < tokens.length; i++) {
       const a = tokens[i];
       const b = worst;
-      const ra = RISK_RANK[a.risk_level] ?? 3;
-      const rb = RISK_RANK[b.risk_level] ?? 3;
-      if (ra !== rb) {
-        if (ra < rb) worst = a;
+      if (!!isBanned(a) !== !!isBanned(b)) {
+        if (isBanned(a)) worst = a;
         continue;
       }
       if (!!a.cooldown_active !== !!b.cooldown_active) {
@@ -171,11 +170,7 @@
       }
       if (dayHeadroom(a) < dayHeadroom(b)) worst = a;
     }
-    if (
-      worst.risk_level === "critical" ||
-      worst.risk_level === "high" ||
-      worst.cooldown_active
-    ) {
+    if (isBanned(worst) || worst.cooldown_active) {
       return worst;
     }
     return null;
@@ -233,7 +228,7 @@
     data?.tokens?.filter((t) => t.cooldown_active).length ?? 0,
   );
   let bannedTokens = $derived(
-    data?.tokens?.filter((t) => t.risk_level === "critical").length ?? 0,
+    data?.tokens?.filter((t) => isBanned(t)).length ?? 0,
   );
   let requestsToday = $derived(
     data?.tokens?.reduce((s, t) => s + (t.requests || 0), 0) ?? 0,
@@ -424,7 +419,7 @@
           {
             label: $tr("Banned"),
             value: bannedTokens,
-            hint: $tr("critical risk"),
+            hint: $tr("banned accounts"),
             tone: bannedTokens > 0 ? "bad" : "default",
           },
           { label: $tr("Requests today"), value: requestsToday },
@@ -435,14 +430,13 @@
         {@const w = worstAccount}
         {@const cd = cooldownLabel(w, Date.now())}
         <Alert
-          tone={w.risk_level === "critical" ? "error" : "warning"}
+          tone={isBanned(w) ? "error" : "warning"}
           title={$tr("Account #{index} needs attention", {
             index: w.index,
           })}
         >
           <p class="text-sm">
             {w.email || $tr("unknown account")}
-            <span class="fp-num text-xs">· {w.risk_level}</span>
           </p>
           {#if w.cooldown_active}
             <p class="mt-1 text-xs">
@@ -577,7 +571,9 @@
 
     <!-- Universal Client Integration & Endpoints Card (Always Available) -->
     <section aria-label="Client integration">
-      <div class="flex items-center justify-between mb-3">
+      <div
+        class="flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between mb-3"
+      >
         <h2 class="text-lg font-semibold text-[var(--fp-text)]">
           {$tr("Client Integration")}
         </h2>
@@ -626,7 +622,7 @@
                   class="px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono text-[10px] text-[var(--fp-accent)]"
                   >OpenAI</span
                 >
-                <span class="font-mono text-[var(--fp-text)] truncate"
+                <span class="font-mono text-[var(--fp-text)] min-w-0 break-all"
                   >POST /v1/chat/completions</span
                 >
               </div>
@@ -642,7 +638,7 @@
                   class="px-1.5 py-0.5 rounded bg-[var(--fp-surface)] border border-[var(--fp-border)] font-mono text-[10px] text-[#A78BFA]"
                   >Anthropic</span
                 >
-                <span class="font-mono text-[var(--fp-text)] truncate"
+                <span class="font-mono text-[var(--fp-text)] min-w-0 break-all"
                   >POST /v1/messages</span
                 >
               </div>

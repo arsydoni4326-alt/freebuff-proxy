@@ -33,26 +33,12 @@ func (c Config) Validate() error {
 		return errors.New("REQUEST_JITTER cannot be negative")
 	case c.TransientRetries < 0:
 		return errors.New("TRANSIENT_RETRIES cannot be negative")
-	case c.SessionCreateMaxParallelGlobal < 0 || c.SessionCreateMaxParallelPerModel < 0:
-		return errors.New("SESSION_CREATE_MAX_PARALLEL_GLOBAL/PER_MODEL cannot be negative (0 = unlimited)")
-	case c.ChatMaxInflightMetered < 0 || c.ChatMaxInflightUnmetered < 0:
-		return errors.New("CHAT_MAX_INFLIGHT_METERED/UNMETERED cannot be negative (0 = unlimited)")
 	case c.RunFinishQueueSize < 0 || c.RunsDrainQueueCap < 0:
 		return errors.New("RUN_FINISH_QUEUE_SIZE/RUNS_DRAIN_QUEUE_CAP cannot be negative (0 = default)")
 	case c.SessionPersist && strings.TrimSpace(c.SessionStateFile) == "":
 		return errors.New("SESSION_STATE_FILE cannot be empty when SESSION_PERSIST is enabled")
 	case c.CostMode != "" && c.CostMode != "free":
 		return errors.New(`COST_MODE must be "free" or unset -- any other value (e.g. a typo) routes requests as PAID and fresh free accounts get 402 "Out of credits"`)
-	case c.MaxMessagesPerDay < 0:
-		return errors.New("MAX_MESSAGES_PER_DAY cannot be negative")
-	case c.MaxRequestsPerDay < 0:
-		return errors.New("MAX_REQUESTS_PER_DAY cannot be negative")
-	case c.MaxRequestsPerMinute < 0:
-		return errors.New("MAX_REQUESTS_PER_MINUTE cannot be negative")
-	case c.BridgeDailyLimit < 0:
-		return errors.New("BRIDGE_DAILY_LIMIT cannot be negative")
-	case c.MaxSpendPerDay < 0:
-		return errors.New("MAX_SPEND_PER_DAY cannot be negative")
 	case c.LogRingSize != 0 && (c.LogRingSize < 50 || c.LogRingSize > 5000):
 		return errors.New("LOG_RING_SIZE must be between 50 and 5000 (default 500)")
 	case c.RateLimitPerIP < 0:
@@ -67,22 +53,12 @@ func (c Config) Validate() error {
 		return errors.New("BRIDGE_CIRCUIT_BREAKER_WINDOW cannot be negative")
 	case c.BridgeCircuitBreakerCooldown < 0:
 		return errors.New("BRIDGE_CIRCUIT_BREAKER_COOLDOWN cannot be negative")
-	case c.RiskMediumThreshold < 0 || c.RiskMediumThreshold > 100:
-		return errors.New("RISK_THRESHOLD_MEDIUM must be between 1 and 100")
-	case c.RiskHighThreshold < 0 || c.RiskHighThreshold > 100:
-		return errors.New("RISK_THRESHOLD_HIGH must be between 1 and 100")
-	case c.RiskMediumThreshold != 0 && c.RiskHighThreshold != 0 && c.RiskMediumThreshold >= c.RiskHighThreshold:
-		return errors.New("RISK_THRESHOLD_MEDIUM must be strictly less than RISK_THRESHOLD_HIGH")
 	case c.MaturityTargetDays < 0 || c.MaturityTargetDays > 28:
 		return errors.New("MATURITY_TARGET_DAYS must be between 1 and 28 (one full streak interval is 7)")
-	case c.BurstMaxTokens != 0 && c.BurstMaxTokens < 2:
-		return errors.New("BURST_MAX_TOKENS must be at least 2 (burst spreading needs two or more accounts)")
-	case c.BurstThreshold < 0:
-		return errors.New("BURST_THRESHOLD cannot be negative")
-	case c.BurstWindow < 0:
-		return errors.New("BURST_WINDOW cannot be negative")
 	case c.QueueDepth < 0:
 		return errors.New("QUEUE_DEPTH cannot be negative (0 disables slot queueing)")
+	case c.TokenMaxConcurrent < 0:
+		return errors.New("TOKEN_MAX_CONCURRENT cannot be negative (0 = unlimited)")
 	}
 	for src, target := range c.QuotaFallbackModels {
 		if strings.TrimSpace(src) == "" || strings.TrimSpace(target) == "" {

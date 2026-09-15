@@ -24,12 +24,6 @@ type BridgeTokenSnapshot struct {
 	// when the bridge entry has no Freebucks quota.
 	Freebucks *upstream.FreebucksInfo `json:"freebucks,omitempty"`
 	SpendDay  float64                 `json:"spend_day"`
-	SpendPct  int                     `json:"spend_pct"`
-	// RequestsPerMinute / RequestsPerDay mirror TokenSnapshot's local
-	// request counters (MAX_REQUESTS_PER_MINUTE rolling 60s admitted;
-	// MAX_REQUESTS_PER_DAY successful chats in the current Pacific day).
-	RequestsPerMinute int `json:"requests_per_minute"`
-	RequestsPerDay    int `json:"requests_per_day"`
 	// BanType / BannedUntil mirror TokenSnapshot's active-ban view
 	// (issues #198/#199): "temporary" (auto-lifts at BannedUntil) vs
 	// "hard" (never self-heals); zero values when no ban is active.
@@ -40,6 +34,10 @@ type BridgeTokenSnapshot struct {
 	// Exposed so /healthz and bridge metrics can surface dead-token counts
 	// without any plaintext token material.
 	DeadToken bool `json:"dead_token,omitempty"`
+	// SpendPct is the advisory spend day-bucket as a percentage of
+	// MAX_SPEND_PER_DAY (0 hidden; informational — the upstream $ ceilings
+	// are server-enforced). Surfaced on /healthz for operator context.
+	SpendPct int `json:"spend_pct,omitempty"`
 	// Rate limit hit/miss counters for dashboard introspection (#bridge-quota-dashboard).
 	RateLimitHits   int64   `json:"rate_limit_hits"`
 	RateLimitMisses int64   `json:"rate_limit_misses"`
@@ -67,7 +65,6 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 	toks := p.roster.Load()
 	out := make([]TokenSnapshot, 0, len(*toks))
 	cfg := p.cfg.Load()
-	dailyLimit := cfg.MaxMessagesPerDay
 	spendLimit := cfg.MaxSpendPerDay
 	// Model-allowlist view (MODEL_LOCKS, issue #325): per-slot lists for
 	// the dashboard + metrics. Read once per snapshot; hot-reload safe.
@@ -92,38 +89,6 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			if cbe.CountryBlockReason != "" {
 				countryReason = cbe.CountryBlockReason
 			}
-		}
-
-		usagePct := 0
-		if dailyLimit > 0 {
-			usagePct = (msgs * 100) / dailyLimit
-			if usagePct > 100 {
-				usagePct = 100
-			}
-		}
-
-		riskLevel := "low"
-		switch {
-		// Ban is checked first: CooldownBan fills the shared cooldown
-		// deadline, so the cooldown case below would otherwise shadow a
-		// banned token as "high". The ban risk is gated on the ban window
-		// still being active (BannedUntil) so an expired ban does not stay
-		// sticky "critical" forever.
-		// A HARD ban has BannedUntil zero (no timed window) and stays live
-		// for good — it must still rank critical instead of falling through
-		// to the usage cases.
-		case rs.BanError != nil && (rs.BannedUntil.IsZero() || time.Now().Before(rs.BannedUntil)):
-			riskLevel = "critical"
-		case !rs.CooldownUntil.IsZero() && time.Now().Before(rs.CooldownUntil):
-			riskLevel = "high"
-		case dailyLimit > 0 && usagePct >= 90:
-			riskLevel = "critical"
-		case dailyLimit > 0 && usagePct >= 70:
-			riskLevel = "high"
-		case msgs > 120:
-			riskLevel = "high"
-		case (dailyLimit > 0 && usagePct >= 30) || msgs >= 50:
-			riskLevel = "moderate"
 		}
 
 		spend := p.spendSnapshot(i)
@@ -160,16 +125,6 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			sessionRemaining = ss.RemainingMs / 1000
 		}
 
-		// Advisory spend ceiling (issue #122): the Pacific-day bucket vs
-		// MAX_SPEND_PER_DAY, capped at 100% like UsagePct. Informational only —
-		// the upstream $ ceilings are server-enforced.
-		spendPct := 0
-		if spendLimit > 0 {
-			spendPct = int((spend.Day * 100) / spendLimit)
-			if spendPct > 100 {
-				spendPct = 100
-			}
-		}
 		// Active-ban view for healthz/dashboard consumers (issues #198/#199).
 		banType, bannedUntil := banView(rs.BanError, rs.BannedUntil)
 		q := tok.quarantine.Load()
@@ -221,14 +176,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			ActiveRuns:              rs.ActiveRuns,
 			Requests:                rs.Requests,
 			Messages24h:             msgs,
-			DailyLimit:              dailyLimit,
-			UsagePct:                usagePct,
-			RequestsPerMinute:       p.rpmCount(i),
 			RequestsPerDay:          p.dayRequestCount(i),
-			RequestsPerMinuteLimit:  p.cfg.Load().MaxRequestsPerMinute,
-			RequestsPerDayLimit:     p.cfg.Load().MaxRequestsPerDay,
-			RequestsPerDayResetIn:   p.roster.dayRequestResetIn(i),
-			RiskLevel:               riskLevel,
 			SessionStatus:           sessionStatus,
 			SessionInstanceID:       ss.InstanceID,
 			SessionQueuePosition:    ss.QueuePosition,
@@ -273,8 +221,6 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			SpendDayStart:           spend.DayStart,
 			SpendWeekStart:          spend.WeekStart,
 			SpendMonthStart:         spend.MonthStart,
-			SpendLimit:              spendLimit,
-			SpendPct:                spendPct,
 			SpendLimited:            spend.SpendLimited,
 			BanType:                 banType,
 			BannedUntil:             bannedUntil,

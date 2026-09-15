@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"time"
+
+	"freebuff-proxy/backend/internal/upstream"
 )
 
 // pool_persist.go — pool runtime write-through cache (DB-unified-storage).
@@ -21,25 +23,23 @@ import (
 // live-only and never blocks the request hot path.
 //
 // Persist allowlist (parent-scoped): ledger counters, admissions counts,
-// bridge daily usage plus survivors, burst hits. Never persisted: live
-// handles (channels, sync.Once, WaitGroup, CancelFunc, atomic.Pointer,
-// Logger, Registry, tokenEntry pointers) and the unfit registry (pure
+// and the live per-token quota cache (QuotaByModel + QuotaSavedAt).
+// Never persisted: live handles (channels, sync.Once, WaitGroup,
+// CancelFunc, atomic.Pointer, Logger, Registry, tokenEntry pointers) and
+// the unfit registry (pure
 // 5-minute TTL episode state; a restart starts servable and re-marks on
 // the next upstream limited_ip refusal).
 //
 // Key namespace (stable strings; store never interprets values):
 //
-//	pool/ledger/<sha256hex(token)>  one AccountLedger blob per token
-//	pool/admissions                  in-flight session admissions by model
-//	pool/burst                       per-model sliding-window burst hits
-//	pool/bridge/usage                global bridge daily counter
-//	pool/bridge/survivors            evicted bridge usage survivors
+//	pool/ledger/<sha256hex(token)>       one AccountLedger blob per token
+//	pool/admissions                       in-flight session admissions by model
+//	pool/probe/quota/<sha256hex(token)>   live quota cache per token (SHA-keyed:
+//	                                      roster order is unstable across restarts)
 const (
-	poolStateAdmissions      = "pool/admissions"
-	poolStateBurst           = "pool/burst"
-	poolStateBridgeUsage     = "pool/bridge/usage"
-	poolStateBridgeSurvivors = "pool/bridge/survivors"
-	poolLedgerPrefix         = "pool/ledger/"
+	poolStateAdmissions  = "pool/admissions"
+	poolLedgerPrefix     = "pool/ledger/"
+	poolProbeQuotaPrefix = "pool/probe/quota/"
 )
 
 // PoolPersist is the persistence backend for pool runtime state. Values
@@ -77,25 +77,34 @@ type poolSpendBlob struct {
 type poolLedgerBlob struct {
 	Usage       []int64       `json:"usage"`
 	Spend       poolSpendBlob `json:"spend"`
-	Requests    []int64       `json:"requests"`
 	ReqDayStart int64         `json:"req_day_start"`
 	ReqDayCount int64         `json:"req_day_count"`
 }
 
-// poolBurstHit is one burst admission at Unix millis UTC.
-type poolBurstHit struct {
-	At  int64 `json:"at"`
-	Tok int   `json:"tok"`
+// poolQuotaRow mirrors one live quota row. ResetAt is Unix millis UTC
+// (0 = absent, preserved as the zero time on restore).
+type poolQuotaRow struct {
+	Model       string             `json:"model"`
+	Limit       float64            `json:"limit"`
+	RecentCount float64            `json:"recent_count"`
+	ResetAt     int64              `json:"reset_at"`
+	Period      string             `json:"period,omitempty"`
+	Pool        string             `json:"pool,omitempty"`
+	PoolLabel   string             `json:"pool_label,omitempty"`
+	Entitlement map[string]float64 `json:"entitlement,omitempty"`
 }
 
-// poolSurvivorBlob is one evicted bridge entry's carried usage.
-type poolSurvivorBlob struct {
-	Count   int   `json:"count"`
-	Evicted int64 `json:"evicted"`
+// poolQuotaBlob is one token's live quota cache: the QuotaByModel map plus
+// the QuotaSavedAt write time (Unix millis UTC). Field names stay
+// snake_case and additive — old rows must still unmarshal after new
+// counters land.
+type poolQuotaBlob struct {
+	SavedAt int64                   `json:"saved_at"`
+	Quota   map[string]poolQuotaRow `json:"quota_by_model"`
 }
 
-// poolTokenHash keys a token's ledger row by the SHA-256 hex of the token
-// value: raw tokens never cross the persistence boundary.
+// poolTokenHash keys a token's per-token rows by the SHA-256 hex of the
+// token value: raw tokens never cross the persistence boundary.
 func poolTokenHash(raw string) string {
 	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
@@ -103,6 +112,10 @@ func poolTokenHash(raw string) string {
 
 // poolLedgerKey returns the pool_state key for one token's ledger blob.
 func poolLedgerKey(tokenHash string) string { return poolLedgerPrefix + tokenHash }
+
+// poolProbeQuotaKey returns the pool_state key for one token's live quota
+// cache blob.
+func poolProbeQuotaKey(tokenHash string) string { return poolProbeQuotaPrefix + tokenHash }
 
 // SetPoolPersist wires the runtime persistence backend (nil disables). The
 // owner calls RestorePoolPersist once at boot after wiring so counters
@@ -146,7 +159,7 @@ func (p *Pool) FlushPoolPersist() error {
 	if st == nil || !p.persistDirty.Swap(false) {
 		return nil
 	}
-	staged, liveLedgers := p.snapshotPoolState()
+	staged, liveLedgers, liveQuotas := p.snapshotPoolState()
 	for _, kv := range staged {
 		if err := st.SavePoolState(kv.key, kv.val); err != nil {
 			p.persistDirty.Store(true)
@@ -154,7 +167,7 @@ func (p *Pool) FlushPoolPersist() error {
 			return err
 		}
 	}
-	// Best-effort orphan prune: ledger rows whose token left the roster
+	// Best-effort orphan prune: per-token rows whose token left the roster
 	// (config reload, RemoveLastToken) must not accumulate across
 	// restarts. Failure is not fatal — the next pass retries.
 	if rows, err := st.ListPoolState(poolLedgerPrefix); err == nil {
@@ -164,21 +177,35 @@ func (p *Pool) FlushPoolPersist() error {
 			}
 		}
 	}
+	if rows, err := st.ListPoolState(poolProbeQuotaPrefix); err == nil {
+		for key := range rows {
+			if !liveQuotas[key] {
+				_ = st.DeletePoolState(key)
+			}
+		}
+	}
 	return nil
 }
 
 // snapshotPoolState copies the allowlisted state under each subsystem's
 // own lock and marshals it. No store I/O happens here. It also returns
-// the live ledger key set for orphan pruning.
-func (p *Pool) snapshotPoolState() (staged []poolKV, liveLedgers map[string]bool) {
+// the live per-token key sets for orphan pruning.
+func (p *Pool) snapshotPoolState() (staged []poolKV, liveLedgers, liveQuotas map[string]bool) {
 	liveLedgers = make(map[string]bool)
+	liveQuotas = make(map[string]bool)
 
 	// Per-token ledgers (roster lock; entry pointers stay in memory —
-	// only the counters cross into blobs).
+	// only the counters cross into blobs). The entry list is also copied
+	// for the quota snapshot below (sessions read outside this lock).
 	p.roster.mu.Lock()
 	ledgers := make([]poolKV, 0)
+	quotaEntries := make([]*tokenEntry, 0)
 	for _, entry := range *p.roster.toks.Load() {
-		if entry == nil || entry.ledger == nil {
+		if entry == nil {
+			continue
+		}
+		quotaEntries = append(quotaEntries, entry)
+		if entry.ledger == nil {
 			continue
 		}
 		key := poolLedgerKey(poolTokenHash(entry.token))
@@ -188,6 +215,48 @@ func (p *Pool) snapshotPoolState() (staged []poolKV, liveLedgers map[string]bool
 	}
 	p.roster.mu.Unlock()
 	staged = append(staged, ledgers...)
+
+	// Live per-token quota cache (session snapshots read outside the
+	// roster lock — the established Snapshot() order — so a slow session
+	// lock never wedges roster mutations). Tokens with neither quota rows
+	// nor a write time stage nothing: a missing row reads as a fresh boot.
+	for _, entry := range quotaEntries {
+		if entry.session == nil {
+			continue
+		}
+		snap := entry.session.Snapshot()
+		if len(snap.QuotaByModel) == 0 && snap.QuotaSavedAt.IsZero() {
+			continue
+		}
+		blob := poolQuotaBlob{Quota: make(map[string]poolQuotaRow, len(snap.QuotaByModel))}
+		if !snap.QuotaSavedAt.IsZero() {
+			blob.SavedAt = snap.QuotaSavedAt.UnixMilli()
+		}
+		for model, q := range snap.QuotaByModel {
+			if model == "" {
+				continue
+			}
+			row := poolQuotaRow{
+				Model:       q.Model,
+				Limit:       q.Limit,
+				RecentCount: q.RecentCount,
+				Period:      q.Period,
+				Pool:        q.Pool,
+				PoolLabel:   q.PoolLabel,
+				Entitlement: q.Entitlement,
+			}
+			if row.Model == "" {
+				row.Model = model
+			}
+			if !q.ResetAt.IsZero() {
+				row.ResetAt = q.ResetAt.UnixMilli()
+			}
+			blob.Quota[model] = row
+		}
+		key := poolProbeQuotaKey(poolTokenHash(entry.token))
+		staged = append(staged, poolKV{key: key, val: mustMarshalPool(blob)})
+		liveQuotas[key] = true
+	}
 
 	// Admissions (transient in-flight counts; restored as-is, self-heals
 	// on the next admission cycle).
@@ -199,32 +268,7 @@ func (p *Pool) snapshotPoolState() (staged []poolKV, liveLedgers map[string]bool
 	p.admissionsMu.Unlock()
 	staged = append(staged, poolKV{key: poolStateAdmissions, val: mustMarshalPool(adm)})
 
-	// Burst hits (millis; restore prunes out-of-window hits).
-	p.burstMu.Lock()
-	burst := make(map[string][]poolBurstHit, len(p.burstHits))
-	for m, hits := range p.burstHits {
-		cp := make([]poolBurstHit, 0, len(hits))
-		for _, h := range hits {
-			cp = append(cp, poolBurstHit{At: h.at.UnixMilli(), Tok: h.tok})
-		}
-		burst[m] = cp
-	}
-	p.burstMu.Unlock()
-	staged = append(staged, poolKV{key: poolStateBurst, val: mustMarshalPool(burst)})
-
-	// Bridge daily usage + survivors (survivor eviction times as millis).
-	p.bridgeMu.Lock()
-	usage := p.bridgeDailyUsage
-	survivors := make([]poolSurvivorBlob, 0, len(p.bridgeSurvivors))
-	for _, s := range p.bridgeSurvivors {
-		survivors = append(survivors, poolSurvivorBlob{Count: s.count, Evicted: s.evicted.UnixMilli()})
-	}
-	p.bridgeMu.Unlock()
-	staged = append(staged,
-		poolKV{key: poolStateBridgeUsage, val: mustMarshalPool(usage)},
-		poolKV{key: poolStateBridgeSurvivors, val: mustMarshalPool(survivors)},
-	)
-	return staged, liveLedgers
+	return staged, liveLedgers, liveQuotas
 }
 
 // marshalLedger copies one ledger's counters into its blob form. Caller
@@ -236,9 +280,6 @@ func marshalLedger(l *AccountLedger) poolLedgerBlob {
 	}
 	for _, t := range l.usage {
 		blob.Usage = append(blob.Usage, t.UnixMilli())
-	}
-	for _, t := range l.requests {
-		blob.Requests = append(blob.Requests, t.UnixMilli())
 	}
 	if l.spend != nil {
 		sp := poolSpendBlob{
@@ -258,12 +299,16 @@ func marshalLedger(l *AccountLedger) poolLedgerBlob {
 	return blob
 }
 
-// RestorePoolPersist loads persisted runtime state into the live maps
-// (boot path; the owner calls it once after SetPoolPersist). Missing rows
-// stay zero-valued; corrupt rows warn and are skipped — restore never
-// fails the boot. TTL/expiry is enforced on the way in: out-of-window
-// usage/request/burst/survivor timestamps are dropped and stale spend
-// buckets roll, so a restart never resurrects expired windows.
+// RestorePoolPersist loads persisted runtime state into the live maps.
+// Start calls it automatically after the owner wires the store with
+// SetPoolPersist; direct calls remain for tests and pre-Start restores.
+// Missing rows stay zero-valued (a fresh boot behaves exactly as before);
+// corrupt rows warn and are skipped — restore never fails the boot.
+// TTL/expiry is enforced on the way in: out-of-window usage timestamps are
+// dropped and stale spend buckets roll, so a restart never resurrects
+// expired windows. Restored quota rows seed the session cache as
+// last-known (stale-marked, dashboard-visible at once); the auto-probe
+// scheduler's freshness gate re-probes them only once aged out.
 func (p *Pool) RestorePoolPersist() {
 	p.persistMu.Lock()
 	st := p.persist
@@ -274,8 +319,72 @@ func (p *Pool) RestorePoolPersist() {
 	now := time.Now()
 	p.restoreLedgers(st, now)
 	p.restoreAdmissions(st)
-	p.restoreBurst(st, now)
-	p.restoreBridge(st, now)
+	p.restoreProbeQuota(st)
+}
+
+// restoreProbeQuota seeds each live token's session quota cache from its
+// SHA-keyed pool_state row, so a restart shows warm data immediately and
+// the first tick probes nothing while the cache is fresh. Rows for tokens
+// no longer in the roster are ignored (the flush prunes them); quota
+// history stays append-only and untouched. Seeding rides the session
+// manager's SeedQuota ts-compare, so a newer live write always wins and
+// re-restores are no-ops.
+func (p *Pool) restoreProbeQuota(st PoolPersist) {
+	// Index the live roster by quota key first (no store I/O under the
+	// roster lock). SHA-keyed, so a roster reorder across restarts still
+	// seeds the right account.
+	p.roster.mu.Lock()
+	byKey := make(map[string]*tokenEntry)
+	for _, entry := range *p.roster.toks.Load() {
+		if entry == nil || entry.session == nil {
+			continue
+		}
+		byKey[poolProbeQuotaKey(poolTokenHash(entry.token))] = entry
+	}
+	p.roster.mu.Unlock()
+
+	for key, entry := range byKey {
+		raw, ok, err := st.LoadPoolState(key)
+		if err != nil {
+			p.logger.Warn("pool: runtime persist restore failed (starting fresh)", "key", key, "error", err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		var blob poolQuotaBlob
+		if err := json.Unmarshal(raw, &blob); err != nil {
+			p.logger.Warn("pool: runtime persist row corrupt (starting fresh)", "key", key, "error", err)
+			continue
+		}
+		if len(blob.Quota) == 0 || blob.SavedAt <= 0 {
+			continue
+		}
+		savedAt := time.UnixMilli(blob.SavedAt)
+		for model, row := range blob.Quota {
+			if model == "" {
+				continue
+			}
+			q := upstream.ModelQuota{
+				Model:       model,
+				Limit:       row.Limit,
+				RecentCount: row.RecentCount,
+				Period:      row.Period,
+				Pool:        row.Pool,
+				PoolLabel:   row.PoolLabel,
+			}
+			if row.ResetAt > 0 {
+				q.ResetAt = time.UnixMilli(row.ResetAt)
+			}
+			if len(row.Entitlement) > 0 {
+				q.Entitlement = make(map[string]float64, len(row.Entitlement))
+				for k, v := range row.Entitlement {
+					q.Entitlement[k] = v
+				}
+			}
+			entry.session.SeedQuota(q, savedAt)
+		}
+	}
 }
 
 func (p *Pool) restoreLedgers(st PoolPersist, now time.Time) {
@@ -319,17 +428,10 @@ func (p *Pool) restoreLedgers(st PoolPersist, now time.Time) {
 // the roster (or bridge) mutex.
 func installLedger(l *AccountLedger, blob poolLedgerBlob, now time.Time) {
 	usageCutoff := now.Add(-usageWindow)
-	rpmCutoff := now.Add(-rpmWindow)
 	l.usage = l.usage[:0]
 	for _, ms := range blob.Usage {
 		if t := time.UnixMilli(ms); !t.Before(usageCutoff) {
 			l.usage = append(l.usage, t)
-		}
-	}
-	l.requests = l.requests[:0]
-	for _, ms := range blob.Requests {
-		if t := time.UnixMilli(ms); !t.Before(rpmCutoff) {
-			l.requests = append(l.requests, t)
 		}
 	}
 	// Pacific-day bucket: dayRequestCount rolls a stale bucket on read as a
@@ -382,79 +484,5 @@ func (p *Pool) restoreAdmissions(st PoolPersist) {
 	}
 	for m, idx := range adm {
 		p.admissions[m] = idx
-	}
-}
-
-func (p *Pool) restoreBurst(st PoolPersist, now time.Time) {
-	raw, ok, err := st.LoadPoolState(poolStateBurst)
-	if err != nil {
-		p.logger.Warn("pool: runtime persist restore failed (starting fresh)", "key", poolStateBurst, "error", err)
-		return
-	}
-	if !ok {
-		return
-	}
-	var stored map[string][]poolBurstHit
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		p.logger.Warn("pool: runtime persist row corrupt (starting fresh)", "key", poolStateBurst, "error", err)
-		return
-	}
-	window := defaultBurstWindow
-	if cfg := p.cfg.Load(); cfg != nil {
-		if w, _, _ := burstLimits(cfg); w > 0 {
-			window = w
-		}
-	}
-	cutoff := now.Add(-window)
-	p.burstMu.Lock()
-	defer p.burstMu.Unlock()
-	if p.burstHits == nil {
-		p.burstHits = make(map[string][]burstHit)
-	}
-	for m, hits := range stored {
-		for _, h := range hits {
-			if t := time.UnixMilli(h.At); t.After(cutoff) {
-				p.burstHits[m] = append(p.burstHits[m], burstHit{at: t, tok: h.Tok})
-			}
-		}
-	}
-}
-
-func (p *Pool) restoreBridge(st PoolPersist, now time.Time) {
-	if raw, ok, err := st.LoadPoolState(poolStateBridgeUsage); err != nil {
-		p.logger.Warn("pool: runtime persist restore failed (starting fresh)", "key", poolStateBridgeUsage, "error", err)
-	} else if ok {
-		var usage int
-		if err := json.Unmarshal(raw, &usage); err != nil {
-			p.logger.Warn("pool: runtime persist row corrupt (starting fresh)", "key", poolStateBridgeUsage, "error", err)
-		} else if usage > 0 {
-			p.bridgeMu.Lock()
-			p.bridgeDailyUsage = usage
-			p.bridgeMu.Unlock()
-		}
-	}
-	raw, ok, err := st.LoadPoolState(poolStateBridgeSurvivors)
-	if err != nil {
-		p.logger.Warn("pool: runtime persist restore failed (starting fresh)", "key", poolStateBridgeSurvivors, "error", err)
-		return
-	}
-	if !ok {
-		return
-	}
-	var stored []poolSurvivorBlob
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		p.logger.Warn("pool: runtime persist row corrupt (starting fresh)", "key", poolStateBridgeSurvivors, "error", err)
-		return
-	}
-	p.bridgeMu.Lock()
-	defer p.bridgeMu.Unlock()
-	for _, s := range stored {
-		evicted := time.UnixMilli(s.Evicted)
-		if now.Sub(evicted) < usageWindow && s.Count > 0 {
-			p.bridgeSurvivors = append(p.bridgeSurvivors, bridgeSurvivor{count: s.Count, evicted: evicted})
-			if len(p.bridgeSurvivors) >= maxBridgeSurvivors {
-				break
-			}
-		}
 	}
 }
