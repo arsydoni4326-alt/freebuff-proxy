@@ -22,6 +22,9 @@ func cardFromSnapshot(t pool.TokenSnapshot) tokenCard {
 		ActiveRuns:       t.ActiveRuns,
 		Requests:         t.Requests,
 		Messages24h:      t.Messages24h,
+		LiveTurns:        t.LiveTurns,
+		QueuedWaiters:    t.QueuedWaiters,
+		OldestWaiterMS:   t.OldestWaiterMS,
 		RequestsPerDay:   t.RequestsPerDay,
 		TransientRetries: t.TransientRetries,
 		AllowlistSkips:   t.AllowlistSkips,
@@ -30,6 +33,11 @@ func cardFromSnapshot(t pool.TokenSnapshot) tokenCard {
 	if !t.CooldownUntil.IsZero() && time.Now().Before(t.CooldownUntil) {
 		card.CooldownActive = true
 		card.CooldownUntil = t.CooldownUntil.Format(time.RFC3339)
+		card.CooldownKind = t.CooldownKind
+		card.CooldownWindowHours = t.CooldownWindowHours
+		if !t.CooldownResetsAt.IsZero() {
+			card.CooldownResetsAt = t.CooldownResetsAt.Format(time.RFC3339)
+		}
 	}
 	if t.BanType != "" {
 		card.BanType = t.BanType
@@ -121,21 +129,35 @@ func maturityCardFromSnapshot(m *pool.MaturitySnapshot) *maturityCard {
 // standing_*, referral_*) ride the once-per-mount full fetch; the SPA merges
 // them back by index. The Freebucks card stays live: it changes mid-session.
 type tokenLiveCard struct {
-	Index            int    `json:"index"`
-	SessionStatus    string `json:"session_status"`
-	AccessTier       string `json:"access_tier,omitempty"`
-	QueuePosition    int    `json:"queue_position"`
-	QueueDepth       int    `json:"queue_depth"`
-	ActiveRuns       int    `json:"active_runs"`
-	Requests         int    `json:"requests"`
-	Messages24h      int    `json:"messages_24h"`
-	RequestsPerDay   int    `json:"requests_per_day"`
-	CooldownActive   bool   `json:"cooldown_active"`
-	CooldownUntil    string `json:"cooldown_until"`
-	Locked           bool   `json:"locked"`
-	BanType          string `json:"ban_type,omitempty"`
-	BannedUntil      string `json:"banned_until,omitempty"`
-	TransientRetries int64  `json:"transient_retries"`
+	Index         int    `json:"index"`
+	SessionStatus string `json:"session_status"`
+	AccessTier    string `json:"access_tier,omitempty"`
+	QueuePosition int    `json:"queue_position"`
+	QueueDepth    int    `json:"queue_depth"`
+	ActiveRuns    int    `json:"active_runs"`
+	Requests      int    `json:"requests"`
+	Messages24h   int    `json:"messages_24h"`
+	// LiveTurns / QueuedWaiters / OldestWaiterMS are live by nature (they
+	// change every second), so they ride the hot poll exactly like
+	// ActiveRuns: the console's "who is waiting" view must not wait for a
+	// full fetch.
+	LiveTurns      int    `json:"live_turns"`
+	QueuedWaiters  int    `json:"queued_waiters"`
+	OldestWaiterMS int64  `json:"oldest_waiter_ms"`
+	RequestsPerDay int    `json:"requests_per_day"`
+	CooldownActive bool   `json:"cooldown_active"`
+	CooldownUntil  string `json:"cooldown_until"`
+	// Cooldown reason rides the hot poll like cooldown_until itself: the
+	// refusal can land between full fetches, and the account card must be
+	// able to say WHY it is cooling down and when upstream lifts it. Same
+	// additive/omitempty contract as tokenCard.
+	CooldownKind        string `json:"cooldown_kind,omitempty"`
+	CooldownResetsAt    string `json:"cooldown_resets_at,omitempty"`
+	CooldownWindowHours int    `json:"cooldown_window_hours,omitempty"`
+	Locked              bool   `json:"locked"`
+	BanType             string `json:"ban_type,omitempty"`
+	BannedUntil         string `json:"banned_until,omitempty"`
+	TransientRetries    int64  `json:"transient_retries"`
 	// AllowlistSkips is live (like TransientRetries): every poll refreshes
 	// it, so it stays out of the SPA's static cache.
 	AllowlistSkips int64 `json:"allowlist_skips,omitempty"`
@@ -163,6 +185,9 @@ func liveCardFromSnapshot(t pool.TokenSnapshot) tokenLiveCard {
 		ActiveRuns:       t.ActiveRuns,
 		Requests:         t.Requests,
 		Messages24h:      t.Messages24h,
+		LiveTurns:        t.LiveTurns,
+		QueuedWaiters:    t.QueuedWaiters,
+		OldestWaiterMS:   t.OldestWaiterMS,
 		RequestsPerDay:   t.RequestsPerDay,
 		TransientRetries: t.TransientRetries,
 		Locked:           t.Locked,
@@ -171,6 +196,11 @@ func liveCardFromSnapshot(t pool.TokenSnapshot) tokenLiveCard {
 	if !t.CooldownUntil.IsZero() && time.Now().Before(t.CooldownUntil) {
 		card.CooldownActive = true
 		card.CooldownUntil = t.CooldownUntil.Format(time.RFC3339)
+		card.CooldownKind = t.CooldownKind
+		card.CooldownWindowHours = t.CooldownWindowHours
+		if !t.CooldownResetsAt.IsZero() {
+			card.CooldownResetsAt = t.CooldownResetsAt.Format(time.RFC3339)
+		}
 	}
 	if t.BanType != "" {
 		card.BanType = t.BanType

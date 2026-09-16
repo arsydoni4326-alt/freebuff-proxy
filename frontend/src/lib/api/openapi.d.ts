@@ -140,6 +140,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/admin/api/logs/export": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Streamed versioned export of request_records plus log_entries */
+    get: operations["exportLogs"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/admin/api/logs/history": {
     parameters: {
       query?: never;
@@ -149,6 +166,40 @@ export interface paths {
     };
     /** Persisted log records */
     get: operations["getLogsHistory"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/admin/api/logs/import": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Gap-fill restore of an export document (INSERT OR IGNORE, 64MB cap) */
+    post: operations["importLogs"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/admin/api/logs/rollup": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Request-outcome rollup: counts, group-bys, error rate, TTFB percentiles, time buckets */
+    get: operations["getLogsRollup"];
     put?: never;
     post?: never;
     delete?: never;
@@ -372,6 +423,23 @@ export interface paths {
     };
     /** Recent chat traces */
     get: operations["getTraces"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/admin/api/usage": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Token usage log: range totals plus per-entry detail (9Router-style overview) */
+    get: operations["getUsage"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1073,6 +1141,7 @@ export interface components {
         window_end_utc: string;
         window_start_utc: string;
       };
+      upstream_sha: string;
     };
     PageStateRequest: {
       data: Record<string, never>;
@@ -1204,6 +1273,31 @@ export interface components {
       has_filter: boolean;
       level: string;
       msg: string;
+      truncated: boolean;
+      window: string;
+    };
+    logsExportDoc: {
+      enabled: boolean;
+      exported_at: number;
+      log_entries: {
+        fields: string;
+        id: number;
+        level: string;
+        msg: string;
+        req_id: string;
+        ts: number;
+      }[];
+      request_records: {
+        endpoint: string;
+        error: string;
+        model: string;
+        req_id: string;
+        status: string;
+        token_idx: number;
+        ts: number;
+        ttfb_ms: number;
+      }[];
+      version: number;
     };
     logsHistoryData: {
       enabled: boolean;
@@ -1214,6 +1308,48 @@ export interface components {
         req_id?: string;
         ts: number;
       }[];
+    };
+    logsImportReport: {
+      imported: number;
+      rejected: number;
+      skipped_duplicate: number;
+    };
+    logsRollupData: {
+      bucket_ms: number;
+      buckets: {
+        errors: number;
+        ok: number;
+        total: number;
+        ts: number;
+      }[];
+      by_error: {
+        errors: number;
+        name: string;
+        total: number;
+      }[];
+      by_model: {
+        errors: number;
+        name: string;
+        total: number;
+      }[];
+      by_token: {
+        errors: number;
+        token_idx: number;
+        total: number;
+      }[];
+      enabled: boolean;
+      error_rate: number;
+      errors: number;
+      ok: number;
+      since: number;
+      total: number;
+      ttfb: {
+        count: number;
+        p50: number;
+        p90: number;
+        p99: number;
+      };
+      until: number;
     };
     maturityHistoryData: {
       enabled: boolean;
@@ -1250,12 +1386,7 @@ export interface components {
     };
     modelsData: {
       agents: number;
-      aliases: {
-        alias: string;
-        real: string;
-      }[];
       count: number;
-      has_aliases: boolean;
       models: {
         agent: string;
         badges?: string[];
@@ -1347,7 +1478,10 @@ export interface components {
         ban_type?: string;
         banned_until?: string;
         cooldown_active: boolean;
+        cooldown_kind?: string;
+        cooldown_resets_at?: string;
         cooldown_until: string;
+        cooldown_window_hours?: number;
         email?: string;
         freebucks?: {
           balance: number;
@@ -1395,6 +1529,7 @@ export interface components {
         index: number;
         last_refund?: number | null;
         last_usage?: string;
+        live_turns: number;
         locked: boolean;
         maturity?: {
           auto_touch_model?: string;
@@ -1415,9 +1550,11 @@ export interface components {
           touch_model?: string;
         } | null;
         messages_24h: number;
+        oldest_waiter_ms: number;
         pending_refund?: string;
         queue_depth: number;
         queue_position: number;
+        queued_waiters: number;
         referral_code?: string;
         referral_github_linked: boolean;
         referral_qualified_count: number;
@@ -1558,11 +1695,152 @@ export interface components {
       maturity_window_end?: string;
       maturity_window_start?: string;
       mode: string;
+      queue_depth: number;
+      queue_wait: string;
       rate_limit_failover: boolean;
+      routing_smart: boolean;
       show_bridge: boolean;
       token_count: number;
+      token_max_concurrent: number;
       token_rotation?: string;
-      tokens: Record<string, never>[];
+      tokens: {
+        access_tier?: string;
+        account_id?: string;
+        active_runs: number;
+        allowed_models?: string[];
+        allowlist_skips?: number;
+        ban_type?: string;
+        banned_until?: string;
+        cooldown_active: boolean;
+        cooldown_kind?: string;
+        cooldown_resets_at?: string;
+        cooldown_until: string;
+        cooldown_window_hours?: number;
+        email?: string;
+        freebucks?: {
+          balance: number;
+          daily: {
+            limit: number;
+            percent_used: number;
+            remaining: number;
+            reset_at?: string;
+            reset_time_zone?: string;
+            spent: number;
+          };
+          first_tab_discount?: {
+            amount: number;
+            available: boolean;
+            holder_surface?: string;
+          } | null;
+          monthly?: {
+            limit: number;
+            percent_used: number;
+            remaining: number;
+            reset_at?: string;
+            reset_time_zone?: string;
+            spent: number;
+          } | null;
+          plan_id?: string;
+          price_notices?: {
+            [key: string]: string;
+          };
+          prices?: {
+            [key: string]: number;
+          };
+          quota_exempt?: boolean;
+          spend: {
+            limit_usd: number;
+            reset_at?: string;
+          };
+          wallet: {
+            balance: number;
+            monthly_bonus: number;
+            next_bonus_at?: string;
+          };
+        } | null;
+        has_quota: boolean;
+        has_referral: boolean;
+        has_standing: boolean;
+        index: number;
+        last_refund?: number | null;
+        last_usage?: string;
+        live_turns: number;
+        locked: boolean;
+        maturity?: {
+          auto_touch_model?: string;
+          auto_touch_reason?: string;
+          badge?: string;
+          effective_touch_model?: string;
+          enabled: boolean;
+          last_action?: string;
+          last_advanced?: string;
+          last_result?: string;
+          last_touch?: string;
+          mode: string;
+          result_day?: string;
+          slot?: string;
+          slot_day?: string;
+          target: number;
+          touch_day?: string;
+          touch_model?: string;
+        } | null;
+        messages_24h: number;
+        oldest_waiter_ms: number;
+        pending_refund?: string;
+        queue_depth: number;
+        queue_position: number;
+        queued_waiters: number;
+        quota: {
+          entitled: string;
+          has_bar: boolean;
+          has_entitlement: boolean;
+          limit: string;
+          model: string;
+          near_limit: boolean;
+          period: string;
+          pool?: string;
+          pool_label?: string;
+          recent: string;
+          remaining: number;
+          reset_at: string;
+          reset_at_utc: string;
+          resets_in: string;
+          usage_pct: number;
+        }[];
+        quota_saved_at?: string;
+        quota_stale?: boolean;
+        referral_code?: string;
+        referral_github_linked: boolean;
+        referral_qualified_count: number;
+        referral_reset_at?: string;
+        referral_sessions_left: number;
+        requests: number;
+        requests_per_day: number;
+        session_expires_at?: string;
+        session_instance: string;
+        session_model: string;
+        session_remaining_seconds: number;
+        session_status: string;
+        standing_blurb?: string;
+        standing_capped_by?: string;
+        standing_capped_reason?: string;
+        standing_label: string;
+        standing_level: string;
+        standing_next_level: string;
+        standing_next_level_at: string;
+        standing_next_steps?: {
+          detail?: string;
+          href?: string;
+          id: string;
+          label: string;
+          points: number;
+        }[];
+        standing_score: number;
+        streak?: number;
+        streak_updated_at?: string;
+        today_used?: boolean;
+        transient_retries: number;
+      }[];
       unmetered_models?: {
         id: string;
         name: string;
@@ -1571,17 +1849,46 @@ export interface components {
     tracesData: {
       enabled: boolean;
       traces: {
+        cached?: number;
         error: string;
+        input?: number;
         model: string;
         ms: string;
+        output?: number;
         phases?: {
           ms: number;
           name: string;
         }[];
+        rate_tokens?: string;
+        reasoning?: number;
+        req_id?: string;
         status: string;
         time: string;
         token: string;
+        total?: number;
+        ts_ms?: number;
       }[];
+    };
+    usageData: {
+      entries: {
+        cached: number;
+        input: number;
+        model: string;
+        ok: boolean;
+        output: number;
+        reasoning: number;
+        req_id: string;
+        total: number;
+        ts_ms: number;
+      }[];
+      range: string;
+      totals: {
+        cached: number;
+        cost: number;
+        input: number;
+        output: number;
+        requests: number;
+      };
     };
   };
   responses: never;
@@ -1743,6 +2050,8 @@ export interface operations {
         level?: string;
         /** @description Message substring filter */
         msg?: string;
+        /** @description View window override (Go duration, clamped to 1m..168h) */
+        window?: string;
       };
       header?: never;
       path?: never;
@@ -1757,6 +2066,31 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["logsData"];
+        };
+      };
+    };
+  };
+  exportLogs: {
+    parameters: {
+      query?: {
+        /** @description Unix-millis lower bound (default 0, clamped to 168h) */
+        since?: string;
+        /** @description Unix-millis upper bound (default now) */
+        until?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Streamed versioned export of request_records plus log_entries */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["logsExportDoc"];
         };
       };
     };
@@ -1790,6 +2124,53 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["logsHistoryData"];
+        };
+      };
+    };
+  };
+  importLogs: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Gap-fill restore of an export document (INSERT OR IGNORE, 64MB cap) */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["logsImportReport"];
+        };
+      };
+    };
+  };
+  getLogsRollup: {
+    parameters: {
+      query?: {
+        /** @description Unix-millis lower bound (default 0, clamped to 168h) */
+        since?: string;
+        /** @description Unix-millis upper bound (default now) */
+        until?: string;
+        /** @description Time-bucket width in millis (default 300000) */
+        bucket_ms?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Request-outcome rollup: counts, group-bys, error rate, TTFB percentiles, time buckets */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["logsRollupData"];
         };
       };
     };
@@ -2130,6 +2511,29 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["tracesData"];
+        };
+      };
+    };
+  };
+  getUsage: {
+    parameters: {
+      query?: {
+        /** @description today (default) | 24h | 7d | 30d | 60d */
+        range?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Token usage log: range totals plus per-entry detail (9Router-style overview) */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["usageData"];
         };
       };
     };

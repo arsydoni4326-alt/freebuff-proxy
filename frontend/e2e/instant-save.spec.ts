@@ -9,8 +9,8 @@ import {
 
 // Instant-save dashboard (no batched draft): every tunable row POSTs its key
 // to /admin/api/settings ~400ms after edit and reports the server message
-// inline via role=status. Only the emergency raw .env editor keeps explicit
-// Save/Revert buttons.
+// inline via role=status. No row keeps an explicit Save button, and the
+// settings page offers no whole-file .env writer at all.
 
 const admin = (hash: string) => `http://127.0.0.1:4173/admin/#${hash}`;
 
@@ -35,9 +35,7 @@ async function assertNoBatchSaveButtons(page: Page) {
 }
 
 test.describe("instant-save dashboard", () => {
-  test("no per-row Save buttons outside the emergency editor", async ({
-    page,
-  }) => {
+  test("no per-row Save buttons on any settings surface", async ({ page }) => {
     const posted: PostedSetting[] = [];
     await mockDashboard(page, loadFixtures());
     await mockSettingsOverlay(page, posted);
@@ -47,14 +45,6 @@ test.describe("instant-save dashboard", () => {
       page.getByRole("heading", { name: "Settings", exact: true }),
     ).toBeVisible();
     await assertNoBatchSaveButtons(page);
-    // The break-glass path keeps its own buttons: heading + Save + textarea.
-    await expect(
-      page.getByRole("heading", { name: "Emergency raw .env editor" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Save raw .env" }),
-    ).toBeVisible();
-    await expect(page.locator("#emergency-raw-env")).toBeVisible();
 
     await page.goto(admin("tokens"));
     await page.getByRole("button", { name: "Controls" }).click();
@@ -70,10 +60,11 @@ test.describe("instant-save dashboard", () => {
     ).toBeVisible();
     await assertNoBatchSaveButtons(page);
 
-    await page.goto(admin("activity"));
-    await page.getByRole("button", { name: "Logging" }).click();
+    // LOG_LEVEL's live card sits on Settings (the Logs page has no Logging
+    // tab any more); its Settings card title names the key.
+    await page.goto(admin("settings"));
     await expect(
-      page.getByRole("heading", { name: "Logging", exact: true }),
+      page.getByRole("heading", { name: "Server Log Level", exact: true }),
     ).toBeVisible();
     await assertNoBatchSaveButtons(page);
   });
@@ -102,9 +93,9 @@ test.describe("instant-save dashboard", () => {
     await mockDashboard(page, loadFixtures());
     await mockSettingsOverlay(page, posted);
 
-    // LOG_LEVEL lives on the Logs page Logging tab (Settings holds a stub).
-    await page.goto(admin("activity"));
-    await page.getByRole("button", { name: "Logging" }).click();
+    // LOG_LEVEL now lives on Settings (the Logs page dropped its Logging
+    // tab; Settings renders the live card instead of a link-out stub).
+    await page.goto(admin("settings"));
     const logLevel = page.getByRole("combobox", { name: "LOG_LEVEL" });
     await expect(logLevel).toBeVisible();
     const logLevelPost = waitSettingsPost(page);
@@ -117,9 +108,8 @@ test.describe("instant-save dashboard", () => {
         .filter({ hasText: "LOG_LEVEL saved. It applies after restart." }),
     ).toBeVisible();
 
-    // HTTP_READ_TIMEOUT lives on Settings (Gateway card); 120s is a real
+    // HTTP_READ_TIMEOUT lives in the Settings Gateway card; 120s is a real
     // catalog option (30s is not — the select only offers listed values).
-    await page.goto(admin("settings"));
     const readTimeout = page.getByRole("combobox", {
       name: "HTTP_READ_TIMEOUT",
     });
@@ -135,10 +125,7 @@ test.describe("instant-save dashboard", () => {
     ).toBeVisible();
 
     // LOG_FORMAT is not on the LOG_LEVEL "Logging" card: it renders in the
-    // "Logging & Diagnostics" card (AdvancedSettings general group) on the
-    // same Logs → Logging tab.
-    await page.goto(admin("activity"));
-    await page.getByRole("button", { name: "Logging" }).click();
+    // "Logging & Diagnostics" card (Settings, general-group keys).
     const logFormat = page.getByRole("combobox", { name: "LOG_FORMAT" });
     await expect(logFormat).toBeVisible();
     const formatPost = waitSettingsPost(page);
@@ -171,49 +158,5 @@ test.describe("instant-save dashboard", () => {
     await expect(
       page.getByRole("status").filter({ hasText: "Overridden by process env" }),
     ).toBeVisible();
-  });
-
-  test("emergency editor reverts locally and saves through /admin/config", async ({
-    page,
-  }) => {
-    await mockDashboard(page, loadFixtures());
-    await mockSettingsOverlay(page, []);
-    // Flag route for the whole-file save (registered after mockDashboard so
-    // it wins for POST /admin/config).
-    let configPosts = 0;
-    await page.route("**/admin/config", async (route) => {
-      if (route.request().method() === "POST") {
-        configPosts += 1;
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, message: "Config saved" }),
-        });
-      } else {
-        await route.continue();
-      }
-    });
-
-    await page.goto(admin("settings"));
-    const editor = page.locator("#emergency-raw-env");
-    await expect(editor).toBeVisible();
-    await expect(editor).not.toHaveValue("", { timeout: 10000 });
-    const base = await editor.inputValue();
-
-    await editor.fill(`${base}\n# e2e-probe=1\n`);
-    await expect(page.getByRole("button", { name: "Revert" })).toBeVisible();
-    await page.getByRole("button", { name: "Revert" }).click();
-    await expect(editor).toHaveValue(base);
-    expect(configPosts).toBe(0);
-
-    await editor.fill(`${base}\n# e2e-probe=1\n`);
-    const saveReq = page.waitForRequest(
-      (r) => r.method() === "POST" && r.url().includes("/admin/config"),
-      { timeout: 10000 },
-    );
-    page.once("dialog", (d) => d.accept());
-    await page.getByRole("button", { name: "Save raw .env" }).click();
-    const req = await saveReq;
-    expect(decodeURIComponent(req.postData() ?? "")).toContain("e2e-probe=1");
   });
 });

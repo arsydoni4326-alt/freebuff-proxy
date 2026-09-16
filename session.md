@@ -1,6 +1,47 @@
 # Session: SQLite Token Database + UI
 
-## Latest: merge upstream/main (vendor 0.0.175, first-tab discount + per-account reset timezone) into develop — merge 3 of 2026-09-16
+## Latest: merge upstream/main (#594 era: cooldown-window kinds, concurrency ladder, queue-wait telemetry, same-model stick-with-overflow) into develop — merge 4 of 2026-09-17
+
+- **Merge fully resolved and staged** (branch `develop`, merge of
+  upstream/main 7cb4ec74 into 992e34e3 = merge of 2026-09-16). All 5
+  remaining conflict files resolved and staged; **no commit made** (repo
+  rule: never commit unless asked).
+- **Per-file resolutions** (policy: additive union — persistence lineage
+  features kept, upstream diagnostics adopted, nothing removed):
+  - `pool/pool.go`: UNION of `TokenSnapshot` heads — kept our
+    `TokenValue` field (dashboard drawer / settings overlay key rows by
+    the real value; never written to DB or logs) and adopted upstream's
+    cooldown-window trio (`CooldownKind` / `CooldownWindowHours` /
+    `CooldownResetsAt`, the freebucks-window "why cooling" diagnostics).
+    Both sides' doc comments retained.
+  - `pool/snapshot.go`: kept our Phase 5.1 health-score computation
+    (`buildHealthScoreInput` → `ComputeHealthScore`) AND adopted upstream's
+    `p.routeSlotStats(tok)` smart-routing saturation call feeding the new
+    `LiveTurns`/`QueuedWaiters`/`OldestWaiterMS` snapshot fields (already
+    present in the struct from upstream's side of the merge).
+  - `server/health.go`: UNION of the /healthz token map — kept our
+    background-probe block (`probe_ok`/`probe_quota_ok`/`probe_error`/
+    `probe_at`, `TOKEN_HEALTH_PROBES`) and adopted upstream's additive
+    cooldown-window fields (`cooldown_kind`/`cooldown_window_hours`/
+    `cooldown_resets_at`). Both are conditional/additive keys; no shape
+    change for existing consumers.
+  - `server/admin_tokens_ops.go`, `server/admin_tokens_routes.go`: kept
+    deleted-by-us (consolidated into `admin_tokens.go` on our lineage).
+    Upstream's edits to the stale copies were comment-only rewording
+    (".env editor" → "API-key save / .env file") inside files our tree no
+    longer has; nothing functional was lost.
+- **Verification**: `go build ./backend/...` green; `gofmt` clean on all
+  three textually resolved files; `git diff --check` clean. Hermetic
+  tests: `pool` package fully ok (41s — covers pool.go + snapshot.go
+  resolutions); `store` fully ok. `server` fails only the two documented
+  pre-existing racy tests (`TestConcurrentReloadAndChat`,
+  `TestSettingsDurationEchoStable`); `session` fails only the documented
+  pre-existing 8 JSON-file store tests — both sets byte-identical to the
+  pristine-HEAD failures recorded in earlier merges (deferred store
+  refactor + racy-on-lineage; not introduced by this merge).
+- **Documentation**: CHANGELOG Unreleased gained this merge's entry.
+
+## Previous: merge upstream/main (vendor 0.0.175, first-tab discount + per-account reset timezone) into develop — merge 3 of 2026-09-16
 
 - **Merge fully resolved and staged** (branch `develop`, merge of
   upstream/main 5589474a into 6588f7a5 = merge of tag

@@ -4,6 +4,7 @@
     ChevronDown,
     ChevronRight,
     Flame,
+    LogOut,
     Unlock,
     Lock,
     Trash2,
@@ -145,9 +146,9 @@
       </button>
     </div>
   </td>
-  <td>
-    <div class="flex min-w-0 flex-col gap-0.5">
-      <div class="flex items-center justify-between gap-1.5 whitespace-nowrap">
+  <td class="w-[1%]">
+    <div class="flex min-w-0 flex-col gap-1">
+      <div class="flex w-max items-center gap-x-2 whitespace-nowrap">
         <span
           class="fp-num text-xs font-semibold whitespace-nowrap text-[var(--fp-text)]"
           >Account #{idx + 1}</span
@@ -164,7 +165,7 @@
       </div>
       {#if token.email || token.account_id}
         <span
-          class="text-[11px] text-[var(--fp-muted)] truncate max-w-[160px]"
+          class="text-[11px] text-[var(--fp-muted)] truncate min-w-0 max-w-[120px]"
           title={token.email || token.account_id}
         >
           {token.email || token.account_id}
@@ -173,7 +174,9 @@
     </div>
   </td>
   <td class="w-[1%] whitespace-nowrap">
-    <div class="flex flex-col items-start gap-0.5">
+    <div
+      class="flex flex-wrap items-center gap-x-2 gap-y-1 @min-[1000px]:w-max"
+    >
       <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
       {#if token.session_status === "active" && sessionRemaining > 0}
         <span
@@ -185,49 +188,57 @@
       {/if}
     </div>
   </td>
-  <td class="w-[1%] whitespace-nowrap">
-    <div class="flex flex-col items-start gap-1 min-w-[280px]">
-      {#if token.session_instance || (token.session_remaining_seconds > 0 && token.session_model)}
-        <div class="flex items-center gap-2 min-w-0 w-full">
+  <td>
+    {#if token.session_instance || token.session_model}
+      <div class="flex min-w-0 flex-col gap-1">
+        <div
+          class="flex min-w-0 flex-nowrap items-center gap-x-2 whitespace-nowrap"
+        >
           {#if token.session_instance}
             <code
-              class="fp-num text-xs text-[var(--fp-muted)] truncate flex-1 min-w-0 max-w-full select-all"
+              class="fp-num text-xs text-[var(--fp-muted)] whitespace-nowrap select-all"
               title={token.session_instance}>{token.session_instance}</code
             >
           {/if}
-          {#if token.session_remaining_seconds > 0 && token.session_model}
-            <Button
-              variant="danger"
-              size="sm"
-              class="!h-7 !text-xs !px-2 w-fit shrink-0"
-              disabled={actionPending}
-              onclick={() => onDropSession?.()}
-            >
-              <span>{$tr("Drop Session")}</span>
-            </Button>
+          {#if token.session_model}
+            <StatusBadge tone="info" status={token.session_model} />
           {/if}
         </div>
-      {:else if !token.session_model}
-        <span class="text-xs text-[var(--fp-dim)]">—</span>
-      {/if}
-      {#if token.session_model}
-        <StatusBadge tone="info" status={token.session_model} />
-      {/if}
-    </div>
+        {#if token.session_status === "active" && token.session_instance && token.session_remaining_seconds > 0 && token.session_model}
+          <Button
+            variant="danger"
+            size="sm"
+            class="!h-7 !text-xs !px-2 shrink-0 self-start"
+            disabled={actionPending}
+            aria-label={$tr("Drop Session")}
+            title={$tr("Drop Session")}
+            onclick={() => onDropSession?.()}
+          >
+            <LogOut size={13} />
+            <span class="hidden @min-[840px]:inline">{$tr("Drop Session")}</span
+            >
+          </Button>
+        {/if}
+      </div>
+    {:else}
+      <span class="text-xs text-[var(--fp-dim)]">—</span>
+    {/if}
   </td>
-  <td class="num">
-    <div class="flex flex-col items-end gap-0.5">
+  <td class="num w-[1%] whitespace-nowrap">
+    <div
+      class="flex flex-nowrap items-center justify-end gap-x-2 whitespace-nowrap @min-[1000px]:w-max"
+    >
       {#if token.cooldown_active}
         {@const cd = cooldownLabel(token, now)}
         <span class="fp-num text-xs text-[var(--fp-warning)] whitespace-nowrap">
           {cd}{#if cd !== "expiring" && cd !== "—"}{" " + $tr("remaining")}{/if}
         </span>
       {/if}
-      <span class="text-xs text-[var(--fp-muted)]">
+      <span class="text-xs text-[var(--fp-muted)] whitespace-nowrap">
         <span class="fp-num text-[var(--fp-text)]">{token.messages_24h}</span>
         {$tr("msgs 24h")}
       </span>
-      <span class="text-[11px] text-[var(--fp-dim)]">
+      <span class="text-[11px] text-[var(--fp-dim)] whitespace-nowrap">
         runs <span class="fp-num text-[var(--fp-text)]"
           >{token.active_runs}</span
         >

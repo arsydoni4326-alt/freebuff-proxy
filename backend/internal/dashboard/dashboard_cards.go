@@ -66,19 +66,36 @@ type upstreamFile struct {
 	Status    string `json:"status"` // DRIFT | MISSING_UPSTREAM | SAME
 }
 type tokenCard struct {
-	Index               int     `json:"index"`
-	Email               string  `json:"email,omitempty"`
-	AccountID           string  `json:"account_id,omitempty"`
-	SessionStatus       string  `json:"session_status"`
-	AccessTier          string  `json:"access_tier,omitempty"`
-	QueuePosition       int     `json:"queue_position"`
-	QueueDepth          int     `json:"queue_depth"`
-	ActiveRuns          int     `json:"active_runs"`
-	Requests            int     `json:"requests"`
-	Messages24h         int     `json:"messages_24h"`
-	RequestsPerDay      int     `json:"requests_per_day"`
-	CooldownActive      bool    `json:"cooldown_active"`
-	CooldownUntil       string  `json:"cooldown_until"`
+	Index         int    `json:"index"`
+	Email         string `json:"email,omitempty"`
+	AccountID     string `json:"account_id,omitempty"`
+	SessionStatus string `json:"session_status"`
+	AccessTier    string `json:"access_tier,omitempty"`
+	QueuePosition int    `json:"queue_position"`
+	QueueDepth    int    `json:"queue_depth"`
+	ActiveRuns    int    `json:"active_runs"`
+	Requests      int    `json:"requests"`
+	Messages24h   int    `json:"messages_24h"`
+	// LiveTurns / QueuedWaiters / OldestWaiterMS are the smart-routing
+	// live-turn lane view (TOKEN_MAX_CONCURRENT, route_smart.go): how many
+	// turns hold this account's slot, how many requests are parked on its
+	// FIFO queue, and how long the oldest one has waited. They are the
+	// "saturated vs free" signal the Logs console reads off the payload.
+	LiveTurns      int    `json:"live_turns"`
+	QueuedWaiters  int    `json:"queued_waiters"`
+	OldestWaiterMS int64  `json:"oldest_waiter_ms"`
+	RequestsPerDay int    `json:"requests_per_day"`
+	CooldownActive bool   `json:"cooldown_active"`
+	CooldownUntil  string `json:"cooldown_until"`
+	// CooldownKind / CooldownResetsAt / CooldownWindowHours (additive) name a
+	// distinguishable window refusal — upstream.WindowKindFreebucks
+	// ("freebucks_window", the vendor's daily freebucks ceiling, which is
+	// what produced the ~20h cooldowns) — plus upstream's window refill
+	// instant (RFC3339) and the window length it declared. Empty/zero for
+	// every other cooldown, so the SPA keeps rendering the old row.
+	CooldownKind        string  `json:"cooldown_kind,omitempty"`
+	CooldownResetsAt    string  `json:"cooldown_resets_at,omitempty"`
+	CooldownWindowHours int     `json:"cooldown_window_hours,omitempty"`
 	Locked              bool    `json:"locked"`
 	BanType             string  `json:"ban_type,omitempty"`
 	BannedUntil         string  `json:"banned_until,omitempty"`
@@ -430,6 +447,16 @@ type tokensData struct {
 	TokenRotation     string         `json:"token_rotation,omitempty"`
 	RateLimitFailover bool           `json:"rate_limit_failover"`
 	MaturityEnabled   bool           `json:"maturity_enabled"`
+	// Queue posture (route_smart.go): the authoritative knobs behind the
+	// per-token live_turns/queued_waiters numbers, so the console can label
+	// a queue honestly instead of guessing a cap. queue_wait is the
+	// QUEUE_WAIT duration string, queue_depth the QUEUE_DEPTH bound,
+	// token_max_concurrent the live-turn cap (0 = unlimited) and
+	// routing_smart the master switch (false = the numbers are inert).
+	QueueWait          string `json:"queue_wait"`
+	QueueDepth         int    `json:"queue_depth"`
+	TokenMaxConcurrent int    `json:"token_max_concurrent"`
+	RoutingSmart       bool   `json:"routing_smart"`
 	// MaturityWindowStart/End are tonight's maintenance window (the 60
 	// minutes before the Pacific-midnight reset, RFC3339 absolute
 	// instants): the SPA formats the next-run countdown from these, so
@@ -497,6 +524,12 @@ func (d *Dashboard) tokensData() tokensData {
 		TokenRotation:     cfg.TokenRotation,
 		RateLimitFailover: cfg.RateLimitFailover,
 		MaturityEnabled:   cfg.MaturityEnabled,
+		// Queue posture: same knobs routeSlotParams resolves for the slot
+		// wall, so the console never has to infer the cap.
+		QueueWait:          cfg.QueueWait.String(),
+		QueueDepth:         cfg.QueueDepth,
+		TokenMaxConcurrent: cfg.TokenMaxConcurrent,
+		RoutingSmart:       cfg.RoutingSmart,
 	}
 	wStart, wEnd := d.pool.MaturityWindow()
 	if !wStart.IsZero() && !wEnd.IsZero() {
@@ -651,6 +684,12 @@ type tokensLiveData struct {
 	TokenRotation     string            `json:"token_rotation,omitempty"`
 	RateLimitFailover bool              `json:"rate_limit_failover"`
 	MaturityEnabled   bool              `json:"maturity_enabled"`
+	// Queue posture, mirroring tokensData: the live poll must not drop the
+	// knobs the console labels the queue with.
+	QueueWait          string `json:"queue_wait"`
+	QueueDepth         int    `json:"queue_depth"`
+	TokenMaxConcurrent int    `json:"token_max_concurrent"`
+	RoutingSmart       bool   `json:"routing_smart"`
 }
 
 // tokensLiveData builds the 10s hot-poll payload directly from pool
@@ -661,11 +700,15 @@ func (d *Dashboard) tokensLiveData() tokensLiveData {
 	cfg := d.cfg()
 	mode := cfg.EffectiveMode()
 	live := tokensLiveData{
-		BridgeTokens:      d.pool.BridgeCount(),
-		TokenCount:        d.pool.TokenCount(),
-		TokenRotation:     cfg.TokenRotation,
-		RateLimitFailover: cfg.RateLimitFailover,
-		MaturityEnabled:   cfg.MaturityEnabled,
+		BridgeTokens:       d.pool.BridgeCount(),
+		TokenCount:         d.pool.TokenCount(),
+		TokenRotation:      cfg.TokenRotation,
+		RateLimitFailover:  cfg.RateLimitFailover,
+		MaturityEnabled:    cfg.MaturityEnabled,
+		QueueWait:          cfg.QueueWait.String(),
+		QueueDepth:         cfg.QueueDepth,
+		TokenMaxConcurrent: cfg.TokenMaxConcurrent,
+		RoutingSmart:       cfg.RoutingSmart,
 	}
 	showBridge := mode == "bridge" || mode == "hybrid"
 	live.BridgeTokenCards = d.bridgeCards(showBridge)

@@ -8,6 +8,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Merge conflict resolution with upstream/main (#594 era: cooldown-window
+  kinds, concurrency ladder, queue-wait telemetry, same-model
+  stick-with-overflow-assist), preserving persistent database state**
+  - Merge of upstream/main 7cb4ec74 (cooldown window diagnostics
+    `cooldown_kind`/`cooldown_window_hours`/`cooldown_resets_at`, smart-routing
+    concurrency ladder + live-turn slot queue telemetry
+    `LiveTurns`/`QueuedWaiters`/`OldestWaiterMS`, queue-wait phase timing,
+    history rollup export, hidden-keys settings card, same-model
+    stick-with-overflow-assist #594) into the DB-persistence lineage
+    (992e34e3 = merge of 2026-09-16). All 5 conflict files resolved;
+    **no commit made** (repo rule: never commit unless asked).
+  - Resolution policy: **additive union** — every DB-persistence feature of
+    this lineage kept untouched, every upstream diagnostic adopted, nothing
+    renamed or removed.
+  - `pool/pool.go`: `TokenSnapshot` union — kept our `TokenValue` field
+    (dashboard drawer / settings overlay key rows by the real token value;
+    never written to DB or logs) and adopted upstream's cooldown-window trio
+    (`CooldownKind` / `CooldownWindowHours` / `CooldownResetsAt`) so the
+    freebucks-window "why is this token cooling" diagnostics work.
+  - `pool/snapshot.go`: kept the Phase 5.1 health-score computation
+    (`buildHealthScoreInput` → `ComputeHealthScore`) and adopted upstream's
+    `routeSlotStats` saturation counters in the same snapshot rows.
+  - `server/health.go`: `/healthz` per-token map union — our background
+    health-probe fields (`probe_ok`, `probe_quota_ok`, `probe_error`,
+    `probe_at`, `TOKEN_HEALTH_PROBES`) and upstream's additive cooldown
+    window fields (`cooldown_kind`, `cooldown_window_hours`,
+    `cooldown_resets_at`) are both emitted; existing consumers see no shape
+    change (all new keys are conditional).
+  - `server/admin_tokens_ops.go`, `server/admin_tokens_routes.go`: kept
+    deleted-by-us (consolidated into `admin_tokens.go`); upstream's edits to
+    the stale copies were comment-only rewording with no functional effect.
+
+### Preserved
+- SQLite token database with `session_state` table for session persistence
+  (`SESSION_PERSIST`, Phase 4 DB durability) — untouched by the merge.
+- Token state store (locks, quarantines, cooldowns, spend/usage ledgers)
+  with `RestoreTokenState` at boot; pool_state ledger/admission restore
+  (`RestorePoolPersist` from `Pool.Start`).
+- Health scoring suite (`HEALTH_SCORE_ENABLED`), background token health
+  probes (`TOKEN_HEALTH_PROBES`), bridge circuit breaker observability
+  (`BreakerSnapshot` → /healthz + /metrics), per-token bridge rate limiting,
+  refund tracking (`lastRefund`/`pendingRefund`) and the refund-refresh
+  route.
+- Quota auto-probe scheduler + ADR-0024 boot seed; maturity automation with
+  the DB maturity blob (MaturityStore) contract unchanged.
+
+### Technical Details
+- Merge verified: all 5 conflict files resolved and staged; `go build
+  ./backend/...` green; `gofmt` clean on all resolved files; `git diff
+  --check` clean. Hermetic tests (`env -u AUTH_TOKENS -u ADMIN_TOKEN go
+  test`): `pool` (41s, covers both pool resolutions) and `store` fully ok;
+  `server` fails only the two documented pre-existing racy tests
+  (`TestConcurrentReloadAndChat`, `TestSettingsDurationEchoStable`) and
+  `session` only the documented pre-existing 8 JSON-file store tests —
+  byte-identical to pristine-HEAD failures recorded in earlier merges; none
+  introduced by this merge. Noted in `session.md`.
+
+### Fixed
 - **Merge conflict resolution with upstream/main (vendor 0.0.175: first-tab discount + per-account reset timezone), preserving persistent database state**
   - Merge of upstream/main 5589474a (vendor b609d73 0.0.175, wire re-pin
     #567, drift-data #558, first-tab discount + per-account reset timezone

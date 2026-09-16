@@ -322,11 +322,10 @@ test.describe("settings saved values", () => {
         { key: "REASONING_IN_CONTENT", value: "true", source: "db" },
       ],
     });
-    // Moved keys render inline on their section pages now: LOG_LEVEL on
-    // the Logs Logging tab, REASONING_IN_CONTENT on the Usage Controls tab.
+    // Saved-value notes render inline on their section pages now: LOG_LEVEL
+    // on Settings, REASONING_IN_CONTENT on the Usage Controls tab.
     // One saved-value note per page.
-    await page.goto(admin("activity"));
-    await page.getByRole("button", { name: "Logging" }).click();
+    await page.goto(admin("settings"));
     await expect(page.getByRole("combobox", { name: "LOG_LEVEL" })).toBeVisible(
       { timeout: 10_000 },
     );
@@ -387,15 +386,15 @@ test.describe("settings saved values", () => {
     await expect(page.getByText("Saved value removed.")).toBeVisible();
   });
 
-  test("degraded store banners read-only while the .env form stays usable", async ({
+  test("degraded store banners read-only with no whole-file editor", async ({
     page,
   }) => {
     await mockDashboard(page, loadFixtures());
     const posted: PostedSetting[] = [];
     await mockSettingsOverlay(page, posted, { degraded: true });
-    // Degraded banner + offline row note render on the Logs Logging tab.
-    await page.goto(admin("activity"));
-    await page.getByRole("button", { name: "Logging" }).click();
+    // Degraded banner + offline row note render on the Settings LOG_LEVEL
+    // card (the Logs page no longer hosts a logging surface).
+    await page.goto(admin("settings"));
     await expect(page.getByRole("combobox", { name: "LOG_LEVEL" })).toBeVisible(
       { timeout: 10_000 },
     );
@@ -421,13 +420,15 @@ test.describe("settings saved values", () => {
       );
     expect(noPost).toBe(true);
     expect(posted).toHaveLength(0);
-    // The break-glass whole-file path stays available on Settings.
+    // Settings stays a reader: the break-glass whole-file editor is gone, so
+    // nothing on the page can write .env around the offline overlay.
     await page.goto(admin("settings"));
     await expect(
-      page.getByRole("heading", { name: "Emergency raw .env editor" }),
+      page.getByRole("heading", { name: "Settings", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#emergency-raw-env")).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: "Save raw .env" }),
-    ).toBeVisible();
+    ).toHaveCount(0);
   });
 });

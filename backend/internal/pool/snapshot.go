@@ -125,6 +125,17 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			sessionRemaining = ss.RemainingMs / 1000
 		}
 
+		// No live instance: the row carries no live-session facts. The
+		// manager stashes the last-seen countdown across invalidation by
+		// design (restart resume), so without this the row would render a
+		// stale model/countdown/expiry for a session that no longer exists.
+		sessionModel := ss.Model
+		sessionExpiresAt := ss.ExpiresAt
+		if ss.InstanceID == "" {
+			sessionModel = ""
+			sessionRemaining = 0
+			sessionExpiresAt = time.Time{}
+		}
 		// Active-ban view for healthz/dashboard consumers (issues #198/#199).
 		banType, bannedUntil := banView(rs.BanError, rs.BannedUntil)
 		q := tok.quarantine.Load()
@@ -166,6 +177,9 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			cfg.RotationInterval,
 		)
 		healthScore, healthLabel := ComputeHealthScore(hin)
+		// Smart-routing saturation view (LiveTurns/QueuedWaiters/
+		// OldestWaiterMS): zero on the legacy path or unlimited caps.
+		liveTurns, queuedWaiters, oldestWait := p.routeSlotStats(tok)
 
 		out = append(out, TokenSnapshot{
 			Token:                   i,
@@ -173,17 +187,23 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			Email:                   tok.Email(),
 			AccountID:               tok.AccountID(),
 			CooldownUntil:           rs.CooldownUntil,
+			CooldownKind:            rs.RateLimitKind,
+			CooldownWindowHours:     rs.RateLimitWindowHours,
+			CooldownResetsAt:        rs.RateLimitResetsAt,
 			ActiveRuns:              rs.ActiveRuns,
 			Requests:                rs.Requests,
 			Messages24h:             msgs,
+			LiveTurns:               liveTurns,
+			QueuedWaiters:           queuedWaiters,
+			OldestWaiterMS:          oldestWait.Milliseconds(),
 			RequestsPerDay:          p.dayRequestCount(i),
 			SessionStatus:           sessionStatus,
 			SessionInstanceID:       ss.InstanceID,
 			SessionQueuePosition:    ss.QueuePosition,
 			SessionQueueDepth:       ss.QueueDepth,
-			SessionModel:            ss.Model,
+			SessionModel:            sessionModel,
 			SessionRemainingSeconds: sessionRemaining,
-			SessionExpiresAt:        ss.ExpiresAt,
+			SessionExpiresAt:        sessionExpiresAt,
 			CountryCode:             countryCode,
 			CountryBlockReason:      countryReason,
 			AccessTier:              ss.AccessTier,

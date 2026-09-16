@@ -46,7 +46,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"quarantined":               snap.Quarantined,
 			"quarantine_reason":         snap.QuarantineReason,
 		}
-		// Background health probe results (TOKEN_HEALTH_PROBES).
+		// Background health probe results (TOKEN_HEALTH_PROBES) —
+		// DB-persistence lineage feature, preserved.
 		if probeResults != nil {
 			if pr, ok := probeResults[snap.Token]; ok {
 				tok["probe_ok"] = pr.OK
@@ -58,6 +59,19 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 					tok["probe_at"] = pr.ProbedAt
 				}
 			}
+		}
+		// Cooldown reason (additive): a distinguishable window refusal (the
+		// vendor's freebucks ceiling) names WHY the token is cooling down and
+		// WHEN upstream lifts it, so the operator never has to explain a
+		// ~20h cooldown from the raw body. Absent for every other cooldown.
+		if snap.CooldownKind != "" {
+			tok["cooldown_kind"] = snap.CooldownKind
+		}
+		if snap.CooldownWindowHours > 0 {
+			tok["cooldown_window_hours"] = snap.CooldownWindowHours
+		}
+		if !snap.CooldownResetsAt.IsZero() {
+			tok["cooldown_resets_at"] = snap.CooldownResetsAt.UTC().Format(time.RFC3339)
 		}
 		if len(snap.QuotaByModel) > 0 {
 			quota := make(map[string]any, len(snap.QuotaByModel))

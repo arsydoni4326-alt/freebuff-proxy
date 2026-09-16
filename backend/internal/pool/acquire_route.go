@@ -155,6 +155,7 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 	var banned []*upstream.BanError
 	var countryBlocked []*upstream.CountryBlockedError
 	var modelLimited []*upstream.LimitedIpError
+failoverLoop:
 	for _, idx := range order {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -229,8 +230,8 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			// Issue #155: if the cooldown was caused by a specific model's quota exhaustion,
 			// and we are requesting a different model (e.g. fallback to mimo-v2.5),
 			// do not block this token from serving the requested model.
-			if rle := tok.runs.RateLimitError(); rle != nil && rle.Model != "" && rle.Model != model && isQuotaExhaustedError(rle) {
-				// Token is only quota-capped for rle.Model, but can still serve `model`.
+			if canServeOtherModel(tok.runs.RateLimitError(), model) {
+				// Token is only quota-capped for the remembered model, but can still serve `model`.
 			} else {
 				errs = append(errs, fmt.Sprintf("%s: cooling down until %s", name, until.Format(time.RFC3339)))
 				p.logger.Debug("pool: token skipped (cooldown)", "token", idx+1, "until", until.Format(time.RFC3339))
@@ -276,25 +277,64 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				continue
 			}
 		}
-
 		// Smart-routing live-turn slot (TOKEN_MAX_CONCURRENT, route_smart.go):
 		// a lease is granted only while the token holds fewer live turns
 		// than the cap; otherwise the caller parks FIFO until QUEUE_WAIT
 		// elapses. The slot is taken BEFORE any upstream admission so a
 		// queued request never burns a session slot or run START while it
 		// waits. Overflow/timeout maps to the existing 429 rate-limit
-		// shape and fails over to the next token; the caller's own ctx
-		// expiry returns as-is (today's gate behavior). Skipped entirely
-		// when ROUTING_SMART is off (legacy path untouched).
+		// shape and fails over to the next token — except a same-model
+		// drain waiter timed out on its stick holder, which overflows to
+		// ONE deterministic helper or fails closed (see below); the
+		// caller's own ctx expiry returns as-is (today's gate behavior).
+		// Skipped entirely when ROUTING_SMART is off (legacy path untouched).
 		var routeSlot *routeSlotPermit
+		// queueWait is this attempt's park duration: set only when the
+		// request actually parked AND the slot was granted. A waiter that
+		// timed out or was cancelled held no slot and reports nothing.
+		var queueWait time.Duration
 		if cfg.RoutingSmart {
 			slotCap, slotDepth, slotWait := routeSlotParams(cfg)
 			// TOKEN_MAX_CONCURRENT=0 skips slot gating entirely: no
 			// counter, no queue — the upstream quota/429 is the brake.
 			if slotCap > 0 {
-				permit, _, slotErr := p.routeSlotAcquire(ctx, tok, idx+1, slotCap, slotDepth, slotWait)
+				parkStart := time.Now()
+				permit, parked, slotErr := p.routeSlotAcquire(ctx, tok, idx+1, slotCap, slotDepth, slotWait)
 				if slotErr != nil {
 					if routeIsQueueExhausted(slotErr) {
+						// Same-model overflow assist (operator ruling 2026-09-16,
+						// drain-only): a waiter that parked FIFO on the usable
+						// same-model holder past QUEUE_WAIT opens the model on
+						// ONE helper — the lowest-index eligible free account
+						// (deterministic, never round-robin/cycling) — to
+						// assist. Exactly one helper attempt per park: the
+						// recursion below carries order=[helper], and the
+						// helper never equals the holder, so it cannot
+						// overflow again (depth at most 1, no cascade). No
+						// eligible helper, or a failed assist, records the
+						// holder's own queue-timeout and breaks fail-closed:
+						// the existing queue-timeout error surfaces unchanged
+						// through the buckets below (never a spread-to-all).
+						// Queue-full (refused without parking) and
+						// cross-model/non-drain traffic keep the legacy
+						// continue below.
+						if qerr, ok := slotErr.(*routeQueueExhaustedError); ok && qerr.Reason == "timeout" {
+							if holders := p.routeStickHolders(cfg, toks, model); len(holders) > 0 && idx == holders[0] {
+								if helper, ok := p.routeOverflowHelper(cfg, toks, model, idx); ok {
+									p.logger.Debug("pool: same-model queue timeout, overflowing to helper", "holder", idx+1, "helper", helper+1, "model", model)
+									if lease, herr := p.leaseFromOrder(ctx, model, agentID, cfg, toks, []int{helper}, quotaLimited); herr == nil {
+										return lease, nil
+									} else if ctx.Err() != nil {
+										return nil, ctx.Err()
+									}
+								}
+								live := p.routeSlotLive(tok)
+								rateLimited = appendRateLimitEntry(rateLimited, routeQueueRateLimit(qerr, model, slotCap, live), idx)
+								errs = append(errs, fmt.Sprintf("%s: %v", name, slotErr))
+								p.logger.Debug("pool: token skipped (live-turn queue exhausted)", "token", idx+1, "err", slotErr)
+								break failoverLoop
+							}
+						}
 						live := p.routeSlotLive(tok)
 						rateLimited = appendRateLimitEntry(rateLimited, routeQueueRateLimit(slotErr.(*routeQueueExhaustedError), model, slotCap, live), idx)
 						errs = append(errs, fmt.Sprintf("%s: %v", name, slotErr))
@@ -302,6 +342,14 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 						continue
 					}
 					return nil, slotErr
+				}
+				// Queue-wait telemetry: the park duration rides the
+				// request's phase accumulator (the server puts it on the
+				// chat trace, inside the console's request card) and the
+				// lease. Never recorded for a request that did not park.
+				if parked {
+					queueWait = time.Since(parkStart)
+					phasetiming.FromContext(ctx).Since(phasetiming.QueueWaitMS, parkStart)
 				}
 				routeSlot = permit
 			}
@@ -509,15 +557,27 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 			routeSlot.Release()
 			continue
 		}
-		p.logger.Debug("pool: lease acquired", "token", idx+1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
-			"country", ss.CountryCode)
+		leaseAttrs := []any{
+			"token", idx + 1, "model", effectiveModel, "agent", effectiveAgentID, "instance_id", instanceID,
+			"country", ss.CountryCode,
+		}
+		if queueWait > 0 {
+			// Queue-wait telemetry: this admission parked in the account's
+			// FIFO live-turn queue before a slot was granted. Before this
+			// line existed, a granted park was invisible — only the
+			// timeout/exhausted path logged anything at all.
+			leaseAttrs = append(leaseAttrs, "queue_wait_ms", queueWait.Milliseconds(), "queue_parked", true)
+		}
+		p.logger.Debug("pool: lease acquired", leaseAttrs...)
 		if cur := p.roster.Load(); idx < 0 || idx >= len(*cur) || (*cur)[idx] != tok {
 			tok.runs.Release(run)
 			routeSlot.Release()
 			continue
 		}
-		lease := &Lease{Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
-			entry: tok, routeSlot: routeSlot, AcquiredAt: time.Now()}
+		lease := &Lease{
+			Token: idx, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: instanceID,
+			entry: tok, routeSlot: routeSlot, QueueWait: queueWait, AcquiredAt: time.Now(),
+		}
 		if cfg.RoutingSmart {
 			p.routeNoteGranted(tok)
 		}
@@ -574,8 +634,10 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 		n := p.notify
 		p.notifyMu.Unlock()
 		if n != nil {
-			n.Send(notify.Event{Event: "pool_exhausted", TokenIndex: 0, Model: model,
-				Message: "all tokens are rate-limited; the pool cannot serve the request"})
+			n.Send(notify.Event{
+				Event: "pool_exhausted", TokenIndex: 0, Model: model,
+				Message: "all tokens are rate-limited; the pool cannot serve the request",
+			})
 		}
 		return nil, bestRateLimitEntry(rateLimited)
 	}

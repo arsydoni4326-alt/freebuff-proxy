@@ -72,6 +72,13 @@ type Lease struct {
 	// (ROUTING_SMART off), when the cap is unlimited, or for synthetic
 	// leases.
 	routeSlot *routeSlotPermit
+	// QueueWait is how long this lease's request sat parked in the
+	// account's FIFO live-turn queue before the slot was granted (zero
+	// when it never parked, or when the slot was free immediately). It is
+	// the value the pool also records as the request's queue_wait_ms
+	// phase; callers log it so an operator can tell a queued admission
+	// from a slow one.
+	QueueWait time.Duration
 	// AcquiredAt is when this lease was handed out (per acquire attempt,
 	// not per run — a chat retry re-acquires and gets a fresh timestamp).
 	// The chat success path uses it to clear unfit marks that PREDATE this
@@ -83,11 +90,26 @@ type Lease struct {
 
 // TokenSnapshot is one token's healthz view.
 type TokenSnapshot struct {
-	Token                   int
-	TokenValue              string // the actual token value from config.AuthTokens
-	Email                   string `json:"email,omitempty"`
-	AccountID               string `json:"account_id,omitempty"`
-	CooldownUntil           time.Time
+	Token int
+	// TokenValue is the actual token value from config.AuthTokens.
+	// DB-persistence lineage field: the dashboard drawer and the settings
+	// overlay key rows by the real value (never written to the DB or logs).
+	TokenValue    string
+	Email         string `json:"email,omitempty"`
+	AccountID     string `json:"account_id,omitempty"`
+	CooldownUntil time.Time
+	// CooldownKind / CooldownWindowHours / CooldownResetsAt answer WHY a
+	// token is cooling down when upstream's refusal was a distinguishable
+	// window refusal (upstream.WindowKindFreebucks → "freebucks_window", the
+	// vendor's daily freebucks ceiling). CooldownKind is "" for every other
+	// cooldown (plain retry-after rate limit, ip_capped, ban, auth) and
+	// CooldownWindowHours/CooldownResetsAt stay zero unless upstream declared
+	// them, so existing consumers see exactly the old shape. CooldownResetsAt
+	// is upstream's own window refill instant; the proxy deadline remains
+	// CooldownUntil — the two are different facts and both are reported.
+	CooldownKind            string
+	CooldownWindowHours     int
+	CooldownResetsAt        time.Time
 	SessionStatus           string
 	SessionInstanceID       string
 	SessionQueuePosition    int
@@ -102,6 +124,17 @@ type TokenSnapshot struct {
 	ActiveRuns       int
 	Requests         int
 	Messages24h      int // successful chats in the last 24h (dashboard display; upstream quota/429 is the enforcement)
+	// LiveTurns is how many chat turns currently hold this account's
+	// smart-routing live-turn slot (TOKEN_MAX_CONCURRENT, route_smart.go);
+	// QueuedWaiters is how many requests are parked on its FIFO live-turn
+	// queue, and OldestWaiterMS is how long the longest-parked waiter has
+	// been waiting (0 when none). Together they are the "this account is
+	// saturated" signal — a request waiting with live turns at the cap is
+	// queued, not slow. Zero on the legacy path (ROUTING_SMART off) or
+	// when the cap is unlimited (no counter, no queue).
+	LiveTurns      int   `json:"live_turns"`
+	QueuedWaiters  int   `json:"queued_waiters"`
+	OldestWaiterMS int64 `json:"oldest_waiter_ms"`
 	// RequestsPerDay is the per-token successful-chat count in the current
 	// Pacific day, rolling at Pacific midnight. Read by the dashboard
 	// per-day display and the maturity client-active skip.
@@ -743,9 +776,9 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 
 	// AUTH_TOKENS slot reconciliation. A quarantine is bound to the exact
 	// account string an entry was built from; when a reload replaces the
-	// account at a slot (operator edited AUTH_TOKENS in the Config editor
-	// or .env), the old entry's terminal state no longer describes the
-	// account now configured there — and keeping the entry would keep
+	// account at a slot (operator edited AUTH_TOKENS in .env), the old
+	// entry's terminal state no longer describes the account now
+	// configured there — and keeping the entry would keep
 	// leasing the OLD account while the replacement token sat idle until a
 	// restart. The slot is therefore REBUILT end-to-end: the old entry is
 	// retired and drained (runs FINISHed, admitted session ended — exactly
