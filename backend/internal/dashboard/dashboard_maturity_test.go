@@ -117,21 +117,22 @@ func TestMaturityCardNextTouchRoundTrip(t *testing.T) {
 	} {
 		if card == nil {
 			t.Fatalf("%s card.Maturity = nil, want rendered card", name)
-		}
-		if card.SlotDay != "2026-09-05" || card.TouchDay != "2026-09-05" {
-			t.Errorf("%s slot/touch day = %q/%q, want 2026-09-05/2026-09-05", name, card.SlotDay, card.TouchDay)
-		}
-		if card.EffectiveTouchModel != "upstage/solar-pro4" {
-			t.Errorf("%s effective = %q, want upstage/solar-pro4", name, card.EffectiveTouchModel)
-		}
-		if card.AutoTouchModel != "upstage/solar-pro4" || card.AutoTouchReason != "auto:unmetered" {
-			t.Errorf("%s auto = %q/%q, want upstage/solar-pro4/auto:unmetered", name, card.AutoTouchModel, card.AutoTouchReason)
+		} else {
+			if card.SlotDay != "2026-09-05" || card.TouchDay != "2026-09-05" {
+				t.Errorf("%s slot/touch day = %q/%q, want 2026-09-05/2026-09-05", name, card.SlotDay, card.TouchDay)
+			}
+			if card.EffectiveTouchModel != "upstage/solar-pro4" {
+				t.Errorf("%s effective = %q, want upstage/solar-pro4", name, card.EffectiveTouchModel)
+			}
+			if card.AutoTouchModel != "upstage/solar-pro4" || card.AutoTouchReason != "auto:unmetered" {
+				t.Errorf("%s auto = %q/%q, want upstage/solar-pro4/auto:unmetered", name, card.AutoTouchModel, card.AutoTouchReason)
+			}
 		}
 	}
 }
 
-// The tokens payload carries the nightly-maintenance globals: the dry-run
-// flag for the badge plus tonight's window (RFC3339 absolute instants) for
+// The tokens payload carries the nightly-maintenance globals: the
+// kill-switch plus tonight's window (RFC3339 absolute instants) for
 // the next-run countdown — a fixed 15m ending at Pacific midnight.
 func TestTokensDataMaturityWindow(t *testing.T) {
 	cfg := &config.Config{
@@ -142,7 +143,6 @@ func TestTokensDataMaturityWindow(t *testing.T) {
 		RegistryRefresh:    6 * time.Hour,
 		UpstreamBaseURL:    "https://www.codebuff.com",
 		MaturityEnabled:    true,
-		MaturityDryRun:     true,
 	}
 	mock := testutil.NewMock()
 	t.Cleanup(mock.Close)
@@ -163,8 +163,8 @@ func TestTokensDataMaturityWindow(t *testing.T) {
 	if !td.MaturityEnabled {
 		t.Error("maturity_enabled = false, want true")
 	}
-	if !td.MaturityDryRun {
-		t.Error("maturity_dry_run = false, want true (badge source)")
+	if td.MaturityWindowStart == "" {
+		t.Error("maturity_window_start empty, want tonight's window for the countdown")
 	}
 	start, err := time.Parse(time.RFC3339, td.MaturityWindowStart)
 	if err != nil {

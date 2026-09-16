@@ -6,7 +6,7 @@
   import ToggleSwitch from "../../components/ToggleSwitch.svelte";
   import DbOverrideSave from "../../components/DbOverrideSave.svelte";
   import Button from "../../components/Button.svelte";
-  import Alert from "../../components/Alert.svelte";
+  import { push as pushToast } from "../../stores/toast.js";
   import { postAPI, fetchAPI } from "../../api/client.js";
   import { adminApi } from "../../api/paths.js";
   import { tr } from "../../i18n.js";
@@ -31,6 +31,8 @@
    * @prop {boolean} [hasPassword]
    * @prop {(() => void) | null} [onPasswordSuccess] - parent refetch after a
    *   password change
+   * @prop {boolean} [degraded=false] - settings store offline: the login
+   *   row renders an honest offline note and stays read-only for saves
    */
   let {
     formValues,
@@ -44,6 +46,7 @@
     isDefaultAdminToken = $bindable(false),
     hasPassword = $bindable(true),
     onPasswordSuccess = null,
+    degraded = false,
   } = $props();
 
   // --- Password form state (from SecurityCard, unchanged logic) ---
@@ -54,8 +57,6 @@
   let showNewPassword = $state(false);
 
   let submitting = $state(false);
-  let errorMsg = $state("");
-  let successMsg = $state("");
 
   onMount(async () => {
     try {
@@ -83,19 +84,26 @@
 
   async function handleSubmit(e) {
     e.preventDefault();
-    errorMsg = "";
-    successMsg = "";
 
     if (hasPassword && !currentPassword.trim()) {
-      errorMsg = $tr("Please enter your current password.");
+      pushToast({
+        tone: "error",
+        title: $tr("Please enter your current password."),
+      });
       return;
     }
     if (newPassword.length < 6) {
-      errorMsg = $tr("New password must be at least 6 characters.");
+      pushToast({
+        tone: "error",
+        title: $tr("New password must be at least 6 characters."),
+      });
       return;
     }
     if (newPassword === "123456") {
-      errorMsg = $tr("New password cannot be the default password (123456).");
+      pushToast({
+        tone: "error",
+        title: $tr("New password cannot be the default password (123456)."),
+      });
       return;
     }
     submitting = true;
@@ -107,7 +115,10 @@
       });
 
       if (res.ok) {
-        successMsg = res.message || $tr("Admin password updated successfully!");
+        pushToast({
+          tone: "success",
+          title: res.message || $tr("Admin password updated successfully!"),
+        });
         currentPassword = "";
         newPassword = "";
         isDefaultAdminToken = false;
@@ -118,11 +129,17 @@
         });
         onPasswordSuccess?.();
       } else {
-        errorMsg = res.message || $tr("Failed to update password.");
+        pushToast({
+          tone: "error",
+          title: res.message || $tr("Failed to update password."),
+        });
       }
     } catch (err) {
-      errorMsg =
-        err.message || $tr("Could not update password. Check connection.");
+      pushToast({
+        tone: "error",
+        title:
+          err.message || $tr("Could not update password. Check connection."),
+      });
     } finally {
       submitting = false;
     }
@@ -275,12 +292,6 @@
                 </p>
               {/if}
             </div>
-            {#if errorMsg}
-              <Alert tone="error">{errorMsg}</Alert>
-            {/if}
-            {#if successMsg}
-              <Alert tone="success">{successMsg}</Alert>
-            {/if}
 
             <div class="pt-2">
               <Button
@@ -332,6 +343,7 @@
                 source={sources.DASHBOARD_REQUIRE_LOGIN}
                 {onReset}
                 {onSaved}
+                {degraded}
               />
             {/snippet}
 

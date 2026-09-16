@@ -452,7 +452,6 @@ Terminal event for OpenAI streaming: `data: [DONE]` (no event type).
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 | `LOG_FORMAT` | `text` | Log format (text, json) |
 | `LOG_ACCESS` | `true` | Per-request access logging |
-| `LOG_RING_SIZE` | `500` | Dashboard log ring buffer (50-5000) |
 | `LOG_FILE` | `` | Optional log file path |
 | `DEBUG_DUMP` | `false` | Dump request/response bodies |
 | `CORS_ALLOWED_ORIGIN` | `*` | CORS origin |
@@ -460,7 +459,6 @@ Terminal event for OpenAI streaming: `data: [DONE]` (no event type).
 | `TRANSIENT_RETRIES` | `1` | Max transport failure retries |
 | `MODELS_HIDE_UNAVAILABLE` | `false` | Prune unavailable models |
 | `MODELS_ALLOW` | `` | Model allowlist |
-| `MODEL_ALIASES` | `` | Model alias map |
 | `CLI_VERSION` | `0.10.7` | Upstream CLI version string |
 | `SESSION_PERSIST` | `false` | Persist sessions to disk |
 | `SESSION_STATE_FILE` | `.freebuff-session-state.json` | Session state file path |
@@ -529,7 +527,6 @@ Think tags (` thinking... `) in upstream responses stripped and converted to
 ### Model Selection
 
 - Model IDs follow upstream convention: `provider/model-name`.
-- `MODEL_ALIASES` maps custom names to real model IDs.
 - `MODELS_ALLOW` restricts catalog to operator-defined allowlist.
 - Limited-tier accounts: all model requests coerced to `mimo/mimo-v2.5` upstream.
 - `/v1/models` returns live catalog synced from upstream at `REGISTRY_REFRESH`.

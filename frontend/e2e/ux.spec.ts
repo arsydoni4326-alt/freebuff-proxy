@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { loadFixtures, mockDashboard } from "./mocks.js";
+import { loadFixtures, mockDashboard, mockSettingsOverlay } from "./mocks.js";
+import type { PostedSetting } from "./mocks.js";
 
 // ---------------------------------------------------------------------------
 // Fixture builders (per-test copies — never mutate shared fixtures)
@@ -449,6 +450,8 @@ test.describe("operator UX journey (hermetic mocks)", () => {
       { configWithApiKeys: configWithContent },
       { loginPage: true },
     );
+    const settingsPosted: PostedSetting[] = [];
+    await mockSettingsOverlay(page, settingsPosted);
 
     // Sign in first; the login response carries fb_admin + fb_csrf.
     await page.goto("http://127.0.0.1:4173/admin/login");
@@ -536,14 +539,16 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     await row1.getByRole("button", { name: "Lock" }).click();
     await lockReq;
 
-    // --- remove token 0 (POST /admin/tokens/remove-specific) ---
-    const row0 = page.locator('table tbody tr').filter({ hasText: '#0' });
-    const removeReq = page.waitForRequest((r) => r.method() === 'POST' && r.url().includes('/admin/tokens/remove-specific'));
-    page.once('dialog', (d) => d.accept());
-    await row0.getByRole('button', { name: 'Remove' }).click();
-    await removeReq;
-
-    // --- config save (POST /admin/config) ---
+    // --- remove token 0 (POST /admin/tokens/remove) ---
+    const row0 = page
+      .locator("table tbody tr")
+      .filter({ hasText: "Account #1" });
+    const removeReq = page.waitForRequest(
+      (r) => r.method() === "POST" && r.url().includes("/admin/tokens/remove"),
+    );
+    page.once("dialog", (d) => d.accept());
+    await row0.getByRole("button", { name: "Remove" }).click();
+    // --- settings row save (POST /admin/api/settings) ---
     const metaResp = page.waitForResponse(
       (r) => r.url().includes("/admin/api/config/meta") && r.status() === 200,
     );
@@ -551,18 +556,19 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     await metaResp;
     const safeMode = page.getByRole("switch", { name: "SAFE_MODE" });
     await expect(safeMode).toHaveAttribute("aria-checked", "true");
-    await safeMode.click();
-    const configReq = page.waitForRequest(
-      (r) => r.method() === "POST" && r.url().includes("/admin/config"),
+    const settingsReq = page.waitForRequest(
+      (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
     );
-    page.once("dialog", (d) => d.accept());
-    await page
-      .getByRole("button", { name: "Save Changes", exact: true })
-      .click();
-    await configReq;
+    await safeMode.click();
+    await settingsReq;
 
     // Every recorded admin POST carried the matching X-CSRF-Token.
-    const expectedPaths = ['/admin/tokens/add', '/admin/tokens/1/lock', '/admin/tokens/remove-specific', '/admin/config'];
+    const expectedPaths = [
+      "/admin/tokens/add",
+      "/admin/tokens/1/lock",
+      "/admin/tokens/remove",
+      "/admin/api/settings",
+    ];
     const seenPaths = posts.map((p) => p.path);
     for (const p of expectedPaths) {
       expect(seenPaths).toContain(p);

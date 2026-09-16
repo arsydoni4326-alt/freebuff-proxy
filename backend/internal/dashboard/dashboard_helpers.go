@@ -102,6 +102,7 @@ func maturityCardFromSnapshot(m *pool.MaturitySnapshot) *maturityCard {
 		LastAction:          m.LastAction,
 		LastResult:          m.LastResult,
 		LastAdvanced:        m.LastAdvanced,
+		ResultDay:           m.ResultDay,
 		EffectiveTouchModel: m.EffectiveTouchModel,
 		AutoTouchModel:      m.AutoTouchModel,
 		AutoTouchReason:     m.AutoTouchReason,
@@ -208,6 +209,16 @@ func freebucksCardFromInfo(info *upstream.FreebucksInfo) *freebucksCard {
 		PriceNotices: info.PriceNotices,
 		QuotaExempt:  info.QuotaExempt,
 	}
+	if info.FirstTabDiscount != nil {
+		d := &freebucksFirstTabCard{
+			Amount:    info.FirstTabDiscount.Amount,
+			Available: info.FirstTabDiscount.Available,
+		}
+		if h := info.FirstTabDiscount.Holder; h != nil {
+			d.HolderSurface = h.Surface
+		}
+		card.FirstTabDiscount = d
+	}
 	card.Wallet = freebucksWalletCard{
 		Balance:      info.Wallet.Balance,
 		MonthlyBonus: info.Wallet.MonthlyBonus,
@@ -238,9 +249,10 @@ func freebucksCardFromInfo(info *upstream.FreebucksInfo) *freebucksCard {
 
 func freebucksWindowCardFromWindow(w upstream.FreebucksWindow) freebucksWindowCard {
 	card := freebucksWindowCard{
-		Limit:     w.Limit,
-		Spent:     w.Spent,
-		Remaining: w.Remaining,
+		Limit:         w.Limit,
+		Spent:         w.Spent,
+		Remaining:     w.Remaining,
+		ResetTimeZone: w.ResetTimeZone,
 	}
 	if !w.ResetAt.IsZero() {
 		card.ResetAt = w.ResetAt.Format(time.RFC3339)

@@ -789,3 +789,69 @@ func TestBridgeDeadToken(t *testing.T) {
 		t.Error("DeadToken = false for hard-banned entry, want true")
 	}
 }
+
+// TestHybridPooledCredentialRefusedOnBridge pins the hybrid guard: in
+// hybrid mode a client credential that equals a pooled AUTH_TOKENS entry
+// must not be relayed as a bridge token — the same upstream account would
+// otherwise run a pooled lease AND a bridge entry (two paths, two
+// concurrent sessions). Non-pooled bridge credentials keep working.
+func TestHybridPooledCredentialRefusedOnBridge(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newTestPool(t, mock)
+	cfg := p.cfg.Load()
+	cfg.BridgeEnabled = true
+	cfg.UpstreamBaseURL = mock.URL()
+	p.cfg.Store(cfg)
+
+	_, err := p.AcquireBridge(context.Background(), "tok-0", modelA)
+	if err == nil {
+		t.Fatal("pooled credential bridged, want refusal")
+		return
+	}
+	if !strings.Contains(err.Error(), "pooled") {
+		t.Fatalf("err = %v, want pooled-token refusal", err)
+	}
+	if got := p.BridgeCount(); got != 0 {
+		t.Errorf("bridge count = %d, want 0 (no entry for a pooled credential)", got)
+	}
+
+	// A genuinely different client token still bridges.
+	lease, err := p.AcquireBridge(context.Background(), "client-own-token", modelA)
+	if err != nil {
+		t.Fatalf("non-pooled bridge credential rejected: %v", err)
+	}
+	p.LeaseRelease(lease)
+	if got := p.BridgeCount(); got != 1 {
+		t.Errorf("bridge count = %d, want 1", got)
+	}
+}
+
+// TestCooldownBridgeIpCappedSurfacesRemembered pins the bridge entry's
+// ip_capped cooldown: after CooldownBridgeIpCapped the next AcquireBridge
+// surfaces the remembered error instead of re-hitting upstream.
+func TestCooldownBridgeIpCappedSurfacesRemembered(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	p := newBridgePool(t, mock)
+
+	lease, err := p.AcquireBridge(context.Background(), "client-tok", modelA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CooldownBridgeIpCapped(lease, &upstream.IpCappedError{RetryAfter: 5 * time.Minute, Body: "ip_capped"})
+	p.LeaseRelease(lease)
+
+	before := mock.RequestCount()
+	_, err = p.AcquireBridge(context.Background(), "client-tok", modelA)
+	var ice *upstream.IpCappedError
+	if !errors.As(err, &ice) {
+		t.Fatalf("second acquire = %v, want *upstream.IpCappedError", err)
+	}
+	if !errors.Is(err, upstream.ErrIpCapped) {
+		t.Error("errors.Is(ErrIpCapped) = false")
+	}
+	if after := mock.RequestCount(); after != before {
+		t.Errorf("upstream requests while ip-capped = %d, want %d (skip)", after, before)
+	}
+}

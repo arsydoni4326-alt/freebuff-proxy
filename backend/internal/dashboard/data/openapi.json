@@ -994,29 +994,8 @@
           "agents": {
             "type": "integer"
           },
-          "aliases": {
-            "items": {
-              "properties": {
-                "alias": {
-                  "type": "string"
-                },
-                "real": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "alias",
-                "real"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          },
           "count": {
             "type": "integer"
-          },
-          "has_aliases": {
-            "type": "boolean"
           },
           "models": {
             "items": {
@@ -1078,9 +1057,7 @@
         },
         "required": [
           "agents",
-          "aliases",
           "count",
-          "has_aliases",
           "models"
         ],
         "type": "object"
@@ -1125,6 +1102,9 @@
                         "reset_at": {
                           "type": "string"
                         },
+                        "reset_time_zone": {
+                          "type": "string"
+                        },
                         "spent": {
                           "type": "number"
                         }
@@ -1134,6 +1114,25 @@
                         "percent_used",
                         "remaining",
                         "spent"
+                      ],
+                      "type": "object"
+                    },
+                    "first_tab_discount": {
+                      "nullable": true,
+                      "properties": {
+                        "amount": {
+                          "type": "number"
+                        },
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "holder_surface": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "amount",
+                        "available"
                       ],
                       "type": "object"
                     },
@@ -1150,6 +1149,9 @@
                           "type": "number"
                         },
                         "reset_at": {
+                          "type": "string"
+                        },
+                        "reset_time_zone": {
                           "type": "string"
                         },
                         "spent": {
@@ -1352,6 +1354,9 @@
                         "reset_at": {
                           "type": "string"
                         },
+                        "reset_time_zone": {
+                          "type": "string"
+                        },
                         "spent": {
                           "type": "number"
                         }
@@ -1361,6 +1366,25 @@
                         "percent_used",
                         "remaining",
                         "spent"
+                      ],
+                      "type": "object"
+                    },
+                    "first_tab_discount": {
+                      "nullable": true,
+                      "properties": {
+                        "amount": {
+                          "type": "number"
+                        },
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "holder_surface": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "amount",
+                        "available"
                       ],
                       "type": "object"
                     },
@@ -1377,6 +1401,9 @@
                           "type": "number"
                         },
                         "reset_at": {
+                          "type": "string"
+                        },
+                        "reset_time_zone": {
                           "type": "string"
                         },
                         "spent": {
@@ -1500,6 +1527,9 @@
                       "type": "string"
                     },
                     "mode": {
+                      "type": "string"
+                    },
+                    "result_day": {
                       "type": "string"
                     },
                     "slot": {
@@ -1910,6 +1940,9 @@
                         "reset_at": {
                           "type": "string"
                         },
+                        "reset_time_zone": {
+                          "type": "string"
+                        },
                         "spent": {
                           "type": "number"
                         }
@@ -1919,6 +1952,25 @@
                         "percent_used",
                         "remaining",
                         "spent"
+                      ],
+                      "type": "object"
+                    },
+                    "first_tab_discount": {
+                      "nullable": true,
+                      "properties": {
+                        "amount": {
+                          "type": "number"
+                        },
+                        "available": {
+                          "type": "boolean"
+                        },
+                        "holder_surface": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "amount",
+                        "available"
                       ],
                       "type": "object"
                     },
@@ -1935,6 +1987,9 @@
                           "type": "number"
                         },
                         "reset_at": {
+                          "type": "string"
+                        },
+                        "reset_time_zone": {
                           "type": "string"
                         },
                         "spent": {
@@ -2054,9 +2109,6 @@
           "in_bridge": {
             "type": "boolean"
           },
-          "maturity_dry_run": {
-            "type": "boolean"
-          },
           "maturity_enabled": {
             "type": "boolean"
           },
@@ -2111,7 +2163,6 @@
           "bridge_tokens",
           "has_tokens",
           "in_bridge",
-          "maturity_dry_run",
           "maturity_enabled",
           "mode",
           "rate_limit_failover",

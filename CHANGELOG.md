@@ -8,16 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **Merge conflict resolution with upstream/main, preserving persistent database state (settings live pages merge)**
-  - `config/`: reconciled key catalog with upstream's retirements (#506 local
-    throttles → unlimited, #510 dead cap knobs deleted, #515 risk_level
-    removed, ADR-0027 premium-quota retirement) while re-adding every knob
-    with a live consumer: `BRIDGE_RATE_LIMIT_PER_TOKEN`,
+- **Merge conflict resolution with upstream/main (vendor 0.0.175: first-tab discount + per-account reset timezone), preserving persistent database state**
+  - Merge of upstream/main 5589474a (vendor b609d73 0.0.175, wire re-pin
+    #567, drift-data #558, first-tab discount + per-account reset timezone
+    port #568, toast notifications #563, interactables e2e inventory #566,
+    dashboard table tidy #561) into the DB-persistence lineage
+    (6588f7a5 = merge of tag v1.8.13-arsydoni4326-alt).
+  - `config/config.go|config_keys.go|config_load.go`: reconciled the key
+    surface — upstream retired the model-fallback layer (`MODEL_ALIASES`,
+    `FALLBACK_AFTER_MS`, `FALLBACK_MODEL`, `QUOTA_FALLBACK_MODELS`) and the
+    log-surface knobs (`LOG_RING_SIZE`, `LOG_CONSOLE_WINDOW`,
+    `LOG_TABLE_RETENTION`; dashboard log surface is now hardcoded: 500
+    ring / 1h console window / 7d history retention) and removed
+    `MATURITY_DRY_RUN` (touches run live). All retired keys are tolerated
+    as unknown and ignored; no config migration needed. Every knob with a
+    live consumer is kept: `BRIDGE_RATE_LIMIT_PER_TOKEN`,
     `BRIDGE_CIRCUIT_BREAKER_FAILURES/WINDOW/COOLDOWN`, `MAX_SPEND_PER_DAY`,
     `AUTO_ROTATE_ON_EXHAUSTION`, `EXHAUSTION_WARNING_THRESHOLD`,
     `HEALTH_SCORE_ENABLED`, `TOKEN_HEALTH_PROBES`, `TOKEN_PROBE_INTERVAL`.
-    `MaturityTouchModel` default stays `deepseek/deepseek-v4-flash`
-    (unmetered, cost-0).
+    `MATURITY_TOUCH_MODEL` default is now `""` (= auto: cheapest served
+    unmetered row, fail-closed on priced rows; explicit id overrides),
+    matching upstream and the merged key catalog.
   - `pool/pool_persist.go`: kept the DB-unified runtime persistence
     (pool_state ledgers/admissions write-through) AND adopted upstream's
     new live per-token quota-cache persistence (`pool/probe/quota/<sha>`
@@ -57,17 +68,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Health scoring (HEALTH_SCORE_ENABLED suite), token health probes,
   bridge circuit breaker + per-token bridge rate limiting, refund tracking
   (`lastRefund`/`pendingRefund`) and the refund-refresh on-view trigger.
-- `MaturityTouchModel=deepseek/deepseek-v4-flash` unmetered default.
+- Maturity auto touch model: the nightly touches still never spend
+  Freebucks (fail-closed on priced rows); the resolved model now comes from
+  the auto pick (cheapest served unmetered row) instead of a hardcoded
+  default id.
+
+### Added
+- Upstream bridge tests merged alongside our retained rate-limit and
+  DeadToken coverage: hybrid pooled-credential refusal pin
+  (`TestHybridPooledCredentialRefusedOnBridge`) and the ip_capped
+  remembered-error pin (`TestCooldownBridgeIpCappedSurfacesRemembered`) —
+  all green against our persisted bridge-cache implementation.
+- `frontend/e2e/ux.spec.ts` and the tokens page aligned with upstream's
+  `POST /admin/tokens/remove` + `POST /admin/api/settings` flow (both
+  routes still served; our `remove-specific` route remains available).
 
 ### Technical Details
-- Merge verified: all 11 conflict files resolved and staged; no commit made.
-  `go build ./backend/...` green; `go vet ./backend/...` clean.
+- Merge verified: all 17 conflict files across the two merge layers
+  resolved and staged; no commit made (repo rule: never commit unless
+  asked). `go build ./backend/...` green; `go vet ./backend/...` clean;
+  merged-out files gofmt'd.
 - Full hermetic suite (`env -u AUTH_TOKENS -u ADMIN_TOKEN go test -count=1
-  -timeout 10m ./backend/...`): every package ok except two pre-existing
-  failures reproduced byte-identical on a pristine HEAD=048c10f worktree —
-  `session` store JSON-file tests (8, deferred store refactor) and
-  `TestConcurrentReloadAndChat` (racy on this lineage). None were introduced
-  by this merge. Noted in `session.md`.
+  -timeout 10m ./backend/...`): every package ok except pre-existing
+  failures reproduced byte-identical on a pristine HEAD=6588f7a5 worktree —
+  `session` store JSON-file tests (8, deferred store refactor),
+  `TestConcurrentReloadAndChat` and `TestSettingsDurationEchoStable` (racy
+  on this lineage). None were introduced by this merge. Noted in
+  `session.md`.
 
 ### Fixed
 - **Merge conflict resolution with upstream/main (smart routing step 1)**

@@ -1,6 +1,61 @@
 # Session: SQLite Token Database + UI
 
-## Latest: merge upstream/main (settings live pages) into bugfix/settings-live — merge 2 of 2026-09-15
+## Latest: merge upstream/main (vendor 0.0.175, first-tab discount + per-account reset timezone) into develop — merge 3 of 2026-09-16
+
+- **Merge fully resolved and staged** (branch `develop`, merge of
+  upstream/main 5589474a into 6588f7a5 = merge of tag
+  v1.8.13-arsydoni4326-alt). All 6 remaining conflict files resolved and
+  staged; **no commit made** (repo rule: never commit unless asked).
+- **Per-file resolutions**:
+  - `config/config.go`: took upstream's hardcoding of the dashboard log
+    surface (500 ring / 1h console window / 7d retention);
+    `LogRingSize`/`LogConsoleWindow`/`LogTableRetention` Config fields
+    dropped (dashboard reads `config.DefaultLog*` constants now). Bridge
+    breaker + MaxSpendPerDay + health-suite Config fields kept.
+  - `config/config_keys.go`: rawConfig keeps our persistence/health knobs
+    (`BridgeRateLimitPerToken`, `BridgeCircuitBreaker*`, `MaxSpendPerDay`,
+    `AutoRotateOnExhaustion`, `ExhaustionWarningThreshold`,
+    `HealthScoreEnabled`, `TokenHealthProbes`, `TokenProbeInterval`);
+    dropped upstream-retired `ModelAliases`, `QuotaFallbackModels`,
+    `FallbackAfter`, `FallbackModels`, `MaturityDryRun` (all excised with
+    zero live consumers). `defaultRawConfig` took upstream's
+    `MaturityTouchModel=""` (= auto), matching the already-merged key
+    catalog (its Default is "" and the merged maturity.go resolves auto).
+  - `config/config_load.go`: kept our parse block for maxSpendPerDay /
+    bridge breaker / exhaustion / health probes; dropped LogRingSize
+    override and the retired Config-literal fields; kept the excised-keys
+    tolerance comment (saved values ignored, no migration).
+  - `config/maturity_test.go`: took upstream's assertion
+    (`MaturityTouchModel == ""`), dropped the MaturityDryRun assertion.
+  - `pool/pool_bridge_test.go`: UNION — kept our `TestBridgeTokenRateLimit`,
+    `TestBridgeTokenRateLimitUnlimited`, `TestBridgeRateLimitEntryIsIndependent`,
+    `TestBridgeDeadToken` (features preserved in the staged pool code) and
+    adopted upstream's `TestHardBannedBridgeEntrySkipsMaintainAndPoll`-era
+    `TestHybridPooledCredentialRefusedOnBridge` +
+    `TestCooldownBridgeIpCappedSurfacesRemembered` (both pass against our
+    bridge cache). Upstream had deleted our rate-limit/DeadToken tests
+    because it retired the features; we kept both features, so we keep
+    their tests too.
+  - `frontend/e2e/ux.spec.ts`: took upstream (the merged SPA posts
+    `POST /admin/tokens/remove` from `paths.js` and saves settings rows via
+    `POST /admin/api/settings`; both routes still served — our
+    `remove-specific` route remains available for the drawer).
+  - `pool/pool_ledger.go`: gofmt whitespace only.
+- **Verification**: `go build ./backend/...` green; `go vet ./backend/...`
+  clean; `git diff --check` clean. Hermetic suite: every package ok except
+  pre-existing failures reproduced on a pristine HEAD=6588f7a5 worktree
+  (`session` store JSON-file tests x8, `TestConcurrentReloadAndChat`,
+  `TestSettingsDurationEchoStable` — deferred store refactor + racy on this
+  lineage; not introduced by this merge). Race detector green on the
+  resolved merge-target tests (`TestBridgeTokenRateLimit|...|TestMaturityDefaults`).
+- **Documentation**: README Configuration Reference gained a retired-keys
+  note (MODEL_ALIASES / FALLBACK_* / QUOTA_FALLBACK_MODELS / LOG_RING_SIZE /
+  LOG_CONSOLE_WINDOW / LOG_TABLE_RETENTION / MATURITY_DRY_RUN dropped;
+  MAX_MESSAGES_PER_DAY row removed, it was already retired); SPECIFICATION
+  config table rows updated; CHANGELOG Unreleased entry rewritten for this
+  merge.
+
+## Previous: merge upstream/main (settings live pages) into bugfix/settings-live — merge 2 of 2026-09-15
 
 - **Merge resolved and staged** (branch `bugfix/settings-live`, HEAD 048c10f
   = v1.8.12-arsydoni4326-alt merge, + upstream/main 66e68f9 = settings live

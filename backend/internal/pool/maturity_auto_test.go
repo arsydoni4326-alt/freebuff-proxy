@@ -64,7 +64,7 @@ func TestMaturityAutoDefaultResolves(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.StreakBody = streakBody(2, false)
-	p := newMaturityPool(t, mock, false)
+	p := newMaturityPool(t, mock)
 	p.cfg.Load().MaturityTouchModel = "auto"
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
@@ -79,18 +79,19 @@ func TestMaturityAutoDefaultResolves(t *testing.T) {
 	snap := p.Snapshot()[0].Maturity
 	if snap == nil {
 		t.Fatal("snapshot maturity = nil, want resolved view")
-	}
-	if snap.AutoTouchModel != "upstage/solar-pro4" || snap.AutoTouchReason != "auto:unmetered" {
-		t.Errorf("auto = %q/%q, want upstage/solar-pro4/auto:unmetered", snap.AutoTouchModel, snap.AutoTouchReason)
-	}
-	if snap.EffectiveTouchModel != "upstage/solar-pro4" {
-		t.Errorf("effective = %q, want upstage/solar-pro4", snap.EffectiveTouchModel)
-	}
-	if snap.SlotDay == "" {
-		t.Error("slot_day empty, want account-day for the next-touch countdown")
-	}
-	if snap.TouchDay == "" || snap.TouchDay != snap.SlotDay {
-		t.Errorf("touch_day = %q slot_day = %q, want equal after a same-day touch", snap.TouchDay, snap.SlotDay)
+	} else {
+		if snap.AutoTouchModel != "upstage/solar-pro4" || snap.AutoTouchReason != "auto:unmetered" {
+			t.Errorf("auto = %q/%q, want upstage/solar-pro4/auto:unmetered", snap.AutoTouchModel, snap.AutoTouchReason)
+		}
+		if snap.EffectiveTouchModel != "upstage/solar-pro4" {
+			t.Errorf("effective = %q, want upstage/solar-pro4", snap.EffectiveTouchModel)
+		}
+		if snap.SlotDay == "" {
+			t.Error("slot_day empty, want account-day for the next-touch countdown")
+		}
+		if snap.TouchDay == "" || snap.TouchDay != snap.SlotDay {
+			t.Errorf("touch_day = %q slot_day = %q, want equal after a same-day touch", snap.TouchDay, snap.SlotDay)
+		}
 	}
 }
 
@@ -100,7 +101,7 @@ func TestMaturityAutoSkipsPricedHead(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.StreakBody = streakBody(2, false)
-	p := newMaturityPool(t, mock, false)
+	p := newMaturityPool(t, mock)
 	p.cfg.Load().MaturityTouchModel = "auto"
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
@@ -134,7 +135,7 @@ func TestMaturityAutoSkipsPricedHead(t *testing.T) {
 func TestMaturityAutoFallbackClosed(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
-	p := newMaturityPool(t, mock, false)
+	p := newMaturityPool(t, mock)
 	p.cfg.Load().MaturityTouchModel = "auto"
 	if err := p.SetMaturity(0, true, 7, "", ""); err != nil {
 		t.Fatal(err)
@@ -171,7 +172,7 @@ func TestMaturityAutoPrecedence(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
 	mock.StreakBody = streakBody(2, false)
-	p := newMaturityPool(t, mock, false)
+	p := newMaturityPool(t, mock)
 	if err := p.SetMaturity(0, true, 7, "", "auto"); err != nil {
 		t.Fatalf("auto override save: %v", err)
 	}

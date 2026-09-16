@@ -10,7 +10,10 @@
   import { onMount } from "svelte";
   import { recordPageVisit } from "../stores/pageState.js";
   import Button from "./Button.svelte";
-  import Alert from "./Alert.svelte";
+  import {
+    push as pushToast,
+    dismiss as dismissToast,
+  } from "../stores/toast.js";
   import EmptyState from "./EmptyState.svelte";
   import RefundLines from "./RefundLines.svelte";
   import {
@@ -30,6 +33,23 @@
   let data = $state(null);
   let loading = $state(true);
   let error = $state("");
+  let errorToast = $state(0);
+  let lastErrorMsg = "";
+  function notifyError(msg) {
+    // The shared tokens poll re-fails with the same message: only replace
+    // the toast when it actually changes, so it never flickers and a
+    // manual dismiss is respected until the next distinct failure.
+    if (msg === lastErrorMsg) return;
+    lastErrorMsg = msg;
+    if (errorToast) dismissToast(errorToast);
+    errorToast = msg
+      ? pushToast({
+          tone: "error",
+          title: $tr("Could not load this page"),
+          body: msg,
+        })
+      : 0;
+  }
   // Countdown tick: the global reset strip re-renders "resets in" against
   // this clock every second. Refetches nothing on its own.
   let now = $state(Date.now());
@@ -99,6 +119,16 @@
     }
     return parts.join(" · ");
   }
+  // First-tab offer line (vendor 6cd8970 firstTabDiscountCopy, condensed
+  // for the account card): the server already folds an available offer
+  // into prices, so this is display state only.
+  function discountLine(d) {
+    if (d == null) return "";
+    if (d.available) {
+      return `${$tr("First-tab discount")}: ${$tr("up to {amount} off one session", { amount: `${formatFreebucks(d.amount)} Freebucks` })} · ${$tr("prices shown include it")}`;
+    }
+    return `${$tr("First-tab discount in use")} · ${$tr("parallel sessions pay the regular price")}`;
+  }
 
   function quotaExempt(token) {
     return Boolean(
@@ -117,6 +147,7 @@
         data = v;
         loading = false;
         error = "";
+        notifyError("");
         // Visit auto-probe (ADR-0025): one silent ?auto=1 probe after the
         // first tokens load, then the store reload carries the numbers.
         // No success banner; a failure surfaces on the probeMsg error path.
@@ -132,6 +163,7 @@
       if (err) {
         error = err;
         loading = false;
+        notifyError(err);
       }
     });
     tick = setInterval(() => {
@@ -142,6 +174,7 @@
       unsubStore?.();
       unsubErr?.();
       clearInterval(tick);
+      if (errorToast) dismissToast(errorToast);
     };
   });
 </script>
@@ -156,7 +189,6 @@
   <p class="text-xs text-[var(--fp-dim)] font-mono">{$tr("Loading…")}</p>
 {:else if error}
   <div class="flex flex-col gap-3">
-    <Alert tone="error" title={$tr("Could not load this page")}>{error}</Alert>
     <div>
       <Button variant="secondary" onclick={refreshTokens}>{$tr("Retry")}</Button
       >
@@ -221,6 +253,14 @@
               <span class="text-[var(--fp-accent)]"
                 >{formatFreebucks(balance)}</span
               >
+            </p>
+          {/if}
+          {#if token.freebucks?.first_tab_discount}
+            <p
+              class="fp-num text-[11px] text-[var(--fp-muted)] tabular-nums"
+              data-testid="first-tab-discount"
+            >
+              {discountLine(token.freebucks.first_tab_discount)}
             </p>
           {/if}
           {#if daily}

@@ -164,6 +164,17 @@ Daily management lives in the dashboard (`/admin`; see [Admin Dashboard](#admin-
 
 ## Configuration Reference
 
+> **Retired keys** (settings-live merge, 2026-09-16): `MODEL_ALIASES`,
+> `FALLBACK_AFTER_MS`, `FALLBACK_MODEL`, `QUOTA_FALLBACK_MODELS`,
+> `LOG_RING_SIZE`, `LOG_CONSOLE_WINDOW`, `LOG_TABLE_RETENTION`, and
+> `MATURITY_DRY_RUN` are no longer read. The dashboard log surface is
+> hardcoded (500-record ring, 1h console view, 7d history retention), model
+> fallback was superseded by upstream's honest-429 routing, and maturity
+> touches run live via the auto touch-model (cheapest served unmetered row;
+> `MATURITY_TOUCH_MODEL` overrides). Saved values are tolerated as unknown
+> keys and ignored — no config migration needed.
+
+All keys can be set via environment variables or the JSON config file passed to `-config` (`AUTO_DISCOVER_TOKEN` is environment-only); a `.env` file (resolved automatically from your platform config directory, or `./.env` in the working directory when present) is also read, and for the keys it covers it behaves like the environment. Precedence, lowest to highest: **built-in defaults < JSON `-config` < `.env` < environment**. List values (`AUTH_TOKENS`, `API_KEYS`, `MODELS_ALLOW`) are comma-separated in env and arrays in JSON (`MODELS_ALLOW` also accepts a plain comma-separated JSON string).
 All keys can be set via environment variables or the JSON config file passed to `-config` (`AUTO_DISCOVER_TOKEN` is environment-only); a `.env` file (resolved automatically from your platform config directory, or `./.env` in the working directory when present) is also read, and for the keys it covers it behaves like the environment. Precedence, lowest to highest: **built-in defaults < JSON `-config` < `.env` < environment**. List values (`AUTH_TOKENS`, `API_KEYS`, `MODELS_ALLOW`) are comma-separated in env and arrays in JSON (`MODELS_ALLOW` also accepts a plain comma-separated JSON string).
 
 **Where tokens and state live.** Token add/remove/swap/move mutations from `/admin` are applied live and written to the SQLite token database when it is active (`AUTH_TOKEN_DB_PATH`, default `data/auth_tokens.db`) and otherwise to `.env`. On startup the pool is reconciled to the database's authoritative token list, so tokens added via the dashboard survive container recreates and restarts **without any write to the `-config` file** — a bind-mounted `config.json` stays untouched (no resource-busy / EBUSY on the mounted file). The database also persists each token's operational state — administrative locks, terminal quarantines (banned / country-blocked / invalid accounts), cooldown/ban windows, and the spend/usage ledgers — so a locked or dead account stays locked/quarantined and quota accounting survives restarts (Phases 1-3 of the SQLite state-persistence program). With `SESSION_PERSIST=true`, active sessions and agent runs are stored in the same database too (Phase 4), so a restart resumes unexpired sessions without writing any JSON file.
@@ -195,17 +206,13 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, `trace` (trace = wire-level bodies) |
 | `LOG_FORMAT` | `text` | `text` (key=value, colored) or `json` (one JSON object per line) |
 | `LOG_ACCESS` | `true` | Log one `access` line per HTTP request (`false` disables; `/healthz`, `/metrics`, OPTIONS are rate-limited to 1/min regardless) |
-| `LOG_RING_SIZE` | `500` | In-memory log ring for `/admin/logs` (50–5000) |
-| `MAX_MESSAGES_PER_DAY` | `0` | Per-token daily cap on successful chats (`0` = unlimited, default; the upstream `429` lock is the real enforcement) |
 | `MAX_SPEND_PER_DAY` | `0` | Advisory per-token Pacific-day spend ceiling in ledger units (`0` = unlimited). Never enforced — surfacing only, on `/healthz` |
 | `IDLE_ROTATION_TIMEOUT` | `0` | Finish runs after this idle period (`0` = disabled; `SAFE_MODE` sets 30m when unset) |
 | `SESSION_IDLE_END` | `0` | End upstream sessions after this idle period, releasing the token's daily admission slot while the proxy sits unused; the next request re-admits and consumes a fresh slot (`0` = disabled, opt-in) |
 | `SCARCE_SESSION_MODELS` | `openai/gpt-5.6-luna` | 1-session/day models to keep alive for their full session (never idle-evict or DELETE on shutdown while active) |
-| `QUOTA_FALLBACK_MODELS` | `flash→mimo, glm→flash, luna→flash` | Map model → fallback when its session quota is exhausted/unentitled. Defaults: `deepseek/deepseek-v4-flash=mimo/mimo-v2.5`, `z-ai/glm-5.2=deepseek/deepseek-v4-flash`, `openai/gpt-5.6-luna=deepseek/deepseek-v4-flash` (luna degrades the scarce premium session locally instead of hammering quota 429s; #203) |
 | `SAFE_MODE` | `true` | Apply anti-ban presets (see below; set `false` to disable) |
 | `REQUEST_JITTER` | `0s` | Random delay range `[0, REQUEST_JITTER)` before upstream calls (`SAFE_MODE` sets 200ms when unset; set `0` for instant TTFB) |
 | `CLI_VERSION` | `0.10.7` | Informational only: parsed and shown on the admin dashboard (Configuration Studio). No wire impact — the chat UA is pinned to `ai-sdk/openai-compatible/1.0.0/codebuff`, the ads UA to `Freebuff-CLI/1.0.0`, and session/auth endpoints default to `Bun/1.3.14` |
-| `MODEL_ALIASES` | `""` | Map aliases to real model IDs, e.g. `gpt-4o:openai/gpt-5.6-luna`. There are no built-in aliases (the old `deepseek-chat`/`gpt-4o`/`claude-3-5-sonnet` map was removed when `deepseek-v4-pro` was paused); clients must map aliases explicitly. |
 | `TRANSIENT_RETRIES` | `1` | Max additional attempts after a transient transport failure; `0` disables |
 | `SESSION_PERSIST` | `false` | Persist session state AND active agent runs so a restart resumes them instead of re-creating (new daily slot / re-START). When the SQLite token DB is active, state is stored in it (no JSON file); otherwise in `SESSION_STATE_FILE` |
 | `SESSION_STATE_FILE` | `.freebuff-session-state.json` | Path of the session state file (used when `SESSION_PERSIST=true`; token-keyed, `0600`) |
@@ -218,8 +225,6 @@ All keys can be set via environment variables or the JSON config file passed to 
 | `RUNS_DRAIN_QUEUE_CAP` | `64` | Draining-runs list cap; older entries are force-dropped (FINISH is best-effort) |
 | `RUNS_DRAIN_TTL` | `10m` | Draining-runs TTL eviction window |
 | `HTTP2_UPSTREAM` | `true` | Negotiate HTTP/2 with the upstream so the ALPN matches real browsers; `false` forces HTTP/1.1 |
-| `FALLBACK_MODEL` | `""` | Map `model1=fallback1,model2=fallback2` to re-route a request to the fallback model when its queue wait passes `FALLBACK_AFTER_MS` (queue-wait only — never on 429 quota exhaustion). When unset, the built-in default applies: `openai/gpt-5.6-luna` → `deepseek/deepseek-v4-flash` |
-| `FALLBACK_AFTER_MS` | `10000` | Queue-wait threshold (ms) before falling back to `FALLBACK_MODEL` |
 | `CORS_ALLOWED_ORIGIN` | `*` | `Access-Control-Allow-Origin` for `/v1/*` responses |
 | `ADOPT_CLI_SESSION` | `false` | Adopt the upstream CLI's active session instead of creating a new one |
 | `WAITING_ROOM_CHAIN` | `false` | After an upstream 428 `waiting_room_required`, fire the reference ad-chain (POST `/api/v1/ads` per provider) + GET `/api/v1/freebuff/streak` before the next session create — on both the pooled and bridge paths (issue #94(b), gated stub — best-effort, never blocks the request; not a queue-across-tokens mechanism) |
@@ -261,7 +266,6 @@ opt out). It enables essential anti-ban protections and presets:
 - **Proxy Header Sanitization**: Strips 25 proxy-identifying headers (`X-Forwarded-For`, `Via`, `CF-Connecting-IP`, etc.).
 - **Request Jitter**: Injects randomized 0-200ms delay jitter to break robotic, machine-like cadence (set `REQUEST_JITTER=0` for instant, or `REQUEST_JITTER=100ms` for minimal jitter).
 - **Idle Rotation**: Finishes runs after 30 minutes of inactivity.
-- **Daily Cap** (optional): `MAX_MESSAGES_PER_DAY` defaults to `0` (unlimited). The upstream `429` lock is the real enforcement; see below.
 
 ### Key Hygiene & Ban Avoidance
 
@@ -302,16 +306,6 @@ opt out). It enables essential anti-ban protections and presets:
   registrations are a documented ban cohort: 6,699 of 7,129 accounts on flagged domains were
   already banned when the blocklist was compiled. Accounts sharing one mailbox are capped at
   lower trust levels.
-
-**Why `MAX_MESSAGES_PER_DAY` Defaults to `0` (Unlimited):**
-
-- Unlimited is the **default**: no local cap throttles your free-tier allowance.
-  The proxy never spams upstream: when an account reaches its daily quota, the
-  upstream `429` lock kicks in (below), so an unlimited local cap is safe.
-- **Zero-Spam Guarantee**: When an account reaches its daily quota or upstream capacity limit, the upstream returns a `429` with a Pacific midnight reset timestamp (`resetAt: 07:00:00Z`).
-- The proxy parses this timestamp and **locks the token locally in memory**.
-- Any subsequent request for that token returns `429` locally in `<1ms` without sending any network traffic upstream.
-- Upstream routers (e.g. 9router) receive standard `429` + `Retry-After` headers and automatically rotate to your next available account without failing user prompts.
 
 ### HTTP Endpoints
 

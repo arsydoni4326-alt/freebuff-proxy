@@ -49,6 +49,7 @@ func (l *AccountLedger) usageCount(now time.Time) int {
 	l.usage = history[first:]
 	return len(l.usage)
 }
+
 // usageResetIn is how long until the oldest usage timestamp ages out of the
 // window as of now (0 when no usage is recorded or the reset is due).
 func (l *AccountLedger) usageResetIn(now time.Time) time.Duration {

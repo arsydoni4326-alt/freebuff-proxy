@@ -1285,13 +1285,20 @@ export interface components {
             percent_used: number;
             remaining: number;
             reset_at?: string;
+            reset_time_zone?: string;
             spent: number;
           };
+          first_tab_discount?: {
+            amount: number;
+            available: boolean;
+            holder_surface?: string;
+          } | null;
           monthly?: {
             limit: number;
             percent_used: number;
             remaining: number;
             reset_at?: string;
+            reset_time_zone?: string;
             spent: number;
           } | null;
           plan_id?: string;
@@ -1349,13 +1356,20 @@ export interface components {
             percent_used: number;
             remaining: number;
             reset_at?: string;
+            reset_time_zone?: string;
             spent: number;
           };
+          first_tab_discount?: {
+            amount: number;
+            available: boolean;
+            holder_surface?: string;
+          } | null;
           monthly?: {
             limit: number;
             percent_used: number;
             remaining: number;
             reset_at?: string;
+            reset_time_zone?: string;
             spent: number;
           } | null;
           plan_id?: string;
@@ -1393,6 +1407,7 @@ export interface components {
           last_result?: string;
           last_touch?: string;
           mode: string;
+          result_day?: string;
           slot?: string;
           slot_day?: string;
           target: number;
@@ -1494,13 +1509,20 @@ export interface components {
             percent_used: number;
             remaining: number;
             reset_at?: string;
+            reset_time_zone?: string;
             spent: number;
           };
+          first_tab_discount?: {
+            amount: number;
+            available: boolean;
+            holder_surface?: string;
+          } | null;
           monthly?: {
             limit: number;
             percent_used: number;
             remaining: number;
             reset_at?: string;
+            reset_time_zone?: string;
             spent: number;
           } | null;
           plan_id?: string;
@@ -1532,7 +1554,6 @@ export interface components {
       bridge_tokens: number;
       has_tokens: boolean;
       in_bridge: boolean;
-      maturity_dry_run: boolean;
       maturity_enabled: boolean;
       maturity_window_end?: string;
       maturity_window_start?: string;

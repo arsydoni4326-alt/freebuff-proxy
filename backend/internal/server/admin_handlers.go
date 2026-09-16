@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -57,10 +56,6 @@ type adminHandlers struct {
 	// handleChat forwards the playground's synthetic chat request to the
 	// normal chat pipeline (admin.go:176).
 	handleChat func(w http.ResponseWriter, r *http.Request)
-}
-
-var restartProcess = func() {
-	os.Exit(0)
 }
 
 func (a *adminHandlers) handleAdminRestart(w http.ResponseWriter, r *http.Request) {
