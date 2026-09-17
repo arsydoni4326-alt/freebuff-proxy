@@ -130,7 +130,7 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 	case "CORS_ALLOWED_ORIGIN":
 		return c.CORSAllowedOrigin, false
 	case "WEBHOOK_URL":
-		return c.WebhookURL, true
+		return boolWord(c.WebhookURL != ""), true
 	case "HTTP2_UPSTREAM":
 		return strconv.FormatBool(c.HTTP2Upstream), false
 	case "AUTO_DISCOVER_TOKEN":
@@ -161,6 +161,46 @@ func renderKey(c *Config, key string) (val string, valueIsSecret bool) {
 		return c.QueueWait.String(), false
 	case "QUEUE_DEPTH":
 		return strconv.Itoa(c.QueueDepth), false
+	case "COOLDOWN_DEFAULT_MS":
+		return strconv.FormatInt(c.DefaultMs().Milliseconds(), 10), false
+	case "COOLDOWN_COUNTRY_BLOCK_MS":
+		return strconv.FormatInt(c.CountryBlockMs().Milliseconds(), 10), false
+	case "COOLDOWN_CEILING_MS":
+		return strconv.FormatInt(c.CeilingMs().Milliseconds(), 10), false
+	case "COOLDOWN_FANOUT_MS":
+		return strconv.FormatInt(c.FanoutMs().Milliseconds(), 10), false
+	case "COOLDOWN_INVALID_MODEL_MS":
+		return strconv.FormatInt(c.InvalidModelMs().Milliseconds(), 10), false
+	case "COOLDOWN_OPAQUE_MS":
+		return strconv.FormatInt(c.OpaqueMs().Milliseconds(), 10), false
+	case "COOLDOWN_LOADSHED_MS":
+		return strconv.FormatInt(c.LoadShedMs().Milliseconds(), 10), false
+	case "COOLDOWN_PEAK_HOURS_MS":
+		return strconv.FormatInt(c.PeakHoursMs().Milliseconds(), 10), false
+	case "COOLDOWN_IP_MAX_READMITS":
+		return strconv.Itoa(c.IpMaxReadmits()), false
+	case "COOLDOWN_IP_JITTER_RATIO":
+		return strconv.FormatFloat(c.IpJitterRatio(), 'f', -1, 64), false
+	case "SESSION_PARK_ENABLED":
+		return strconv.FormatBool(c.SessionParkEnabled()), false
+	case "SESSION_PARK_THRESHOLD_MS":
+		return strconv.FormatInt(c.SessionParkThresholdMs().Milliseconds(), 10), false
+	case "SESSION_POLL_MAX_MS":
+		return strconv.FormatInt(c.SessionPollMaxMs().Milliseconds(), 10), false
+	case "SMART_PROBE_BACKOFF_MAX_MS":
+		return strconv.FormatInt(c.SmartProbeBackoffMaxMs().Milliseconds(), 10), false
+	case "MATURITY_BACKOFF_MS":
+		return strconv.FormatInt(c.MaturityBackoffMs().Milliseconds(), 10), false
+	case "COMPRESS_PROMPT":
+		return strconv.FormatBool(c.CompressPrompt), false
+	case "CACHE_CONTROL_INJECTION":
+		return strconv.FormatBool(c.CacheControlInjection), false
+	case "REASONING_IN_CONTENT":
+		return c.ReasoningInContent, false
+	case "ACTING_USER_ID":
+		return c.ActingUserID, false
+	case "ADMIN_FORCE_SECURE_COOKIES":
+		return strconv.FormatBool(effectiveAdminForceSecureCookies()), false
 	default:
 		// A catalog key with no Config field (new upstream knob not yet
 		// wired into Config): fall back to the catalog default so the

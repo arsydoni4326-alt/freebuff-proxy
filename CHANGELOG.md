@@ -8,6 +8,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Merge conflict resolution with upstream/main (#605 era: dead-code prune,
+  settings display desync fix, restart-only key flags), preserving persistent
+  database state** (merge 5 of 2026-09-17)
+  - Merge of upstream/main 328261be (dead frontend-file prune
+    `Stepper`/`Pips`/`FieldBox`/`Sparkline`/`history.js`, dead exports removal,
+    settings renderKey desync fix for five keys, `AUTO_DISCOVER_TOKEN` +
+    `REGISTRY_REFRESH` flagged restart_only, cooldown/session-park tuning
+    knobs #605) into the DB-persistence lineage (c7db90b0 = merge 4 of
+    2026-09-17). All 3 conflict paths resolved; **no commit made** (repo
+    rule: never commit unless asked).
+  - Resolution policy: **additive union** — every DB-persistence feature of
+    this lineage kept untouched, every upstream knob adopted, nothing
+    renamed or removed.
+  - `config/config_keys.go` (`defaultRawConfig`): union of both default
+    sets — our persistence/health lineage defaults (`SessionPersist`,
+    `SessionStateFile`, `MaxSpendPerDay`, `BridgeCircuitBreaker*`,
+    `RateLimitBurst`, `AutoRotateOnExhaustion`, `ExhaustionWarningThreshold`,
+    `HealthScoreEnabled`, `TokenHealthProbes`, `TokenProbeInterval`) and
+    upstream's cooldown/session-park tuning defaults (`Cooldown*Ms`,
+    `SessionParkEnabled`, `SessionParkThresholdMs`, `SessionPollMaxMs`,
+    `SmartProbeBackoffMaxMs`, `MaturityBackoffMs`).
+  - `config/config_load.go` (`cfg := Config{...}`): same union at the
+    Config-literal level — our lineage assignments and upstream's cooldown
+    tuning assignments (`CooldownDefault` … `MaturityBackoff`) all populate
+    the merged Config struct.
+  - `pool/quota_smartprobe.go`: kept deleted-by-us (the ADR-0022 quota
+    auto-probe scheduler `quota_autoprobe.go` remains the quota path);
+    upstream's activity-aware smart-probe scheduler was already superseded
+    on this lineage.
+  - `pool/cooldown_tuning.go`: the adopted upstream push assigns
+    `quotaProbeMaxInterval` from `SMART_PROBE_BACKOFF_MAX_MS`; the variable
+    previously lived in the deleted smartprobe file, so its declaration
+    (default 30m) and the knob's live-apply push moved here — catalog
+    surface and tuning tests unchanged.
+- Live-boot persistence chain verified end-to-end after resolution:
+  `cli_serve.go` loads DB tokens → `SetTokenStateStore` → `RestoreTokenState`
+  (locks/quarantines/cooldowns/ledgers), and `SetPoolPersist(histStore)` →
+  `RestorePoolPersist()` from `Pool.Start` (pool_state
+  admissions/burst/bridge/ledgers) — both untouched by the merge.
+
+### Preserved
+- SQLite token database with `session_state` table for session persistence
+  (`SESSION_PERSIST`, Phase 4 DB durability) — untouched by the merge.
+- Token state store (locks, quarantines, cooldowns, spend/usage ledgers)
+  with `RestoreTokenState` at boot; pool_state ledger/admission restore
+  (`RestorePoolPersist` from `Pool.Start`); DB settings overlay
+  (ADR-0019) with the `config:migrated_env_v1` marker.
+- Health scoring suite (`HEALTH_SCORE_ENABLED`), background token health
+  probes (`TOKEN_HEALTH_PROBES`), bridge circuit breaker observability
+  (`BreakerSnapshot` → /healthz + /metrics), per-token bridge rate limiting,
+  refund tracking (`lastRefund`/`pendingRefund`) and the refund-refresh
+  route.
+- Quota auto-probe scheduler + ADR-0024 boot seed; maturity automation with
+  the DB maturity blob (MaturityStore) contract unchanged.
+
+### Technical Details
+- Merge verified: all 3 conflict paths resolved and staged; `go build
+  ./backend/...` green; `gofmt` clean on all resolved files; hermetic tests
+  (`env -u AUTH_TOKENS -u ADMIN_TOKEN go test -count=1`): `config` ok
+  (0.7s), `pool` ok (41s — covers cooldown_tuning + Config-literal union),
+  `store` ok (1.1s — covers persist_carry / pool_persist / settings
+  overlay). Noted in `session.md`.
+
+
+### Fixed
 - **Merge conflict resolution with upstream/main (#594 era: cooldown-window
   kinds, concurrency ladder, queue-wait telemetry, same-model
   stick-with-overflow-assist), preserving persistent database state**

@@ -128,6 +128,24 @@ type rawConfig struct {
 	// QueueDepth records QUEUE_DEPTH (default 16): the per-token FIFO
 	// queue depth cap.
 	QueueDepth *int `json:"QUEUE_DEPTH"`
+	// Cooldown backoffs (COOLDOWN_*_MS, integer milliseconds) and the
+	// session-park switch: raw ints parsed to Durations in Load
+	// (zero-tolerant → Contract defaults in cooldown.go).
+	CooldownDefaultMs      *int     `json:"COOLDOWN_DEFAULT_MS"`
+	CooldownCountryBlockMs *int     `json:"COOLDOWN_COUNTRY_BLOCK_MS"`
+	CooldownCeilingMs      *int     `json:"COOLDOWN_CEILING_MS"`
+	CooldownFanoutMs       *int     `json:"COOLDOWN_FANOUT_MS"`
+	CooldownInvalidModelMs *int     `json:"COOLDOWN_INVALID_MODEL_MS"`
+	CooldownOpaqueMs       *int     `json:"COOLDOWN_OPAQUE_MS"`
+	CooldownLoadShedMs     *int     `json:"COOLDOWN_LOADSHED_MS"`
+	CooldownPeakHoursMs    *int     `json:"COOLDOWN_PEAK_HOURS_MS"`
+	CooldownIPMaxReadmits  *int     `json:"COOLDOWN_IP_MAX_READMITS"`
+	CooldownIPJitterRatio  *float64 `json:"COOLDOWN_IP_JITTER_RATIO"`
+	SessionParkEnabled     bool     `json:"SESSION_PARK_ENABLED"`
+	SessionParkThresholdMs *int     `json:"SESSION_PARK_THRESHOLD_MS"`
+	SessionPollMaxMs       *int     `json:"SESSION_POLL_MAX_MS"`
+	SmartProbeBackoffMaxMs *int     `json:"SMART_PROBE_BACKOFF_MAX_MS"`
+	MaturityBackoffMs      *int     `json:"MATURITY_BACKOFF_MS"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list
@@ -207,6 +225,24 @@ func defaultRawConfig() rawConfig {
 		TokenHealthProbes:            false,      // token health probes off by default (issue #281)
 		TokenProbeInterval:           "",         // "" = default 30m
 		MaturityTouchModel:           "",         // empty default (= auto): cheapest served unmetered row, explicit id overrides
+		// Cooldown / session-park tuning defaults (upstream/main): integer
+		// milliseconds mirroring cooldown.go (Contract = previous hardcoded
+		// behavior), zero-tolerant in Load.
+		CooldownDefaultMs:      ptrInt(defaultCooldownDefaultMs),
+		CooldownCountryBlockMs: ptrInt(defaultCooldownCountryBlockMs),
+		CooldownCeilingMs:      ptrInt(defaultCooldownCeilingMs),
+		CooldownFanoutMs:       ptrInt(defaultCooldownFanoutMs),
+		CooldownInvalidModelMs: ptrInt(defaultCooldownInvalidModelMs),
+		CooldownOpaqueMs:       ptrInt(defaultCooldownOpaqueMs),
+		CooldownLoadShedMs:     ptrInt(defaultCooldownLoadShedMs),
+		CooldownPeakHoursMs:    ptrInt(defaultCooldownPeakHoursMs),
+		CooldownIPMaxReadmits:  ptrInt(defaultCooldownIPMaxReadmits),
+		CooldownIPJitterRatio:  new(defaultCooldownIPJitterRatio),
+		SessionParkEnabled:     true,
+		SessionParkThresholdMs: ptrInt(defaultSessionParkThresholdMs),
+		SessionPollMaxMs:       ptrInt(defaultSessionPollMaxMs),
+		SmartProbeBackoffMaxMs: ptrInt(defaultSmartProbeBackoffMaxMs),
+		MaturityBackoffMs:      ptrInt(defaultMaturityBackoffMs),
 	}
 }
 

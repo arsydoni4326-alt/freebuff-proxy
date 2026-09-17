@@ -174,9 +174,9 @@ failoverLoop:
 		}
 		name := fmt.Sprintf("token-%d", idx+1)
 
-		// Quarantined tokens (terminal account state: banned,
-		// country_blocked, 401 invalid) are permanently skipped — the pool
-		// never revives a dead account, so they are never re-admitted. Their
+		// Quarantined tokens (terminal account state: a live ban) are
+		// permanently skipped — the pool never revives a dead account, so
+		// they are never re-admitted. Their
 		// remembered terminal error still feeds the failover buckets so a
 		// fully-quarantined pool surfaces the right 403/401 instead of a
 		// generic 502.
@@ -406,8 +406,11 @@ failoverLoop:
 		if err != nil {
 			c := p.classifyAndCooldown(tok.runs, err)
 			if c.authRejected {
+				// 401 invalid is a time-bound park (runs.DefaultCooldown),
+				// never a terminal quarantine: the account may recover
+				// (rotated secret, upstream flap) and the cooldown expiry
+				// revives it automatically.
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
-				p.quarantineToken(tok, "invalid", err)
 			}
 			var wr *session.WaitingRoomError
 			if errors.As(err, &wr) {
@@ -447,7 +450,10 @@ failoverLoop:
 				banned = appendBan(banned, be)
 			}
 			if cbe := c.countryBlocked; cbe != nil {
-				p.quarantineToken(tok, "country_blocked", err)
+				// country_blocked is a time-bound park
+				// (runs countryBlockCooldown), never a terminal
+				// quarantine: short region/egress transients must ride
+				// out the window instead of killing the token.
 				countryBlocked = appendCountryBlock(countryBlocked, cbe)
 			}
 			if lie := c.limitedIp; lie != nil {
@@ -511,8 +517,9 @@ failoverLoop:
 		if err != nil {
 			c := p.classifyAndCooldown(tok.runs, err)
 			if c.authRejected {
+				// 401 invalid is a time-bound park (runs.DefaultCooldown),
+				// never a terminal quarantine — see the admission path.
 				p.logger.Debug("pool: token cooling down", "token", idx+1, "duration", runs.DefaultCooldown.String())
-				p.quarantineToken(tok, "invalid", err)
 			}
 			if rle := c.rateLimited; rle != nil {
 				// Issue #178: tag the refusal with the requested model when
@@ -547,7 +554,8 @@ failoverLoop:
 				banned = appendBan(banned, be)
 			}
 			if cbe := c.countryBlocked; cbe != nil {
-				p.quarantineToken(tok, "country_blocked", err)
+				// country_blocked is a time-bound park, never a terminal
+				// quarantine — see the admission path.
 				countryBlocked = appendCountryBlock(countryBlocked, cbe)
 			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
