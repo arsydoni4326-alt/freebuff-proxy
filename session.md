@@ -1,6 +1,40 @@
 # Session: SQLite Token Database + UI
 
-## Latest: merge upstream/main (#594 era: cooldown-window kinds, concurrency ladder, queue-wait telemetry, same-model stick-with-overflow) into develop — merge 4 of 2026-09-17
+## Latest: merge upstream/main (#605 era: dead-code prune, settings display desync fix, restart-only key flags) into develop — merge 5 of 2026-09-17
+
+- **Merge fully resolved and staged** (branch `develop`, merge of
+  upstream/main 328261be into c7db90b0 = merge 4 of 2026-09-17). All 3
+  remaining conflict paths resolved and staged; **no commit made** (repo
+  rule: never commit unless asked).
+- **Per-path resolutions** (policy: additive union — persistence lineage
+  features kept, upstream knobs adopted, nothing removed):
+  - `config/config_keys.go`: `defaultRawConfig()` UNION — kept our
+    persistence/health defaults (SessionPersist, SessionStateFile,
+    MaxSpendPerDay, BridgeCircuitBreaker*, RateLimitBurst,
+    AutoRotateOnExhaustion, ExhaustionWarningThreshold, HealthScoreEnabled,
+    TokenHealthProbes, TokenProbeInterval) and adopted upstream's
+    cooldown/session-park tuning defaults (Cooldown*Ms, SessionParkEnabled,
+    SessionParkThresholdMs, SessionPollMaxMs, SmartProbeBackoffMaxMs,
+    MaturityBackoffMs).
+  - `config/config_load.go`: `cfg := Config{...}` literal UNION — same
+    split: our lineage assignments kept, upstream's cooldown tuning
+    assignments (CooldownDefault … MaturityBackoff) appended.
+  - `pool/quota_smartprobe.go`: kept deleted-by-us (ADR-0022
+    quota_autoprobe.go remains the quota path; no live references to the
+    smartprobe scheduler anywhere in the tree).
+  - `pool/cooldown_tuning.go` (compile follow-up, not a conflict): adopted
+    upstream push assigns quotaProbeMaxInterval from
+    SMART_PROBE_BACKOFF_MAX_MS; the var previously lived in the deleted
+    smartprobe file, so its declaration (default 30m) moved here. Catalog
+    surface and tuning tests unchanged.
+- **Verification**: `go build ./backend/...` green; `gofmt` clean. Hermetic
+  tests (`-count=1`): config ok (0.7s), pool ok (41s), store ok (1.1s).
+  Persistence chain verified live-boot intact: cli_serve.go DB token load →
+  SetTokenStateStore → RestoreTokenState; SetPoolPersist(histStore) →
+  RestorePoolPersist() from Pool.Start.
+- **Documentation**: CHANGELOG Unreleased gained this merge's entry.
+
+## Previous: merge upstream/main (#594 era: cooldown-window kinds, concurrency ladder, queue-wait telemetry, same-model stick-with-overflow) into develop — merge 4 of 2026-09-17
 
 - **Merge fully resolved and staged** (branch `develop`, merge of
   upstream/main 7cb4ec74 into 992e34e3 = merge of 2026-09-16). All 5

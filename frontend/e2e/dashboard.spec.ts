@@ -1837,18 +1837,20 @@ test.describe("dashboard hermetic mocks", () => {
     // Overview loading skeleton used aria-live="polite" and aria-busy="true"
     // Pool status lives in the Pool Tokens table (the standalone At-risk
     // section is gone): overview must not render it, tokens rows must show
-    // status + usage per account.
+    // status per account.
     await expect(
       page.locator('section[aria-label="At-risk tokens"]'),
     ).toHaveCount(0);
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     const tokensTable = page.locator("table.fp-table");
-    // Fixture token #2 (Account #2) row shows its status chip and usage.
+    // Fixture token #2 (Account #2) carries no streak, so its row exposes
+    // the "No streak" label in the Account cell's status area.
     await expect(
-      tokensTable.locator("tbody tr").filter({ hasText: "Account #2" }),
-    ).toContainText("msgs 24h");
-    await expect(tokensTable.getByText("msgs 24h").first()).toBeVisible();
-    await expect(tokensTable.getByText("reqs").first()).toBeVisible();
+      tokensTable
+        .locator("tbody tr")
+        .filter({ hasText: "Account #2" })
+        .getByLabel("No streak"),
+    ).toBeVisible();
 
     // Navigate to Activity and check filter labelling + live region. Live is
     // the default tab; the labelled filter inputs and entry text live in
@@ -1910,16 +1912,34 @@ test.describe("dashboard hermetic mocks", () => {
       "true",
     );
 
-    // KPI stats from fixtures/metrics.json
+    // KPI stats from fixtures/metrics.json (Models served card removed).
     await expect(page.getByText("Requests served")).toBeVisible();
-    await expect(page.getByText("Models served")).toBeVisible();
+    await expect(page.getByText("Models served")).toHaveCount(0);
     // Sparkline SVG embedded from the API payload
     await expect(page.locator('svg[role="img"]').first()).toBeVisible();
     // Per-token table rows carry the fixture requests_24h counts (2 and 4).
     await expect(
       page.getByRole("heading", { name: "Per-token metrics" }),
     ).toBeVisible();
-    const metricRows = page.locator("table tbody tr");
+    const perTokenTable = page.locator("table", {
+      has: page.getByRole("columnheader", { name: "Requests (24h)" }),
+    });
+    await expect(
+      perTokenTable.getByRole("columnheader", { name: "Token" }),
+    ).toBeVisible();
+    await expect(
+      perTokenTable.getByRole("columnheader", { name: "Requests (24h)" }),
+    ).toBeVisible();
+    for (const gone of [
+      "Spend",
+      "Transient retries",
+      "Fingerprint rotations",
+    ]) {
+      await expect(
+        perTokenTable.getByRole("columnheader", { name: gone }),
+      ).toHaveCount(0);
+    }
+    const metricRows = perTokenTable.locator("tbody tr");
     await expect(metricRows.nth(0)).toContainText("2");
     await expect(metricRows.nth(1)).toContainText("4");
     await expect(metricRows).toHaveCount(2);
