@@ -68,6 +68,7 @@ var clientToOfficial = map[string]string{
 
 	// Codex / OpenAI harnesses
 	"shell":          "run_terminal_command",
+	"shell_command":  "run_terminal_command",
 	"local_shell":    "run_terminal_command",
 	"container_exec": "run_terminal_command",
 	"exec_command":   "run_terminal_command",
@@ -92,6 +93,9 @@ var clientToOfficial = map[string]string{
 	"developer__write":       "write_file",
 	"developer__edit":        "str_replace",
 	"computer__execute":      "run_terminal_command",
+	// Goose dot-mangled forms (model rewrites __ to . on the wire)
+	"developer.shell":       "run_terminal_command",
+	"developer.text_editor": "str_replace",
 
 	// Continue (keys are matched lowercase)
 	"readfile":             "read_files",
@@ -133,6 +137,7 @@ var clientToOfficial = map[string]string{
 	"search_file_content": "code_search",
 	// Hermes (reference/agents/hermes-agent toolsets.py + agent/* tool refs)
 	"terminal":     "run_terminal_command",
+	"execute_code": "run_terminal_command",
 	"web_extract":  "read_url",
 	"patch":        "str_replace",
 	"todo_list":    "write_todos",
@@ -142,6 +147,7 @@ var clientToOfficial = map[string]string{
 	// OpenHands agent-server (reference/harnesses/OpenHands __tests__ tool_call
 	// fixtures carry the wire function name; terminal shares the Hermes entry)
 	"invoke_skill": "skill",
+	"run_ipython":  "run_terminal_command",
 	// Crush-additions (reference/agents/crush internal/agent/tools/*.go)
 	"fetch":       "read_url",
 	"multiedit":   "str_replace",
@@ -164,6 +170,9 @@ var clientToOfficial = map[string]string{
 	// Reasonix (reference/agents/DeepSeek-Reasonix internal/tool/builtin/*.go)
 	"multi_edit":    "str_replace",
 	"complete_step": "write_todos",
+
+	// Cursor
+	"strreplace": "str_replace",
 }
 
 // officialTools is the set of official codebuff signature tool names a
@@ -203,9 +212,47 @@ func init() {
 // tools array), then thread it to the response relays (FromUpstream restores
 // client names). Zero value is valid: nothing maps, relays pass through.
 type ToolMapper struct {
-	upstreamToClient map[string]string // response path: official → original
+	upstreamToClient map[string]string // response path: official/MCP → original
+	clientToUpstream map[string]string // request path: original → official/MCP
 	msgs             int               // len(messages) (or len(input) for Responses) in the scanned body
 	tools            int               // len(tools) in the scanned body
+}
+
+func isForeignHarness(name string) bool {
+	return ForeignHarnessToolNames[name] || strings.HasPrefix(strings.ToLower(name), "cron")
+}
+
+// resolveUpstreamTool decides the wire name for a client tool.
+// Tools mapped in clientToOfficial are mapped to their official codebuff signature tool.
+// Unmapped foreign harness tools (matching ForeignHarnessToolNames exact casing)
+// are safely virtualized into the MCP namespace (mcp__<tool_name>) to prevent triggering
+// foreign_tool_names. Unrecognized custom tools and existing MCP tools pass through verbatim.
+func resolveUpstreamTool(origName string, params map[string]any) string {
+	if origName == "" {
+		return ""
+	}
+	if officialTools[origName] || CustomSignatureToolNames[origName] {
+		return origName
+	}
+
+	lower := strings.ToLower(origName)
+
+	if official, ok := clientToOfficial[lower]; ok && official != "" {
+		return official
+	}
+
+	if strings.Contains(origName, "__") {
+		return origName
+	}
+
+	// Check exact case in ForeignHarnessToolNames (e.g. PascalCase "Task", "Agent",
+	// "AskUserQuestion" from Claude Code, or "browser_exec" from OpenClaw).
+	// Lowercase agentic tools like OMP's "task" are not in ForeignHarnessToolNames.
+	if ForeignHarnessToolNames[origName] || strings.HasPrefix(lower, "cron") {
+		return "mcp__" + origName
+	}
+
+	return origName
 }
 
 // MsgCount is the client message count retained by NewToolMapper (0 when the
@@ -225,14 +272,18 @@ func NewToolMapper(body []byte) ToolMapper {
 		Input    []json.RawMessage `json:"input"`
 		Tools    []struct {
 			Function struct {
-				Name string `json:"name"`
+				Name       string         `json:"name"`
+				Parameters map[string]any `json:"parameters"`
 			} `json:"function"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ToolMapper{}
 	}
-	m := ToolMapper{upstreamToClient: make(map[string]string)}
+	m := ToolMapper{
+		upstreamToClient: make(map[string]string),
+		clientToUpstream: make(map[string]string),
+	}
 	m.msgs = len(payload.Messages)
 	if m.msgs == 0 {
 		m.msgs = len(payload.Input) // Responses API carries input[], not messages[]
@@ -242,6 +293,11 @@ func NewToolMapper(body []byte) ToolMapper {
 		name := t.Function.Name
 		if name == "" {
 			continue
+		}
+		upstreamName := resolveUpstreamTool(name, t.Function.Parameters)
+		if upstreamName != "" && upstreamName != name {
+			m.clientToUpstream[name] = upstreamName
+			m.upstreamToClient[upstreamName] = name
 		}
 		if official, ok := clientToOfficial[strings.ToLower(name)]; ok && official != "" && official != name {
 			m.upstreamToClient[official] = name
@@ -268,8 +324,19 @@ func (m ToolMapper) ToUpstream(payload map[string]any) {
 			continue
 		}
 		name, _ := fn["name"].(string)
-		if official, hit := clientToOfficial[strings.ToLower(name)]; hit && official != "" {
-			fn["name"] = official
+		if name == "" {
+			continue
+		}
+		upstreamName, hit := m.clientToUpstream[name]
+		if !hit {
+			params, _ := fn["parameters"].(map[string]any)
+			upstreamName = resolveUpstreamTool(name, params)
+			if m.upstreamToClient != nil && upstreamName != "" && upstreamName != name {
+				m.upstreamToClient[upstreamName] = name
+			}
+		}
+		if upstreamName != "" && upstreamName != name {
+			fn["name"] = upstreamName
 			// Preserve the original where the model can see it: some models
 			// echo the description when choosing between similar tools.
 			if desc, _ := fn["description"].(string); desc != "" && !strings.Contains(desc, "(client tool: "+name+")") {
@@ -287,17 +354,24 @@ func (m ToolMapper) RenameRequestToolChoice(payload map[string]any) {
 	if !ok || tc == nil {
 		return
 	}
+	rename := func(name string) string {
+		if upstreamName, hit := m.clientToUpstream[name]; hit && upstreamName != "" {
+			return upstreamName
+		}
+		if upstreamName := resolveUpstreamTool(name, nil); upstreamName != "" {
+			return upstreamName
+		}
+		return name
+	}
 	switch v := tc.(type) {
 	case string:
-		if official, hit := clientToOfficial[strings.ToLower(v)]; hit && official != "" {
-			payload["tool_choice"] = official
+		if v != "none" && v != "auto" && v != "required" {
+			payload["tool_choice"] = rename(v)
 		}
 	case map[string]any:
 		if fn, ok := v["function"].(map[string]any); ok {
 			if name, _ := fn["name"].(string); name != "" {
-				if official, hit := clientToOfficial[strings.ToLower(name)]; hit && official != "" {
-					fn["name"] = official
-				}
+				fn["name"] = rename(name)
 			}
 		}
 	}

@@ -5,14 +5,12 @@
    * All KPIs/cards map to real response fields only.
    */
   import { onMount, onDestroy } from "svelte";
-  import { ExternalLink } from "@lucide/svelte";
   import PageShell from "../components/PageShell.svelte";
   import KpiGrid from "../components/KpiGrid.svelte";
   import ApiKeysEditor from "../components/ApiKeysEditor.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import Card from "../components/Card.svelte";
   import CopyButton from "../components/CopyButton.svelte";
-  import Alert from "../components/Alert.svelte";
   import {
     push as pushToast,
     dismiss as dismissToast,
@@ -23,7 +21,12 @@
   import { createQueryStore } from "../stores/query.js";
   import { tr } from "../i18n.js";
   import { recordPageVisit } from "../stores/pageState.js";
-  import { formatTime, parseLogFields } from "../utils/format.js";
+  import {
+    formatTime,
+    formatLocalDate,
+    parseLogFields,
+  } from "../utils/format.js";
+  import { isExhausted, resetTimeFor } from "../utils/tokenStatus.js";
   let data = $state(null);
   let loading = $state(true);
   let error = $state("");
@@ -186,7 +189,12 @@
   let cooldownKey = $state("");
   $effect(() => {
     const w = worstAccount;
-    const key = w ? `${w.index}-${isBanned(w) ? "banned" : "cooldown"}` : "";
+    const cond = isBanned(w)
+      ? "banned"
+      : isExhausted(w)
+        ? "exhausted"
+        : "cooldown";
+    const key = w ? `${w.index}-${cond}` : "";
     if (key === cooldownKey) return;
     if (cooldownToast) {
       dismissToast(cooldownToast);
@@ -194,10 +202,21 @@
     }
     cooldownKey = key;
     if (w) {
+      let title = $tr("Account #{index} needs attention", { index: w.index });
+      let body = w.email || w.session_status || "";
+      if (isExhausted(w)) {
+        const resetAt = resetTimeFor(w);
+        title = $tr("Account #{index} exhausted", { index: w.index });
+        body = resetAt
+          ? $tr("Daily Freebucks limit reached. Resets at {time}", {
+              time: formatLocalDate(resetAt),
+            })
+          : $tr("Daily Freebucks limit reached");
+      }
       cooldownToast = pushToast({
         tone: isBanned(w) ? "error" : "warning",
-        title: $tr("Account #{index} needs attention", { index: w.index }),
-        body: w.email || w.session_status || "",
+        title,
+        body,
       });
     }
   });
@@ -352,83 +371,6 @@
   <!-- Upstream announcements and broadcasts -->
   <AnnouncementsBanner />
 
-  <!-- Upstream sync banner: warns operators that the running build is
-       behind CodebuffAI/freebuff@main. Data ships compiled into the
-       binary (see backend/internal/dashboard/data/upstream_drift.json) and is
-       refreshed by .github/workflows/upstream-drift.yml. -->
-  {#if data?.upstream_sync}
-    {@const us = data.upstream_sync}
-    {#if us.has_drift}
-      <Alert
-        tone={us.has_registry_drift ? "error" : "warning"}
-        title={$tr("Upstream has updates — your build is behind")}
-      >
-        <p class="mb-2">
-          {#if us.version_changed}
-            {$tr("Update available: vendor {pinned} → {live}.", {
-              pinned: us.vendor_version_pinned ?? "?",
-              live: us.vendor_version ?? "?",
-            })}
-          {/if}
-          {$tr(
-            "CodebuffAI/freebuff moved past vendor {sha} (checked {when}). This build knows about {pinned} upstream SHAs; a newer one is on main.",
-            {
-              sha: us.upstream_sha,
-              when: us.checked_at,
-              pinned: us.drifted_files?.length ?? 0,
-            },
-          )}
-        </p>
-        {#if us.drifted_files && us.drifted_files.length > 0}
-          <ul class="text-xs space-y-1 mb-3">
-            {#each us.drifted_files as f (f.file)}
-              <li>
-                <span class="fp-num text-[var(--fp-muted)]">[{f.group}]</span>
-                <code class="fp-num text-xs">{f.file}</code>
-                {#if f.pinned_sha}
-                  <span class="fp-num text-[var(--fp-dim)]"
-                    >({f.pinned_sha} -> {f.vendor_sha})</span
-                  >
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
-        <p class="text-xs text-[var(--fp-muted)]">
-          {$tr(
-            "Registry pin drift can land via the auto-synced PR; wire-shape drift needs a human to port (the upstream-drift workflow opens a needs-port issue for each).",
-          )}
-        </p>
-        <a
-          href={us.releases_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="mt-2 inline-flex items-center gap-1 text-xs text-[var(--fp-accent)] hover:underline"
-        >
-          {$tr("Open releases page")}
-          <ExternalLink size={12} />
-        </a>
-      </Alert>
-    {:else if us.version_changed}
-      <Alert tone="info" title={$tr("Upstream vendor update available")}>
-        <p class="mb-2">
-          {$tr("Update available: vendor {pinned} → {live}.", {
-            pinned: us.vendor_version_pinned ?? "?",
-            live: us.vendor_version ?? "?",
-          })}
-        </p>
-        <a
-          href={us.releases_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          class="mt-2 inline-flex items-center gap-1 text-xs text-[var(--fp-accent)] hover:underline"
-        >
-          {$tr("Open releases page")}
-          <ExternalLink size={12} />
-        </a>
-      </Alert>
-    {/if}
-  {/if}
   {#if data}
     {#if data.has_tokens}
       <!-- KPI row (pooled tokens active) -->
@@ -458,7 +400,19 @@
       {#if worstAccount}
         {@const w = worstAccount}
         <p class="text-xs text-[var(--fp-muted)]">
-          {$tr("Account #{index} needs attention", { index: w.index })} ·
+          {#if isExhausted(w)}
+            {@const resetAt = resetTimeFor(w)}
+            {$tr("Account #{index} exhausted", { index: w.index })}
+            {#if resetAt}
+              <span class="fp-num text-[var(--fp-warning)]">
+                · {$tr("resets at {time}", {
+                  time: formatLocalDate(resetAt),
+                })}</span
+              >
+            {/if}
+          {:else}
+            {$tr("Account #{index} needs attention", { index: w.index })}
+          {/if} ·
           <a href="#tokens" class="text-[var(--fp-accent)] hover:underline"
             >{$tr("Open Tokens")}</a
           >

@@ -16,7 +16,11 @@
     statusFor,
     streakBadgeFor,
     sessionCountdownLabel,
+    isExhausted,
+    resetTimeFor,
+    cooldownLabel,
   } from "../utils/tokenStatus.js";
+  import { formatLocalDate } from "../utils/format.js";
   import { tr } from "../i18n.js";
 
   /**
@@ -143,7 +147,7 @@
       </button>
     </div>
   </td>
-  <td class="w-[1%]">
+  <td class="min-w-[180px] w-[180px]">
     <div class="flex min-w-0 flex-col gap-1">
       <div
         class="flex w-full items-center justify-between gap-x-2 whitespace-nowrap"
@@ -170,7 +174,7 @@
       </div>
       {#if token.email || token.account_id}
         <span
-          class="text-[11px] text-[var(--fp-muted)] truncate min-w-0 max-w-[120px]"
+          class="text-[11px] text-[var(--fp-muted)] truncate min-w-0 max-w-[180px]"
           title={token.email || token.account_id}
         >
           {token.email || token.account_id}
@@ -197,9 +201,27 @@
         >
           {sessionCountdownLabel(sessionRemaining)}
         </span>
+      {:else if isExhausted(token)}
+        {@const resetAt = resetTimeFor(token)}
+        {@const cd = cooldownLabel(token, nowTick)}
+        <span
+          class="fp-num text-[11px] text-[var(--fp-warning)] whitespace-nowrap"
+          title={resetAt ? `Resets at ${formatLocalDate(resetAt)}` : ""}
+          aria-label={`Resets in ${cd}`}
+        >
+          resets in {cd}
+        </span>
+      {:else if token.cooldown_active}
+        {@const cd = cooldownLabel(token, nowTick)}
+        <span
+          class="fp-num text-[11px] text-[var(--fp-muted)] whitespace-nowrap"
+          aria-label={`Cooldown remaining: ${cd}`}
+        >
+          {cd}
+        </span>
       {/if}
-    </div>
-  </td>
+    </div></td
+  >
   <td>
     {#if token.session_instance || token.session_model}
       <div class="flex min-w-0 items-center gap-3">
