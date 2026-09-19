@@ -154,3 +154,4 @@ data
 docker-compose.override.yml
 docker-compose.*.local.yml
 compose.override.yml
+session.md

@@ -185,6 +185,14 @@ func (s *Server) chatAttempt(ctx context.Context, model string, normalized []byt
 	st.attempts = 1
 	if err == nil {
 		st.statuses = append(st.statuses, http.StatusOK)
+		// Issue #74 P2: a successful chat is egress-level proof the model
+		// is servable again — drop any (egress, model) unfit mark. Only
+		// marks created before THIS lease's acquisition are cleared (an
+		// older in-flight chat succeeding must not erase a mark that
+		// landed after its admission).
+		if !lease.AcquiredAt.IsZero() {
+			s.pool.ClearModelUnfitBefore(effectiveModel, lease.AcquiredAt)
+		}
 		released = true // Disarm deferred release: ownership transferred to caller
 		return up, lease, nil
 	}
@@ -200,8 +208,16 @@ func (s *Server) chatAttempt(ctx context.Context, model string, normalized []byt
 	switch {
 	case errors.Is(err, upstream.ErrModelIPLimited):
 		// The egress IP is limited for the requested model. The session
-		// stays bound to its admitted model — NOT invalidated. Surface
-		// with no unfit mark and no retry.
+		// stays bound to its admitted model — NOT invalidated. Mark the
+		// (egress, model) pair unfit for ~5 min so new requests refuse
+		// fast (409 model_ip_limited) without burning a daily-slot
+		// admission; surface with no retry.
+		var lie *upstream.LimitedIpError
+		if errors.As(err, &lie) {
+			s.pool.MarkModelUnfit(effectiveModel, lie)
+		} else {
+			s.pool.MarkModelUnfit(effectiveModel, nil)
+		}
 		release()
 		return nil, nil, err
 	case errors.Is(err, upstream.ErrSessionInvalid):

@@ -157,8 +157,6 @@ func (r *Registry) SetConfig(cfg *config.Config) {
 	r.cfg.Store(cfg)
 }
 
-
-
 // LastRefreshAt returns the instant the most recent live Refresh successfully
 // swapped the model map. The zero time means the registry has never refreshed
 // from upstream (fresh boot or LoadFallback-only state). Safe for concurrent
@@ -179,7 +177,6 @@ func (r *Registry) UsingFallback() bool {
 	defer r.mu.RUnlock()
 	return r.usingFallback
 }
-
 
 // Models returns the sorted model list as a copy.
 func (r *Registry) Models() []string {

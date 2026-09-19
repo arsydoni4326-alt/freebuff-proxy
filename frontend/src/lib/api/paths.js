@@ -71,4 +71,6 @@ export const tokenActions = {
   refundRefresh: (idx) => `/admin/tokens/${idx}/refund-refresh`,
   test: (idx) => `/admin/tokens/${idx}/test`,
   session: (idx) => `/admin/tokens/${idx}/session`,
+  maturity: (idx) => `/admin/tokens/${idx}/maturity`,
+  maturityTouch: (idx) => `/admin/tokens/${idx}/maturity/touch`,
 };

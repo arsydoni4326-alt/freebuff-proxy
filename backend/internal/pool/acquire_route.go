@@ -122,10 +122,49 @@ func (p *Pool) Acquire(ctx context.Context, model string) (*Lease, error) {
 		return nil, pinFailFastError(model, len(*toks))
 	}
 
+	// MODEL_LOCKS fail-fast (issue #325, our lineage): when every slot's
+	// allowlist excludes the model, no admission can succeed — surface the
+	// routing error without touching upstream (mirrors the pin gate).
+	if allLockedOut(toks, cfg, p.reg, model) {
+		for _, tok := range *toks {
+			tok.allowlistSkips.Add(1)
+		}
+		return nil, lockFailFastError(model, len(*toks))
+	}
+
 	// Strict index order (spill_order.go): concurrent requests share the
 	// per-entry single-flight in the session manager, so no leader gate
-	// is needed to prevent duplicate session creates.
+	// is needed to prevent duplicate session creates. MODEL_LOCKS slots
+	// whose allowlist excludes the model are dropped from the walk (their
+	// skip counted) — the remaining lanes serve, matching slots first via
+	// the spill order.
 	order, quotaLimited := p.spillOrder(toks, model)
+	if len(cfg.ModelLocks) > 0 {
+		kept := make([]int, 0, len(order))
+		for _, idx := range order {
+			if lockedOutByModel(cfg, p.reg, idx, model) {
+				if idx >= 0 && idx < len(*toks) {
+					(*toks)[idx].allowlistSkips.Add(1)
+				}
+				continue
+			}
+			kept = append(kept, idx)
+		}
+		order = kept
+	}
+	// Random rotation (TOKEN_ROTATION=random, PRD §2.3): a random head
+	// index starts the walk each Acquire so no fixed slot starves under
+	// hot-session-first ordering. Deterministic when the test seeds
+	// randGen (randMu-guarded, math/rand/v2 PCG).
+	if cfg.TokenRotation == "random" && len(order) > 1 {
+		p.randMu.Lock()
+		start := p.randGen.IntN(len(order))
+		p.randMu.Unlock()
+		rotated := make([]int, 0, len(order))
+		rotated = append(rotated, order[start:]...)
+		rotated = append(rotated, order[:start]...)
+		order = rotated
+	}
 	return p.leaseFromOrder(ctx, model, agentID, cfg, toks, order, quotaLimited)
 }
 
@@ -459,7 +498,18 @@ func (p *Pool) leaseFromOrder(ctx context.Context, model string, agentID string,
 				// is invalidated. Surface a walk-local Model-stamped copy
 				// (never mutate the single-flight-shared value), no
 				// failover walk.
+				// Our lineage: mark the (egress, model) pair unfit for
+				// modelUnfitTTL so the next request refuses fast (409
+				// model_ip_limited) without burning a daily-slot admission.
+				p.MarkModelUnfit(model, lie)
 				routeSlot.Release()
+				// Ban > model-IP-limited (PRD §6 bucket precedence): a ban
+				// collected earlier in the walk outranks the correlative
+				// limited-ip refusal, so surface the ban instead of the
+				// limited error.
+				if len(banned) > 0 {
+					return nil, banned[0]
+				}
 				return nil, tagLimitedIPModel(lie, model)
 			}
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))

@@ -2,6 +2,7 @@
 package pool
 
 import (
+	"freebuff-proxy/backend/internal/config"
 	"freebuff-proxy/backend/internal/session"
 	"freebuff-proxy/backend/internal/upstream"
 	"time"
@@ -57,6 +58,17 @@ func banView(ban *upstream.BanError, until time.Time) (string, time.Time) {
 		return "hard", time.Time{}
 	}
 	return "temporary", ban.ResumesAt
+}
+
+// tokenValueAt returns the config's raw token for roster index i, or ""
+// when the live config no longer carries an entry at that slot (a reload
+// window can briefly leave the roster larger than cfg.AuthTokens — the
+// value is display-only and must never panic the snapshot).
+func tokenValueAt(cfg *config.Config, i int) string {
+	if cfg == nil || i < 0 || i >= len(cfg.AuthTokens) {
+		return ""
+	}
+	return cfg.AuthTokens[i]
 }
 
 // Snapshot returns the per-token healthz view.
@@ -197,7 +209,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 
 		out = append(out, TokenSnapshot{
 			Token:                   i,
-			TokenValue:              cfg.AuthTokens[i],
+			TokenValue:              tokenValueAt(cfg, i),
 			Email:                   tok.Email(),
 			AccountID:               tok.AccountID(),
 			CooldownUntil:           rs.CooldownUntil,
@@ -236,6 +248,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			TodayUsed:               todayUsed,
 			LastUsageDate:           lastUsage,
 			StreakUpdatedAt:         streakUpdated,
+			Maturity:                p.maturitySnapshot(tok, streak),
 			UpgradeHint:             ss.UpgradeHint,
 			ServerMessage:           ss.ServerMessage,
 			Locked:                  tok.locked.Load(),

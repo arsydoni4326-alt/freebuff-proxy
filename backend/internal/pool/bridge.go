@@ -196,6 +196,9 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 			if rle := entry.runs.RateLimitError(); rle != nil {
 				return nil, rle
 			}
+			if ice := entry.runs.IpCappedError(); ice != nil {
+				return nil, ice
+			}
 			return nil, fmt.Errorf("bridge: token cooling down until %s", until.Format(time.RFC3339))
 		}
 	}

@@ -342,7 +342,6 @@ func (m *Manager) persistRemoveLocked(oldInstance string) {
 	m.mu.Lock()
 }
 
-
 // restorePersistedQuotaLocked seeds the saved quota from the on-disk entry
 // when this process has never seen live quota (restart with lazy session
 // resume). Caller must hold m.mu. Store.Load is in-memory after the first

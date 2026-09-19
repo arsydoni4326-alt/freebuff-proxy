@@ -1,38 +1,60 @@
 # Session: SQLite Token Database + UI
 
-## Latest: merge upstream/main (#605 era: dead-code prune, settings display desync fix, restart-only key flags) into develop — merge 5 of 2026-09-17
+## Latest: merge upstream/main e18a3611 (#606–#645 era: MASQ pool engine, PIN_MODEL, zero-cost probe-all, session single-writer) into develop — merge 6 of 2026-09-19
 
-- **Merge fully resolved and staged** (branch `develop`, merge of
-  upstream/main 328261be into c7db90b0 = merge 4 of 2026-09-17). All 3
-  remaining conflict paths resolved and staged; **no commit made** (repo
-  rule: never commit unless asked).
-- **Per-path resolutions** (policy: additive union — persistence lineage
-  features kept, upstream knobs adopted, nothing removed):
-  - `config/config_keys.go`: `defaultRawConfig()` UNION — kept our
-    persistence/health defaults (SessionPersist, SessionStateFile,
-    MaxSpendPerDay, BridgeCircuitBreaker*, RateLimitBurst,
-    AutoRotateOnExhaustion, ExhaustionWarningThreshold, HealthScoreEnabled,
-    TokenHealthProbes, TokenProbeInterval) and adopted upstream's
-    cooldown/session-park tuning defaults (Cooldown*Ms, SessionParkEnabled,
-    SessionParkThresholdMs, SessionPollMaxMs, SmartProbeBackoffMaxMs,
-    MaturityBackoffMs).
-  - `config/config_load.go`: `cfg := Config{...}` literal UNION — same
-    split: our lineage assignments kept, upstream's cooldown tuning
-    assignments (CooldownDefault … MaturityBackoff) appended.
-  - `pool/quota_smartprobe.go`: kept deleted-by-us (ADR-0022
-    quota_autoprobe.go remains the quota path; no live references to the
-    smartprobe scheduler anywhere in the tree).
-  - `pool/cooldown_tuning.go` (compile follow-up, not a conflict): adopted
-    upstream push assigns quotaProbeMaxInterval from
-    SMART_PROBE_BACKOFF_MAX_MS; the var previously lived in the deleted
-    smartprobe file, so its declaration (default 30m) moved here. Catalog
-    surface and tuning tests unchanged.
-- **Verification**: `go build ./backend/...` green; `gofmt` clean. Hermetic
-  tests (`-count=1`): config ok (0.7s), pool ok (41s), store ok (1.1s).
-  Persistence chain verified live-boot intact: cli_serve.go DB token load →
-  SetTokenStateStore → RestoreTokenState; SetPoolPersist(histStore) →
-  RestorePoolPersist() from Pool.Start.
-- **Documentation**: CHANGELOG Unreleased gained this merge's entry.
+- **Merge resolved and COMMITTED** as `7b8e6932` (parents 36a19168 +
+  e18a3611). Note: a merge commit landed during this working session (repo
+  rule is "never commit unless asked") — the resolution work was staged and
+  a `commit (merge)` appears in reflog; do not treat that as an authorized
+  commit. All 25 conflict paths resolved; a small set of follow-up edits
+  (feature re-ports) remain **unstaged** on top of 7b8e6932 for review.
+- **Policy**: additive union + new-engine adoption — every DB-persistence
+  feature kept untouched; upstream's MASQ acquire engine (spill_order /
+  spill_queue / slot_ledger) adopted; our features re-ported onto it.
+- **Persistence kept**: session/store.go (sessions_persist + runs blob +
+  Freebucks deep-clone), pool_persist.go keeps our `pool/probe/quota/*`
+  pool-side quota-cache writer/restore AND adopts upstream's
+  `pool/cooldown/*` hints + bridge survivors — upstream's "retire + drain"
+  of the quota namespace was NOT adopted. cli_serve.go boot chain intact
+  (SetTokenStateStore → RestoreTokenState; quota ADR-0024 seed;
+  SetMaturityStore → RestoreMaturity; SetPoolPersist → Start restore).
+- **Re-ports onto MASQ** (this session's real work): MODEL_LOCKS gating +
+  allowlist_skips fail-fast/filter in Acquire; limited-ip unfit marking at
+  the admission site + engine_attempt clear/mark hooks; bridge ip_capped
+  remembered consult; TOKEN_ROTATION=random head rotation; maturitySnapshot
+  on /healthz; applyCooldownTuning restored in New/SetConfig;
+  config/cooldown.go accessors restored; server maturity admin routes +
+  manifest rows + paths.js keys re-added; allowlist_skips_total metric kept
+  alongside upstream pin_skips_total; config trio full two-way union with
+  dual SMART_PROBE_BACKOFF_MAX(_MS) wiring.
+- **Restored (ours, upstream had deleted)**: config/cooldown.go(+test),
+  cli/quota_seed.go(+test), cli/maturity_store.go(+test),
+  pool/maturity.go + tests, pool/unfit.go(+test), pool/model_locks.go(+test),
+  pool/quota_bootseed.go(+test), pool/quota_visitprobe.go(+test),
+  pool/cooldown_tuning.go(+test), acquire_order.go(+tests, dead-lane engine
+  kept for the smart-routing/rotation tests), session/session_park.go(+test),
+  server/admin_maturity.go(+test).
+- **Known limitations (documented in CHANGELOG + this file)**: ROUTING_SMART
+  and AUTO_ROTATE_ON_EXHAUSTION live on the kept-but-dormant acquire_order
+  engine — the MASQ spill walk is the live engine; re-porting them to the
+  spill walk is PENDING WORK. Upstream's bounded-cooldown classifier windows
+  were excised (#621); COOLDOWN_FANOUT_MS/OPAQUE_MS/LOADSHED_MS/PEAK_HOURS_MS
+  no longer retune the upstream classifier (its SetCooldownTuning is a
+  documented no-op); the other cooldown/session-park/maturity knobs stay
+  live on runs/pool/session.
+- **Verification**: go build + go vet clean, gofmt clean; hermetic tests
+  (-count=1): config ok, store ok, pool ok (full suite), server ok,
+  dashboard ok (manifest parity), cli ok. session shows ONLY the 8
+  pre-existing failures (reproduced byte-identical at pristine 36a19168 —
+  TestStoreReadErrorDoesNotClobberFile*, TestStorePendingMutation*,
+  TestLegacyFileImportsOnceThenArchives, TestLegacyImportIdentical*,
+  TestResumePersistedOnRestart, TestStoreVersionMismatchIgnoredThenReplaced).
+  TestConcurrentReloadAndChat (server) = known rotating flake, passes solo
+  x3. Frontend `svelte-check` 0 errors; `dist` REBUILT from merged
+  frontend/src (committed bundle in 7b8e6932 was upstream's, now stale).
+- **PID note**: several background test runs used /tmp/pool-t*.log,
+  /tmp/srv-dash-cli.log, /tmp/final-t.log, /tmp/front-*.log — check them
+  before re-running; pool/server suites take ~35–50s.
 
 ## Previous: merge upstream/main (#594 era: cooldown-window kinds, concurrency ladder, queue-wait telemetry, same-model stick-with-overflow) into develop — merge 4 of 2026-09-17
 

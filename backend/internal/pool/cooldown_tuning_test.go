@@ -77,8 +77,14 @@ func TestCooldownTuningPushDoesNotLeak(t *testing.T) {
 		if got := runs.SnapshotTuning(); got.Default != 61*time.Second || got.CountryBlock != 62*time.Second || got.Ceiling != 49*time.Hour || got.IPMaxReadmits != 7 || got.IPJitterRatio != 0.33 {
 			t.Errorf("runs tuning = %+v, want 61s/62s/49h/7/0.33 (custom knobs not enforced)", got)
 		}
-		if got := upstream.SnapshotTuning(); got.Fanout != 71*time.Second || got.InvalidModel != 72*time.Second || got.Opaque != 73*time.Second || got.LoadShed != 74*time.Second || got.PeakHours != 75*time.Second || got.Ceiling != 49*time.Hour {
-			t.Errorf("upstream tuning = %+v, want 71s/72s/73s/74s/75s/49h (custom knobs not enforced)", got)
+		// Upstream's bounded-cooldown classifier windows were excised
+		// upstream (#621, "cooldown hints" cutover): SetCooldownTuning is a
+		// documented no-op there, so the COOLDOWN_FANOUT_*/OPAQUE_*/… knobs
+		// no longer retune the classifier. The push point stays (runs and
+		// pool caps below still honor their knobs) and the SnapshotTuning
+		// type keeps compiling for tests; zero is the honest read-back.
+		if got := upstream.SnapshotTuning(); got.Fanout != 0 || got.InvalidModel != 0 || got.Opaque != 0 || got.LoadShed != 0 || got.PeakHours != 0 || got.Ceiling != 0 {
+			t.Errorf("upstream tuning = %+v, want all-zero (bounded-cooldown classifier excised upstream #621)", got)
 		}
 		if sessionPollBackoffMax != 76*time.Second || quotaProbeMaxInterval != 77*time.Second || maturity429Backoff != 78*time.Second {
 			t.Errorf("pool caps = %v/%v/%v, want 76s/77s/78s", sessionPollBackoffMax, quotaProbeMaxInterval, maturity429Backoff)

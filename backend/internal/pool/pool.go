@@ -750,7 +750,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), bridgeCreateGate: make(chan struct{}, 4), admissions: make(map[string]int), cooldownHints: make(map[string]poolCooldownBlob), unfit: make(map[unfitKey]unfitEntry), lastTokenByModel: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState()}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), bridgeCreateGate: make(chan struct{}, 4), admissions: make(map[string]int), cooldownHints: make(map[string]poolCooldownBlob), unfit: make(map[unfitKey]unfitEntry), lastTokenByModel: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState(), randGen: rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 1))}
 	p.probeCtx, p.probeCancel = context.WithCancel(context.Background())
 	p.cfg.Store(cfg)
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))
@@ -772,6 +772,7 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		toks = append(toks, entry)
 	}
 	p.roster = *newTokenRoster(toks)
+	p.applyCooldownTuning(cfg)
 	return p, nil
 }
 
@@ -792,6 +793,12 @@ func runOptions(cfg *config.Config) runs.Options {
 // Acquire/maintain pass without rebuilding the pool, except that an AUTH_TOKENS slot change rebuilds that entry (see below).
 func (p *Pool) SetConfig(cfg *config.Config) {
 	p.cfg.Store(cfg)
+
+	// Live cooldown/session-park tuning push (our lineage): the operator's
+	// COOLDOWN_*/SESSION_*/SMART_PROBE_/MATURITY_*_MS knobs retune the
+	// runs/upstream/session enforcement points and the session park gate on
+	// boot (New) and every reload.
+	p.applyCooldownTuning(cfg)
 
 	// Runtime-adjustable knobs: the session re-admit lead / probe cache TTL
 	// (#99/#60) follow config reloads.

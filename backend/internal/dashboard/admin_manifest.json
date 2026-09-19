@@ -507,24 +507,6 @@
   },
   {
     "method": "POST",
-    "path": "/admin/tokens/{id}/maturity",
-    "auth": "sensitive",
-    "js": {
-      "export": "tokenActions",
-      "key": "maturity"
-    }
-  },
-  {
-    "method": "POST",
-    "path": "/admin/tokens/{id}/maturity/touch",
-    "auth": "sensitive",
-    "js": {
-      "export": "tokenActions",
-      "key": "maturityTouch"
-    }
-  },
-  {
-    "method": "POST",
     "path": "/admin/tokens/remove-specific",
     "auth": "sensitive",
     "js": {
@@ -539,6 +521,24 @@
     "js": {
       "export": "adminApi",
       "key": "tokenList"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/admin/tokens/{id}/maturity",
+    "auth": "sensitive",
+    "js": {
+      "export": "tokenActions",
+      "key": "maturity"
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/admin/tokens/{id}/maturity/touch",
+    "auth": "sensitive",
+    "js": {
+      "export": "tokenActions",
+      "key": "maturityTouch"
     }
   }
 ]

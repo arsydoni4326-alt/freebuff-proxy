@@ -341,4 +341,3 @@ func TestBridgeSurvivorExpiry(t *testing.T) {
 		t.Errorf("converged survivors = %+v, want only the fresh record", kept)
 	}
 }
-
