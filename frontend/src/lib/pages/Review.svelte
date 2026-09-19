@@ -1,5 +1,6 @@
 <!-- REVIEW TEMP - TEMPORARY show-all page, WILL BE DELETED. Do not build on this. -->
 <script>
+  import Button from "../components/Button.svelte";
   // REVIEW TEMP - TEMPORARY show-all page, WILL BE DELETED. Do not build on this.
   import { onMount } from "svelte";
   import { SvelteMap } from "svelte/reactivity";
@@ -80,12 +81,6 @@
         { m: "GET", p: "/admin/api/tokens", note: "Pool snapshot" },
         {
           m: "POST",
-          p: "/admin/tokens/test-all",
-          note: "Probe every pool token",
-          json: true,
-        },
-        {
-          m: "POST",
           p: "/admin/tokens/add",
           note: "Add one upstream token",
           json: true,
@@ -139,24 +134,6 @@
           m: "POST",
           p: "/admin/tokens/{id}/session",
           note: "Admit session on {id}",
-          json: true,
-        },
-        {
-          m: "POST",
-          p: "/admin/tokens/{id}/maturity",
-          note: "Maturity probe on {id}",
-          json: true,
-        },
-        {
-          m: "POST",
-          p: "/admin/tokens/{id}/maturity/touch",
-          note: "Touch maturity on {id}",
-          json: true,
-        },
-        {
-          m: "POST",
-          p: "/admin/tokens/{id}/maturity/warn-reset",
-          note: "Reset maturity warning on {id}",
           json: true,
         },
       ],
@@ -626,13 +603,14 @@
                     />
                   </label>
                 {/if}
-                <button
-                  class="fp-btn fp-btn-sm"
+                <Button
+                  variant="secondary"
+                  size="sm"
                   disabled={pending[k]}
                   onclick={() => tryRow(gi, ri)}
                 >
                   {pending[k] ? "Trying…" : "Try"}
-                </button>
+                </Button>
               </div>
               {#if row.form === "config"}
                 <textarea
@@ -695,8 +673,8 @@
         value={tableFilter}
         oninput={(e) => (tableFilter = e.currentTarget.value)}
       />
-      <button class="fp-btn fp-btn-sm" onclick={fetchSettingsTable}
-        >Refresh</button
+      <Button variant="secondary" size="sm" onclick={fetchSettingsTable}
+        >Refresh</Button
       >
       {#if settingsDegraded}
         <span class="text-xs text-yellow-500"
@@ -771,12 +749,14 @@
                           (editVals[entry.key] = e.currentTarget.value)}
                       />
                     {/if}
-                    <button
-                      class="fp-btn fp-btn-sm mt-1"
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      class="mt-1"
                       onclick={() => saveSettingKey(entry)}
                     >
                       Save
-                    </button>
+                    </Button>
                     {#if editOut[entry.key]}
                       <pre
                         class="mt-1 max-h-24 overflow-auto whitespace-pre-wrap">{editOut[

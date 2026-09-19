@@ -267,6 +267,13 @@ export interface FreebuffFreebucksInfo {
   planId: string | null
   /** Session price per model id. Only models on the meter appear here. */
   prices: Record<string, number>
+  /**
+   * The list price per model id BEFORE the first-tab discount, so a client
+   * can cross it out beside the discounted `prices` entry. Present only on a
+   * quote that carries `firstTabDiscount`; it equals `prices` while the
+   * discount is unavailable. Never used for admission or charging.
+   */
+  listPrices?: Record<string, number>
   /** Account-wide first-tab offer. Prices already include it when available. */
   firstTabDiscount?: {
     amount: number
@@ -282,9 +289,13 @@ export interface FreebuffFreebucksInfo {
    *  model in `peak.modelIds` — that entry is the same fact as prose, kept
    *  for builds that predate the badge. */
   priceNotices?: Record<string, string>
-  /** @deprecated Legacy peak surcharge; new servers omit it now that Flash
-   *  uses Luminal's flat rate. Retained for older server responses. */
+  /** @deprecated Legacy peak surcharge. Current Flash offers use priceNotices
+   *  and priceChanges; retained for older server responses. */
   peak?: FreebuffFreebucksPeak
+  /** Server-owned recurring prices for new sessions. Clients project this policy
+   *  into `prices` (including first-tab discounts) even when refreshes fail.
+   *  A fresh response replaces the policy; admitted charges never change. */
+  offPeak?: Record<string, FreebuffOffPeakPrice>
   /** Scheduled changes announced by the server; do not reprice admitted sessions. */
   priceChanges?: readonly FreebuffPriceChange[]
   /**
@@ -320,6 +331,14 @@ export interface FreebuffFreebucksPeak {
   surcharge: number
   /** ISO instant the surcharge lifts (the end of the expensive window). */
   endsAt: string
+}
+
+export interface FreebuffOffPeakPrice {
+  /** UTC hours, daily [start, end); end may be on the next day. */
+  startHourUtc: number
+  endHourUtc: number
+  price: number
+  regularPrice: number
 }
 
 export interface FreebuffPriceChange {
@@ -636,10 +655,10 @@ export const getSubscriptionInfo = (
  * offer invisible instead of a broken-looking greyed-out row.
  *
  * `remaining`/`total` describe the GLOBAL pool shared by every user, while
- * `userRemaining` describes the caller's own daily ceiling. A row is joinable
+ * `userRemaining` describes the caller's campaign allowance. A row is joinable
  * only while both are non-zero, and the client must treat `userRemaining === 0`
  * as "not now" rather than hiding the row — the user has already had their
- * session and the reset time explains when they get another.
+ * session. Campaign offers have no daily reset.
  *
  * The ceiling itself is not on the wire: it is fixed by construction
  * (FREEBUFF_LIMITED_OFFER_SESSION_LIMIT, which no streak or referral can
@@ -655,10 +674,10 @@ export interface FreebuffLimitedModelOffer {
   remaining: number
   /** Pool size for the current wave, for "N of M left" copy. */
   total: number
-  /** Sessions this user may still start today. May be 0. */
+  /** Sessions this user may still start in this campaign. May be 0. */
   userRemaining: number
-  /** ISO timestamp at which `userRemaining` refills. */
-  userResetAt: string
+  /** Legacy daily reset timestamp; null for a one-per-campaign offer. */
+  userResetAt: string | null
 }
 
 /** Pull the limited-model offers off whichever session status carries them.
@@ -674,6 +693,11 @@ export const getLimitedModelOffers = (
 
 export type FreebuffCountryBlockReason =
   | 'country_not_allowed'
+  /** The request's own network passed, but the ACCOUNT was seen from a
+   *  not-allowed country within the access-floor window, so it keeps that
+   *  country's limits. Set by the floor in `access-cache.ts`, never by an
+   *  IP lookup. */
+  | 'recent_limited_country'
   | 'anonymized_or_unknown_country'
   | 'anonymous_network'
   | 'missing_client_ip'
@@ -908,6 +932,8 @@ export type FreebuffSessionAdmissionResponse = (
       status: 'model_unavailable'
       accessTier?: FreebuffAccessTier
       requestedModel: string
+      /** A used personal trial cannot be replenished by waiting or upgrading. */
+      limitedOfferReason?: 'used' | 'closed' | 'exhausted'
       /**
        * Prose, and quoted in UTC with the zone NAMED — the server cannot know
        * where the reader is, and the container it runs in is not a guess worth

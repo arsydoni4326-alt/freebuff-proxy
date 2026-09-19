@@ -153,7 +153,6 @@ func (p *Pool) bridgeEntryFor(clientToken string) (*bridgeEntry, error) {
 	entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 	entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 	entry.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-	pushParkConfig(entry.session, cfg)
 	entry.runs = runs.NewRunManagerOpts(client, entry.session, runOptions(cfg))
 	entry.lastUsed = time.Now()
 
@@ -438,7 +437,14 @@ func (p *Pool) bridgeSessionPollTick(ctx context.Context, cfg *config.Config) {
 // bridgeSessionPollTick schedule.
 func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 	cfg := p.cfg.Load()
-	var toEvict []*bridgeEntry
+	// bridgeEviction carries an idle-evict victim with its SHA map key so
+	// the drain loop below can capture a usage survivor (the key never
+	// holds the raw client token).
+	type bridgeEviction struct {
+		key   string
+		entry *bridgeEntry
+	}
+	var toEvict []bridgeEviction
 	var toMaintain []*bridgeEntry
 	idleEvict := defaultBridgeIdleEvict
 	if cfg.BridgeIdleEvict > 0 {
@@ -455,21 +461,18 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 			toMaintain = append(toMaintain, entry)
 			continue
 		}
-		// Parked entry: a live CooldownUntil inside the session-park
-		// window means the entry is riding out a short transient —
-		// killing it here would end a session the next request could
-		// still use once the window lapses. Keep it cached; the sweep
-		// reaps it once the cooldown lapses and it stays idle. The
-		// gate is threshold-aware (same shouldPark boundary as the
-		// acquire path): a terminal-length cooldown (e.g. the 30m
-		// auth-rejection window past the 15m park threshold) still
-		// evicts on idle instead of squatting the cache.
-		if until := entry.runs.CooldownUntil(); time.Now().Before(until) && shouldPark(cfg, time.Until(until)) {
+		// Cooling entry: a live CooldownUntil means the entry is riding
+		// out a transient — killing it here would end a session the next
+		// request could still use once the window lapses. Keep it cached;
+		// the sweep reaps it once the cooldown lapses and it stays idle.
+		// (The old session-park threshold gate is excised with
+		// SESSION_PARK_*: any live window now holds.)
+		if until := entry.runs.CooldownUntil(); time.Now().Before(until) {
 			toMaintain = append(toMaintain, entry)
 			continue
 		}
 		if now.Sub(entry.lastUsed) > idleEvict {
-			toEvict = append(toEvict, entry)
+			toEvict = append(toEvict, bridgeEviction{key: token, entry: entry})
 			delete(p.bridge, token)
 			p.bridgeOrder = removeBridgeOrder(p.bridgeOrder, token)
 			p.logger.Debug("pool: bridge entry evicted (idle)", "bridge_entries", len(p.bridge))
@@ -479,7 +482,13 @@ func (p *Pool) bridgeMaintain(ctx context.Context, idle bool) {
 	}
 	p.bridgeMu.Unlock()
 	p.markPersistDirty()
-	for _, entry := range toEvict {
+	for _, ev := range toEvict {
+		entry := ev.entry
+		// Survivor accounting first: the unlinked entry carries no
+		// in-flight lease and is unreachable from the cache, so its
+		// ledger is stable without bridgeMu. Entries with no in-window
+		// usage record nothing (the eviction still proceeds).
+		p.captureBridgeSurvivor(ev.key, entry, time.Now())
 		// Mirror the shutdown drain: FINISH the runs AND end the entry's
 		// upstream session, so a dropped idle entry does not leak its
 		// session upstream. Bounded by the same RequestTimeout ctx as the

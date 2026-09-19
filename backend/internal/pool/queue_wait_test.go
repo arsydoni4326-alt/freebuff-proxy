@@ -25,24 +25,27 @@ import (
 
 // parkHold is the bounded hold kept while the waiter is already parked on
 // the FIFO queue. It only makes the park measurable at millisecond
-// resolution — the waiter's arrival is proven by routeSlotQueued before the
+// resolution — the waiter's arrival is proven by slotQueued before the
 // hold, so nothing races on it.
 const parkHold = 25 * time.Millisecond
 
 // waitForParkedWaiter waits until the lane reports exactly one parked
 // waiter (the goroutine has genuinely queued, not merely started).
-func waitForParkedWaiter(t *testing.T, p *Pool, key any) {
+func waitForParkedWaiter(t *testing.T, p *Pool, key slotKey) {
 	t.Helper()
-	eventually(t, "waiter parks on the live-turn queue", func() bool { return p.routeSlotQueued(key) == 1 })
+	eventually(t, "waiter parks on the live-turn queue", func() bool { return p.slotQueued(key) == 1 })
 }
 
 // TestQueueWaitRecordedWhenParkedThenGranted proves the granted-after-park
 // path reports its wait: the lease carries it and the request's phase
 // accumulator carries queue_wait_ms.
 func TestQueueWaitRecordedWhenParkedThenGranted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode: pool queue-wait lane excluded; run `go test ./backend/...` for the full tier")
+	}
 	mock := testutil.NewMock()
 	defer mock.Close()
-	p := newSmartTestPool(t, func(c *config.Config) { c.TokenMaxConcurrent = 1 }, mock)
+	p := newSmartTestPool(t, func(c *config.Config) { c.SlotsPerAccount = 1 }, mock)
 	entry := smartEntry(p, 0)
 
 	holder, err := p.Acquire(context.Background(), modelA)
@@ -55,7 +58,7 @@ func TestQueueWaitRecordedWhenParkedThenGranted(t *testing.T) {
 		lease, err := p.Acquire(ctx, modelA)
 		parkedCh <- acquireResult{lease, err}
 	}()
-	waitForParkedWaiter(t, p, entry)
+	waitForParkedWaiter(t, p, slotKey{entry: entry, model: modelA})
 	time.Sleep(parkHold)
 	p.LeaseRelease(holder)
 
@@ -89,6 +92,9 @@ func TestQueueWaitRecordedWhenParkedThenGranted(t *testing.T) {
 // TestQueueWaitAbsentWhenNeverParked proves an immediate grant reports no
 // wait at all: no phase key and a zero lease wait.
 func TestQueueWaitAbsentWhenNeverParked(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode: pool queue-wait lane excluded; run `go test ./backend/...` for the full tier")
+	}
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newSmartTestPool(t, nil, mock)
@@ -111,10 +117,13 @@ func TestQueueWaitAbsentWhenNeverParked(t *testing.T) {
 // TestQueueWaitAbsentAfterQueueWaitTimeout proves a waiter whose QUEUE_WAIT
 // elapsed claims no wait: it never held a slot, so no wait was granted.
 func TestQueueWaitAbsentAfterQueueWaitTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode: pool queue-wait lane excluded; run `go test ./backend/...` for the full tier")
+	}
 	mock := testutil.NewMock()
 	defer mock.Close()
 	p := newSmartTestPool(t, func(c *config.Config) {
-		c.TokenMaxConcurrent = 1
+		c.SlotsPerAccount = 1
 		c.QueueWait = 80 * time.Millisecond
 	}, mock)
 
@@ -143,9 +152,12 @@ func TestQueueWaitAbsentAfterQueueWaitTimeout(t *testing.T) {
 // bridge lane keys the slot state off the *bridgeEntry, and its lease must
 // report the park identically.
 func TestBridgeQueueWaitRecordedWhenParkedThenGranted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode: pool queue-wait lane excluded; run `go test ./backend/...` for the full tier")
+	}
 	mock := testutil.NewMock()
 	defer mock.Close()
-	p := newBridgeSmartPool(t, func(c *config.Config) { c.TokenMaxConcurrent = 1 }, mock)
+	p := newBridgeSmartPool(t, func(c *config.Config) { c.SlotsPerAccount = 1 }, mock)
 	const token = "bridge-queue-wait"
 	entry := bridgeLane(t, p, token)
 
@@ -159,7 +171,7 @@ func TestBridgeQueueWaitRecordedWhenParkedThenGranted(t *testing.T) {
 		lease, err := p.AcquireBridge(ctx, token, modelA)
 		parkedCh <- acquireResult{lease, err}
 	}()
-	waitForParkedWaiter(t, p, entry)
+	waitForParkedWaiter(t, p, slotKey{entry: entry, model: modelA})
 	time.Sleep(parkHold)
 	p.LeaseRelease(holder)
 
@@ -191,9 +203,12 @@ func TestBridgeQueueWaitRecordedWhenParkedThenGranted(t *testing.T) {
 // timeout/exhausted skip, so an operator could not tell a queued admission
 // from a slow one.
 func TestLeaseAcquiredLineReportsQueueWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("short mode: pool queue-wait lane excluded; run `go test ./backend/...` for the full tier")
+	}
 	mock := testutil.NewMock()
 	defer mock.Close()
-	p := newSmartTestPool(t, func(c *config.Config) { c.TokenMaxConcurrent = 1 }, mock)
+	p := newSmartTestPool(t, func(c *config.Config) { c.SlotsPerAccount = 1 }, mock)
 	var sink bytes.Buffer
 	p.logger = slog.New(slog.NewTextHandler(&sink, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	entry := smartEntry(p, 0)
@@ -207,7 +222,7 @@ func TestLeaseAcquiredLineReportsQueueWait(t *testing.T) {
 		lease, err := p.Acquire(context.Background(), modelA)
 		parkedCh <- acquireResult{lease, err}
 	}()
-	waitForParkedWaiter(t, p, entry)
+	waitForParkedWaiter(t, p, slotKey{entry: entry, model: modelA})
 	time.Sleep(parkHold)
 	p.LeaseRelease(holder)
 

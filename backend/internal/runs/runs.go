@@ -18,13 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"freebuff-proxy/backend/internal/session"
+	"freebuff-proxy/backend/internal/upstream"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
-
-	"freebuff-proxy/backend/internal/session"
-	"freebuff-proxy/backend/internal/upstream"
 )
 
 // shutdownTimeout bounds Shutdown when the caller passes a context without a
@@ -143,6 +142,12 @@ type RunManager struct {
 	// first refusal that day); a new midnight resets the budget. Guarded
 	// by mu.
 	ipCappedDayReset time.Time
+	// modelLimits remembers per-model admission/run-start rate-limit
+	// refusals that carry an expiry (see RememberModelRateLimit): an
+	// admission 429's quota truth dies with the walk unless kept here, so
+	// the next same-model request skips the dead lane contact-free until
+	// the window resets. Keyed by model id; lazy-expired on read.
+	modelLimits map[string]*modelLimitEntry
 	// totalRequests is the cumulative count of Acquire leases handed out.
 	// It is kept separate from the per-run counters because rotated runs
 	// that get FINISHed leave the active+draining sets and would otherwise

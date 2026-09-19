@@ -387,10 +387,10 @@ func (s *Server) adminHandler(r dashboard.AdminRoute) http.Handler {
 		return http.HandlerFunc(s.admin.handleTokenRefundRefresh)
 	case "POST /admin/tokens/{id}/test":
 		return http.HandlerFunc(s.admin.handleTokenTest)
+	case "POST /admin/tokens/test-all":
+		return http.HandlerFunc(s.admin.handleTokensTestAll)
 	case "POST /admin/tokens/{id}/session":
 		return http.HandlerFunc(s.admin.handleTokenSpawnSession)
-	case "POST /admin/tokens/test-all":
-		return http.HandlerFunc(s.admin.handleTokenTestAll)
 	case "POST /admin/tokens/add":
 		return http.HandlerFunc(s.admin.handleTokenAdd)
 	case "POST /admin/tokens/remove":

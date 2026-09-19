@@ -45,7 +45,8 @@ type Config struct {
 	// deferred; see the gap analysis item 24.)
 	ActingUserID string
 	// AutoDiscoverToken records the effective AUTO_DISCOVER_TOKEN knob
-	// (default true): process env wins, else the DB overlay, else enabled.
+	// (default true, env-only): the process environment alone decides; a DB
+	// overlay row is inert (SettingsBlockedKeys).
 	// When false, an empty AUTH_TOKENS pool stays empty (bridge mode) and
 	// the CLI-credential discovery hook never fires; ADOPT_CLI_SESSION can
 	// still opt into discovery on its own.
@@ -119,7 +120,12 @@ type Config struct {
 	// serve, e.g. {0: ["z-ai/glm-5.2"]}. Slots without an entry are
 	// unlocked (today's behavior). Parsed at Load; malformed values
 	// reject the config.
-	ModelLocks       map[int][]string
+	ModelLocks map[int][]string
+	// PinModel pins pool slots to one model each (PIN_MODEL): map from
+	// AUTH_TOKENS slot index to the model id that slot serves, e.g.
+	// {0: "z-ai/glm-5.2"}. Slots without an entry are unpinned (serve any
+	// model). Parsed at Load; malformed values reject the config.
+	PinModel         map[int]string
 	TransientRetries int    // max additional attempts after a transient transport failure (0 = disabled; default 1)
 	SessionPersist   bool   // true = persist session state to disk so restart resumes unexpired sessions (SESSION_PERSIST)
 	SessionStateFile string // path to the session state file (SESSION_STATE_FILE; default .freebuff-session-state.json)
@@ -207,6 +213,17 @@ type Config struct {
 	// 429-backoff doubling). Zero-tolerant like BURST_WINDOW: empty or
 	// non-positive values fall back to the default.
 	QuotaProbeIdleHeartbeat time.Duration
+	// SmartProbeEnabled is the master switch for the smart zero-cost quota
+	// prober (SMART_PROBE_ENABLED; default true): activity-triggered
+	// (lease grant, successful chat, 429 refusal) plus reset-instant
+	// (per-model ResetAt, remembered-429 reset, Freebucks daily refill)
+	// session-less probes. False restores pre-scheduler behavior (manual
+	// probes only).
+	SmartProbeEnabled bool
+	// SmartProbeBackoffMax caps the smart prober's 429-backoff doubling
+	// (SMART_PROBE_BACKOFF_MAX; default 30m). Zero-tolerant like
+	// BURST_WINDOW: empty or non-positive values fall back to the default.
+	SmartProbeBackoffMax time.Duration
 	// WaitingRoomChain, when enabled (WAITING_ROOM_CHAIN=false default),
 	// fires the reference ad-chain + streak requests before the next
 	// session create after an upstream 428 waiting_room_required (issue
@@ -282,6 +299,16 @@ type Config struct {
 	// anti-ban posture is 1 (bunker: fully sequential turns per account).
 	// Live-apply (read per Acquire).
 	TokenMaxConcurrent int
+	// SlotsPerAccount caps concurrent live turns per pooled account-model
+	// lane (SLOTS_PER_ACCOUNT; default 2, the approved anti-ban pacing): a
+	// token leases a new turn for a model only while fewer than this many
+	// are live on that account for that model, so one account may hold 2
+	// turns of model A and 2 of model B at the same time. 0 = unlimited
+	// (no slot gating at all, for full operator control); negative values
+	// floor to 0. The strictest anti-ban posture is 1 (bunker: fully
+	// sequential turns per account-model lane).
+	// Live-apply (read per Acquire).
+	SlotsPerAccount int
 	// QueueWait bounds how long one Acquire parks on a full token's FIFO
 	// slot queue before failing over (QUEUE_WAIT; default 30s).
 	// Zero-tolerant like BURST_WINDOW: empty or non-positive values fall
@@ -293,6 +320,12 @@ type Config struct {
 	// no queueing (fail over at once when no live-turn slot is free);
 	// negative is rejected in Validate. Live-apply (read per Acquire).
 	QueueDepth int
+	// MaxSpillAccounts bounds how many continuation accounts one Acquire
+	// may spill to after its head lane's QUEUE_WAIT elapses
+	// (MAX_SPILL_ACCOUNTS; default 0 = unbounded, the full index chain).
+	// A 429 quota requeue never consumes spill budget. Live-apply (read
+	// per Acquire).
+	MaxSpillAccounts int
 	// Cooldown backoffs (COOLDOWN_*_MS, integer milliseconds): every
 	// upstream-refusal backoff the pool and classifier apply, tunable
 	// without a restart. Zero-tolerant: unset or non-positive values fall
@@ -338,11 +371,6 @@ type Config struct {
 	// sessionPollBackoffMax). Zero-tolerant. Live-apply (read per failed
 	// poll via SessionPollMaxMs()).
 	SessionPollMax time.Duration
-	// SmartProbeBackoffMaxMs caps the quota-probe 429-backoff doubling
-	// (SMART_PROBE_BACKOFF_MAX_MS; default 30m, previous hardcoded
-	// quotaProbeMaxInterval). Zero-tolerant. Live-apply (read per probe
-	// via SmartProbeBackoffMaxMs()).
-	SmartProbeBackoffMax time.Duration
 	// MaturityBackoffMs pauses the nightly maturity walk after a
 	// rate-limited touch (MATURITY_BACKOFF_MS; default 3m, previous
 	// hardcoded maturity429Backoff). Zero-tolerant. Live-apply (read per

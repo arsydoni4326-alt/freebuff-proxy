@@ -163,18 +163,22 @@ test.describe("real-world data", () => {
       page.getByRole("heading", { name: "Account #1" }),
     ).toBeVisible();
     await expect(page.getByText("dev@example.com").first()).toBeVisible();
-    await expect(page.getByText("Balance 7.5")).toBeVisible();
-    await expect(page.getByText("Used 2.5 / 10")).toBeVisible();
+    // Vendor formatFreebucks rounds (7.5 -> 8); the archived Sept-6 reset_at
+    // is stale, so the strip shows the refill-pending copy, not a countdown.
+    await expect(page.getByText("Balance 8")).toBeVisible();
+    await expect(page.getByText("Used 3 / 10")).toBeVisible();
     await expect(page.getByText("Used 42 / 300")).toBeVisible();
     // Row header line (issue #364): daily fraction · wallet · monthly.
-    // The "resets in" countdown renders once in the shared strip, never
-    // per row.
+    // The countdown renders once in the shared strip, never per row —
+    // here the pending copy, since the archived reset already passed.
     await expect(
       page.locator('[data-testid="freebucks-header"]').first(),
     ).toContainText(
-      /7\.5\/10 Freebucks daily · 5 in wallet · \$258 monthly usage left/,
+      /8\/10 Freebucks daily · 5 in wallet · \$258 monthly usage left/,
     );
-    await expect(page.getByTestId("reset-strip")).toContainText("resets in");
+    await expect(page.getByTestId("reset-strip")).toContainText(
+      "Updating balance…",
+    );
   });
 
   test("quota: models tab shows ids plus priced Freebucks suffix", async ({
@@ -251,8 +255,16 @@ test.describe("real-world data", () => {
     // The pack must describe the live catalog: these pool rows render from
     // config-meta, and the superseded pack hid them (or lacked the key), so
     // these assertions fail when the pack drifts again.
+    // QUOTA_AUTO_PROBE was excised with the Fase E prober removal, so the
+    // MASQ queue-posture rows stand in as the catalog-rendered pool proof.
     await expect(
-      page.getByText("QUOTA_AUTO_PROBE", { exact: true }),
+      page.getByText("SLOTS_PER_ACCOUNT", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("QUEUE_WAIT", { exact: true }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByText("QUEUE_DEPTH", { exact: true }).first(),
     ).toBeVisible();
     await expect(
       page.getByText("RATE_LIMIT_BURST", { exact: true }),

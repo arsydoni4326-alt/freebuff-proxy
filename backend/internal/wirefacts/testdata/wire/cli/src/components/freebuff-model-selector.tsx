@@ -3,7 +3,11 @@ import {
   isFreebucksPeakModel,
 } from '@codebuff/common/util/freebuff-peak-price'
 import { watchFreebucksPriceChanges } from '@codebuff/common/util/freebuff-price-changes'
-import { firstTabDiscountCopy } from '@codebuff/common/util/freebuff-first-tab-discount'
+import { freebucksOffPeakCopy } from '@codebuff/common/util/freebuff-off-peak-price'
+import {
+  firstTabDiscountCopy,
+  firstTabListPriceFor,
+} from '@codebuff/common/util/freebuff-first-tab-discount'
 import { TextAttributes } from '@opentui/core'
 import { useKeyboard } from '@opentui/react'
 import React, {
@@ -133,6 +137,15 @@ const TOGGLE_ID = '__freebuff_toggle__'
 
 /** Joins the parts of a row's second line (see `rowDetails`). */
 const DETAIL_SEPARATOR = ' · '
+
+/** One chip on a row's second line. `struck` is drawn crossed out, one space
+ *  ahead of `text` — the regular price beside a discounted one. */
+type RowDetail = { struck?: string; text: string; warn: boolean }
+
+/** The chip as plain characters, for the width math (a struck price still
+ *  takes its columns). */
+const detailText = (detail: RowDetail): string =>
+  detail.struck !== undefined ? `${detail.struck} ${detail.text}` : detail.text
 
 // There used to be a right-aligned "Press Enter ↵" cue on the focused row, with
 // its width reserved in the line-1 budget below. Both are gone: the cue was
@@ -345,7 +358,7 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
   )
   const taglineFor = useCallback(
     (model: FreebuffModelOption) =>
-      isFreebucksPeakModel(freebucks, model.id)
+      isFreebucksPeakModel(freebucks, model.id) || freebucks?.offPeak?.[model.id]
         ? model.tagline
         : (freebucks?.priceNotices?.[model.id] ?? model.tagline),
     [freebucks],
@@ -423,8 +436,8 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
    * off the first frame.
    */
   const rowDetails = useCallback(
-    (model: FreebuffModelOption): { text: string; warn: boolean }[] => {
-      const details: { text: string; warn: boolean }[] = []
+    (model: FreebuffModelOption): RowDetail[] => {
+      const details: RowDetail[] = []
       // THE PRICE LEADS LINE 2, and on the meter it is often the only thing
       // on it.
       //
@@ -439,13 +452,23 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
       // the balance cannot cover it — the same signal the dimmed price carries
       // on the other two surfaces.
       const rowPrice = freebucksPriceFor(freebucks, model.id)
+      const offPeakCopy = freebucksOffPeakCopy(freebucks, model.id, { now: nowMs ?? Date.now() })
       if (rowPrice !== undefined) {
+        // The regular price struck through ahead of the discounted one
+        // ("~~15~~ 5 Freebucks/hr") while the first-tab offer is available,
+        // only on rows the offer actually moved.
+        const listPrice = firstTabListPriceFor(freebucks, model.id)
         details.push({
+          struck:
+            listPrice !== undefined ? formatFreebucks(listPrice) : undefined,
           text: freebucksPriceLabel(rowPrice),
           warn: (freebucks?.balance ?? 0) < rowPrice,
         })
+        if (offPeakCopy) details.push({ text: offPeakCopy.detail, warn: false })
         if (freebucks?.firstTabDiscount?.available) {
-          details.push({ text: 'First-tab discount', warn: false })
+          // A promotion, not a price: named as one so nobody plans around a
+          // row that will one day cost its regular price again.
+          details.push({ text: 'Limited-time first-tab discount', warn: false })
         }
       }
       if (model.warning) details.push({ text: model.warning, warn: true })
@@ -499,6 +522,7 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
     [
       deploymentAvailabilityLabel,
       now,
+      nowMs,
       premiumSectionQuotas,
       meterFor,
       freebucks,
@@ -506,9 +530,7 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
   )
   const rowDetailsText = useCallback(
     (model: FreebuffModelOption): string =>
-      rowDetails(model)
-        .map((detail) => detail.text)
-        .join(DETAIL_SEPARATOR),
+      rowDetails(model).map(detailText).join(DETAIL_SEPARATOR),
     [rowDetails],
   )
 
@@ -516,7 +538,7 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
     (modelId: string) => {
       if (!isFreebuffModelAvailable(modelId, new Date(now))) return false
       // An offer row is on screen only while the shared pool has capacity, so
-      // what's left to check is the caller's own daily ceiling. It travels on
+      // what's left to check is the caller's campaign allowance. It travels on
       // the offer payload rather than in `rateLimitsByModel`, which the server
       // deliberately keeps free of these models so the 30s poll doesn't pay for
       // a quota nobody is using.
@@ -896,7 +918,7 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
   // separate strings before the picker gained an override, and a row whose
   // suffix outgrows what the width maths budgeted for is a truncated row.
   //
-  // A model with a LADDER but no pinned `reasoningEffort` (Fable 5) still shows
+  // A model with a LADDER but no pinned `reasoningEffort` (Fable 5.1) still shows
   // nothing until the user picks: its default is the provider's own, and
   // spending row width to restate it pushed the "see all models" toggle off a
   // short terminal. The suffix appears the moment it carries information the
@@ -1419,6 +1441,15 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
             {details.map((detail, index) => (
               <React.Fragment key={`${index}-${detail.text}`}>
                 {index > 0 && <span fg={mutedColor}>{DETAIL_SEPARATOR}</span>}
+                {detail.struck !== undefined && (
+                  <span
+                    fg={mutedColor}
+                    attributes={TextAttributes.STRIKETHROUGH}
+                  >
+                    {detail.struck}
+                  </span>
+                )}
+                {detail.struck !== undefined && <span> </span>}
                 <span fg={detail.warn ? warningColor : mutedColor}>
                   {detail.text}
                 </span>
@@ -1455,21 +1486,10 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
     )
   }
 
-  // Scarcity, on the LIMITED TRIAL header rather than on the row — same
-  // treatment the shared premium quota gets, so counts live in one predictable
-  // place and the rows stay narrow. Two facts, in the order they matter: how
-  // much of the wave is left for everyone, and (only once the user has spent
-  // theirs) when they personally get another. `offers` is homogeneous — one
-  // pool, one per-user ceiling — so the first entry speaks for all of them.
+  // All offers share a campaign pool and per-user allowance. Put the personal
+  // refusal first so narrow terminals cannot clip why a trial is locked.
   const offerSummary = offers[0]
   const offerUserExhausted = !!offerSummary && offerSummary.userRemaining <= 0
-  const offerUserResetAt = offerSummary
-    ? new Date(offerSummary.userResetAt)
-    : null
-  const offerUserResetCountdown =
-    offerUserResetAt && Number.isFinite(offerUserResetAt.getTime())
-      ? formatFreebuffPremiumResetCountdown(offerUserResetAt, now)
-      : null
 
   const sectionsContent = renderedSections.map((section) => (
     <box
@@ -1496,19 +1516,14 @@ export const FreebuffModelSelector: React.FC<FreebuffModelSelectorProps> = ({
           {section.key === 'premium' && premiumResetCountdown && (
             <span fg={theme.muted}> · resets in {premiumResetCountdown}</span>
           )}
+          {section.key === 'offer' && offerUserExhausted && (
+            <span fg={theme.secondary}> · trial used</span>
+          )}
           {section.key === 'offer' && offerSummary && (
             <span fg={theme.primary}>
               {' '}
-              · {offerSummary.remaining} of {offerSummary.total} sessions left
-            </span>
-          )}
-          {section.key === 'offer' && offerUserExhausted && (
-            <span fg={theme.secondary}>
-              {' '}
-              · you've used yours
-              {offerUserResetCountdown
-                ? `, resets in ${offerUserResetCountdown}`
-                : ''}
+              · {offerSummary.remaining} of {offerSummary.total} sessions left ·
+              1 per user
             </span>
           )}
         </text>

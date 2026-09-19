@@ -209,7 +209,7 @@ func TestQuotaStateWindowSemantics(t *testing.T) {
 			if tc.quota != nil {
 				(*toks)[0].session.UpdateQuotaFromProbe(&upstream.SessionState{RateLimitsByModel: tc.quota})
 			}
-			order, limited := p.acquireOrder(toks, 0, tc.model)
+			order, limited := p.spillOrder(toks, tc.model)
 			if len(limited) != 0 {
 				t.Errorf("%s: quotaLimited = %v, want empty (counts never gate)", tc.name, limited)
 			}
@@ -284,6 +284,12 @@ func TestBridgeQuotaMirrorsPooled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The setup admission leaves a live reusable session on the bridge
+	// entry while the pooled entry has none — and a live session for the
+	// model now bypasses the cap by design (reuse costs zero admission).
+	// Drop it so both sides are compared on identical (session-less)
+	// state: the pin is the allowance semantics, not the setup residue.
+	pb.InvalidateBridgeSession(blease)
 	pb.LeaseRelease(blease)
 	blease.Bridge.sessionMgr().UpdateQuotaFromProbe(&upstream.SessionState{Freebucks: fb})
 
@@ -323,8 +329,10 @@ func TestMismatchEscalationModelUsesRefusedModel(t *testing.T) {
 	p.SetNotifier(notify.New(srv.URL, nil))
 
 	// Model carried in the body: the event must carry it, indexed 1-based.
-	rle := &upstream.RateLimitError{Status: "free_mode_invalid_agent_model", Model: modelA,
-		RetryAfter: upstream.InvalidModelCooldown}
+	rle := &upstream.RateLimitError{
+		Status: "free_mode_invalid_agent_model", Model: modelA,
+		RetryAfter: time.Minute,
+	}
 	p.recordMismatchEscalation(1, rle)
 	p.recordMismatchEscalation(1, rle)
 	p.recordMismatchEscalation(1, rle)
@@ -366,12 +374,18 @@ func TestMismatchEscalationModelUsesRefusedModel(t *testing.T) {
 	}))
 	defer srv2.Close()
 	p.SetNotifier(notify.New(srv2.URL, nil))
-	p.recordMismatchEscalation(2, &upstream.RateLimitError{Status: "free_mode_invalid_agent_model",
-		RetryAfter: upstream.InvalidModelCooldown})
-	p.recordMismatchEscalation(2, &upstream.RateLimitError{Status: "free_mode_invalid_agent_model",
-		RetryAfter: upstream.InvalidModelCooldown})
-	p.recordMismatchEscalation(2, &upstream.RateLimitError{Status: "free_mode_invalid_agent_model",
-		RetryAfter: upstream.InvalidModelCooldown})
+	p.recordMismatchEscalation(2, &upstream.RateLimitError{
+		Status:     "free_mode_invalid_agent_model",
+		RetryAfter: time.Minute,
+	})
+	p.recordMismatchEscalation(2, &upstream.RateLimitError{
+		Status:     "free_mode_invalid_agent_model",
+		RetryAfter: time.Minute,
+	})
+	p.recordMismatchEscalation(2, &upstream.RateLimitError{
+		Status:     "free_mode_invalid_agent_model",
+		RetryAfter: time.Minute,
+	})
 	testutil.WaitFor(t, 3*time.Second, func() bool {
 		return gotModel.Load().(string) == "free_mode_invalid_agent_model"
 	}, "code-fallback webhook never posted a model")
@@ -592,5 +606,40 @@ func TestFreebucksCappedClaimableGrants(t *testing.T) {
 	// revived legacy quota — there is no legacy path to revive).
 	if capped, _ := freebucksCappedForSnapshot(session.SessionSnapshot{}, "deepseek/deepseek-v4-flash"); capped {
 		t.Error("capped with nil Freebucks, want not capped")
+	}
+}
+
+// TestFreebucksCappedExhaustedZeroBalance verifies that an account with no Freebucks
+// left (Spendable < price) is strictly capped and skipped even when upstream omits
+// an explicit future reset timestamp (falling back to Pacific midnight refill),
+// and that premium models default to capped when balance is exhausted.
+func TestFreebucksCappedExhaustedZeroBalance(t *testing.T) {
+	mkSnap := func(fb *upstream.FreebucksInfo) session.SessionSnapshot {
+		return session.SessionSnapshot{Freebucks: fb}
+	}
+	// Zero balance, no explicit ResetAt → must be capped with retry > 0 (until Pacific midnight).
+	zeroFb := &upstream.FreebucksInfo{
+		Balance: 0,
+		Daily:   upstream.FreebucksWindow{Limit: 20, Spent: 20, Remaining: 0},
+		Prices:  map[string]float64{"upstage/solar-pro4": 2},
+	}
+	capped, retry := freebucksCappedForSnapshot(mkSnap(zeroFb), "upstage/solar-pro4")
+	if !capped {
+		t.Fatal("not capped with 0 balance on priced model, want capped")
+	}
+	if retry <= 0 {
+		t.Errorf("retry = %v, want > 0 (until Pacific midnight fallback)", retry)
+	}
+
+	// Zero balance on a premium model not in Prices map → must be capped.
+	capped, _ = freebucksCappedForSnapshot(mkSnap(zeroFb), "openai/gpt-5.6-luna")
+	if !capped {
+		t.Fatal("not capped with 0 balance on premium model not in prices map, want capped")
+	}
+
+	// Zero balance on unmetered model (not in prices and not premium) → not capped.
+	capped, _ = freebucksCappedForSnapshot(mkSnap(zeroFb), "z-ai/glm-5.3-flash")
+	if capped {
+		t.Fatal("capped on unmetered model with 0 balance, want unmetered model accessible")
 	}
 }

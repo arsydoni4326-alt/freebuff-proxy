@@ -144,8 +144,9 @@ func TestSettingsOverlaySecretsEnvWins(t *testing.T) {
 // TestOverlayCoversCatalog: every non-blocked catalog key must be
 // overlay-addressable (applyMappedValues is the single shared key list, so
 // this guards the filter in applySettingsOverlay, not the list itself).
-// Since the env-to-DB migration the blocked set is empty: AUTH_TOKENS rides
-// the overlay with presence semantics next to applyMappedValues.
+// The env-only keys (SettingsBlockedKeys) are skipped by that filter;
+// AUTH_TOKENS rides the overlay with presence semantics next to
+// applyMappedValues.
 func TestOverlayCoversCatalog(t *testing.T) {
 	for _, def := range Catalog() {
 		if IsSettingsBlocked(def.Key) {
@@ -180,43 +181,60 @@ func TestOverlayCoversCatalog(t *testing.T) {
 	}
 }
 
-// TestValidateSettingValue pins the POST gate: unknown keys and unparseable
-// typed values reject; writable knobs accept. Secrets are storable since
+// TestValidateSettingValue pins the POST gate: unknown keys, unparseable
+// typed values, and env-only keys (SettingsBlockedKeys, even well-formed)
+// reject; writable knobs accept. Secrets are storable since
 // the env-to-DB migration (the DB file holds them at mode 0600); AUTH_TOKENS
 // and ADMIN_TOKEN take the dedicated-endpoint path in the settings POST
 // handler, but Validate itself accepts them so migrated rows read back.
 func TestValidateSettingValue(t *testing.T) {
 	for key, value := range map[string]string{
-		"LOG_LEVEL":            "debug",
-		"SAFE_MODE":            "false",
-		"RATE_LIMIT_BURST":     "30",
-		"RATE_LIMIT_PER_IP":    "2.5",
-		"MODELS_ALLOW":         "deepseek/deepseek-v4-flash",
-		"MATURITY_TARGET_DAYS": "14",
-		"HTTP_READ_TIMEOUT":    "90s",
-		"AUTH_TOKENS":          "fb-test-fake-token-1",
-		"ADMIN_TOKEN":          "fb-test-fake-admin-1",
-		"API_KEYS":             "fb-test-fake-client-1",
-		"WEBHOOK_URL":          "https://example.invalid/hook",
-		"UPSTREAM_BASE_URL":    "https://example.invalid",
-		"AUTO_DISCOVER_TOKEN":  "false",
+		"LOG_LEVEL":         "debug",
+		"SAFE_MODE":         "false",
+		"RATE_LIMIT_BURST":  "30",
+		"RATE_LIMIT_PER_IP": "2.5",
+		"MODELS_ALLOW":      "deepseek/deepseek-v4-flash",
+		"AUTH_TOKENS":       "fb-test-fake-token-1",
+		"ADMIN_TOKEN":       "fb-test-fake-admin-1",
+		"API_KEYS":          "fb-test-fake-client-1",
+		"WEBHOOK_URL":       "https://example.invalid/hook",
+		"UPSTREAM_BASE_URL": "https://example.invalid",
 	} {
 		if err := ValidateSettingValue(key, value); err != nil {
 			t.Errorf("ValidateSettingValue(%s,%s) = %v, want nil", key, value, err)
 		}
 	}
 	for key, value := range map[string]string{
-		"NOPE_NOT_A_KEY":       "x",
-		"DB_PATH":              "/tmp/x.db",
-		"SAFE_MODE":            "banana",
-		"RATE_LIMIT_BURST":     "lots",
-		"RATE_LIMIT_PER_IP":    "fast",
-		"MATURITY_TARGET_DAYS": "seven",
-		"LOG_LEVEL":            "",
-		"":                     "x",
+		"NOPE_NOT_A_KEY":    "x",
+		"DB_PATH":           "/tmp/x.db",
+		"SAFE_MODE":         "banana",
+		"RATE_LIMIT_BURST":  "lots",
+		"RATE_LIMIT_PER_IP": "fast",
+		"LOG_LEVEL":         "",
+		"":                  "x",
+		// Env-only keys (data-architecture decision) never store: the
+		// settings-block gate rejects even well-formed values with an
+		// env/.env pointer so POST never persists an inert row.
+		"SESSION_STATE_FILE":  "custom-state.json",
+		"SESSION_PERSIST":     "false",
+		"LOG_FILE":            "proxy.log",
+		"HTTP_READ_TIMEOUT":   "90s",
+		"AUTO_DISCOVER_TOKEN": "false",
 	} {
 		if err := ValidateSettingValue(key, value); err == nil {
 			t.Errorf("ValidateSettingValue(%q,%q) accepted, want an error", key, value)
+		}
+	}
+	// The block message points at the environment/.env, mirroring the
+	// ADMIN_FORCE_SECURE_COOKIES POST pointer.
+	for _, key := range []string{"SESSION_STATE_FILE", "SESSION_PERSIST", "LOG_FILE", "HTTP_READ_TIMEOUT", "AUTO_DISCOVER_TOKEN"} {
+		err := ValidateSettingValue(key, "false")
+		if err == nil {
+			t.Errorf("ValidateSettingValue(%s) accepted, want the env-only block", key)
+			continue
+		}
+		if !strings.Contains(err.Error(), ".env") {
+			t.Errorf("ValidateSettingValue(%s) = %v, want an environment/.env pointer", key, err)
 		}
 	}
 }
@@ -243,6 +261,91 @@ func TestValidateSettingValueDurationGate(t *testing.T) {
 	for key := range durationSettingKeys {
 		if err := ValidateSettingValue(key, "not-a-duration"); err == nil {
 			t.Errorf("ValidateSettingValue(%s,not-a-duration) accepted, want a parse error", key)
+		}
+	}
+}
+
+// TestValidateSettingValueLoadAgreement pins the gate/Load contract behind
+// POST: for every value Load rejects, the pre-transaction gate must reject
+// too — a value the gate waves through but Load refuses costs the operator
+// a 400 on something the gate just blessed (or a stored row the running
+// config cannot use). Where the loader fails loudly (durations, selects,
+// range-checked numbers) agreement runs both ways. Unparseable ints/floats
+// are silently skipped by the override helpers (the env tier keeps its
+// historic ignore), so those pin gate-side rejection only.
+func TestValidateSettingValueLoadAgreement(t *testing.T) {
+	clearEnv(t)
+	agreeReject := map[string][]string{
+		"RATE_LIMIT_BURST":     {"-1"},
+		"QUEUE_DEPTH":          {"-1"},
+		"MAX_SPILL_ACCOUNTS":   {"-1"},
+		"TRANSIENT_RETRIES":    {"-1"},
+		"MATURITY_TARGET_DAYS": {"0", "-1", "29"},
+		"RATE_LIMIT_PER_IP":    {"-1", "NaN", "Inf"},
+		"LOG_LEVEL":            {"verbose"},
+		"LOG_FORMAT":           {"xml", "JSON"},
+		"COST_MODE":            {"paid", "FREE"},
+		"TLS_FINGERPRINT":      {"netscape"},
+		"ROTATION_INTERVAL":    {"0s"},
+		"REQUEST_TIMEOUT":      {"0s"},
+		"SESSION_CALL_TIMEOUT": {"0s"},
+		"REGISTRY_REFRESH":     {"0s"},
+		"REQUEST_JITTER":       {"-1s"},
+	}
+	for key, values := range agreeReject {
+		for _, value := range values {
+			if err := ValidateSettingValue(key, value); err == nil {
+				t.Errorf("gate accepted %s=%q, want rejection (Load refuses it)", key, value)
+			}
+			if _, err := LoadOpts("", LoadOptions{Overlay: map[string]string{key: value}}); err == nil {
+				t.Errorf("Load accepted %s=%q, want rejection (the gate refuses it)", key, value)
+			}
+		}
+	}
+	// Every value here must pass BOTH, including the case-folded selects
+	// and the loader-folded durations (QUEUE_WAIT owns its own parity
+	// test; IDLE_ROTATION_TIMEOUT pins the store-side agreement here).
+	// SLOTS_PER_ACCOUNT=-1 rides the loader floor to 0 (unlimited) — the
+	// one int negative Load takes, so the gate takes it too.
+	agreeAccept := map[string][]string{
+		"RATE_LIMIT_BURST":          {"0", "30"},
+		"QUEUE_DEPTH":               {"0", "16"},
+		"MAX_SPILL_ACCOUNTS":        {"0"},
+		"SLOTS_PER_ACCOUNT":         {"-1", "0", "2"},
+		"TRANSIENT_RETRIES":         {"0", "3"},
+		"MATURITY_TARGET_DAYS":      {"1", "7", "28"},
+		"RATE_LIMIT_PER_IP":         {"0", "2.5"},
+		"LOG_LEVEL":                 {"debug", "DEBUG"},
+		"LOG_FORMAT":                {"text", "json"},
+		"COST_MODE":                 {"free"},
+		"TLS_FINGERPRINT":           {"auto", "Chrome126"},
+		"ROTATION_INTERVAL":         {"6h"},
+		"REQUEST_TIMEOUT":           {"15m"},
+		"SESSION_CALL_TIMEOUT":      {"30s"},
+		"REGISTRY_REFRESH":          {"6h"},
+		"REQUEST_JITTER":            {"0s", "200ms"},
+		"IDLE_ROTATION_TIMEOUT":     {"0", "0s", "-5s", "30m"},
+		"BRIDGE_IDLE_EVICT":         {"0s", "72h"},
+		"RUN_FINISH_INLINE_TIMEOUT": {"0s", "250ms"},
+	}
+	for key, values := range agreeAccept {
+		for _, value := range values {
+			if err := ValidateSettingValue(key, value); err != nil {
+				t.Errorf("gate rejected %s=%q: %v, want acceptance (Load takes it)", key, value, err)
+			}
+			if _, err := LoadOpts("", LoadOptions{Overlay: map[string]string{key: value}}); err != nil {
+				t.Errorf("Load rejected %s=%q: %v, want acceptance (the gate takes it)", key, value, err)
+			}
+		}
+	}
+	// Unparseable ints/floats never reach the loader (the override helpers
+	// skip them): the gate still 400s them so POST never stores a no-op.
+	for key, value := range map[string]string{
+		"RATE_LIMIT_BURST":  "lots",
+		"RATE_LIMIT_PER_IP": "fast",
+	} {
+		if err := ValidateSettingValue(key, value); err == nil {
+			t.Errorf("gate accepted %s=%q, want a parse rejection", key, value)
 		}
 	}
 }
@@ -339,50 +442,114 @@ func TestLogAndListenKeysAreRestartOnly(t *testing.T) {
 	}
 }
 
-// TestAutoDiscoverTokenOverlay: AUTO_DISCOVER_TOKEN is overlay-addressable
-// since the env-to-DB migration. The overlay row takes effect only when the
-// process environment leaves the key unset (env wins); the resolved value
-// records on Config and suppresses CLI auto-discovery when false.
+// TestAutoDiscoverTokenOverlay: AUTO_DISCOVER_TOKEN is env-only per the
+// data-architecture decision. The overlay row is inert: IsSettingsBlocked
+// holds, Validate rejects with an env/.env pointer, OverlayFromRows drops
+// the row, and LoadOpts ignores a hand-built overlay entry (effective
+// falls back to env-then-default-true). The overlay-false-suppresses-
+// discovery behavior change is intended.
 func TestAutoDiscoverTokenOverlay(t *testing.T) {
-	if IsSettingsBlocked("AUTO_DISCOVER_TOKEN") {
-		t.Error("IsSettingsBlocked(AUTO_DISCOVER_TOKEN) = true, want false (unblocked by the env-to-DB migration)")
+	if !IsSettingsBlocked("AUTO_DISCOVER_TOKEN") {
+		t.Error("IsSettingsBlocked(AUTO_DISCOVER_TOKEN) = false, want true (env-only)")
 	}
-	if err := ValidateSettingValue("AUTO_DISCOVER_TOKEN", "false"); err != nil {
-		t.Errorf("ValidateSettingValue(AUTO_DISCOVER_TOKEN) = %v, want nil", err)
+	if err := ValidateSettingValue("AUTO_DISCOVER_TOKEN", "false"); err == nil {
+		t.Error("ValidateSettingValue(AUTO_DISCOVER_TOKEN) accepted, want the env-only block")
 	}
-	if ov := OverlayFromRows(map[string]string{"config:AUTO_DISCOVER_TOKEN": "false"}); ov["AUTO_DISCOVER_TOKEN"] != "false" {
-		t.Errorf("OverlayFromRows dropped unblocked AUTO_DISCOVER_TOKEN: %v", ov)
+	if ov := OverlayFromRows(map[string]string{"config:AUTO_DISCOVER_TOKEN": "false"}); len(ov) != 0 {
+		t.Errorf("OverlayFromRows kept blocked AUTO_DISCOVER_TOKEN: %v", ov)
 	}
 	clearEnv(t)
 	t.Chdir(t.TempDir())
-	// clearEnv pins AUTO_DISCOVER_TOKEN=false in the environment; unset it so
-	// the first load below resolves the overlay tier alone.
+	// clearEnv pins AUTO_DISCOVER_TOKEN=false in the environment; unset it
+	// so the load below resolves the default tier with an inert overlay.
 	if err := os.Unsetenv("AUTO_DISCOVER_TOKEN"); err != nil {
 		t.Fatal(err)
 	}
 	fakeDiscover := func() (string, string, string, bool) { return "fb-test-fake-discovered-1", "", "", true }
-	// Overlay "false" with no env: discovery suppressed, field records false.
+	// Inert overlay "false" with no env: default true stands, discovery fires.
 	cfg, err := LoadOpts("", LoadOptions{DiscoverCLIToken: fakeDiscover, Overlay: map[string]string{"AUTO_DISCOVER_TOKEN": "false"}})
 	if err != nil {
 		t.Fatalf("LoadOpts: %v", err)
 	}
-	if cfg.AutoDiscoverToken {
-		t.Error("AutoDiscoverToken = true, want false (overlay)")
-	}
-	if len(cfg.AuthTokens) != 0 {
-		t.Errorf("AuthTokens = %v, want empty (overlay false suppresses discovery)", cfg.AuthTokens)
-	}
-	// Env "true" beats overlay "false": discovery fires.
-	t.Setenv("AUTO_DISCOVER_TOKEN", "true")
-	cfg, err = LoadOpts("", LoadOptions{DiscoverCLIToken: fakeDiscover, Overlay: map[string]string{"AUTO_DISCOVER_TOKEN": "false"}})
-	if err != nil {
-		t.Fatalf("LoadOpts env-wins: %v", err)
-	}
 	if !cfg.AutoDiscoverToken {
-		t.Error("AutoDiscoverToken = false, want true (env wins)")
+		t.Error("AutoDiscoverToken = false, want true (overlay row is inert, default stands)")
 	}
 	if len(cfg.AuthTokens) != 1 || cfg.AuthTokens[0] != "fb-test-fake-discovered-1" {
-		t.Errorf("AuthTokens = %v, want the discovered token (env true enables discovery)", cfg.AuthTokens)
+		t.Errorf("AuthTokens = %v, want the discovered token (inert overlay enables discovery)", cfg.AuthTokens)
+	}
+	// Env "false" still suppresses discovery (and records false).
+	t.Setenv("AUTO_DISCOVER_TOKEN", "false")
+	cfg, err = LoadOpts("", LoadOptions{DiscoverCLIToken: fakeDiscover, Overlay: map[string]string{"AUTO_DISCOVER_TOKEN": "true"}})
+	if err != nil {
+		t.Fatalf("LoadOpts env: %v", err)
+	}
+	if cfg.AutoDiscoverToken {
+		t.Error("AutoDiscoverToken = true, want false (env decides)")
+	}
+	if len(cfg.AuthTokens) != 0 {
+		t.Errorf("AuthTokens = %v, want empty (env false suppresses discovery)", cfg.AuthTokens)
+	}
+}
+
+// TestEnvOnlyKeysAreInert pins the data-architecture env-only gate for all
+// five keys: blocked from the overlay, dropped from row dumps, ignored by
+// the loader (defaults stand), and never reported as the db source tier.
+func TestEnvOnlyKeysAreInert(t *testing.T) {
+	envOnly := []string{"SESSION_STATE_FILE", "SESSION_PERSIST", "LOG_FILE", "HTTP_READ_TIMEOUT", "AUTO_DISCOVER_TOKEN"}
+	for _, key := range envOnly {
+		if !IsSettingsBlocked(key) {
+			t.Errorf("IsSettingsBlocked(%s) = false, want true (env-only)", key)
+		}
+	}
+	rows := map[string]string{}
+	for _, key := range envOnly {
+		rows[OverlayRowKey(key)] = "false"
+	}
+	if ov := OverlayFromRows(rows); len(ov) != 0 {
+		t.Errorf("OverlayFromRows kept blocked rows: %v", ov)
+	}
+	clearEnv(t)
+	t.Chdir(t.TempDir())
+	// clearEnv pins AUTO_DISCOVER_TOKEN=false; unset it so the default
+	// tier resolves below.
+	if err := os.Unsetenv("AUTO_DISCOVER_TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadOpts("", LoadOptions{Overlay: map[string]string{
+		"SESSION_PERSIST":     "false",
+		"SESSION_STATE_FILE":  "custom-state.json",
+		"LOG_FILE":            "proxy.log",
+		"HTTP_READ_TIMEOUT":   "300s",
+		"AUTO_DISCOVER_TOKEN": "false",
+	}})
+	if err != nil {
+		t.Fatalf("LoadOpts with inert overlay: %v", err)
+	}
+	if !cfg.SessionPersist {
+		t.Error("SessionPersist = false, want true (blocked overlay ignored, default stands)")
+	}
+	if cfg.SessionStateFile != ".freebuff-session-state.json" {
+		t.Errorf("SessionStateFile = %q, want the default (blocked overlay ignored)", cfg.SessionStateFile)
+	}
+	if cfg.HTTPReadTimeout != 60*time.Second {
+		t.Errorf("HTTPReadTimeout = %v, want the 60s default (blocked overlay ignored)", cfg.HTTPReadTimeout)
+	}
+	if !cfg.AutoDiscoverToken {
+		t.Error("AutoDiscoverToken = false, want true (blocked overlay ignored, default stands)")
+	}
+	// Source tiers stay truthful: a hand-built overlay carrying blocked
+	// keys never reports db.
+	sources := SettingSources("", map[string]string{
+		"SESSION_PERSIST":     "false",
+		"SESSION_STATE_FILE":  "custom-state.json",
+		"LOG_FILE":            "proxy.log",
+		"HTTP_READ_TIMEOUT":   "300s",
+		"AUTO_DISCOVER_TOKEN": "false",
+	})
+	for _, key := range envOnly {
+		if sources[key] == "db" {
+			t.Errorf("%s source = db for a blocked overlay row, want env/file/default", key)
+		}
 	}
 }
 
@@ -426,11 +593,10 @@ func TestOverlayFromRowsDropsMalformed(t *testing.T) {
 		t.Errorf("OverlayFromRows = %v, want exactly the 4 valid rows", ov)
 	}
 	malformed := OverlayFromRows(map[string]string{
-		"config:SAFE_MODE":            "banana",
-		"config:RATE_LIMIT_BURST":     "lots",
-		"config:RATE_LIMIT_PER_IP":    "fast",
-		"config:MATURITY_TARGET_DAYS": "seven",
-		"config:LOG_LEVEL2":           "debug",
+		"config:SAFE_MODE":         "banana",
+		"config:RATE_LIMIT_BURST":  "lots",
+		"config:RATE_LIMIT_PER_IP": "fast",
+		"config:LOG_LEVEL2":        "debug",
 	})
 	if len(malformed) != 0 {
 		t.Errorf("OverlayFromRows kept malformed rows: %v", malformed)

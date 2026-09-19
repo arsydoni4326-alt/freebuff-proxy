@@ -134,6 +134,12 @@
           <Flame size={11} aria-hidden="true" />
           {streak.label}
         </span>
+        {#if streak.bonus}
+          <span
+            class="text-[10px] text-[var(--fp-muted)] whitespace-nowrap"
+            title={streak.bonus}>{streak.bonus}</span
+          >
+        {/if}
       </div>
       {#if token.email || token.account_id}
         <span
@@ -141,6 +147,15 @@
           title={token.email || token.account_id}
         >
           {token.email || token.account_id}
+        </span>
+      {/if}
+      {#if token.pinned_model}
+        <span
+          class="inline-flex items-center gap-1 text-[11px] text-[var(--fp-accent)] truncate max-w-[180px]"
+          title={token.pinned_model}
+        >
+          <Lock size={11} aria-hidden="true" class="shrink-0" />
+          <span class="truncate">{token.pinned_model}</span>
         </span>
       {/if}
     </div>
@@ -259,7 +274,7 @@
       {/if}
       {#if token.session_status === "active" && token.session_instance && token.session_remaining_seconds > 0 && token.session_model}
         <Button
-          variant="danger"
+          variant="secondary"
           size="sm"
           disabled={actionPending}
           onclick={() => onDropSession?.()}

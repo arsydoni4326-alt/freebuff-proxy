@@ -1,11 +1,3 @@
-<script module>
-  // Visit auto-probe guard (ADR-0025): the mount fires one silent ?auto=1
-  // probe after the first tokens load. Module-scoped so a double-mount
-  // (HMR / StrictMode-style remount) still fires once per page load; the
-  // server throttles pool-wide to one upstream pass per hour regardless.
-  let visitAutoProbeSent = false;
-</script>
-
 <script>
   import { onMount } from "svelte";
   import { recordPageVisit } from "../stores/pageState.js";
@@ -21,13 +13,15 @@
     tokensError,
     ensureTokensStore,
     refreshTokens,
-    probeAllQuotas,
   } from "../stores/tokens.js";
+  import { postAPI } from "../api/client.js";
+  import { adminActions } from "../api/paths.js";
   import { tr } from "../i18n.js";
   import {
     formatFreebucks,
     formatAllowanceUsd,
     freebucksResetCountdown,
+    offPeakCopy,
   } from "../utils/freebucks.js";
 
   let data = $state(null);
@@ -53,10 +47,69 @@
   // Countdown tick: the global reset strip re-renders "resets in" against
   // this clock every second. Refetches nothing on its own.
   let now = $state(Date.now());
+  // Probe-all (POST /admin/tokens/test-all, zero-cost: the pool probes every
+  // token with a session-less GET and claims no slot). Progress + disabled
+  // state on the button, one summary toast, then a list refetch so the
+  // account cards render the fresh probe data.
+  let probing = $state(false);
 
-  // Auto-probe failure line only: the probe itself is silent (no success
-  // banner), and manual probing lives under Dev Tools.
-  let probeMsg = $state("");
+  // Short per-status labels for the summary toast, mirroring the backend
+  // pool.ProbeTokenOutcome status set (backend/internal/pool/probe.go).
+  const PROBE_STATUS_LABELS = {
+    ok: "ok",
+    banned: "banned",
+    rate_limited: "limited",
+    freebucks_exhausted: "exhausted",
+    auth_rejected: "rejected",
+    country_blocked: "blocked",
+    error: "error",
+  };
+
+  function probeSummary(outcomes) {
+    const counts = {};
+    for (const o of outcomes) {
+      const s = String(o?.status ?? "error");
+      counts[s] = (counts[s] ?? 0) + 1;
+    }
+    const parts = [`${counts.ok ?? 0} ok`];
+    delete counts.ok;
+    for (const s of Object.keys(counts))
+      parts.push(`${counts[s]} ${PROBE_STATUS_LABELS[s] ?? s}`);
+    return $tr("Probed {total}: {parts}", {
+      total: outcomes.length,
+      parts: parts.join(", "),
+    });
+  }
+
+  async function probeAll() {
+    if (probing) return;
+    probing = true;
+    try {
+      const res = await postAPI(adminActions.testAll, {});
+      if (Array.isArray(res)) {
+        const allOk = res.every((o) => o?.status === "ok");
+        pushToast({
+          tone: allOk ? "success" : "warning",
+          title: probeSummary(res),
+        });
+      } else if (res && res.ok === false) {
+        pushToast({
+          tone: "error",
+          title: res.message || $tr("Probe all failed"),
+        });
+      } else {
+        pushToast({ tone: "error", title: $tr("Probe all failed") });
+      }
+      refreshTokens();
+    } catch (e) {
+      pushToast({
+        tone: "error",
+        title: e?.message || $tr("Network error probing tokens"),
+      });
+    } finally {
+      probing = false;
+    }
+  }
 
   // Global reset strip: the first account carrying a daily reset time sets
   // the shared Pacific-midnight countdown for every account on the page.
@@ -135,6 +188,20 @@
       token.freebucks?.quota_exempt ?? token.freebucks?.quotaExempt,
     );
   }
+  // Off-peak per-model lines for one account card: the active/upcoming
+  // detail for every priced model carrying a server off-peak offer.
+  function offPeakLines(token) {
+    const fb = token.freebucks;
+    if (!fb) return [];
+    const offers = fb.off_peak ?? fb.offPeak ?? {};
+    const out = [];
+    for (const id of Object.keys(offers)) {
+      if (fb.prices?.[id] === undefined) continue;
+      const detail = offPeakCopy(fb, id, { now })?.detail;
+      if (detail) out.push(detail);
+    }
+    return out;
+  }
 
   let unsubStore = null;
   let unsubErr = null;
@@ -148,15 +215,6 @@
         loading = false;
         error = "";
         notifyError("");
-        // Visit auto-probe (ADR-0025): one silent ?auto=1 probe after the
-        // first tokens load, then the store reload carries the numbers.
-        // No success banner; a failure surfaces on the probeMsg error path.
-        if (!visitAutoProbeSent) {
-          visitAutoProbeSent = true;
-          probeAllQuotas({ auto: true }).catch((e) => {
-            probeMsg = e.message || $tr("Quota refresh failed.");
-          });
-        }
       }
     });
     unsubErr = tokensError.subscribe((err) => {
@@ -179,16 +237,19 @@
   });
 </script>
 
-{#if probeMsg}
-  <p class="text-xs font-mono text-red-400" role="status">
-    {probeMsg}
-  </p>
-{/if}
-
 {#if loading}
-  <p class="text-xs text-[var(--fp-dim)] font-mono">{$tr("Loading…")}</p>
+  <p
+    role="status"
+    aria-label={$tr("Loading…")}
+    class="text-xs text-[var(--fp-dim)] font-mono"
+  >
+    {$tr("Loading…")}
+  </p>
 {:else if error}
   <div class="flex flex-col gap-3">
+    <p class="text-sm text-[var(--fp-error)]" data-testid="inline-error">
+      {error}
+    </p>
     <div>
       <Button variant="secondary" onclick={refreshTokens}>{$tr("Retry")}</Button
       >
@@ -201,16 +262,37 @@
       "Add a token to the pool to see Freebucks allowances and model pricing.",
     )}
   />
-{:else if data}
-  {#if resetAt}
-    <p
-      class="text-xs text-[var(--fp-muted)] font-mono"
-      data-testid="reset-strip"
+{:else}
+  <div class="mb-2 flex flex-wrap items-center justify-end gap-2">
+    <Button
+      variant="secondary"
+      size="sm"
+      disabled={probing}
+      loading={probing}
+      onclick={probeAll}
+      title={$tr("Zero-cost probe of every account: no session claimed")}
     >
-      {$tr("Daily pools reset at")}
-      {resetAt} · {$tr("resets in")}
-      {resetCountdown} · {$tr("shared for all accounts")}
-    </p>
+      {probing ? $tr("Probing…") : $tr("Probe all")}
+    </Button>
+  </div>
+  {#if resetAt}
+    {#if Date.parse(resetAt) <= now}
+      <p
+        class="text-xs text-[var(--fp-muted)] font-mono"
+        data-testid="reset-strip"
+      >
+        {$tr("Updating balance…")}
+      </p>
+    {:else}
+      <p
+        class="text-xs text-[var(--fp-muted)] font-mono"
+        data-testid="reset-strip"
+      >
+        {$tr("Daily pools reset at")}
+        {resetAt} · {$tr("resets in")}
+        {resetCountdown} · {$tr("shared for all accounts")}
+      </p>
+    {/if}
   {/if}
   <ul
     class="grid grid-cols-1 lg:grid-cols-2 gap-2.5"
@@ -266,6 +348,14 @@
               {discountLine(token.freebucks.first_tab_discount)}
             </p>
           {/if}
+          {#each offPeakLines(token) as line, i (i)}
+            <p
+              class="fp-num text-[11px] text-[var(--fp-muted)] tabular-nums"
+              data-testid="off-peak-line"
+            >
+              {line}
+            </p>
+          {/each}
           {#if daily}
             <div class="flex flex-col gap-1">
               <div

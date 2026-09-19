@@ -1,7 +1,6 @@
 package pool
 
 import (
-	"freebuff-proxy/backend/internal/session"
 	"math/rand/v2"
 	"sort"
 	"time"
@@ -323,34 +322,4 @@ func tokenAvailable(tok *tokenEntry, model string) bool {
 		return canServeOtherModel(tok.runs.RateLimitError(), model)
 	}
 	return tok.runs.BanError() == nil
-}
-
-// bestWaitingRoom picks the queue entry with the lowest position; ties break
-// on the lowest queue depth (PRD §3: best-waiting-room-position selection).
-func bestWaitingRoom(entries []*session.WaitingRoomError) *session.WaitingRoomError {
-	best := entries[0]
-	for _, candidate := range entries[1:] {
-		if betterWait(candidate, best) {
-			best = candidate
-		}
-	}
-	return best
-}
-
-// betterWait reports whether a outranks b. Positions <= 0 mean "unknown" and
-// rank below any known position (mirrors freebuff2api-quorinex).
-func betterWait(a, b *session.WaitingRoomError) bool {
-	if b == nil {
-		return true
-	}
-	if a.Position <= 0 {
-		return false
-	}
-	if b.Position <= 0 {
-		return true
-	}
-	if a.Position != b.Position {
-		return a.Position < b.Position
-	}
-	return a.QueueDepth < b.QueueDepth
 }

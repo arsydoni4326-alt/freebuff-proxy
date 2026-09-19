@@ -8,11 +8,10 @@ package session
 import (
 	"context"
 	"errors"
+	"freebuff-proxy/backend/internal/upstream"
 	"log/slog"
 	"sync"
 	"time"
-
-	"freebuff-proxy/backend/internal/upstream"
 )
 
 // Manager owns the cached session state for one token.
@@ -81,9 +80,8 @@ type Manager struct {
 	// from the live config via SetParkConfig (see session_park.go).
 	parkEnabled   bool
 	parkThreshold time.Duration
-	// pollFailures counts consecutive transient poll GET failures for the
-	// failedPollDelayMs-shaped park backoff (ParkDelay); reset on any
-	// successful GET. Guarded by mu.
+	// pollFailures counts consecutive transient poll GET failures; reset on
+	// any successful GET. Guarded by mu.
 	pollFailures int
 	// unavailableTTL + modelUnavailable cache model_unavailable refusals per
 	// model (issue #158); entry.until = min(next window opening, now+TTL).

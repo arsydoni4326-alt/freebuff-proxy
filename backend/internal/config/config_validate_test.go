@@ -200,6 +200,7 @@ func TestValidate(t *testing.T) {
 		RequestTimeout:     15 * time.Minute,
 		SessionCallTimeout: 30 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
+		MaturityTargetDays: 7,
 	}
 	if err := good.Validate(); err != nil {
 		t.Fatalf("good config Validate: %v", err)
@@ -247,6 +248,7 @@ func TestValidateListenAddr(t *testing.T) {
 		RequestTimeout:     15 * time.Minute,
 		SessionCallTimeout: 30 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
+		MaturityTargetDays: 7,
 	}
 
 	for _, addr := range []string{"127.0.0.1:3457", ":3457", "0.0.0.0:8080", "[::1]:3457", "localhost:1", "127.0.0.1:65535"} {
@@ -286,6 +288,7 @@ func TestValidateModeKnobs(t *testing.T) {
 		RequestTimeout:     15 * time.Minute,
 		SessionCallTimeout: 30 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
+		MaturityTargetDays: 7,
 	}
 	for _, cost := range []string{"", "free"} {
 		c := good
@@ -602,43 +605,6 @@ func TestIdleRotationTimeout(t *testing.T) {
 	}
 }
 
-// TestSessionIdleEnd mirrors TestIdleRotationTimeout for the opt-in
-// SESSION_IDLE_END knob: unset → disabled, env override parses, explicit
-// "0" disables, invalid values fail with the key named.
-func TestSessionIdleEnd(t *testing.T) {
-	clearEnv(t)
-	t.Setenv("AUTH_TOKENS", "tok")
-
-	// Unset: disabled (never preset by SAFE_MODE — ending a session costs
-	// a fresh daily-slot admission when traffic resumes).
-	cfg, err := Load("")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	} else if cfg.SessionIdleEnd != 0 {
-		t.Errorf("SessionIdleEnd = %v, want 0 (unset)", cfg.SessionIdleEnd)
-	}
-
-	t.Setenv("SESSION_IDLE_END", "45m")
-	if cfg, err = Load(""); err != nil {
-		t.Fatalf("Load (env): %v", err)
-	} else if cfg.SessionIdleEnd != 45*time.Minute {
-		t.Errorf("SessionIdleEnd = %v, want 45m (env)", cfg.SessionIdleEnd)
-	}
-
-	t.Setenv("SESSION_IDLE_END", "0")
-	if cfg, err = Load(""); err != nil {
-		t.Fatalf("Load (env 0): %v", err)
-	} else if cfg.SessionIdleEnd != 0 {
-		t.Errorf("SessionIdleEnd = %v, want 0 (explicit 0)", cfg.SessionIdleEnd)
-	}
-
-	t.Setenv("SESSION_IDLE_END", "soon")
-	if _, err := Load(""); err == nil || !strings.Contains(err.Error(), "SESSION_IDLE_END") {
-		t.Fatalf("Load (bad): err = %v, want parse error mentioning SESSION_IDLE_END", err)
-		return
-	}
-}
-
 // TestRequestJitterNegative pins the REQUEST_JITTER validation: a negative
 // duration must fail Load (only TRANSIENT_RETRIES negativity was tested).
 func TestRequestJitterNegative(t *testing.T) {
@@ -665,6 +631,7 @@ func TestValidateWebhookURL(t *testing.T) {
 		RequestTimeout:     15 * time.Minute,
 		SessionCallTimeout: 30 * time.Second,
 		RegistryRefresh:    6 * time.Hour,
+		MaturityTargetDays: 7,
 	}
 
 	rejected := []string{

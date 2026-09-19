@@ -42,18 +42,26 @@ test.describe("user flows", () => {
   test("quota: reset strip renders the shared pacific-midnight countdown", async ({
     page,
   }) => {
-    await mockDashboard(page, loadFixtures(RW));
+    // Fresh reset dates: the archived Sept-6 reset_at is stale, which the
+    // vendor refill-pending rule renders as "Updating balance…" instead.
+    const f = loadFixtures(RW);
+    const list = f.tokens.tokens ?? f.tokens;
+    for (const t of Array.isArray(list) ? list : []) {
+      if (t.freebucks?.daily)
+        t.freebucks.daily.reset_at = "2030-01-01T07:00:00Z";
+    }
+    await mockDashboard(page, f);
     await page.goto(admin("plans"));
     await page.getByRole("button", { name: "Accounts" }).click();
     await page.getByText("Account #1").first().waitFor();
     // One strip for the whole page (first account reset time, shared
-    // countdown) — no per-row Refresh/Probe buttons remain here.
+    // countdown) — no per-row Refresh buttons remain here. One page-level
+    // Probe all button (POST /admin/tokens/test-all, zero-cost) serves the
+    // whole list instead.
     await expect(page.getByTestId("reset-strip")).toHaveCount(1);
     await expect(page.getByTestId("reset-strip")).toContainText("resets in");
     await expect(page.getByRole("button", { name: "Refresh" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Probe all" })).toHaveCount(
-      0,
-    );
+    await expect(page.getByRole("button", { name: "Probe all" })).toBeVisible();
   });
 
   test("quota: exempt account shows quota exempt chip", async ({ page }) => {

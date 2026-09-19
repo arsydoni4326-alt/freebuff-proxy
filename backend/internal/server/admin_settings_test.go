@@ -276,16 +276,17 @@ func TestSettingsPostDurationRejectedBeforeTheOverlay(t *testing.T) {
 }
 
 // TestSettingsPostAcceptsMigratedSecrets pins the env-to-DB migration's POST
-// surface: API_KEYS, WEBHOOK_URL, UPSTREAM_BASE_URL, and AUTO_DISCOVER_TOKEN
-// persist to the DB overlay and report source=db (fake values only).
+// surface: API_KEYS, WEBHOOK_URL, and UPSTREAM_BASE_URL persist to the DB
+// overlay and report source=db (fake values only). AUTO_DISCOVER_TOKEN is
+// env-only per the data-architecture decision and 400s (pinned by
+// TestSettingsPostEnvOnlyKeys).
 func TestSettingsPostAcceptsMigratedSecrets(t *testing.T) {
 	ts, cookie, csrf := settingsTestServer(t)
 
 	for key, value := range map[string]string{
-		"API_KEYS":            "fb-test-fake-client-1",
-		"WEBHOOK_URL":         "https://example.invalid/hook",
-		"UPSTREAM_BASE_URL":   "https://example.invalid",
-		"AUTO_DISCOVER_TOKEN": "false",
+		"API_KEYS":          "fb-test-fake-client-1",
+		"WEBHOOK_URL":       "https://example.invalid/hook",
+		"UPSTREAM_BASE_URL": "https://example.invalid",
 	} {
 		code, res := settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
 			map[string]any{"key": key, "value": value})
@@ -294,7 +295,7 @@ func TestSettingsPostAcceptsMigratedSecrets(t *testing.T) {
 		}
 	}
 	entries := settingsSources(t, ts, cookie)
-	for _, key := range []string{"API_KEYS", "WEBHOOK_URL", "UPSTREAM_BASE_URL", "AUTO_DISCOVER_TOKEN"} {
+	for _, key := range []string{"API_KEYS", "WEBHOOK_URL", "UPSTREAM_BASE_URL"} {
 		if entries[key]["source"] != "db" {
 			t.Errorf("%s source = %v, want db after POST", key, entries[key]["source"])
 		}
@@ -341,15 +342,16 @@ func TestSettingsWithoutStore(t *testing.T) {
 }
 
 // TestSettingsPostRestartOnlyMatrix pins the logger/listener review finding
-// end to end: every restart-only key persists through POST but reports
-// setting_restart_only (never setting_saved), and GET flags the row
-// restart_only with source=db.
+// end to end: every restart-only overlay-addressable key persists through
+// POST but reports setting_restart_only (never setting_saved), and GET
+// flags the row restart_only with source=db. LOG_FILE is env-only per the
+// data-architecture decision and 400s instead (pinned by
+// TestSettingsPostEnvOnlyKeys).
 func TestSettingsPostRestartOnlyMatrix(t *testing.T) {
 	ts, cookie, csrf := settingsTestServer(t)
 	for key, value := range map[string]string{
 		"LOG_LEVEL":   "debug",
 		"LOG_FORMAT":  "json",
-		"LOG_FILE":    "proxy.log",
 		"LISTEN_ADDR": "127.0.0.1:3458",
 	} {
 		code, res := settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
@@ -366,7 +368,7 @@ func TestSettingsPostRestartOnlyMatrix(t *testing.T) {
 		}
 	}
 	entries := settingsSources(t, ts, cookie)
-	for _, key := range []string{"LOG_LEVEL", "LOG_FORMAT", "LOG_FILE", "LISTEN_ADDR"} {
+	for _, key := range []string{"LOG_LEVEL", "LOG_FORMAT", "LISTEN_ADDR"} {
 		if entries[key]["source"] != "db" {
 			t.Errorf("%s source = %v, want db after POST", key, entries[key]["source"])
 		}
@@ -482,8 +484,8 @@ func TestSettingsMigratePayloadShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWithStatus: %v", err)
 	}
-	if ms.FromVersion != 0 || len(ms.Applied) != 4 || !ms.Fresh || ms.Noop {
-		t.Fatalf("fresh status = %+v, want {From:0 Applied:x4 Fresh:true Noop:false}", ms)
+	if ms.FromVersion != 0 || len(ms.Applied) != 5 || !ms.Fresh || ms.Noop {
+		t.Fatalf("fresh status = %+v, want {From:0 Applied:x5 Fresh:true Noop:false}", ms)
 	}
 	srv, _ := server.NewTestServerStack(t, nil, []*testutil.MockUpstream{testutil.NewMock()},
 		func(c *config.Config) { c.AdminToken = "secret" }, nil, nil, server.WithHistory(st))
@@ -498,12 +500,12 @@ func TestSettingsMigratePayloadShape(t *testing.T) {
 	if mig == nil {
 		t.Fatal("store-backed settings has no migrate object, want the boot report")
 	}
-	if mig["from_version"] != 0.0 || mig["to_version"] != 4.0 {
-		t.Errorf("migrate from/to = %v/%v, want 0/4", mig["from_version"], mig["to_version"])
+	if mig["from_version"] != 0.0 || mig["to_version"] != 5.0 {
+		t.Errorf("migrate from/to = %v/%v, want 0/5", mig["from_version"], mig["to_version"])
 	}
 	applied, ok := mig["applied"].([]any)
-	if !ok || len(applied) != 4 {
-		t.Fatalf("migrate applied = %v, want the 4-step chain", mig["applied"])
+	if !ok || len(applied) != 5 {
+		t.Fatalf("migrate applied = %v, want the 5-step chain", mig["applied"])
 	}
 	for i, v := range applied {
 		if v != float64(i+1) {
@@ -580,6 +582,98 @@ func TestSettingsPostSecureCookiesEnvOnly(t *testing.T) {
 	}
 }
 
+// TestSettingsPostEnvOnlyKeys pins the data-architecture env-only gate:
+// SESSION_STATE_FILE, SESSION_PERSIST, LOG_FILE, HTTP_READ_TIMEOUT, and
+// AUTO_DISCOVER_TOKEN 400 with an environment/.env pointer (mirroring
+// ADMIN_FORCE_SECURE_COOKIES, which keeps its own 400), pre-existing rows
+// go inert instead of shadowing, and DELETE :key still clears them.
+func TestSettingsPostEnvOnlyKeys(t *testing.T) {
+	ts, cookie, csrf := settingsTestServer(t)
+	envOnly := map[string]string{
+		"SESSION_STATE_FILE":  "custom-state.json",
+		"SESSION_PERSIST":     "false",
+		"LOG_FILE":            "proxy.log",
+		"HTTP_READ_TIMEOUT":   "120s",
+		"AUTO_DISCOVER_TOKEN": "false",
+	}
+	for key, value := range envOnly {
+		code, res := settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
+			map[string]any{"key": key, "value": value})
+		if code != http.StatusBadRequest {
+			t.Errorf("POST %s = %d %v, want 400 (env-only)", key, code, res)
+			continue
+		}
+		if msg, _ := res["message"].(string); !strings.Contains(msg, ".env") {
+			t.Errorf("POST %s message = %q, want a pointer to the environment/.env", key, msg)
+		}
+	}
+	// The precedent still holds.
+	if code, res := settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
+		map[string]any{"key": "ADMIN_FORCE_SECURE_COOKIES", "value": "true"}); code != http.StatusBadRequest {
+		t.Errorf("POST ADMIN_FORCE_SECURE_COOKIES = %d %v, want 400", code, res)
+	}
+	// Rejections store nothing: no db tier appears.
+	entries := settingsSources(t, ts, cookie)
+	for key := range envOnly {
+		if entries[key]["source"] == "db" {
+			t.Errorf("%s source = db after rejected POST, want no overlay row", key)
+		}
+	}
+}
+
+// TestSettingsDeleteEnvOnlyKeys pins the leftover-row contract: rows saved
+// before the env-only gate (migration-shaped raw literals seeded straight
+// to the table) stay inert — GET never reports them as the db tier and the
+// effective value keeps the default — while DELETE :key clears them like
+// any other row.
+func TestSettingsDeleteEnvOnlyKeys(t *testing.T) {
+	ts, cookie, csrf, st := settingsStoreTestServer(t)
+	seeds := map[string]string{
+		"SESSION_STATE_FILE":  "custom-state.json",
+		"SESSION_PERSIST":     "false",
+		"LOG_FILE":            "proxy.log",
+		"HTTP_READ_TIMEOUT":   "300s",
+		"AUTO_DISCOVER_TOKEN": "false",
+	}
+	for key, raw := range seeds {
+		if err := st.SetSetting(config.OverlayRowKey(key), raw); err != nil {
+			t.Fatalf("SetSetting %s: %v", key, err)
+		}
+	}
+	resp, data := doJSON(t, http.MethodPost, ts.URL+"/admin/reload", nil,
+		map[string]string{"Authorization": "Bearer secret"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reload after seeding env-only rows = %d, want 200: %s", resp.StatusCode, data)
+	}
+	// Inert: the seeded literals drive neither the tier nor the value.
+	entries := settingsSources(t, ts, cookie)
+	for key := range seeds {
+		if entries[key]["source"] == "db" {
+			t.Errorf("%s source = db for a pre-existing env-only row, want env/file/default (inert)", key)
+		}
+	}
+	if v := entries["SESSION_PERSIST"]["value"]; v == "false" {
+		t.Errorf("SESSION_PERSIST GET value = %q, want the default (seeded false row is inert)", v)
+	}
+	// DELETE still clears every leftover row.
+	for key := range seeds {
+		code, res := settingsDo(t, http.MethodDelete, ts.URL+"/admin/api/settings/"+key, cookie, csrf, nil)
+		if code != http.StatusOK || res["ok"] != true {
+			t.Errorf("DELETE %s = %d %v, want 200 ok (leftover row clears)", key, code, res)
+			continue
+		}
+		if v, ok, err := st.GetSetting(config.OverlayRowKey(key)); err != nil || ok {
+			t.Errorf("%s row = %q,%v,%v after DELETE, want no row", key, v, ok, err)
+		}
+	}
+	entries = settingsSources(t, ts, cookie)
+	for key := range seeds {
+		if entries[key]["source"] == "db" {
+			t.Errorf("%s source = db after DELETE, want env/file/default", key)
+		}
+	}
+}
+
 // TestSettingsPostEnvShadowNote pins env-shadow honesty: with the key pinned
 // by the process environment, the overlay row still persists but the message
 // says the effective value still comes from the environment, and GET keeps
@@ -629,18 +723,15 @@ func TestSettingsDurationEchoStable(t *testing.T) {
 		}
 	}
 
-	// The five Pool Strategy owned keys (Balance posture) plus one sibling
-	// duration knob sharing the normalize path.
-	post("ROUTING_SMART", "true")
-	post("TOKEN_ROTATION", "drain")
-	post("RATE_LIMIT_FAILOVER", "true")
+	// The MASQ owned keys (strict spill posture).
+	post("SLOTS_PER_ACCOUNT", "2")
+	post("MAX_SPILL_ACCOUNTS", "0")
 	post("QUEUE_WAIT", "60s")
 	post("QUEUE_DEPTH", "16")
-	post("QUOTA_PROBE_ACTIVE_INTERVAL", "90s")
 	for key, want := range map[string]string{
-		"ROUTING_SMART": "true", "TOKEN_ROTATION": "drain",
-		"RATE_LIMIT_FAILOVER": "true", "QUEUE_WAIT": "60s",
-		"QUEUE_DEPTH": "16", "QUOTA_PROBE_ACTIVE_INTERVAL": "90s",
+		"SLOTS_PER_ACCOUNT":  "2",
+		"MAX_SPILL_ACCOUNTS": "0", "QUEUE_WAIT": "60s",
+		"QUEUE_DEPTH": "16",
 	} {
 		echo(key, want)
 	}
@@ -655,10 +746,9 @@ func TestSettingsDurationEchoStable(t *testing.T) {
 	post("QUEUE_DEPTH", "16")
 	echo("QUEUE_WAIT", "60s")
 	echo("QUEUE_DEPTH", "16")
-
 	// Bool spellings still normalize to one display form.
-	post("RATE_LIMIT_FAILOVER", "on")
-	echo("RATE_LIMIT_FAILOVER", "true")
+	post("SAFE_MODE", "on")
+	echo("SAFE_MODE", "true")
 
 	// Knob-chain agreement: the raw db-tier echo ("60s") and the live
 	// effective rendering (Go-normalized, e.g. "1m0s") denote the same
@@ -872,4 +962,40 @@ func maskedSecretShape(v string) bool {
 		}
 	}
 	return false
+}
+
+func TestSettingsPostMaturityKeys(t *testing.T) {
+	ts, cookie, csrf := settingsTestServer(t)
+
+	// MATURITY_ENABLED
+	code, res := settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
+		map[string]any{"key": "MATURITY_ENABLED", "value": "false"})
+	if code != http.StatusOK || res["ok"] != true {
+		t.Fatalf("POST MATURITY_ENABLED = %d %v, want 200 ok", code, res)
+	}
+
+	// MATURITY_TARGET_DAYS
+	code, res = settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
+		map[string]any{"key": "MATURITY_TARGET_DAYS", "value": "14"})
+	if code != http.StatusOK || res["ok"] != true {
+		t.Fatalf("POST MATURITY_TARGET_DAYS = %d %v, want 200 ok", code, res)
+	}
+
+	// MATURITY_TOUCH_MODEL
+	code, res = settingsDo(t, http.MethodPost, ts.URL+"/admin/api/settings", cookie, csrf,
+		map[string]any{"key": "MATURITY_TOUCH_MODEL", "value": "deepseek/deepseek-v4-flash"})
+	if code != http.StatusOK || res["ok"] != true {
+		t.Fatalf("POST MATURITY_TOUCH_MODEL = %d %v, want 200 ok", code, res)
+	}
+
+	entries := settingsSources(t, ts, cookie)
+	if entries["MATURITY_ENABLED"]["value"] != "false" {
+		t.Errorf("MATURITY_ENABLED value = %v, want false", entries["MATURITY_ENABLED"]["value"])
+	}
+	if entries["MATURITY_TARGET_DAYS"]["value"] != "14" {
+		t.Errorf("MATURITY_TARGET_DAYS value = %v, want 14", entries["MATURITY_TARGET_DAYS"]["value"])
+	}
+	if entries["MATURITY_TOUCH_MODEL"]["value"] != "deepseek/deepseek-v4-flash" {
+		t.Errorf("MATURITY_TOUCH_MODEL value = %v, want deepseek/deepseek-v4-flash", entries["MATURITY_TOUCH_MODEL"]["value"])
+	}
 }

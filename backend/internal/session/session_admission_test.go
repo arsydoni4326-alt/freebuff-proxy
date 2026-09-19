@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"freebuff-proxy/backend/internal/testutil"
+	"freebuff-proxy/backend/internal/upstream"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"freebuff-proxy/backend/internal/testutil"
-	"freebuff-proxy/backend/internal/upstream"
 )
 
 func TestStatusErrorModelIPLimited(t *testing.T) {
@@ -39,10 +39,11 @@ func TestStatusErrorModelIPLimited(t *testing.T) {
 	}
 }
 
-// TestStatusErrorClampsCooldown pins the parse-time ceiling on the session
-// admission path: an absurd upstream retryAfterMs (int64 max) must clamp to
-// upstream.MaxCooldown — not wrap the ms→ns multiply into a multi-year
-// positive window — across every status that derives a cooldown from it.
+// TestStatusErrorClampsCooldown pins the parse-time overflow guard on the
+// session admission path: an absurd upstream retryAfterMs (int64 max) must
+// saturate at the largest representable duration — not wrap the ms→ns
+// multiply into a multi-year positive window — across every status that
+// derives a cooldown from it.
 func TestStatusErrorClampsCooldown(t *testing.T) {
 	huge := &upstream.SessionState{RetryAfterMs: int64(1<<63 - 1)}
 
@@ -51,16 +52,16 @@ func TestStatusErrorClampsCooldown(t *testing.T) {
 	if !errors.As(err, &rle) {
 		t.Fatalf("statusError(rate_limited) = %v, want *upstream.RateLimitError", err)
 	}
-	if rle.RetryAfter != upstream.MaxCooldown {
-		t.Errorf("rate_limited RetryAfter = %v, want %v (clamped)", rle.RetryAfter, upstream.MaxCooldown)
+	if rle.RetryAfter != time.Duration(math.MaxInt64) {
+		t.Errorf("rate_limited RetryAfter = %v, want %v (clamped)", rle.RetryAfter, time.Duration(math.MaxInt64))
 	}
 
 	err = statusError("spend_limited", huge)
 	if !errors.As(err, &rle) {
 		t.Fatalf("statusError(spend_limited) = %v, want *upstream.RateLimitError", err)
 	}
-	if rle.RetryAfter != upstream.MaxCooldown {
-		t.Errorf("spend_limited RetryAfter = %v, want %v (clamped)", rle.RetryAfter, upstream.MaxCooldown)
+	if rle.RetryAfter != time.Duration(math.MaxInt64) {
+		t.Errorf("spend_limited RetryAfter = %v, want %v (clamped)", rle.RetryAfter, time.Duration(math.MaxInt64))
 	}
 
 	err = statusError("ip_capped", huge)
@@ -68,8 +69,8 @@ func TestStatusErrorClampsCooldown(t *testing.T) {
 	if !errors.As(err, &ice) {
 		t.Fatalf("statusError(ip_capped) = %v, want *upstream.IpCappedError", err)
 	}
-	if ice.RetryAfter != upstream.MaxCooldown {
-		t.Errorf("ip_capped RetryAfter = %v, want %v (clamped)", ice.RetryAfter, upstream.MaxCooldown)
+	if ice.RetryAfter != time.Duration(math.MaxInt64) {
+		t.Errorf("ip_capped RetryAfter = %v, want %v (clamped)", ice.RetryAfter, time.Duration(math.MaxInt64))
 	}
 
 	err = statusError("limited_ip", &upstream.SessionState{Message: "model is limited on this IP", RetryAfterMs: int64(1<<63 - 1)})
@@ -77,8 +78,8 @@ func TestStatusErrorClampsCooldown(t *testing.T) {
 	if !errors.As(err, &lie) {
 		t.Fatalf("statusError(limited_ip) = %v, want *upstream.LimitedIpError", err)
 	}
-	if lie.RetryAfter != upstream.MaxCooldown {
-		t.Errorf("limited_ip RetryAfter = %v, want %v (clamped)", lie.RetryAfter, upstream.MaxCooldown)
+	if lie.RetryAfter != time.Duration(math.MaxInt64) {
+		t.Errorf("limited_ip RetryAfter = %v, want %v (clamped)", lie.RetryAfter, time.Duration(math.MaxInt64))
 	}
 
 	// Normal values are untouched.
@@ -278,6 +279,7 @@ func TestModelLockedRecreates(t *testing.T) {
 		t.Errorf("creates = %d, want 2 (model_locked → recreate)", mock.SessionCreates)
 	}
 }
+
 func TestModelUnavailableFallback(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -911,5 +913,48 @@ func TestModelLockedFallbackInstance(t *testing.T) {
 	}
 	if deleteInstanceIDs[0] != "locked-inst-123" {
 		t.Errorf("DELETE x-freebuff-instance-id = %q, want locked-inst-123 (model-lock release carries the refused slot id)", deleteInstanceIDs[0])
+	}
+}
+
+// TestModelUnavailableFallbackWithLimitedOfferReason pins the vendor e2b911eca
+// limitedOfferReason path through refresh: a 409 carrying
+// limitedOfferReason "used" still falls back to the meter-resolved model and
+// adopts it, and the cached refusal short-circuits the next admission for
+// the same model with zero additional creates (cache semantics unchanged
+// for all three reasons; no admission-math change).
+func TestModelUnavailableFallbackWithLimitedOfferReason(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	var createdModels []string
+	mock.SessionHandler = func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			model := r.Header.Get("x-freebuff-model")
+			createdModels = append(createdModels, model)
+			w.Header().Set("Content-Type", "application/json")
+			if model == "rare/model" {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = io.WriteString(w, `{"status":"model_unavailable","requestedModel":"rare/model","limitedOfferReason":"used"}`)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":"active","instanceId":"inst-fallback","model":"`+model+`","expiresAt":"2030-01-01T00:00:00Z"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}
+
+	mgr := newTestManager(t, mock)
+	instance, err := mgr.EnsureSessionForModel(context.Background(), "rare/model")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if instance != "inst-fallback" {
+		t.Errorf("instance = %q, want inst-fallback", instance)
+	}
+	if len(createdModels) != 2 {
+		t.Fatalf("createdModels = %v, want 2 attempts", createdModels)
+	}
+	if createdModels[0] != "rare/model" || createdModels[1] != DefaultFallbackModel() {
+		t.Errorf("createdModels = %v, want rare/model then cheapest fallback %s", createdModels, DefaultFallbackModel())
 	}
 }

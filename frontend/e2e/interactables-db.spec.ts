@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { loadFixtures, mockDashboard, mockSettingsOverlay } from "./mocks.js";
 import type { PostedSetting } from "./mocks.js";
+import { tokenRow, tokensPayload } from "./mock-data.js";
 
 // ---------------------------------------------------------------------------
 // Full interactable inventory, DB-first (mocked gateway API + stateful
@@ -20,7 +21,7 @@ import type { PostedSetting } from "./mocks.js";
 //   reorder/clear/finish/drop .... interactions.spec
 //   lock/add/remove/login/drag ... ux.spec
 //   pins/strategy/threshold ...... dashboard.spec
-//   rotation/failover ............ interactions.spec (+ inline here)
+//   strategy/slots ............. interactions.spec (+ inline here)
 // Usage (#plans: Quota/Models/Controls)
 //   saved notes + persist ........ page-state.spec
 //   reset strip / exempt chip .... flows.spec
@@ -59,26 +60,6 @@ const admin = (hash: string) => `http://127.0.0.1:4173/admin/#${hash}`;
 // global Notifications host; lockstep matters if the host label moves).
 const toasts = (page: Parameters<typeof mockDashboard>[0]) =>
   page.getByLabel("Notifications");
-
-const TOK0 = {
-  index: 0,
-  email: "acct0@example.com",
-  session_status: "idle",
-  queue_position: 0,
-  queue_depth: 0,
-  active_runs: 0,
-  requests: 0,
-  messages_24h: 0,
-  cooldown_active: false,
-  cooldown_until: "",
-  locked: false,
-  transient_retries: 1,
-  has_standing: false,
-  session_instance: "",
-  session_model: "",
-  session_remaining_seconds: 0,
-  has_quota: false,
-};
 test.describe("interactables DB-first (mocked gateway + overlay)", () => {
   test.use({ expect: { timeout: 10_000 } });
 
@@ -95,26 +76,24 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
       page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Controls" }).click();
-    const failover = page.getByRole("switch", {
-      name: "Auto Failover on Rate Limit (429)",
-    });
-    await expect(failover).toHaveAttribute("aria-checked", "true");
+    const slots = page.locator('input[aria-label="SLOTS_PER_ACCOUNT"]');
+    await expect(slots).toBeVisible();
 
     const saveReq = page.waitForRequest(
       (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
       { timeout: 10_000 },
     );
-    await failover.click();
+    await slots.fill("3");
     await saveReq;
 
     // DB-first proof: the exact overlay payload the gateway would persist.
     await expect
-      .poll(() => posted.find((p) => p.key === "RATE_LIMIT_FAILOVER")?.value)
-      .toBe("false");
+      .poll(() => posted.find((p) => p.key === "SLOTS_PER_ACCOUNT")?.value)
+      .toBe("3");
     // Per-row saves stay inline by design (HEAD #563 only moved reset
     // outcomes to the global toaster): the row reports
     // saved-and-live and no toast appears.
-    const row = page.locator("div.py-4", { has: failover }).first();
+    const row = page.locator("div.py-4", { has: slots }).first();
     await expect(
       row.locator('span[role="status"]', {
         hasText: "saved and applied live",
@@ -136,18 +115,16 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
       page.getByRole("heading", { name: "Pool", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Controls" }).click();
-    const failover = page.getByRole("switch", {
-      name: "Auto Failover on Rate Limit (429)",
-    });
-    await failover.click();
+    const slots = page.locator('input[aria-label="SLOTS_PER_ACCOUNT"]');
+    await slots.fill("3");
 
     await expect
-      .poll(() => posted.filter((p) => p.key === "RATE_LIMIT_FAILOVER").length)
+      .poll(() => posted.filter((p) => p.key === "SLOTS_PER_ACCOUNT").length)
       .toBeGreaterThan(0);
     // Row-level error contract: the row keeps the edited value with an
     // inline Retry affordance; a per-row failure never raises a toast
     // (HEAD #563 only toasts reset outcomes).
-    const row = page.locator("div.py-4", { has: failover }).first();
+    const row = page.locator("div.py-4", { has: slots }).first();
     await expect(row.getByRole("button", { name: "Retry" })).toBeVisible();
     await expect(toasts(page).getByRole("alert")).toHaveCount(0);
     await expect(toasts(page).getByRole("status")).toHaveCount(0);
@@ -239,15 +216,7 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          mode: "pooled",
-          in_bridge: false,
-          bridge_tokens: 0,
-          token_count: 1,
-          has_tokens: true,
-          tokens: [TOK0],
-          bridge_token_cards: [],
-        }),
+        body: JSON.stringify(tokensPayload([tokenRow(0)])),
       });
     });
     await page.unroute("**/admin/api/config");
@@ -344,10 +313,10 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
     );
     await page.getByRole("button", { name: "Controls" }).click();
     await expect(
-      page.getByRole("radio", { name: "Drain (Safest)" }),
+      page.getByRole("radio", { name: "Drain", exact: true }),
     ).toBeVisible();
 
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.getByRole("button", { name: "Accounts", exact: true }).click();
     await expect(page.getByText("Account #1").first()).toBeVisible();
   });
 
@@ -367,13 +336,13 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
       'button[aria-label="Expand details for account 1"]',
     );
     await expand.click();
-    // Drawer opens: the pinned-models block renders for the expanded token.
-    await expect(table.getByText("Pinned models")).toBeVisible();
+    // Drawer opens: the pinned-model block renders for the expanded token.
+    await expect(table.getByText("Pinned model")).toBeVisible();
     // Collapse hides it again (button label flips with aria-expanded).
     await table
       .locator('button[aria-label="Collapse details for account 1"]')
       .click();
-    await expect(table.getByText("Pinned models")).toHaveCount(0);
+    await expect(table.getByText("Pinned model")).toHaveCount(0);
   });
 
   test("generate key posts the .env save, shows the modal, Done toasts", async ({
@@ -633,21 +602,21 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
       page.getByRole("heading", { name: "Logs", exact: true }),
     ).toBeVisible();
 
-    // The Logs page is telemetry only: exactly three tabs, no Logging entry.
+    // The Logs page is telemetry only: four tabs (Live/Metrics/Team/Traces),
+    // no Logging entry.
     const tabs = page.getByRole("group", { name: "Activity view" });
-    await expect(tabs.getByRole("button")).toHaveCount(3);
+    await expect(tabs.getByRole("button")).toHaveCount(4);
     await expect(tabs.getByRole("button", { name: "Live" })).toBeVisible();
     await expect(tabs.getByRole("button", { name: "Metrics" })).toBeVisible();
+    await expect(tabs.getByRole("button", { name: "Team" })).toBeVisible();
     await expect(tabs.getByRole("button", { name: "Traces" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Logging" })).toHaveCount(0);
 
     // Neither Logs card came along: the LOG_LEVEL editor lives on Settings,
     // and the general-group "Logging & Diagnostics" card no longer renders
     // here. The page description stays truthful to the remaining tabs.
-    await expect(page.locator('select[aria-label="LOG_LEVEL"]')).toHaveCount(0);
-    await expect(page.getByText("Logging & Diagnostics")).toHaveCount(0);
     await expect(
-      page.getByText("Live traffic, metrics, and traces."),
+      page.getByText("Live traffic, metrics, team usage, and traces."),
     ).toBeVisible();
   });
 });

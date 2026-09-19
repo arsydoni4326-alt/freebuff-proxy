@@ -63,9 +63,9 @@ type rawConfig struct {
 	// MaxSpendPerDay is the ADVISORY per-token Pacific-day spend ceiling in
 	// ledger units (MAX_SPEND_PER_DAY; 0 = unlimited, never enforced).
 	MaxSpendPerDay           *int            `json:"MAX_SPEND_PER_DAY"`
+	SessionIdleEnd           string          `json:"SESSION_IDLE_END"`
 	IdleRotationTimeout      string          `json:"IDLE_ROTATION_TIMEOUT"`
 	SafeMode                 bool            `json:"SAFE_MODE"`
-	SessionIdleEnd           string          `json:"SESSION_IDLE_END"`
 	ModelsHideUnavailable    bool            `json:"MODELS_HIDE_UNAVAILABLE"`
 	ModelsAllow              modelsAllowList `json:"MODELS_ALLOW"`
 	CORSAllowedOrigin        string          `json:"CORS_ALLOWED_ORIGIN"`
@@ -84,15 +84,17 @@ type rawConfig struct {
 	ModelUnavailableCacheTTL string          `json:"MODEL_UNAVAILABLE_CACHE_TTL"`
 	WebhookURL               string          `json:"WEBHOOK_URL"`
 	AdoptCLISession          bool            `json:"ADOPT_CLI_SESSION"`
-	MaturityEnabled          bool            `json:"MATURITY_ENABLED"`
-	MaturityTouchModel       string          `json:"MATURITY_TOUCH_MODEL"`
-	MaturityTargetDays       *int            `json:"MATURITY_TARGET_DAYS"`
 	QuotaAutoProbe           bool            `json:"QUOTA_AUTO_PROBE"`
 	QuotaProbeActiveInterval string          `json:"QUOTA_PROBE_ACTIVE_INTERVAL"`
 	QuotaProbeIdleHeartbeat  string          `json:"QUOTA_PROBE_IDLE_HEARTBEAT"`
 	WaitingRoomChain         bool            `json:"WAITING_ROOM_CHAIN"`
 	RateLimitPerIP           *float64        `json:"RATE_LIMIT_PER_IP"`
 	RateLimitBurst           *int            `json:"RATE_LIMIT_BURST"`
+	// MaturityEnabled is the global kill-switch for streak-maturity
+	// automation (MATURITY_ENABLED; default true).
+	MaturityEnabled    bool   `json:"MATURITY_ENABLED"`
+	MaturityTouchModel string `json:"MATURITY_TOUCH_MODEL"`
+	MaturityTargetDays *int   `json:"MATURITY_TARGET_DAYS"`
 	// AutoRotateOnExhaustion deprioritises health-label "exhausted" tokens
 	// during Acquire (AUTO_ROTATE_ON_EXHAUSTION; default false).
 	AutoRotateOnExhaustion bool `json:"AUTO_ROTATE_ON_EXHAUSTION"`
@@ -107,10 +109,13 @@ type rawConfig struct {
 	TokenHealthProbes bool `json:"TOKEN_HEALTH_PROBES"`
 	// TokenProbeInterval is the interval between background health probes
 	// per token (TOKEN_PROBE_INTERVAL; "" = default 30m).
-	TokenProbeInterval    string `json:"TOKEN_PROBE_INTERVAL"`
-	TokenRotation         string `json:"TOKEN_ROTATION"`
-	RateLimitFailover     *bool  `json:"RATE_LIMIT_FAILOVER"`
-	ModelLocks            string `json:"MODEL_LOCKS"`
+	TokenProbeInterval string `json:"TOKEN_PROBE_INTERVAL"`
+	TokenRotation      string `json:"TOKEN_ROTATION"`
+	RateLimitFailover  *bool  `json:"RATE_LIMIT_FAILOVER"`
+	ModelLocks         string `json:"MODEL_LOCKS"`
+	// PinModel pins pool slots to one model each (PIN_MODEL): "i=model,…"
+	// pairs; parsed at Load (pin_model.go).
+	PinModel              string `json:"PIN_MODEL"`
 	DashboardEnabled      bool   `json:"DASHBOARD_ENABLED"`
 	DashboardRequireLogin bool   `json:"DASHBOARD_REQUIRE_LOGIN"`
 	CompressPrompt        string `json:"COMPRESS_PROMPT"`
@@ -122,15 +127,19 @@ type rawConfig struct {
 	// TokenMaxConcurrent records TOKEN_MAX_CONCURRENT (default 2, floor
 	// 1): the per-token live-turn cap.
 	TokenMaxConcurrent *int `json:"TOKEN_MAX_CONCURRENT"`
-	// QueueWait records QUEUE_WAIT (default "30s"): the FIFO slot-queue
-	// wait bound.
-	QueueWait string `json:"QUEUE_WAIT"`
-	// QueueDepth records QUEUE_DEPTH (default 16): the per-token FIFO
-	// queue depth cap.
-	QueueDepth *int `json:"QUEUE_DEPTH"`
-	// Cooldown backoffs (COOLDOWN_*_MS, integer milliseconds) and the
-	// session-park switch: raw ints parsed to Durations in Load
-	// (zero-tolerant → Contract defaults in cooldown.go).
+	// SmartProbeEnabled is the master switch for the smart zero-cost quota
+	// prober (SMART_PROBE_ENABLED; default true).
+	SmartProbeEnabled bool `json:"SMART_PROBE_ENABLED"`
+	// SmartProbeBackoffMax is the 429-backoff doubling ceiling string for
+	// the smart prober (SMART_PROBE_BACKOFF_MAX; default "30m",
+	// zero-tolerant → 30m).
+	SmartProbeBackoffMax string `json:"SMART_PROBE_BACKOFF_MAX"`
+	// SlotsPerAccount records SLOTS_PER_ACCOUNT (default 2, floor
+	// 0; 0 = unlimited live turns, no slot gating applies).
+	SlotsPerAccount *int `json:"SLOTS_PER_ACCOUNT"`
+	// Cooldown / session-park tuning knobs (integer milliseconds,
+	// zero-tolerant in Load via msVal): every upstream-refusal backoff the
+	// pool and classifier apply, tunable without a restart.
 	CooldownDefaultMs      *int     `json:"COOLDOWN_DEFAULT_MS"`
 	CooldownCountryBlockMs *int     `json:"COOLDOWN_COUNTRY_BLOCK_MS"`
 	CooldownCeilingMs      *int     `json:"COOLDOWN_CEILING_MS"`
@@ -146,6 +155,15 @@ type rawConfig struct {
 	SessionPollMaxMs       *int     `json:"SESSION_POLL_MAX_MS"`
 	SmartProbeBackoffMaxMs *int     `json:"SMART_PROBE_BACKOFF_MAX_MS"`
 	MaturityBackoffMs      *int     `json:"MATURITY_BACKOFF_MS"`
+	// QueueWait records QUEUE_WAIT (default "30s"): the FIFO slot-queue
+	// wait bound.
+	QueueWait string `json:"QUEUE_WAIT"`
+	// QueueDepth records QUEUE_DEPTH (default 16): the per-token FIFO
+	// queue depth cap.
+	QueueDepth *int `json:"QUEUE_DEPTH"`
+	// MaxSpillAccounts records MAX_SPILL_ACCOUNTS (default 0): the spill
+	// walk bound, 0 = unbounded.
+	MaxSpillAccounts *int `json:"MAX_SPILL_ACCOUNTS"`
 }
 
 // modelsAllowList is the raw MODELS_ALLOW value. The README documents list
@@ -225,6 +243,11 @@ func defaultRawConfig() rawConfig {
 		TokenHealthProbes:            false,      // token health probes off by default (issue #281)
 		TokenProbeInterval:           "",         // "" = default 30m
 		MaturityTouchModel:           "",         // empty default (= auto): cheapest served unmetered row, explicit id overrides
+		MaturityTargetDays:           ptrInt(7),  // default 7-day streak target
+		SmartProbeEnabled:            true,       // smart zero-cost quota prober on by default; set SMART_PROBE_ENABLED=false to disable
+		SmartProbeBackoffMax:         "30m",      // 429-backoff doubling ceiling
+		SlotsPerAccount:              ptrInt(2),  // per account-model live turns (floor 1; bunker strictness is 1)
+		MaxSpillAccounts:             ptrInt(0),  // spill walk bound (0 = unbounded index chain)
 		// Cooldown / session-park tuning defaults (upstream/main): integer
 		// milliseconds mirroring cooldown.go (Contract = previous hardcoded
 		// behavior), zero-tolerant in Load.

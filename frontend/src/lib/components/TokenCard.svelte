@@ -110,7 +110,7 @@
             title={$tr("Move Up / Prioritize")}
             aria-label={$tr("Move Up")}
             onclick={() => onSwap?.(idx, idx - 1)}
-            class="inline-flex items-center justify-center w-5 h-5 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface-2)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+            class="inline-flex items-center justify-center w-6 h-6 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface-2)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronUp size={13} />
           </button>
@@ -120,7 +120,7 @@
             title={$tr("Move Down")}
             aria-label={$tr("Move Down")}
             onclick={() => onSwap?.(idx, idx + 1)}
-            class="inline-flex items-center justify-center w-5 h-5 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface-2)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+            class="inline-flex items-center justify-center w-6 h-6 rounded text-[var(--fp-dim)] hover:text-[var(--fp-text)] hover:bg-[var(--fp-surface-2)] disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronDown size={13} />
           </button>
@@ -161,6 +161,12 @@
           <Flame size={11} aria-hidden="true" />
           {streak.label}
         </span>
+        {#if streak.bonus}
+          <span
+            class="text-[10px] text-[var(--fp-muted)] whitespace-nowrap"
+            title={streak.bonus}>{streak.bonus}</span
+          >
+        {/if}
       </div>
       {#if token.email || token.account_id}
         <span
@@ -170,8 +176,17 @@
           {token.email || token.account_id}
         </span>
       {/if}
-    </div>
-  </td>
+      {#if token.pinned_model}
+        <span
+          class="inline-flex items-center gap-1 text-[11px] text-[var(--fp-accent)] truncate min-w-0 max-w-[160px]"
+          title={token.pinned_model}
+        >
+          <Lock size={11} aria-hidden="true" class="shrink-0" />
+          <span class="truncate">{token.pinned_model}</span>
+        </span>
+      {/if}
+    </div></td
+  >
   <td class="w-[1%] whitespace-nowrap">
     <div class="flex flex-col items-start gap-1">
       <StatusBadge status={st.label} tone={st.tone} pulse={st.pulse} />
@@ -201,9 +216,9 @@
         </div>
         {#if token.session_status === "active" && token.session_instance && token.session_remaining_seconds > 0 && token.session_model}
           <Button
-            variant="danger"
+            variant="secondary"
             size="sm"
-            class="!h-7 !text-xs !px-2 shrink-0"
+            class="shrink-0"
             disabled={actionPending}
             aria-label={$tr("Drop Session")}
             title={$tr("Drop Session")}

@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"freebuff-proxy/backend/internal/config"
+
 	history "freebuff-proxy/backend/internal/store"
 
 	_ "modernc.org/sqlite"
@@ -99,12 +101,13 @@ func TestMigrateEnvToDBLegacyV4ThenImport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("raw open: %v", err)
 	}
-	// Minimal v4 shape: the settings table plus the pool_state table 00004
-	// adds (probes lift the baseline), stamped user_version=4, one
-	// pre-existing control row that must survive.
+	// Minimal v4 shape: the settings table, the pool_state table 00004 adds,
+	// and request_records at its v4 width (00005 alters it), stamped
+	// user_version=4, one pre-existing control row that must survive.
 	for _, ddl := range []string{
 		`CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE TABLE pool_state(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE request_records(req_id TEXT PRIMARY KEY, ts INTEGER NOT NULL, endpoint TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', token_idx INTEGER NOT NULL DEFAULT -1, status TEXT NOT NULL DEFAULT '', ttfb_ms INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '')`,
 		`INSERT INTO settings(key, value, updated_at) VALUES('ui/theme', 'dark', 1)`,
 		`PRAGMA user_version=4`,
 	} {
@@ -208,8 +211,9 @@ func TestSmartMigrateMarkedLatestZeroWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if got := fi.Mode().Perm(); got != 0o600 {
-		t.Fatalf("mode = %o, want 600 before the no-op re-boot", got)
+	gotPerm := fi.Mode().Perm()
+	if runtime.GOOS != "windows" && gotPerm != 0o600 {
+		t.Fatalf("mode = %o, want 600 before the no-op re-boot", gotPerm)
 	}
 
 	second, ms, err := history.OpenWithStatus(path)
@@ -231,7 +235,9 @@ func TestSmartMigrateMarkedLatestZeroWrites(t *testing.T) {
 	if got := smartMigrateFileHash(t, path); got != beforeHash {
 		t.Error("DB bytes changed across a marked latest re-boot (want zero writes)")
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(path); err != nil {
+		t.Errorf("DB mode changed across a marked latest re-boot: %v", err)
+	} else if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("DB mode changed across a marked latest re-boot: %v %o", err, fi.Mode().Perm())
 	}
 }

@@ -99,6 +99,20 @@ type SessionState struct {
 	// needing a fresh purchase is refused rather than charged for an hour
 	// it could not be issued. False when the response omits it.
 	PurchasesPaused bool
+	// LimitedOfferReason mirrors the upstream model_unavailable
+	// limitedOfferReason (vendor e2b911eca): only set on
+	// model_unavailable, '' otherwise. Values used|closed|exhausted are an
+	// opaque passthrough like CountryBlockReason — never switched on, never
+	// clamped; anything else normalizes to ''. A 'used' personal trial
+	// cannot be replenished by waiting or upgrading, so unlike
+	// closed/exhausted it carries no countdown (the state build skips the
+	// UnavailableWindow parse for it).
+	LimitedOfferReason string
+	// LimitedModelOffers carries the capacity-limited models the picker may
+	// additionally offer right now, parsed from the pre-join (none)
+	// response (vendor e2b911eca, FreebuffLimitedModelOffer); nil when the
+	// response carries none.
+	LimitedModelOffers []LimitedModelOffer
 	// WindowHours / FreebucksShortfall mirror the error-body window evidence
 	// (RateLimitError.WindowHours / FreebucksShortfall): a session status
 	// response reporting the vendor's freebucks ceiling carries the same two
@@ -124,8 +138,48 @@ type rawWalletConsent struct {
 	WalletSpend float64 `json:"walletSpend"`
 }
 
-func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, body string) (*SessionState, error) {
+// LimitedModelOffer mirrors FreebuffLimitedModelOffer (vendor e2b911eca):
+// one capacity-limited model wave entry on the pre-join (none) response.
+// UserResetAt is *string so a JSON null stays nil (never a zero time); a
+// one-per-campaign offer carries null.
+type LimitedModelOffer struct {
+	Model         string  `json:"model"`
+	Remaining     int     `json:"remaining"`
+	Total         int     `json:"total"`
+	UserRemaining int     `json:"userRemaining"`
+	UserResetAt   *string `json:"userResetAt"`
+}
 
+// Joinable reports whether the user may still start a session from this
+// offer: the client treats userRemaining == 0 as "not now" rather than
+// hiding the row.
+func (o LimitedModelOffer) Joinable() bool { return o.UserRemaining > 0 }
+
+// Fable 5.1 trace-campaign pins (vendor e2b911eca,
+// common/src/constants/freebuff-models.ts): the capacity-limited trial
+// model id and its picker display name. Fable is deliberately NOT a
+// standing picker model — the server advertises it only while the shared
+// pool has sessions left (limitedModelOffers), and it runs on the base2
+// root base2-free-fable as the campaign's deliberate base2 exception
+// (free-agent-selection.ts; there is no base3-free-fable and one must
+// never be resolved — the registry text parser cannot evaluate the base3
+// by-model maps, which enforces this today).
+const (
+	FreebuffFable51ModelID     = "anthropic/claude-fable-5.1"
+	FreebuffFable51DisplayName = "Claude Fable 5.1"
+)
+
+// LimitedOfferSessionLimit is the per-user campaign allowance: one
+// admission per user for the entire campaign, and early ends do not
+// refund it (vendor FREEBUFF_LIMITED_OFFER_SESSION_LIMIT).
+const LimitedOfferSessionLimit = 1
+
+// LimitedOfferMaxSessions is the hard ceiling for the Fable 5.1 trace
+// campaign, even if an env value is larger (vendor
+// FREEBUFF_LIMITED_OFFER_MAX_SESSIONS).
+const LimitedOfferMaxSessions = 500
+
+func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, body string) (*SessionState, error) {
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 		if req.Method == http.MethodPost && isSessionAdmissionRequest(req) {
 			// The dedicated admission route fails closed on servers
@@ -176,6 +230,8 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 		ResumesAt              any                      `json:"resumes_at"`
 		RetryAfterMs           int64                    `json:"retryAfterMs"`
 		AvailableHours         string                   `json:"availableHours"`
+		LimitedOfferReason     string                   `json:"limitedOfferReason"`
+		LimitedModelOffers     []LimitedModelOffer      `json:"limitedModelOffers"`
 		Message                string                   `json:"message"`
 		GlmPromo               json.RawMessage          `json:"glmPromo"`
 		RateLimitsByModel      map[string]rawModelQuota `json:"rateLimitsByModel"`
@@ -228,14 +284,25 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 			GlmPromo:           string(raw.GlmPromo),
 			UpdateRequired:     raw.UpdateRequired,
 			PurchasesPaused:    raw.PurchasesPaused,
+			// LimitedOfferReason deliberately unset here: the switch below
+			// admits only the three known vendor members, anything else stays ''.
 		}
-		if raw.UpgradeHint != nil && (raw.UpgradeHint.URL != "" || raw.UpgradeHint.Message != "") {
-			state.UpgradeHint = &SessionUpgradeHint{
-				URL:     raw.UpgradeHint.URL,
-				Message: raw.UpgradeHint.Message,
-			}
+		// limitedOfferReason is an opaque passthrough like CountryBlockReason,
+		// but only the three vendor members survive: an unknown string (a
+		// newer server member this build does not know) normalizes to '' so
+		// callers can treat '' as "no offer info".
+		switch raw.LimitedOfferReason {
+		case "used", "closed", "exhausted":
+			state.LimitedOfferReason = raw.LimitedOfferReason
 		}
-		if raw.Status == "model_unavailable" && raw.AvailableHours != "" {
+		if len(raw.LimitedModelOffers) > 0 {
+			state.LimitedModelOffers = append([]LimitedModelOffer(nil), raw.LimitedModelOffers...)
+		}
+		// A 'used' personal trial cannot be replenished by waiting, so it
+		// carries no countdown: skip the UnavailableWindow parse and leave
+		// the refusal terminal (vendor e2b911eca message/fallback branches
+		// treat 'used' distinctly from 'closed'/'exhausted').
+		if raw.Status == "model_unavailable" && raw.AvailableHours != "" && state.LimitedOfferReason != "used" {
 			if w, ok := ParseAvailabilityWindow(raw.AvailableHours); ok {
 				state.UnavailableWindow = &w
 			}
@@ -284,7 +351,14 @@ func (c *Client) parseSessionResponse(req *http.Request, resp *http.Response, bo
 			fb := &FreebucksInfo{
 				Balance:      raw.Freebucks.Balance,
 				Prices:       raw.Freebucks.Prices,
+				ListPrices:   raw.Freebucks.ListPrices,
 				PriceNotices: raw.Freebucks.PriceNotices,
+			}
+			if raw.Freebucks.OffPeak != nil {
+				fb.OffPeak = make(map[string]FreebuffOffPeakPrice, len(raw.Freebucks.OffPeak))
+				for id, o := range raw.Freebucks.OffPeak {
+					fb.OffPeak[id] = FreebuffOffPeakPrice(o)
+				}
 			}
 			fb.ClaimableGrant = raw.Freebucks.ClaimableGrant
 			if raw.Freebucks.Upgrade != nil {

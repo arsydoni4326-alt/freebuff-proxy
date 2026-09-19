@@ -65,13 +65,13 @@ type Lease struct {
 	// reused by a later AddToken), and a bounds-checked release would leak
 	// the run's inflight or hit an unrelated manager.
 	entry *tokenEntry
-	// routeSlot is the smart-routing live-turn slot held for this lease
-	// (route_smart.go, TOKEN_MAX_CONCURRENT). Set at grant time on the
-	// smart path only, for pooled AND bridge leases; released through the
-	// lease by LeaseRelease/LeaseAbandon. Nil on the legacy path
-	// (ROUTING_SMART off), when the cap is unlimited, or for synthetic
-	// leases.
-	routeSlot *routeSlotPermit
+	// routeSlot is the MASQ slot-ledger live-turn slot held for this lease
+	// (slot_ledger.go, SLOTS_PER_ACCOUNT per account-model lane). Set at
+	// grant time on the smart path only, for pooled AND bridge leases;
+	// released through the lease by LeaseRelease/LeaseAbandon. Nil on the
+	// legacy path (ROUTING_SMART off), when the cap is unlimited, or for
+	// synthetic leases.
+	routeSlot *slotPermit
 	// QueueWait is how long this lease's request sat parked in the
 	// account's FIFO live-turn queue before the slot was granted (zero
 	// when it never parked, or when the slot was free immediately). It is
@@ -81,10 +81,6 @@ type Lease struct {
 	QueueWait time.Duration
 	// AcquiredAt is when this lease was handed out (per acquire attempt,
 	// not per run — a chat retry re-acquires and gets a fresh timestamp).
-	// The chat success path uses it to clear unfit marks that PREDATE this
-	// admission (a retry's fresh acquire proves the mark stale, while an
-	// older in-flight chat's success must not erase a mark that landed
-	// after its admission).
 	AcquiredAt time.Time
 }
 
@@ -125,7 +121,7 @@ type TokenSnapshot struct {
 	Requests         int
 	Messages24h      int // successful chats in the last 24h (dashboard display; upstream quota/429 is the enforcement)
 	// LiveTurns is how many chat turns currently hold this account's
-	// smart-routing live-turn slot (TOKEN_MAX_CONCURRENT, route_smart.go);
+	// MASQ slot-ledger lanes (SLOTS_PER_ACCOUNT, slot_ledger.go);
 	// QueuedWaiters is how many requests are parked on its FIFO live-turn
 	// queue, and OldestWaiterMS is how long the longest-parked waiter has
 	// been waiting (0 when none). Together they are the "this account is
@@ -241,6 +237,10 @@ type TokenSnapshot struct {
 	// outside it.
 	AllowedModels  []string `json:"allowed_models,omitempty"`
 	AllowlistSkips int64    `json:"allowlist_skips,omitempty"`
+	// PinnedModel is the slot's PIN_MODEL pin; "" when unpinned.
+	// PinSkips counts Acquire-time skips for models outside the pin.
+	PinnedModel string `json:"pinned_model,omitempty"`
+	PinSkips    int64  `json:"pin_skips,omitempty"`
 	// BanType / BannedUntil surface the token's active upstream ban
 	// (issues #198/#199): BanType is "temporary" when the ban carries a
 	// resumes_at deadline (auto-lifts at BannedUntil) and "hard" when it
@@ -252,8 +252,10 @@ type TokenSnapshot struct {
 	TodayUsed       bool      `json:"today_used,omitempty"`
 	LastUsageDate   string    `json:"last_usage,omitempty"`
 	StreakUpdatedAt time.Time `json:"streak_updated_at,omitempty"`
-	// Maturity is the streak-maturity automation view (nil until maturity
-	// is first enabled for the token).
+	// Maturity is the streak-maturity automation view. The automation is
+	// excised (Fase E): the snapshot always leaves it nil and the
+	// dashboard renders no card. The type is kept so historical payloads
+	// and the dashboard mapper still compile.
 	Maturity *MaturitySnapshot `json:"maturity,omitempty"`
 }
 
@@ -281,14 +283,15 @@ type Pool struct {
 	retiredMu sync.Mutex
 	retired   map[*tokenEntry]time.Time
 
-	rr     atomic.Uint64 // round-robin start index
 	logger *slog.Logger
+
 	// quotaBootAt anchors the ADR-0024 staggered boot-probe slots. Set once
 	// in Start before the maintain loop launches (happens-before the first
 	// tick via the goroutine spawn); zero until then, which also keeps
 	// unit tests that never Start probe-free. Never reset — Shutdown is
 	// terminal and a second Start is a no-op (p.once).
 	quotaBootAt time.Time
+
 	// histSink is the optional maturity history consumer (ADR-0016); nil
 	// keeps the pool free of persistence. Set once via SetHistorySink.
 	histSink atomic.Pointer[HistorySink]
@@ -301,6 +304,7 @@ type Pool struct {
 	once   sync.Once
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
 	// probeCtx roots every detached probe round (upstream issue #484
 	// heritage): rounds run off the maintain goroutine but stay wg-tracked,
 	// and Shutdown cancels this context (then wg-waits), so a wedged probe
@@ -308,6 +312,7 @@ type Pool struct {
 	// deadline.
 	probeCtx    context.Context
 	probeCancel context.CancelFunc
+
 	// draining is set at the START of Shutdown: request-path admissions are
 	// refused from then on, so no session POST or run START can land after
 	// the shutdown drain has released the upstream sessions (post-drain
@@ -320,10 +325,6 @@ type Pool struct {
 	lastActiveMu sync.Mutex
 	lastActive   time.Time
 	idleFinished bool
-	// sessionsEnded mirrors idleFinished for the opt-in SESSION_IDLE_END
-	// sweep: whether upstream sessions were already released for the
-	// current idle stretch. Guarded by lastActiveMu.
-	sessionsEnded bool
 
 	// refundMu + refundInflight cap concurrent pending-refund refreshes per
 	// account (single-flight): concurrent RefreshTokenRefund calls for the
@@ -379,7 +380,6 @@ type Pool struct {
 	// on different tokens for the same model). Guarded by admissionsMu.
 	admissionsMu sync.Mutex
 	admissions   map[string]int
-
 	// lastBulkProbe is the pool-scoped timestamp of the last bulk probe
 	// pass (manual Probe-all button or stale visit auto-probe, ADR-0025).
 	// In-memory only (a restart re-probes on the next stale visit); the
@@ -406,6 +406,7 @@ type Pool struct {
 	// at the moment a follower is about to park on the leader's gate. Lets tests
 	// deterministically count parked waiters before the leader releases.
 	testGatePark func()
+
 	// store persists session state across restarts (SESSION_PERSIST); nil
 	// disables. Injected by the caller (main) via SetSessionStore so there
 	// is exactly one store shared by pooled and bridge entries.
@@ -425,6 +426,7 @@ type Pool struct {
 	// nil disables persistence (in-memory only, pre-rev-2 behavior).
 	maturityStoreMu sync.Mutex
 	maturityStore   MaturityStore
+
 	// storeSessionPersist and storeStateFile record the persistence config
 	// the store was created with (captured by SetSessionStore), so SetConfig
 	// can detect a reload that changes the persistence semantics — the live
@@ -449,8 +451,9 @@ type Pool struct {
 	probeResults *probeState
 	// Runtime persistence (pool_persist.go, DB-unified-storage):
 	// write-through cache of the allowlisted counters (usage and Pacific-day
-	// request ledgers, session spend buckets, admissions counts) through
-	// the PoolPersist interface. nil disables (in-memory only).
+	// request ledgers, session spend buckets, admissions counts,
+	// terminal-cooldown hints, bridge survivors) through the PoolPersist
+	// interface. nil disables (in-memory only).
 	// persistDirty is set lock-free on every mutation; the maintain tick
 	// plus a best-effort Shutdown pass flush it in the background, so the
 	// request hot path never blocks on the store.
@@ -462,27 +465,43 @@ type Pool struct {
 	randMu  sync.Mutex
 	randGen *rand.Rand
 
-	// Smart routing state (route_smart.go): per-lane live-turn slot
-	// semaphores with FIFO waiter queues (routeSlots, keyed by the lane's
-	// entry pointer — *tokenEntry pooled, *bridgeEntry bridge — so
-	// dashboard reorders and concurrent clients never merge lanes) plus
-	// the consecutive-turn anti-clump cursor (routePrev). Guarded by
-	// routeMu. In-memory only: a restart resets every counter to zero
-	// (same discipline as the probe scheduler's transient flags) — no
-	// pool_state rows, no SQL.
+	// Terminal-cooldown hints (cooldown_hint.go): in-memory mirror of the
+	// pool/cooldown/* rows. Guarded by cooldownHintMu; the request hot path
+	// reads memory only, never the store.
+	cooldownHintMu sync.Mutex
+	cooldownHints  map[string]poolCooldownBlob
+
+	// Bridge idle-eviction survivors (cooldown_hint.go): bounded,
+	// timestamped usage contributions of idle-evicted bridge entries.
+	// Guarded by bridgeSurvivorMu, never nested under bridgeMu (eviction
+	// captures after unlinking; snapshot/restore take it alone).
+	bridgeSurvivorMu sync.Mutex
+	bridgeSurvivors  []bridgeSurvivor
+
+	// MASQ slot ledger (slot_ledger.go): per-lane live-turn slot
+	// semaphores with FIFO waiter queues (routeSlots, keyed by
+	// slotKey{entry, model} - *tokenEntry pooled, *bridgeEntry bridge -
+	// so dashboard reorders and concurrent clients never merge lanes).
+	// Guarded by routeMu. In-memory only: a restart resets every counter
+	// to zero (same discipline as the probe scheduler's transient flags)
+	// - no pool_state rows, no SQL.
 	routeMu    sync.Mutex
-	routeSlots map[any]*routeSlotState
-	routePrev  *tokenEntry
+	routeSlots map[slotKey]*slotState
+
+	// MASQ precious sessions (precious.go): open set of (entry, model)
+	// pairs whose live session is never proactively dropped (load drops,
+	// recovery invalidations and operator drops keep them; superseded and
+	// entry teardown still drop). Guarded by preciousMu, never nested
+	// with routeMu, the roster or session locks. In-memory only like the
+	// slot ledger: a restart resets every mark to zero.
+	preciousMu sync.Mutex
+	precious   map[preciousKey]struct{}
+	// Smart-probe round single-flight (smart_probe.go): a dispatched
+	// stagger worker still running suppresses the next maintain tick's
+	// dispatch. In-memory only like the slot ledger: a restart resets it.
+	smartProbeInflight atomic.Bool
 }
 
-// admissionGate is the per-model leader election gate: the leader creates
-// the gate, followers block on gate.ch, and the chosen token is
-// communicated via gate.token/hasToken (guarded by modelAdmissionGateMu).
-type admissionGate struct {
-	ch       chan struct{}
-	token    int
-	hasToken bool
-}
 type tokenEntry struct {
 	session   *session.Manager
 	runs      *runs.RunManager
@@ -522,6 +541,23 @@ type tokenEntry struct {
 	// (MODEL_LOCKS, issue #325): requests for models the slot is not locked
 	// to. Surfaced per-token in snapshots, cards, and metrics.
 	allowlistSkips atomic.Int64
+	// Smart-probe schedule (smart_probe.go): probeDirty marks activity
+	// interest (lease grant, successful chat, 429 refusal); probeNextAt is
+	// the earliest eligible instant (unix nanos, 0 = none — debounce and
+	// 429-backoff gate); probeInflight is the per-token single-flight;
+	// probeLastAt is the last smart-probe fire (reset catch-up compares
+	// against it); probeBackoffStep counts consecutive probe-429 outcomes
+	// for the doubling schedule. In-memory only: a restart re-derives
+	// everything from quota memory on the next pass.
+	probeDirty       atomic.Bool
+	probeNextAt      atomic.Int64
+	probeInflight    atomic.Bool
+	probeLastAt      atomic.Int64
+	probeBackoffStep atomic.Int64
+	// pinSkips counts Acquire-time single-pin skips for this slot
+	// (PIN_MODEL): requests for models the slot is not pinned to.
+	// Surfaced per-token in snapshots, cards, and metrics.
+	pinSkips atomic.Int64
 
 	// quarantine, when non-nil, marks this fixed pooled token permanently
 	// ineligible for leasing: its account reached a terminal state (a live
@@ -597,6 +633,7 @@ func (e *tokenEntry) SetAccountID(id string) {
 		e.accountID.Store(&id)
 	}
 }
+
 func (e *tokenEntry) Streak() *upstream.StreakInfo {
 	return e.streak.Load()
 }
@@ -713,12 +750,9 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		return nil, fmt.Errorf("pool: %d sessions for %d tokens", len(sessions), len(cfg.AuthTokens))
 	}
 
-	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), unfit: make(map[unfitKey]unfitEntry), bridgeCreateGate: make(chan struct{}, 4), lastTokenByModel: make(map[string]int), admissions: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState()}
+	p := &Pool{reg: reg, logger: slog.Default(), bridge: make(map[string]*bridgeEntry), bridgeCreateGate: make(chan struct{}, 4), admissions: make(map[string]int), cooldownHints: make(map[string]poolCooldownBlob), unfit: make(map[unfitKey]unfitEntry), lastTokenByModel: make(map[string]int), modelAdmissionGate: make(map[string]*admissionGate), healthTracker: newHealthState(), probeResults: newProbeState()}
 	p.probeCtx, p.probeCancel = context.WithCancel(context.Background())
 	p.cfg.Store(cfg)
-	// Push the operator's cooldown tuning (COOLDOWN_*/SESSION_* backoffs)
-	// into runs/upstream/pool enforcement points; re-pushed by SetConfig.
-	p.applyCooldownTuning(cfg)
 	toks := make([]*tokenEntry, 0, len(cfg.AuthTokens))
 	for i := range cfg.AuthTokens {
 		if sessions[i] == nil || clients[i] == nil {
@@ -728,11 +762,6 @@ func New(cfg *config.Config, clients []*upstream.Client, sessions []*session.Man
 		sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 		sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 		sess.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-		// SessionPreserve seam: push the session-park gate next to the
-		// other per-manager knobs (no-op when their branch merges first
-		// with the Manager method; guarded call keeps this branch
-		// compiling standalone until the integrate step).
-		pushParkConfig(sess, cfg)
 		entry := &tokenEntry{
 			session: sess,
 			runs:    runs.NewRunManagerOpts(clients[i], sess, runOptions(cfg)),
@@ -763,9 +792,6 @@ func runOptions(cfg *config.Config) runs.Options {
 // Acquire/maintain pass without rebuilding the pool, except that an AUTH_TOKENS slot change rebuilds that entry (see below).
 func (p *Pool) SetConfig(cfg *config.Config) {
 	p.cfg.Store(cfg)
-	// Re-push live cooldown tuning (COOLDOWN_*/SESSION_POLL_* backoffs and
-	// the session-park threshold) after every reload.
-	p.applyCooldownTuning(cfg)
 
 	// Runtime-adjustable knobs: the session re-admit lead / probe cache TTL
 	// (#99/#60) follow config reloads.
@@ -774,14 +800,12 @@ func (p *Pool) SetConfig(cfg *config.Config) {
 		tok.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		tok.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 		tok.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-		pushParkConfig(tok.session, cfg)
 	}
 	p.bridgeMu.Lock()
 	for _, entry := range p.bridge {
 		entry.session.SetReAdmitLead(cfg.SessionReAdmitLead)
 		entry.session.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 		entry.session.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-		pushParkConfig(entry.session, cfg)
 	}
 	p.bridgeMu.Unlock()
 
@@ -932,7 +956,6 @@ func (p *Pool) buildTokenEntry(idx int, token string) (*tokenEntry, error) {
 	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
 	sess.SetModelUnavailableCacheTTL(cfg.ModelUnavailableCacheTTL)
-	pushParkConfig(sess, cfg)
 	entry := &tokenEntry{
 		session: sess,
 		runs:    runs.NewRunManagerOpts(client, sess, runOptions(cfg)),
@@ -1176,6 +1199,7 @@ func (p *Pool) Chat(ctx context.Context, lease *Lease, opts upstream.ChatOptions
 	if err == nil {
 		if t.entry != nil {
 			p.recordChatEntry(t.entry)
+			p.markProbeDirty(t.entry)
 		}
 		p.requestsServed.Add(1)
 	}

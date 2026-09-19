@@ -24,11 +24,13 @@ type LoadOptions struct {
 	// environment, so UI-persisted knobs beat the file without rewriting
 	// it while explicit process env keeps winning. Since the env-to-DB
 	// migration every catalog key is overlay-addressable, secrets included
-	// (the DB file holds them at mode 0600); AUTH_TOKENS applies with
+	// (the DB file holds them at mode 0600), except the env-only keys
+	// (SettingsBlockedKeys: SESSION_STATE_FILE, SESSION_PERSIST, LOG_FILE,
+	// HTTP_READ_TIMEOUT, AUTO_DISCOVER_TOKEN), whose rows are inert and
+	// filtered before they apply; AUTH_TOKENS applies with
 	// presence semantics (an empty row pins bridge mode and suppresses CLI
-	// auto-discovery, mirroring the .env tier), and AUTO_DISCOVER_TOKEN is
-	// honored from the overlay only when the process environment leaves it
-	// unset. Nil or empty behaves like Load.
+	// auto-discovery, mirroring the .env tier). Nil or empty behaves like
+	// Load.
 	Overlay map[string]string
 }
 
@@ -94,7 +96,6 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideBool(&raw.BridgeEnabled, "BRIDGE_ENABLED")
 	overrideString(&raw.BridgeIdleEvict, "BRIDGE_IDLE_EVICT")
 	overrideString(&raw.IdleRotationTimeout, "IDLE_ROTATION_TIMEOUT")
-	overrideString(&raw.SessionIdleEnd, "SESSION_IDLE_END")
 	overrideBool(&raw.SafeMode, "SAFE_MODE")
 	overrideBool(&raw.ModelsHideUnavailable, "MODELS_HIDE_UNAVAILABLE")
 	overrideString((*string)(&raw.ModelsAllow), "MODELS_ALLOW")
@@ -114,16 +115,12 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideString(&raw.ModelUnavailableCacheTTL, "MODEL_UNAVAILABLE_CACHE_TTL")
 	overrideString(&raw.WebhookURL, "WEBHOOK_URL")
 	overrideBool(&raw.AdoptCLISession, "ADOPT_CLI_SESSION")
-	overrideBool(&raw.MaturityEnabled, "MATURITY_ENABLED")
-	overrideString(&raw.MaturityTouchModel, "MATURITY_TOUCH_MODEL")
-	overrideInt(&raw.MaturityTargetDays, "MATURITY_TARGET_DAYS")
-	overrideBool(&raw.QuotaAutoProbe, "QUOTA_AUTO_PROBE")
-	overrideString(&raw.QuotaProbeActiveInterval, "QUOTA_PROBE_ACTIVE_INTERVAL")
-	overrideString(&raw.QuotaProbeIdleHeartbeat, "QUOTA_PROBE_IDLE_HEARTBEAT")
-	overrideBool(&raw.RoutingSmart, "ROUTING_SMART")
-	overrideInt(&raw.TokenMaxConcurrent, "TOKEN_MAX_CONCURRENT")
+	overrideInt(&raw.SlotsPerAccount, "SLOTS_PER_ACCOUNT")
 	overrideString(&raw.QueueWait, "QUEUE_WAIT")
 	overrideInt(&raw.QueueDepth, "QUEUE_DEPTH")
+	overrideInt(&raw.MaxSpillAccounts, "MAX_SPILL_ACCOUNTS")
+	// Cooldown / session-park tuning overrides (our lineage): integer
+	// millisecond knobs, zero-tolerant in Load via msVal.
 	overrideInt(&raw.CooldownDefaultMs, "COOLDOWN_DEFAULT_MS")
 	overrideInt(&raw.CooldownCountryBlockMs, "COOLDOWN_COUNTRY_BLOCK_MS")
 	overrideInt(&raw.CooldownCeilingMs, "COOLDOWN_CEILING_MS")
@@ -149,6 +146,7 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideString(&raw.TokenRotation, "TOKEN_ROTATION")
 	overrideBoolPtr(&raw.RateLimitFailover, "RATE_LIMIT_FAILOVER")
 	overrideString(&raw.ModelLocks, "MODEL_LOCKS")
+	overrideString(&raw.PinModel, "PIN_MODEL")
 	overrideBool(&raw.DashboardEnabled, "DASHBOARD_ENABLED")
 	overrideBool(&raw.AutoRotateOnExhaustion, "AUTO_ROTATE_ON_EXHAUSTION")
 	overrideString(&raw.ExhaustionWarningThreshold, "EXHAUSTION_WARNING_THRESHOLD")
@@ -156,6 +154,11 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	overrideBool(&raw.TokenHealthProbes, "TOKEN_HEALTH_PROBES")
 	overrideString(&raw.TokenProbeInterval, "TOKEN_PROBE_INTERVAL")
 	overrideBool(&raw.DashboardRequireLogin, "DASHBOARD_REQUIRE_LOGIN")
+	overrideBool(&raw.MaturityEnabled, "MATURITY_ENABLED")
+	overrideString(&raw.MaturityTouchModel, "MATURITY_TOUCH_MODEL")
+	overrideInt(&raw.MaturityTargetDays, "MATURITY_TARGET_DAYS")
+	overrideBool(&raw.SmartProbeEnabled, "SMART_PROBE_ENABLED")
+	overrideString(&raw.SmartProbeBackoffMax, "SMART_PROBE_BACKOFF_MAX")
 	// Convert feature-translation modes (issue #277): COMPRESS_PROMPT,
 	// CACHE_CONTROL_INJECTION and REASONING_IN_CONTENT are resolved once
 	// here (so the dashboard config form and /admin/reload swaps apply) and
@@ -248,6 +251,60 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		if modelUnavailableCacheTTL <= 0 {
 			modelUnavailableCacheTTL = time.Hour
 		}
+	}
+	// msVal resolves one integer-millisecond knob (COOLDOWN_*_MS /
+	// SESSION_*_MS / SMART_PROBE_BACKOFF_MAX_MS / MATURITY_BACKOFF_MS)
+	// with msToDuration (cooldown.go): nil or non-positive values fall
+	// back to the Contract defaults, so a blank row can never zero-out a
+	// backoff. Absurd values saturate instead of wrapping (consumers clamp
+	// to the ceiling at use); negative readmits/jitter are rejected in
+	// Validate.
+	msVal := func(raw *int, fallback int) time.Duration {
+		if raw == nil {
+			return msToDuration(0, fallback)
+		}
+		return msToDuration(*raw, fallback)
+	}
+	cooldownDefault := msVal(raw.CooldownDefaultMs, defaultCooldownDefaultMs)
+	cooldownCountryBlock := msVal(raw.CooldownCountryBlockMs, defaultCooldownCountryBlockMs)
+	cooldownCeiling := msVal(raw.CooldownCeilingMs, defaultCooldownCeilingMs)
+	cooldownFanout := msVal(raw.CooldownFanoutMs, defaultCooldownFanoutMs)
+	cooldownInvalidModel := msVal(raw.CooldownInvalidModelMs, defaultCooldownInvalidModelMs)
+	cooldownOpaque := msVal(raw.CooldownOpaqueMs, defaultCooldownOpaqueMs)
+	cooldownLoadShed := msVal(raw.CooldownLoadShedMs, defaultCooldownLoadShedMs)
+	cooldownPeakHours := msVal(raw.CooldownPeakHoursMs, defaultCooldownPeakHoursMs)
+	sessionParkThreshold := msVal(raw.SessionParkThresholdMs, defaultSessionParkThresholdMs)
+	sessionPollMax := msVal(raw.SessionPollMaxMs, defaultSessionPollMaxMs)
+	maturityBackoff := msVal(raw.MaturityBackoffMs, defaultMaturityBackoffMs)
+	// Zero readmits falls back to the default like the ms knobs above (an
+	// explicit 0 can never mean "no re-admits": runs would still enforce
+	// the old global). A negative value passes through so Validate
+	// rejects it.
+	cooldownIPMaxReadmits := defaultCooldownIPMaxReadmits
+	if raw.CooldownIPMaxReadmits != nil && *raw.CooldownIPMaxReadmits != 0 {
+		cooldownIPMaxReadmits = *raw.CooldownIPMaxReadmits
+	}
+	cooldownIPJitterRatio := defaultCooldownIPJitterRatio
+	if raw.CooldownIPJitterRatio != nil {
+		cooldownIPJitterRatio = *raw.CooldownIPJitterRatio
+	}
+	// SMART_PROBE_BACKOFF_MAX is zero-tolerant like the other session
+	// knobs: "" or "0" fall back to the documented 30m default (a zero cap
+	// would pin every probe-429 retry to immediacy, defeating the backoff).
+	// SMART_PROBE_BACKOFF_MAX_MS (our lineage, integer milliseconds) is the
+	// fallback source when the string knob is unset — both spellings feed
+	// the same Config field so either knob stays live.
+	smartProbeBackoffMax := 30 * time.Minute
+	if v := strings.TrimSpace(raw.SmartProbeBackoffMax); v != "" {
+		smartProbeBackoffMax, err = parseDuration(v, "SMART_PROBE_BACKOFF_MAX")
+		if err != nil {
+			return Config{}, err
+		}
+		if smartProbeBackoffMax <= 0 {
+			smartProbeBackoffMax = 30 * time.Minute
+		}
+	} else if raw.SmartProbeBackoffMaxMs != nil {
+		smartProbeBackoffMax = msVal(raw.SmartProbeBackoffMaxMs, defaultSmartProbeBackoffMaxMs)
 	}
 	runFinishQueueSize := 64
 	if raw.RunFinishQueueSize != nil {
@@ -415,6 +472,20 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		adminToken = DefaultAdminToken
 	}
 
+	pinModel, err := parsePinModel(raw.PinModel)
+	if err != nil {
+		return Config{}, err
+	}
+	// SLOTS_PER_ACCOUNT defaults to 2 (the approved anti-ban pacing).
+	// 0 = unlimited: no live-turn slot gating applies at all. Negative
+	// values floor to 0 instead of failing the load.
+	slotsPerAccount := 2
+	if raw.SlotsPerAccount != nil {
+		slotsPerAccount = *raw.SlotsPerAccount
+	}
+	if slotsPerAccount < 0 {
+		slotsPerAccount = 0
+	}
 	tokenRotation := strings.ToLower(strings.TrimSpace(raw.TokenRotation))
 	switch tokenRotation {
 	case "", "drain":
@@ -495,41 +566,11 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 	if raw.QueueDepth != nil {
 		queueDepth = *raw.QueueDepth
 	}
-	// COOLDOWN_*_MS / SESSION_*_MS / SMART_PROBE_BACKOFF_MAX_MS /
-	// MATURITY_BACKOFF_MS are integer-millisecond knobs resolved with
-	// msToDuration (cooldown.go): nil or non-positive values fall back to
-	// the Contract defaults, so a blank row can never zero-out a backoff.
-	// Absurd values saturate instead of wrapping (consumers clamp to the
-	// ceiling at use); negative readmits/jitter are rejected in Validate.
-	msVal := func(raw *int, fallback int) time.Duration {
-		if raw == nil {
-			return msToDuration(0, fallback)
-		}
-		return msToDuration(*raw, fallback)
-	}
-	cooldownDefault := msVal(raw.CooldownDefaultMs, defaultCooldownDefaultMs)
-	cooldownCountryBlock := msVal(raw.CooldownCountryBlockMs, defaultCooldownCountryBlockMs)
-	cooldownCeiling := msVal(raw.CooldownCeilingMs, defaultCooldownCeilingMs)
-	cooldownFanout := msVal(raw.CooldownFanoutMs, defaultCooldownFanoutMs)
-	cooldownInvalidModel := msVal(raw.CooldownInvalidModelMs, defaultCooldownInvalidModelMs)
-	cooldownOpaque := msVal(raw.CooldownOpaqueMs, defaultCooldownOpaqueMs)
-	cooldownLoadShed := msVal(raw.CooldownLoadShedMs, defaultCooldownLoadShedMs)
-	cooldownPeakHours := msVal(raw.CooldownPeakHoursMs, defaultCooldownPeakHoursMs)
-	sessionParkThreshold := msVal(raw.SessionParkThresholdMs, defaultSessionParkThresholdMs)
-	sessionPollMax := msVal(raw.SessionPollMaxMs, defaultSessionPollMaxMs)
-	smartProbeBackoffMax := msVal(raw.SmartProbeBackoffMaxMs, defaultSmartProbeBackoffMaxMs)
-	maturityBackoff := msVal(raw.MaturityBackoffMs, defaultMaturityBackoffMs)
-	// Zero readmits falls back to the default like the ms knobs above (an
-	// explicit 0 can never mean "no re-admits": runs would still enforce
-	// the old global). A negative value passes through so Validate
-	// rejects it.
-	cooldownIPMaxReadmits := defaultCooldownIPMaxReadmits
-	if raw.CooldownIPMaxReadmits != nil && *raw.CooldownIPMaxReadmits != 0 {
-		cooldownIPMaxReadmits = *raw.CooldownIPMaxReadmits
-	}
-	cooldownIPJitterRatio := defaultCooldownIPJitterRatio
-	if raw.CooldownIPJitterRatio != nil {
-		cooldownIPJitterRatio = *raw.CooldownIPJitterRatio
+	// MAX_SPILL_ACCOUNTS defaults to 0 (unbounded spill chain); negative
+	// is rejected in Validate.
+	maxSpillAccounts := 0
+	if raw.MaxSpillAccounts != nil {
+		maxSpillAccounts = *raw.MaxSpillAccounts
 	}
 	cfg := Config{
 		ListenAddr:                   strings.TrimSpace(raw.ListenAddr),
@@ -541,6 +582,7 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		SessionCallTimeout:           sessionCallTimeout,
 		TokenRotation:                tokenRotation,
 		ModelLocks:                   modelLocks,
+		PinModel:                     pinModel,
 		APIKeys:                      dedupeStrings(raw.APIKeys),
 		AdminToken:                   adminToken,
 		DashboardRequireLogin:        dashboardRequireLogin,
@@ -585,8 +627,10 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		QuotaProbeIdleHeartbeat:      quotaProbeIdleHeartbeat,
 		RoutingSmart:                 raw.RoutingSmart,
 		TokenMaxConcurrent:           tokenMaxConcurrent,
+		SlotsPerAccount:              slotsPerAccount,
 		QueueWait:                    queueWait,
 		QueueDepth:                   queueDepth,
+		MaxSpillAccounts:             maxSpillAccounts,
 		WaitingRoomChain:             raw.WaitingRoomChain,
 		RateLimitPerIP:               rateLimitPerIP,
 		RateLimitBurst:               rateLimitBurst,
@@ -606,6 +650,8 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		HealthScoreEnabled:           healthScoreEnabled,
 		TokenHealthProbes:            raw.TokenHealthProbes,
 		TokenProbeInterval:           tokenProbeInterval,
+		SmartProbeEnabled:            raw.SmartProbeEnabled,
+		SmartProbeBackoffMax:         smartProbeBackoffMax,
 		CooldownDefault:              cooldownDefault,
 		CooldownCountryBlock:         cooldownCountryBlock,
 		CooldownCeiling:              cooldownCeiling,
@@ -619,25 +665,22 @@ func LoadOpts(configPath string, opts LoadOptions) (Config, error) {
 		SessionParkEnabledFlag:       raw.SessionParkEnabled,
 		SessionParkThreshold:         sessionParkThreshold,
 		SessionPollMax:               sessionPollMax,
-		SmartProbeBackoffMax:         smartProbeBackoffMax,
 		MaturityBackoff:              maturityBackoff,
 	}
-
 	// Auto-discover CLI token if a discovery hook was wired (LoadOpts,
 	// issue #283) AND no AUTH_TOKENS were explicitly configured AND
 	// AUTO_DISCOVER_TOKEN is not disabled. ADOPT_CLI_SESSION (issue #97)
 	// also opts into discovery: the operator explicitly asked to run like
 	// the CLI, so AUTO_DISCOVER_TOKEN=false must not silently leave the
 	// pool empty.
-	// AUTO_DISCOVER_TOKEN resolves process env > DB overlay > default true,
-	// like every other knob (the overlay only counts when the environment
-	// leaves it unset). It records on the config so the dashboard and the
-	// env-to-DB migration export the effective value instead of hardcoding
-	// it.
+	// AUTO_DISCOVER_TOKEN is env-only (data-architecture decision): the
+	// process environment alone decides, defaulting to true when unset. A
+	// DB overlay row is inert (SettingsBlockedKeys) — behavior change from
+	// the migrated era, when the overlay applied beneath the environment.
+	// It records on the config so the dashboard and the env-to-DB migration
+	// export the effective value instead of hardcoding it.
 	autoDiscover := true
 	if v, ok := os.LookupEnv("AUTO_DISCOVER_TOKEN"); ok {
-		autoDiscover = !isFalseWord(v)
-	} else if v, ok := opts.Overlay["AUTO_DISCOVER_TOKEN"]; ok {
 		autoDiscover = !isFalseWord(v)
 	}
 	cfg.AutoDiscoverToken = autoDiscover
@@ -753,6 +796,7 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideStringFrom(&raw.TokenRotation, get, "TOKEN_ROTATION")
 	overrideBoolPtrFrom(&raw.RateLimitFailover, get, "RATE_LIMIT_FAILOVER")
 	overrideStringFrom(&raw.ModelLocks, get, "MODEL_LOCKS")
+	overrideStringFrom(&raw.PinModel, get, "PIN_MODEL")
 	overrideCSVFrom(&raw.APIKeys, get, "API_KEYS")
 	overrideStringFrom(&raw.AdminToken, get, "ADMIN_TOKEN")
 	overrideStringFrom(&raw.CostMode, get, "COST_MODE")
@@ -793,16 +837,15 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideStringFrom(&raw.ModelUnavailableCacheTTL, get, "MODEL_UNAVAILABLE_CACHE_TTL")
 	overrideStringFrom(&raw.WebhookURL, get, "WEBHOOK_URL")
 	overrideBoolFrom(&raw.AdoptCLISession, get, "ADOPT_CLI_SESSION")
-	overrideBoolFrom(&raw.MaturityEnabled, get, "MATURITY_ENABLED")
-	overrideStringFrom(&raw.MaturityTouchModel, get, "MATURITY_TOUCH_MODEL")
-	overrideIntFrom(&raw.MaturityTargetDays, get, "MATURITY_TARGET_DAYS")
+	overrideIntFrom(&raw.SlotsPerAccount, get, "SLOTS_PER_ACCOUNT")
+	overrideStringFrom(&raw.QueueWait, get, "QUEUE_WAIT")
+	overrideIntFrom(&raw.QueueDepth, get, "QUEUE_DEPTH")
+	overrideIntFrom(&raw.MaxSpillAccounts, get, "MAX_SPILL_ACCOUNTS")
 	overrideBoolFrom(&raw.QuotaAutoProbe, get, "QUOTA_AUTO_PROBE")
 	overrideStringFrom(&raw.QuotaProbeActiveInterval, get, "QUOTA_PROBE_ACTIVE_INTERVAL")
 	overrideStringFrom(&raw.QuotaProbeIdleHeartbeat, get, "QUOTA_PROBE_IDLE_HEARTBEAT")
 	overrideBoolFrom(&raw.RoutingSmart, get, "ROUTING_SMART")
 	overrideIntFrom(&raw.TokenMaxConcurrent, get, "TOKEN_MAX_CONCURRENT")
-	overrideStringFrom(&raw.QueueWait, get, "QUEUE_WAIT")
-	overrideIntFrom(&raw.QueueDepth, get, "QUEUE_DEPTH")
 	overrideIntFrom(&raw.CooldownDefaultMs, get, "COOLDOWN_DEFAULT_MS")
 	overrideIntFrom(&raw.CooldownCountryBlockMs, get, "COOLDOWN_COUNTRY_BLOCK_MS")
 	overrideIntFrom(&raw.CooldownCeilingMs, get, "COOLDOWN_CEILING_MS")
@@ -823,6 +866,11 @@ func applyMappedValues(raw *rawConfig, get func(string) string) {
 	overrideIntFrom(&raw.RateLimitBurst, get, "RATE_LIMIT_BURST")
 	overrideBoolFrom(&raw.DashboardEnabled, get, "DASHBOARD_ENABLED")
 	overrideBoolFrom(&raw.DashboardRequireLogin, get, "DASHBOARD_REQUIRE_LOGIN")
+	overrideBoolFrom(&raw.MaturityEnabled, get, "MATURITY_ENABLED")
+	overrideStringFrom(&raw.MaturityTouchModel, get, "MATURITY_TOUCH_MODEL")
+	overrideIntFrom(&raw.MaturityTargetDays, get, "MATURITY_TARGET_DAYS")
+	overrideBoolFrom(&raw.SmartProbeEnabled, get, "SMART_PROBE_ENABLED")
+	overrideStringFrom(&raw.SmartProbeBackoffMax, get, "SMART_PROBE_BACKOFF_MAX")
 	// Convert feature-translation modes (issue #277), mirroring Load.
 	overrideStringFrom(&raw.CompressPrompt, get, "COMPRESS_PROMPT")
 	overrideStringFrom(&raw.CacheControlInjection, get, "CACHE_CONTROL_INJECTION")
@@ -966,6 +1014,9 @@ func overrideBoolFrom(target *bool, get func(string) string, envName string) {
 	override(target, get, envName, parseBool)
 }
 
+// overrideBoolPtr sets target from *bool env vars ("1"/"true" → true,
+// "0"/"false" → false); unset or unrecognized values leave the
+// file/default value untouched (nil keeps the load-time default).
 func overrideBoolPtr(target **bool, envName string) {
 	override(target, os.Getenv, envName, parseBoolPtr)
 }

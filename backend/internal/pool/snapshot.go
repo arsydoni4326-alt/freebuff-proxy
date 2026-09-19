@@ -2,10 +2,9 @@
 package pool
 
 import (
-	"time"
-
 	"freebuff-proxy/backend/internal/session"
 	"freebuff-proxy/backend/internal/upstream"
+	"time"
 )
 
 // BridgeTokenSnapshot is a dashboard-ready view of one bridge entry (#187).
@@ -69,8 +68,12 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 	// Model-allowlist view (MODEL_LOCKS, issue #325): per-slot lists for
 	// the dashboard + metrics. Read once per snapshot; hot-reload safe.
 	var modelLocks map[int][]string
+	// Single-pin view (PIN_MODEL): per-slot pins for the dashboard +
+	// metrics. Read once per snapshot; hot-reload safe.
+	var pinModel map[int]string
 	if c := p.cfg.Load(); c != nil {
 		modelLocks = c.ModelLocks
+		pinModel = c.PinModel
 	}
 	for i, tok := range *toks {
 		rs := tok.runs.Snapshot()
@@ -129,12 +132,23 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		// manager stashes the last-seen countdown across invalidation by
 		// design (restart resume), so without this the row would render a
 		// stale model/countdown/expiry for a session that no longer exists.
+		// A synthesized "expired" row is terminal too: expiry and grace both
+		// passed while the cache still says "active" (polls stopped, so no
+		// poll/store invalidation observed it), and every terminal path —
+		// Invalidate (commit(nil)), poll past-grace, store load — drops the
+		// slot. Render it like IDLE instead of the stale cache values.
 		sessionModel := ss.Model
 		sessionExpiresAt := ss.ExpiresAt
-		if ss.InstanceID == "" {
+		sessionInstanceID := ss.InstanceID
+		sessionQueuePosition := ss.QueuePosition
+		sessionQueueDepth := ss.QueueDepth
+		if ss.InstanceID == "" || sessionStatus == "expired" {
+			sessionInstanceID = ""
 			sessionModel = ""
 			sessionRemaining = 0
 			sessionExpiresAt = time.Time{}
+			sessionQueuePosition = 0
+			sessionQueueDepth = 0
 		}
 		// Active-ban view for healthz/dashboard consumers (issues #198/#199).
 		banType, bannedUntil := banView(rs.BanError, rs.BannedUntil)
@@ -177,9 +191,9 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			cfg.RotationInterval,
 		)
 		healthScore, healthLabel := ComputeHealthScore(hin)
-		// Smart-routing saturation view (LiveTurns/QueuedWaiters/
-		// OldestWaiterMS): zero on the legacy path or unlimited caps.
-		liveTurns, queuedWaiters, oldestWait := p.routeSlotStats(tok)
+		// Slot saturation view (LiveTurns/QueuedWaiters/OldestWaiterMS):
+		// zero on the legacy path or unlimited caps.
+		liveTurns, queuedWaiters, oldestWait := p.slotEntryStats(tok)
 
 		out = append(out, TokenSnapshot{
 			Token:                   i,
@@ -198,9 +212,9 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			OldestWaiterMS:          oldestWait.Milliseconds(),
 			RequestsPerDay:          p.dayRequestCount(i),
 			SessionStatus:           sessionStatus,
-			SessionInstanceID:       ss.InstanceID,
-			SessionQueuePosition:    ss.QueuePosition,
-			SessionQueueDepth:       ss.QueueDepth,
+			SessionInstanceID:       sessionInstanceID,
+			SessionQueuePosition:    sessionQueuePosition,
+			SessionQueueDepth:       sessionQueueDepth,
 			SessionModel:            sessionModel,
 			SessionRemainingSeconds: sessionRemaining,
 			SessionExpiresAt:        sessionExpiresAt,
@@ -222,7 +236,6 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			TodayUsed:               todayUsed,
 			LastUsageDate:           lastUsage,
 			StreakUpdatedAt:         streakUpdated,
-			Maturity:                p.maturitySnapshot(tok, streak),
 			UpgradeHint:             ss.UpgradeHint,
 			ServerMessage:           ss.ServerMessage,
 			Locked:                  tok.locked.Load(),
@@ -230,6 +243,8 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			QuarantineReason:        quarantineReason,
 			AllowedModels:           append([]string(nil), modelLocks[i]...),
 			AllowlistSkips:          tok.allowlistSkips.Load(),
+			PinnedModel:             pinModel[i],
+			PinSkips:                tok.pinSkips.Load(),
 			TransientRetries:        tok.client.TransientRetries(),
 			FingerprintRotations:    tok.client.FingerprintRotations(),
 			RateLimitEvents:         tok.client.RateLimitEvents(),

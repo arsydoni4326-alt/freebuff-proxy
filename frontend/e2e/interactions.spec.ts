@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { loadFixtures, mockDashboard, mockSettingsOverlay } from "./mocks.js";
-import type { Fixtures, PostedSetting } from "./mocks.js";
+import type { PostedSetting } from "./mocks.js";
+import { settingsConfig, tokenRow, tokensPayload } from "./mock-data.js";
 
 // ---------------------------------------------------------------------------
 // Clickable / interactable coverage (hermetic mocks).
@@ -8,59 +9,13 @@ import type { Fixtures, PostedSetting } from "./mocks.js";
 // dashboard.spec.ts and ux.spec.ts pin data rendering and the main mutation
 // flows; this suite pins every remaining button, toggle, select, radio and
 // dialog on the operator path: token reorder/clear/probe/finish/drop-session,
-// dialog dismiss, rotation radios, failover switch, log view/filter/paging
+// dialog dismiss, strategy preset radios, slots stepper, log view/filter/paging
 // controls, settings discard/bridge/rate-limit/password, setup key buttons,
 // sidebar navigation and the overview error-retry path.
 // ---------------------------------------------------------------------------
 
-// Minimal token row mirroring the real /admin/api/tokens row shape.
-function tokenRow(
-  idx: number,
-  over: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
-    index: idx,
-    email: `acct${idx}@example.com`,
-    session_status: "idle",
-    queue_position: 0,
-    queue_depth: 0,
-    active_runs: 0,
-    requests: 0,
-    messages_24h: 0,
-    cooldown_active: false,
-    cooldown_until: "",
-    locked: false,
-    transient_retries: 1,
-    has_standing: false,
-    session_instance: "",
-    session_model: "",
-    session_remaining_seconds: 0,
-    has_quota: false,
-    ...over,
-  };
-}
-
-function tokensPayload(tokens: Array<Record<string, unknown>>) {
-  return {
-    mode: "pooled",
-    in_bridge: false,
-    bridge_tokens: 0,
-    token_count: tokens.length,
-    has_tokens: true,
-    tokens,
-    bridge_token_cards: [],
-  };
-}
-
-// Settings fixtures carry a live .env so the form cards render with values.
-function settingsConfig(f: Fixtures) {
-  return {
-    ...f.config,
-    env_content:
-      "LISTEN_ADDR=127.0.0.1:3457\nAUTH_TOKENS=tok0,tok1\nAPI_KEYS=sk-local-xyz\nSAFE_MODE=true\nLOG_LEVEL=info\n",
-    has_env_file: true,
-  };
-}
+// Token rows, pool payloads, and live-.env settings come from the centralized
+// mock-data.ts factory (same shapes as the helpers deleted here).
 
 test.describe("operator interactions (hermetic mocks)", () => {
   test.use({ expect: { timeout: 10_000 } });
@@ -280,9 +235,12 @@ test.describe("operator interactions (hermetic mocks)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 3b. Manual probe moved off Plans: no buttons there; Dev Tools owns it.
+  // 3b. Usage Accounts offers one page-level Probe all (POST
+  // /admin/tokens/test-all, zero-cost): it toasts one summary and refetches
+  // the list. Dev Tools keeps the playground + spawner panels (no
+  // "Probe All Tokens" there).
   // -------------------------------------------------------------------------
-  test("quota: plans has no manual probe buttons, devtools does", async ({
+  test("quota: plans probe-all posts test-all and toasts the summary; devtools spawn stays", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -295,13 +253,38 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Probe all" })).toHaveCount(
-      0,
+    const probe = page.getByRole("button", { name: "Probe all" });
+    await expect(probe, "usage accounts offers Probe all").toBeVisible();
+    await page.route("**/admin/tokens/test-all", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            index: 0,
+            status: "ok",
+            spendable_freebucks: 10,
+            daily_limit_freebucks: 100,
+            daily_spent_freebucks: 5,
+            quarantined: false,
+            cooling: false,
+          },
+        ]),
+      });
+    });
+    const refetch = page.waitForResponse(
+      (r) => r.url().includes("/admin/api/tokens") && r.status() === 200,
     );
-    await expect(page.getByText("Quotas refreshed from upstream.")).toHaveCount(
-      0,
-    );
-    // Manual probing lives under Dev Tools (DEVTOOLS on for this page).
+    await probe.click();
+    await refetch;
+    await expect(
+      page.getByText("Probed 1: 1 ok"),
+      "probe-all summary toast",
+    ).toBeVisible();
+    // Dev Tools keeps only the session spawn + playground panels.
+    await expect(
+      page.getByRole("button", { name: "Probe All Tokens" }),
+    ).toHaveCount(0);
     await page.unroute("**/admin/api/config");
     await page.route("**/admin/api/config", async (route) => {
       await route.fulfill({
@@ -314,12 +297,8 @@ test.describe("operator interactions (hermetic mocks)", () => {
       });
     });
     await page.goto("http://127.0.0.1:4173/admin/#devtools");
-    await expect(
-      page.getByRole("button", { name: "Probe All Tokens" }),
-    ).toBeVisible();
+    await expect(page.getByLabel("Model Playground")).toBeVisible();
   });
-  // Manual probe buttons live under Dev Tools now (per-token probe buttons
-  // remain on each Tokens row).
   // -------------------------------------------------------------------------
   // 3c. Tokens page has no Probe-all header button.
   // -------------------------------------------------------------------------
@@ -520,9 +499,9 @@ test.describe("operator interactions (hermetic mocks)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // 5. Rotation radios and the failover switch instant-save per key.
+  // 5. Strategy preset radios and the slots stepper instant-save per key.
   // -------------------------------------------------------------------------
-  test("tokens: rotation radio and failover switch instant-save per key", async ({
+  test("tokens: strategy preset radios and slots stepper instant-save per key", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -533,38 +512,43 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     // Pool controls moved behind the Controls tab.
     await page.getByRole("button", { name: "Controls" }).click();
-    const drain = page.getByRole("radio", { name: "Drain (Safest)" });
-    const rr = page.getByRole("radio", { name: "Round Robin (1:1)" });
+    const drain = page.getByRole("radio", { name: "Drain" });
+    const balance = page.getByRole("radio", { name: "Balance" });
+    // Catalog defaults (2 slots, 30s wait, depth 16, unbounded spill)
+    // classify as Balance.
+    await expect(balance).toHaveAttribute("aria-checked", "true");
+
+    const presetReq = page.waitForRequest(
+      (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
+      { timeout: 10000 },
+    );
+    await drain.click();
     await expect(drain).toHaveAttribute("aria-checked", "true");
+    await presetReq;
 
-    const rotationReq = page.waitForRequest(
+    // A Drain tap writes its changed keys (debounced ~400ms each): the
+    // queue posture lands in the overlay posts.
+    await expect
+      .poll(() => posted.find((p) => p.key === "QUEUE_WAIT")?.value)
+      .toBe("300s");
+    await expect
+      .poll(() => posted.find((p) => p.key === "QUEUE_DEPTH")?.value)
+      .toBe("1024");
+
+    const slots = page.locator('input[aria-label="SLOTS_PER_ACCOUNT"]');
+    const slotsReq = page.waitForRequest(
       (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
       { timeout: 10000 },
     );
-    await rr.click();
-    await expect(rr).toHaveAttribute("aria-checked", "true");
-    await rotationReq;
-
-    const failover = page.getByRole("switch", {
-      name: "Auto Failover on Rate Limit (429)",
-    });
-    await expect(failover).toHaveAttribute("aria-checked", "true");
-    const failoverReq = page.waitForRequest(
-      (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
-      { timeout: 10000 },
-    );
-    await failover.click();
-    await expect(failover).toHaveAttribute("aria-checked", "false");
-    await failoverReq;
-
-    // Each row instant-saves its own key (debounced ~400ms): both keys land
-    // in the overlay posts.
+    await slots.fill("3");
+    await slotsReq;
     await expect
-      .poll(() => posted.find((p) => p.key === "TOKEN_ROTATION")?.value)
-      .toBe("round_robin");
-    await expect
-      .poll(() => posted.find((p) => p.key === "RATE_LIMIT_FAILOVER")?.value)
-      .toBe("false");
+      .poll(() => posted.find((p) => p.key === "SLOTS_PER_ACCOUNT")?.value)
+      .toBe("3");
+
+    // The deleted rotation/failover keys are never written by this card.
+    expect(posted.find((p) => p.key === "TOKEN_ROTATION")).toBeUndefined();
+    expect(posted.find((p) => p.key === "RATE_LIMIT_FAILOVER")).toBeUndefined();
   });
   // -------------------------------------------------------------------------
   // 6. Logs: console/table toggle, auto toggle, refresh and clear console.

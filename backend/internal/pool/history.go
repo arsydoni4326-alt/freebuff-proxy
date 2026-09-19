@@ -7,12 +7,9 @@ import (
 // MaturityHistoryEvent is one pool lifecycle fact (ADR-0016) for the
 // history store. The sink runs on pool goroutines (maintain tick, admin
 // handlers), so it must never block, fail open, or call back into the
-// pool: the CLI adapter does a single synchronous SQLite insert and drops
-// nothing (callers are rare: config changes, daily touches).
-//
-// Kinds: "config" (enable/disable/target/mode change), "touch" (one fire
-// outcome, skips included), "advance" (streak moved), "release" (target
-// reached, automation disabled).
+// pool: the CLI adapter does a single synchronous SQLite insert. The
+// maturity automation is excised (Fase E), so nothing emits yet — the
+// boundary stays for the next lifecycle-fact producer.
 type MaturityHistoryEvent struct {
 	TS       int64
 	TokenIdx int
@@ -35,6 +32,8 @@ func (p *Pool) SetHistorySink(s HistorySink) {
 	p.histSink.Store(&s)
 }
 
+// emitMaturity records one lifecycle fact through the sink (best-effort:
+// a nil sink drops it silently — history is advisory).
 func (p *Pool) emitMaturity(idx int, kind, detail string) {
 	if v := p.histSink.Load(); v != nil && *v != nil {
 		(*v).RecordMaturity(MaturityHistoryEvent{

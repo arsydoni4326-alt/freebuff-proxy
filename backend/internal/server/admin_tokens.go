@@ -145,17 +145,27 @@ func (a *adminHandlers) handleTokenFinish(w http.ResponseWriter, r *http.Request
 
 func (a *adminHandlers) handleTokenDropSession(w http.ResponseWriter, r *http.Request) {
 	id, err := tokenActionID(r)
+	var kept bool
 	if err == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		err = a.pool.DropTokenSession(ctx, id)
+		kept, err = a.pool.DropTokenSession(ctx, id)
 	}
 	if err != nil {
 		a.dash.RenderConfigResult(w, r, false, "Drop session failed: "+err.Error())
 		return
 	}
+	// The precious-keep DECISION lives in the pool (keepSession): the
+	// handler only reports it honestly. kept=true carries the keep note
+	// verbatim; a real drop is the bare {ok:true,kept:false}
+	// acknowledgment (the toast copy lives frontend-side).
+	if kept {
+		a.logfunc().Info("dashboard token session kept (precious)", "token", id)
+		a.dash.RenderDropSessionResult(w, r, true, "Session kept (precious) — next request still rides it.")
+		return
+	}
 	a.logfunc().Info("dashboard token session dropped", "token", id)
-	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" session dropped — next request will re-admit fresh.")
+	a.dash.RenderDropSessionResult(w, r, false, "")
 }
 
 // handleTokenRefundRefresh replays one token's parked pending-refund DELETE
@@ -270,13 +280,14 @@ func (a *adminHandlers) handleTokenTest(w http.ResponseWriter, r *http.Request) 
 	a.dash.RenderConfigResult(w, r, true, msg)
 }
 
-func (a *adminHandlers) handleTokenTestAll(w http.ResponseWriter, r *http.Request) {
-	// Visit auto-probe (ADR-0025): the Quota Tracker page fires ?auto=1 on
-	// mount so a cold page shows numbers without a button press. Stale
-	// only (pool-scoped 1h throttle shared by all clients/tabs); fresh
-	// returns the current view untouched with an ok note in the same
-	// envelope shape the client already drains. The manual button (no
-	// param) always forces and refreshes the throttle timestamp.
+func (a *adminHandlers) handleTokensTestAll(w http.ResponseWriter, r *http.Request) {
+	// Visit auto-probe (ADR-0025, our lineage): the Quota Tracker page
+	// fires ?auto=1 on mount so a cold page shows numbers without a
+	// button press. Stale only (pool-scoped 1h throttle shared by all
+	// clients/tabs); fresh returns the current view untouched with an ok
+	// note in the same envelope shape the client already drains. The
+	// manual button (no param) always forces and refreshes the throttle
+	// timestamp.
 	if r.URL.Query().Get("auto") == "1" {
 		if a.pool.ProbeAllIfStale(r.Context(), pool.QuotaVisitProbeMaxAge) {
 			a.dash.RenderConfigResult(w, r, true, "Quotas refreshed from upstream.")
@@ -285,30 +296,18 @@ func (a *adminHandlers) handleTokenTestAll(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
-	results := a.pool.ProbeAll(r.Context())
-	outcomes := make([]dashboard.TokenTestOutcome, 0, len(results))
-	for _, res := range results {
-		i := res.Index
-		state, err := res.State, res.Err
-		ok := err == nil || errors.Is(err, upstream.ErrNoActiveSession)
-		msg := "ok"
-		switch {
-		case errors.Is(err, upstream.ErrNoActiveSession):
-			msg = "ok (no active session)"
-		case err != nil:
-			msg = err.Error()
-		default:
-			if q := quotaSummary(state); q != "" {
-				msg = "ok (" + q + ")"
-			}
-		}
-		outcomes = append(outcomes, dashboard.TokenTestOutcome{Token: i, OK: ok, Message: msg})
-	}
-	if len(outcomes) == 0 {
-		a.dash.RenderConfigResult(w, r, false, "No tokens to test (bridge mode has no fixed AUTH_TOKENS).")
+	// Zero-cost probe-all (upstream #629/#644): ProbeAllTokens claims no
+	// session and touches no model (bounded concurrency 4, 15s per-token
+	// timeout inside the pool); the frozen outcome slice renders as ONE
+	// JSON array (200).
+	outcomes, err := a.pool.ProbeAllTokens(r.Context())
+	if err != nil {
+		a.logfunc().Warn("dashboard tokens probe-all failed", "err", err)
+		a.dash.RenderConfigResult(w, r, false, "Tokens test-all failed: "+err.Error())
 		return
 	}
-	a.dash.RenderTestResults(w, r, outcomes)
+	a.logfunc().Info("dashboard tokens probe-all ok", "tokens", len(outcomes))
+	a.dash.RenderProbeAllResults(w, r, outcomes)
 }
 
 func (a *adminHandlers) addTokenPersist(ctx context.Context, token string) (int, error) {

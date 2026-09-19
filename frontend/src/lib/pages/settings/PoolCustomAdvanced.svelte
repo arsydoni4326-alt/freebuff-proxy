@@ -11,13 +11,16 @@
 
   /**
    * Custom advanced card (Pool → Controls, below Pool Controls).
-   * Hand-tuning home for the relocated Pool Tuning rows (probe
-   * intervals, admission caches, sessions). The routing knobs the
-   * strategy presets own — token rotation, the ROUTING_SMART master
-   * switch, 429 failover, QUEUE_WAIT, QUEUE_DEPTH — live in the Pool
-   * Strategy card, so none of them is rendered twice. Values carried
-   * over unchanged; only the address moved.
-   * Every row instant-saves to the DB overlay on edit (DbOverrideSave).
+   * Hand-tuning home for the relocated Pool Tuning rows (admission
+   * caches, sessions). The routing knobs the strategy presets own —
+   * token rotation, the ROUTING_SMART master switch, 429 failover,
+   * QUEUE_WAIT, QUEUE_DEPTH — live in the Pool Strategy card, so none
+   * of them is rendered twice. Values carried over unchanged; only the
+   * address moved. The quota-prober rows are gone with the prober
+   * removal (no catalog rows, no section), not relocated.
+   * Every row instant-saves to the DB overlay on edit (DbOverrideSave),
+   * except env-only SESSION_PERSIST: its row renders the effective value
+   * read-only with an env-note (no editor, no save), like the hidden keys.
    *
    * @prop {Array} meta - config catalog entries (for relocated-row copy)
    * @prop {Record<string, string>} formValues
@@ -84,10 +87,8 @@
   }
 
   // --- Relocated groups (values preserved, address moved) ---
-  const PROBE_KEYS = [
-    "QUOTA_PROBE_ACTIVE_INTERVAL",
-    "QUOTA_PROBE_IDLE_HEARTBEAT",
-  ];
+  // No probing group: QUOTA_PROBE_* / QUOTA_AUTO_PROBE were excised from
+  // the catalog with the prober removal, so there is nothing to relocate.
   const CACHE_KEYS = ["MODEL_UNAVAILABLE_CACHE_TTL", "SESSION_PROBE_CACHE_TTL"];
   const SESSION_KEYS = [
     "SESSION_RE_ADMIT_LEAD",
@@ -95,11 +96,6 @@
     "SESSION_PERSIST",
     "ADOPT_CLI_SESSION",
   ];
-  // Probing rows dim (never disable) while the prober master switch is
-  // off — the switch itself stays in Pool Tuning.
-  let autoProbeOff = $derived(
-    String(formValues.QUOTA_AUTO_PROBE ?? "true").toLowerCase() === "false",
-  );
   let adoptGated = $derived((tokenCount ?? 0) > 1);
 
   function rowText(key) {
@@ -114,12 +110,9 @@
   function shownKeys(keys) {
     return keys.filter((k) => entry(k) && hit(rowText(k)));
   }
-  let probeShown = $derived(shownKeys(PROBE_KEYS));
   let cacheShown = $derived(shownKeys(CACHE_KEYS));
   let sessionShown = $derived(shownKeys(SESSION_KEYS));
-  let visible = $derived(
-    probeShown.length + cacheShown.length + sessionShown.length,
-  );
+  let visible = $derived(cacheShown.length + sessionShown.length);
   $effect(() => {
     onMatchCount?.(visible);
   });
@@ -162,7 +155,25 @@
             {degraded}
           />
         {/snippet}
-        {#if e.kind === "bool"}
+        {#if key === "SESSION_PERSIST"}
+          <!-- Env-only (data-architecture decision): the reader never
+            consults the overlay, so there is no editor and no save — the
+            effective value renders read-only with the gateway's verbatim
+            pointer, like the hidden keys. -->
+          <div class="w-full sm:w-56">
+            <code
+              class="fp-mono text-xs text-[var(--fp-text)] break-all block text-right select-all"
+              title={val(key)}>{val(key)}</code
+            >
+            <p
+              class="text-[10px] text-[var(--fp-dim)] leading-relaxed mt-1 text-right"
+            >
+              {$tr(
+                "SESSION_PERSIST is set in the environment or .env file, not as a knob (the reader never consults the overlay).",
+              )}
+            </p>
+          </div>
+        {:else if e.kind === "bool"}
           <ToggleSwitch
             checked={boolVal(key)}
             ariaLabel={key}
@@ -223,7 +234,7 @@
   <SettingsCard
     title={$tr("Custom advanced")}
     description={$tr(
-      "Hand-tuned probing, admission-cache, and session knobs. Values carried over unchanged — only the address moved.",
+      "Hand-tuned admission-cache and session knobs. Values carried over unchanged — only the address moved.",
     )}
   >
     {#snippet icon()}
@@ -234,30 +245,10 @@
         <span
           role="status"
           class="text-[11px] font-mono text-[var(--fp-dim)] shrink-0"
-          >{$tr("{visible} of {total}", { visible, total: 9 })}</span
+          >{$tr("{visible} of {total}", { visible, total: 6 })}</span
         >
       {/if}
     {/snippet}
-
-    {#if probeShown.length > 0}
-      <div class="pt-4">
-        <p
-          class="text-xs font-semibold uppercase tracking-wider text-[var(--fp-muted)] pb-1"
-        >
-          {$tr("Probing")}
-        </p>
-        {#if autoProbeOff}
-          <p class="text-[11px] text-[var(--fp-dim)] leading-relaxed pb-1">
-            {$tr(
-              "Parked: the prober master switch (QUOTA_AUTO_PROBE) is off in Pool Tuning.",
-            )}
-          </p>
-        {/if}
-        {#each probeShown as key (key)}
-          {@render genRow(key, autoProbeOff)}
-        {/each}
-      </div>
-    {/if}
 
     {#if cacheShown.length > 0}
       <div class="pt-4">

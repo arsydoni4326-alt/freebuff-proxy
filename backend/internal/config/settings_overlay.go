@@ -21,18 +21,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
-// SettingsBlockedKeys names keys that may never live in the DB overlay.
-// Empty since the env-to-DB migration: every formerly-blocked key
-// (AUTH_TOKENS, ADMIN_TOKEN, API_KEYS, WEBHOOK_URL, UPSTREAM_BASE_URL,
-// DB_PATH, AUTO_DISCOVER_TOKEN) is now overlay-addressable so a fully
-// migrated user runs from the DB alone. The map (and IsSettingsBlocked) stay
-// as the gate for any future key that must remain env-only. Two notes:
+// SettingsBlockedKeys names keys that may never live in the DB overlay
+// (data-architecture decision, env-only): the readers consult the process
+// environment (with a .env fallback where the loader wires one) and never
+// the overlay, so a saved row would sit inert while looking live. POST
+// rejects these with a 400 pointing at the environment/.env (see
+// ValidateSettingValue and the settings handler's env-only gate, mirroring
+// the ADMIN_FORCE_SECURE_COOKIES precedent); OverlayFromRows and
+// applySettingsOverlay drop their rows so pre-existing rows go inert
+// instead of shadowing, while DELETE :key still clears the raw row. Two
+// notes:
 //
 //   - DB_PATH has no catalog entry, so OverlayFromRows still drops it as an
 //     unknown key: the open path resolves the file from the process
@@ -40,7 +45,17 @@ import (
 //     repoint the live file.
 //   - Process env still wins over the overlay at runtime for every key, so
 //     a migrated row can never silently override an explicit environment.
-var SettingsBlockedKeys = map[string]bool{}
+//   - AUTO_DISCOVER_TOKEN behavior change is intended: the overlay value
+//     applied when the environment left it unset (env > overlay > true);
+//     after gating the effective value falls back to env-then-default-true
+//     and overlay rows are inert.
+var SettingsBlockedKeys = map[string]bool{
+	"SESSION_STATE_FILE":  true,
+	"SESSION_PERSIST":     true,
+	"LOG_FILE":            true,
+	"HTTP_READ_TIMEOUT":   true,
+	"AUTO_DISCOVER_TOKEN": true,
+}
 
 // OverlayRowPrefix namespaces config overlays inside the generic settings
 // table (store holds other control state under its own keys).
@@ -108,13 +123,18 @@ func OverlayFromRows(rows map[string]string) map[string]string {
 }
 
 // ValidateSettingValue checks one overlay write before it touches the DB:
-// the key must be a known writable catalog key and the value must parse for
-// its kind. Secrets are storable: the settings table lives in the dashboard
-// DB file (0600, enforced at open), which is the persisted home of the whole
-// knob set since the env-to-DB migration. Deeper semantic checks (durations,
-// model locks, fallback maps) run through the full Load in the POST handler
-// — this gate only rejects what could never take effect (unknown keys,
-// unparseable bool/int/float), so a 400 never stores a silent no-op.
+// the key must be a known writable catalog key and the value must be one
+// Load accepts. Secrets are storable: the settings table lives in the
+// dashboard DB file (0600, enforced at open), which is the persisted home
+// of the whole knob set since the env-to-DB migration. This gate rejects
+// exactly what Load rejects — a value waved through here but refused by the
+// POST handler's double-Load would cost the operator a 400 on something the
+// gate just blessed, and a value rejected here that Load would take is a
+// 400 on something that would have worked. Parse-only is not enough: an
+// integer can parse yet fall outside its Load range (negatives, MATURITY
+// 1..28), a duration can parse yet be one Validate refuses (non-positive
+// rotation/request timeouts, negative jitter), a select can parse as text
+// yet name no enumerant, and a float can parse yet be NaN/Inf/negative.
 func ValidateSettingValue(key, value string) error {
 	n := NormalizeSettingKey(key)
 	if n == "" {
@@ -137,34 +157,84 @@ func ValidateSettingValue(key, value string) error {
 			return fmt.Errorf("%s must be a bool (true/false, 1/0, on/off, yes/no), got %q", n, value)
 		}
 	case "int":
-		if _, ok := parseIntPtr(v); !ok {
+		iv, ok := parseIntPtr(v)
+		if !ok {
 			return fmt.Errorf("%s must be an integer, got %q", n, value)
 		}
+		// Every int knob but one rejects negatives at Load (Validate): the
+		// streak target additionally confines itself to 1..28.
+		// SLOTS_PER_ACCOUNT is the exception — the loader floors negatives
+		// to 0 (unlimited) instead of failing, the same QUEUE_WAIT parity
+		// model as the folded durations, so the gate waves them through
+		// and Load lands 0. (Validate still refuses a hand-built negative,
+		// which only direct Config literals can carry post-floor.)
+		// A direct Config with a zero MaturityTargetDays never reaches
+		// Validate from Load (the loader defaults blanks to 7), so the
+		// gate mirrors the loader: only an explicit out-of-range value is
+		// refused.
+		if n == "MATURITY_TARGET_DAYS" {
+			if *iv < 1 || *iv > 28 {
+				return fmt.Errorf("%s must be an integer in 1..28 (got %d)", n, *iv)
+			}
+		} else if n != "SLOTS_PER_ACCOUNT" && *iv < 0 {
+			return fmt.Errorf("%s cannot be negative (got %d)", n, *iv)
+		}
 	}
-	// RATE_LIMIT_PER_IP renders as a text knob but parses as a float: an
-	// unparseable value would fall through overrideFloat silently, so check
-	// it explicitly (every other text/select/list knob fails its Load parse
-	// loudly when malformed).
+	// Select knobs are checked against their catalog enumerants with the
+	// same case policy Load validates with: LOG_LEVEL rides the
+	// case-insensitive slog mapping and TLS_FINGERPRINT lowercases before
+	// comparing, while LOG_FORMAT and COST_MODE compare exactly (Load
+	// rejects "JSON" and "FREE").
+	if def.Kind == "select" && len(def.Enum) > 0 {
+		fold := n == "LOG_LEVEL" || n == "TLS_FINGERPRINT"
+		accepted := false
+		for _, e := range def.Enum {
+			if v == e || (fold && strings.EqualFold(v, e)) {
+				accepted = true
+				break
+			}
+		}
+		if !accepted {
+			return fmt.Errorf("%s must be one of: %s (got %q)", n, strings.Join(def.Enum, ", "), value)
+		}
+	}
+	// RATE_LIMIT_PER_IP renders as a text knob but parses as a float, and
+	// strconv.ParseFloat accepts NaN/Inf: Load (Validate) refuses
+	// non-finite and negative values, so the gate matches it exactly.
 	if n == "RATE_LIMIT_PER_IP" {
-		if _, ok := parseFloatPtr(v); !ok {
+		fv, ok := parseFloatPtr(v)
+		if !ok {
 			return fmt.Errorf("%s must be a number (requests/second, 0 disables), got %q", n, value)
 		}
-	}
-	// COOLDOWN_IP_JITTER_RATIO renders as a text knob but parses as a
-	// float: same silent-fallthrough guard as RATE_LIMIT_PER_IP above.
-	if n == "COOLDOWN_IP_JITTER_RATIO" {
-		if _, ok := parseFloatPtr(v); !ok {
-			return fmt.Errorf("%s must be a number (+/-fraction, e.g. 0.2), got %q", n, value)
+		if math.IsNaN(*fv) || math.IsInf(*fv, 0) {
+			return fmt.Errorf("%s must be a finite number (requests/second, 0 disables), got %q", n, value)
+		}
+		if *fv < 0 {
+			return fmt.Errorf("%s cannot be negative (got %q)", n, value)
 		}
 	}
-	// Duration knobs are checked here, not left to the Load in the POST
-	// handler: that Load runs after the handler has read the DB overlay, so
-	// a typo would pay a database round trip to earn the same 400. This gate
-	// owns the parse only — a zero or negative duration can carry documented
-	// meaning (floor, disabled), and the loader applies it.
+	// Duration knobs parse here so a typo is a cheap 400 before any DB
+	// round trip. Sign policy mirrors the loader: rotation, request,
+	// session-call, and registry-refresh timeouts must be positive
+	// (Validate refuses zero); jitter refuses negatives but keeps 0 (the
+	// SafeMode preset fills an unset jitter). Every other duration knob
+	// folds a non-positive value to its documented default in the loader
+	// (the QUEUE_WAIT parity model: gate accepts, Load lands positive), so
+	// parse-only keeps gate and Load in agreement there.
 	if durationSettingKeys[n] {
-		if _, err := time.ParseDuration(v); err != nil {
+		d, err := time.ParseDuration(v)
+		if err != nil {
 			return fmt.Errorf("%s must be a Go duration (e.g. 30s, 1m, 30m), got %q", n, value)
+		}
+		switch n {
+		case "ROTATION_INTERVAL", "REQUEST_TIMEOUT", "SESSION_CALL_TIMEOUT", "REGISTRY_REFRESH":
+			if d <= 0 {
+				return fmt.Errorf("%s must be greater than zero (got %q)", n, value)
+			}
+		case "REQUEST_JITTER":
+			if d < 0 {
+				return fmt.Errorf("%s cannot be negative (got %q)", n, value)
+			}
 		}
 	}
 	return nil
@@ -242,7 +312,10 @@ func SettingSources(configPath string, overlay map[string]string) map[string]str
 			out[k] = "env"
 			continue
 		}
-		if _, ok := overlay[k]; ok {
+		// Env-only keys never report db: OverlayFromRows already drops their
+		// rows, but a hand-built overlay map must not resurrect a db tier the
+		// loader would ignore (the reader never consults the overlay).
+		if _, ok := overlay[k]; ok && !IsSettingsBlocked(k) {
 			out[k] = "db"
 			continue
 		}

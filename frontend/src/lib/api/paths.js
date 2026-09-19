@@ -53,13 +53,13 @@ export const adminActions = {
   tokenRemove: "/admin/tokens/remove",
   tokenRemoveSpecific: "/admin/tokens/remove-specific",
   tokenSwap: "/admin/tokens/swap",
-  tokenTestAll: "/admin/tokens/test-all",
+  testAll: "/admin/tokens/test-all",
   restart: "/admin/restart",
 };
 
 /**
  * Per-token action endpoints: /admin/tokens/{idx}/{action}.
- * Actions: unlock, unlock-lock, lock, finish, test, session, maturity,
+ * Actions: unlock, unlock-lock, lock, finish, test, session,
  * refund-refresh.
  */
 export const tokenActions = {
@@ -71,6 +71,4 @@ export const tokenActions = {
   refundRefresh: (idx) => `/admin/tokens/${idx}/refund-refresh`,
   test: (idx) => `/admin/tokens/${idx}/test`,
   session: (idx) => `/admin/tokens/${idx}/session`,
-  maturity: (idx) => `/admin/tokens/${idx}/maturity`,
-  maturityTouch: (idx) => `/admin/tokens/${idx}/maturity/touch`,
 };

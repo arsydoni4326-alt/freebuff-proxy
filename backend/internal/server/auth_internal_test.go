@@ -189,7 +189,8 @@ func errorResponse(t *testing.T, err error) (status int, hdr http.Header, body s
 		Code    string `json:"code"`
 		Hint    string `json:"hint"`
 	} `json:"error"`
-}) {
+},
+) {
 	t.Helper()
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	w := httptest.NewRecorder()
@@ -248,6 +249,79 @@ func TestWriteErrorNewMappings(t *testing.T) {
 		}
 		if body.Error.Hint == "" || !strings.Contains(body.Error.Hint, "COST_MODE") {
 			t.Errorf("hint = %q, want COST_MODE hint", body.Error.Hint)
+		}
+	})
+
+	t.Run("free_mode_unavailable 403 terminal", func(t *testing.T) {
+		// docs/CLI-LIMITASI.md P0-1: region/egress gate — terminal 403,
+		// never the generic 502, never a Retry-After.
+		err := &upstream.FreeModeUnavailableError{Status: http.StatusForbidden, CountryBlockReason: "anonymous_network"}
+		status, hdr, body := errorResponse(t, err)
+		if status != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", status)
+		}
+		if body.Error.Code != "free_mode_unavailable" {
+			t.Errorf("code = %q, want free_mode_unavailable", body.Error.Code)
+		}
+		if body.Error.Message == "" {
+			t.Error("message is empty, want egress-actionable copy")
+		}
+		if ra := hdr.Get("Retry-After"); ra != "" {
+			t.Errorf("Retry-After = %q, want empty (terminal gate)", ra)
+		}
+	})
+
+	t.Run("provider_usage_exhausted 402 verbatim", func(t *testing.T) {
+		// docs/CLI-LIMITASI.md P0-2: operator-side refill — 402 with a
+		// distinct code, upstream body verbatim, never out_of_credits.
+		const upstreamBody = `{"error":"insufficient credits"}`
+		err := &upstream.ProviderUsageError{Status: http.StatusPaymentRequired, Body: upstreamBody}
+		status, hdr, body := errorResponse(t, err)
+		if status != http.StatusPaymentRequired {
+			t.Errorf("status = %d, want 402", status)
+		}
+		if body.Error.Code != "provider_usage_exhausted" {
+			t.Errorf("code = %q, want provider_usage_exhausted", body.Error.Code)
+		}
+		if body.Error.Message != upstreamBody {
+			t.Errorf("message = %q, want upstream body verbatim", body.Error.Message)
+		}
+		if ra := hdr.Get("Retry-After"); ra != "" {
+			t.Errorf("Retry-After = %q, want empty", ra)
+		}
+	})
+
+	t.Run("consent_required 409 re-confirm", func(t *testing.T) {
+		err := &upstream.ConsentRequiredError{Status: http.StatusConflict, WalletSpend: 5}
+		status, hdr, body := errorResponse(t, err)
+		if status != http.StatusConflict {
+			t.Errorf("status = %d, want 409", status)
+		}
+		if body.Error.Code != "consent_required" {
+			t.Errorf("code = %q, want consent_required", body.Error.Code)
+		}
+		if !strings.Contains(body.Error.Message, "5") {
+			t.Errorf("message = %q, want re-confirm amount", body.Error.Message)
+		}
+		if ra := hdr.Get("Retry-After"); ra != "" {
+			t.Errorf("Retry-After = %q, want empty (terminal)", ra)
+		}
+	})
+
+	t.Run("first_tab_discount_changed 409 no-charge", func(t *testing.T) {
+		err := &upstream.FirstTabChangedError{Status: http.StatusConflict, Body: `{"status":"first_tab_discount_changed"}`}
+		status, hdr, body := errorResponse(t, err)
+		if status != http.StatusConflict {
+			t.Errorf("status = %d, want 409", status)
+		}
+		if body.Error.Code != "first_tab_discount_changed" {
+			t.Errorf("code = %q, want first_tab_discount_changed", body.Error.Code)
+		}
+		if !strings.Contains(body.Error.Message, "No Freebucks were charged") {
+			t.Errorf("message = %q, want no-charge copy", body.Error.Message)
+		}
+		if ra := hdr.Get("Retry-After"); ra != "" {
+			t.Errorf("Retry-After = %q, want empty (terminal)", ra)
 		}
 	})
 
@@ -569,8 +643,8 @@ func TestWriteErrorLoadSheddingAndPeakHours(t *testing.T) {
 		wantRetryMin time.Duration
 		wantRetryMax time.Duration
 	}{
-		{"load_shedding", &upstream.RateLimitError{Status: "load_shedding", RetryAfter: upstream.LoadShedCooldown, Body: "load saturated"}, "load_shedding", 60 * time.Second, 120 * time.Second},
-		{"peak_hours", &upstream.RateLimitError{Status: "peak_hours", RetryAfter: upstream.PeakHoursCooldown, Body: "peak hours"}, "peak_hours", 25 * time.Minute, 35 * time.Minute},
+		{"load_shedding", &upstream.RateLimitError{Status: "load_shedding", RetryAfter: 90 * time.Second, Body: "load saturated"}, "load_shedding", 60 * time.Second, 120 * time.Second},
+		{"peak_hours", &upstream.RateLimitError{Status: "peak_hours", RetryAfter: 30 * time.Minute, Body: "peak hours"}, "peak_hours", 25 * time.Minute, 35 * time.Minute},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -712,5 +786,22 @@ func TestWriteErrorSessionInvalid(t *testing.T) {
 	}
 	if !strings.Contains(writeBody.Error.Message, "retry immediately") {
 		t.Errorf("message = %q, want retry-immediately hint", writeBody.Error.Message)
+	}
+}
+
+// TestWriteErrorNoEndpoints verifies issue #630's routing refusal surfaces
+// as 502 with code "model_no_endpoints" — never the opaque
+// upstream_unavailable — plus the shape-to-change hint.
+func TestWriteErrorNoEndpoints(t *testing.T) {
+	err := &upstream.NoEndpointsError{Status: http.StatusNotFound, Model: "deepseek/deepseek-v4-flash", Body: "No endpoints found for deepseek/deepseek-v4-flash."}
+	status, _, writeBody := errorResponse(t, err)
+	if status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", status)
+	}
+	if writeBody.Error.Code != "model_no_endpoints" {
+		t.Errorf("code = %q, want model_no_endpoints", writeBody.Error.Code)
+	}
+	if !strings.Contains(writeBody.Error.Message, "retry without tools") {
+		t.Errorf("message = %q, want without-tools hint", writeBody.Error.Message)
 	}
 }

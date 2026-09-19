@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"freebuff-proxy/backend/internal/phasetiming"
+	"freebuff-proxy/backend/internal/pool"
 )
 
 // resultEnvelope is the single admin wire shape: every admin endpoint ships
@@ -49,6 +50,25 @@ func (d *Dashboard) RenderConfigResult(w http.ResponseWriter, r *http.Request, o
 	d.RenderResult(w, status, ok, message, "")
 }
 
+// DropSessionOutcome is the drop-session wire shape: ok is always true on
+// this path (failures use the shared envelope), kept reports the
+// precious-keep no-op, and message carries the keep note only when kept —
+// a real drop is a bare acknowledgment whose toast copy lives
+// frontend-side.
+type DropSessionOutcome struct {
+	OK      bool   `json:"ok"`
+	Kept    bool   `json:"kept"`
+	Message string `json:"message,omitempty"`
+}
+
+// RenderDropSessionResult writes the drop-session outcome (200): kept=true
+// carries the precious-keep note verbatim, kept=false is the bare
+// {ok:true,kept:false} acknowledgment.
+func (d *Dashboard) RenderDropSessionResult(w http.ResponseWriter, r *http.Request, kept bool, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(DropSessionOutcome{OK: true, Kept: kept, Message: message})
+}
+
 // TokenTestOutcome is one per-token probe outcome in a test-all response.
 type TokenTestOutcome struct {
 	Token      int    `json:"token"`
@@ -67,6 +87,17 @@ func (d *Dashboard) RenderTestResults(w http.ResponseWriter, r *http.Request, ou
 	}
 	for i := range outcomes {
 		outcomes[i].InstanceID = shortID(outcomes[i].InstanceID)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(outcomes)
+}
+
+// RenderProbeAllResults writes the test-all probe outcome as ONE JSON array
+// of pool.ProbeTokenOutcome (200). The legacy TokenTestOutcome /
+// RenderTestResults pair stays untouched for the single-token path.
+func (d *Dashboard) RenderProbeAllResults(w http.ResponseWriter, r *http.Request, outcomes []pool.ProbeTokenOutcome) {
+	if outcomes == nil {
+		outcomes = []pool.ProbeTokenOutcome{}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(outcomes)

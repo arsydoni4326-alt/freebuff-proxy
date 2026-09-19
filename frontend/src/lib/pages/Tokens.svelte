@@ -59,15 +59,8 @@
   // the operator enables DEVTOOLS_ENABLED=true in .env (same gate as the
   // sidebar's Dev Tools tab and the server-side DevTools route).
   let devToolsEnabled = $state(false);
-  // Token rotation strategy (TOKEN_ROTATION) + auto-failover flag
-  // (RATE_LIMIT_FAILOVER): summary chips fed from the tokens snapshot in
-  // applyTokens. Policy editing lives in the Pool Strategy card on the
-  // Controls tab.
-  let tokenRotation = $state("drain");
-  let rateLimitFailover = $state(true);
-  // Queue-posture chip: the same five-key detection the Pool Strategy card
-  // badge uses, read from the shared settings store (the tokens snapshot
-  // still carries rotation + failover only). The store is empty until
+  // Queue-posture chip: the same detection the Pool Strategy card badge
+  // uses, read from the shared settings store. The store is empty until
   // fetchSettings() resolves and stays empty — or degraded — when the
   // overlay is unreachable, so the chip reports nothing until then rather
   // than guessing a posture from file/loader defaults.
@@ -77,11 +70,11 @@
       Object.keys($settingsFormValues).length === 0
       ? null
       : detectStrategy({
-          ROUTING_SMART: $settingsFormValues.ROUTING_SMART,
-          TOKEN_ROTATION: $settingsFormValues.TOKEN_ROTATION,
-          RATE_LIMIT_FAILOVER: $settingsFormValues.RATE_LIMIT_FAILOVER,
+          SLOTS_PER_ACCOUNT: $settingsFormValues.SLOTS_PER_ACCOUNT,
           QUEUE_WAIT: $settingsFormValues.QUEUE_WAIT,
           QUEUE_DEPTH: $settingsFormValues.QUEUE_DEPTH,
+          PIN_MODEL: $settingsFormValues.PIN_MODEL,
+          MAX_SPILL_ACCOUNTS: $settingsFormValues.MAX_SPILL_ACCOUNTS,
         }),
   );
   // Active tab: pool accounts vs pool controls vs account warming. The
@@ -117,12 +110,6 @@
   function applyTokens(v) {
     if (!v) return;
     data = v;
-    if (v.token_rotation) {
-      tokenRotation = v.token_rotation;
-    }
-    if (v.rate_limit_failover !== undefined) {
-      rateLimitFailover = v.rate_limit_failover;
-    }
     // Seed the per-token spawn-model map so no TokenCard binding ever sees
     // with a fallback (props_invalid_value) and unmounts the table.
     (v?.tokens ?? []).forEach((t, i) => {
@@ -183,6 +170,10 @@
     title,
     tone = "warn",
     confirmText = "",
+    // Frontend-side success copy: the drop-session real-drop leg answers
+    // {ok:true, kept:false} with no message field (backend lane), so callers
+    // whose endpoint omits the message pass their own toast copy here.
+    successMsg = "",
   ) {
     if (confirmMsg) {
       const ok = await confirmAction({
@@ -196,12 +187,28 @@
     actionPending = true;
     try {
       const result = await postAPI(url, body || undefined);
+      // Precious-keep honesty: the gateway answers {ok:true, kept:true} when
+      // keepSession fires (the session survives). Report the keep as a
+      // warning note — never a success toast — then refetch so the still-live
+      // row stays on screen.
+      if (result && result.kept === true) {
+        pushToast({
+          tone: "warning",
+          title:
+            result.message ||
+            $tr("Session kept (precious) — next request still rides it."),
+        });
+        refreshTokens();
+        return;
+      }
       const actOK = result.ok !== false;
       pushToast({
         tone: actOK ? "success" : "error",
         title:
           result.message ||
-          (actOK ? $tr("Action completed") : $tr("Action failed")),
+          (actOK
+            ? successMsg || $tr("Action completed")
+            : $tr("Action failed")),
       });
       refreshTokens();
     } catch (e) {
@@ -307,6 +314,10 @@
         "Drop active session on account #{idx}? This ends the current session upstream (e.g. luna) so the next request admits fresh for the model you want. Use this when you need to switch models immediately.",
         { idx: idx + 1 },
       ),
+      undefined,
+      "warn",
+      "",
+      $tr("Session dropped — next request will re-admit fresh."),
     );
   }
 
@@ -456,8 +467,7 @@
       refreshTokens();
     }
     window.addEventListener("fp-config-saved", onConfigSaved);
-    // Rotation/failover chips are read-only from the tokens snapshot
-    // (applyTokens); only the DevTools gate still reads .env here.
+    // Only the DevTools gate still reads .env here.
     (async () => {
       try {
         const cfgRes = await fetchAPI(adminApi.config);
@@ -516,26 +526,6 @@
       </div>
       <div
         class="flex flex-col px-2.5 py-1.5 bg-[var(--fp-surface)]"
-        data-testid="rotation-chip"
-        title={$tr(
-          "Which account each request picks (TOKEN_ROTATION, effective value). Both presets select Drain; the other modes are picked in the Pool Strategy card.",
-        )}
-      >
-        <dt class="text-[10px] uppercase tracking-wider text-[var(--fp-dim)]">
-          {$tr("Rotation")}
-        </dt>
-        <dd class="text-sm font-semibold text-[var(--fp-text)]">
-          {tokenRotation === "drain"
-            ? $tr("Drain")
-            : tokenRotation === "round_robin"
-              ? $tr("Robin")
-              : tokenRotation === "least_used"
-                ? $tr("Least")
-                : $tr("Random")}
-        </dd>
-      </div>
-      <div
-        class="flex flex-col px-2.5 py-1.5 bg-[var(--fp-surface)]"
         data-testid="queue-chip"
         title={posture
           ? $tr(
@@ -549,30 +539,15 @@
           {$tr("Queue")}
         </dt>
         <dd class="text-sm font-semibold text-[var(--fp-text)]">
-          {posture === "drain"
-            ? $tr("Drain")
-            : posture === "balance"
-              ? $tr("Balance")
-              : posture === "custom"
-                ? $tr("Custom")
-                : "—"}
-        </dd>
-      </div>
-      <div
-        class="flex flex-col px-2.5 py-1.5 bg-[var(--fp-surface)]"
-        title={$tr(
-          "On a 429 the request retries at once on another healthy account. Toggle it in the Pool Strategy card on the Controls tab.",
-        )}
-      >
-        <dt class="text-[10px] uppercase tracking-wider text-[var(--fp-dim)]">
-          {$tr("Failover")}
-        </dt>
-        <dd
-          class="text-sm font-semibold {rateLimitFailover
-            ? 'text-[var(--fp-accent)]'
-            : 'text-[var(--fp-dim)]'}"
-        >
-          {rateLimitFailover ? $tr("On") : $tr("Off")}
+          {posture === "masq"
+            ? $tr("MASQ")
+            : posture === "drain"
+              ? $tr("Drain")
+              : posture === "balance"
+                ? $tr("Balance")
+                : posture === "custom"
+                  ? $tr("Custom")
+                  : "—"}
         </dd>
       </div>
     </dl>

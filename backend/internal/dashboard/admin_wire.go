@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 
 	"freebuff-proxy/backend/internal/config"
+	"freebuff-proxy/backend/internal/pool"
 )
 
 // AdminAPIQuery is one documented query parameter.
@@ -251,15 +252,6 @@ type SpawnSessionRequest struct {
 	Model string `json:"model,omitempty"`
 }
 
-// MaturityUpdateRequest is the POST /admin/tokens/{id}/maturity body
-// (absent fields leave that dimension untouched).
-type MaturityUpdateRequest struct {
-	Enabled    *bool  `json:"enabled,omitempty"`
-	Mode       string `json:"mode,omitempty"`
-	Target     *int   `json:"target,omitempty"`
-	TouchModel string `json:"touch_model,omitempty"`
-}
-
 // --- system ---
 
 // ModeSwitchRequest is the POST /admin/mode body.
@@ -350,7 +342,7 @@ func AdminAPIPaths() []AdminAPIPath {
 		{Method: "GET", Path: "/admin/api/logs/export", OperationID: "exportLogs", Summary: "Streamed versioned export of request_records plus log_entries", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: logsExportDoc{}, Query: []AdminAPIQuery{{Name: "since", Description: "Unix-millis lower bound (default 0, clamped to 168h)"}, {Name: "until", Description: "Unix-millis upper bound (default now)"}}},
 		{Method: "POST", Path: "/admin/api/logs/import", OperationID: "importLogs", Summary: "Gap-fill restore of an export document (INSERT OR IGNORE, 64MB cap)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: logsImportReport{}},
 		{Method: "GET", Path: "/admin/api/metrics", OperationID: "getMetrics", Summary: "Latency and throughput view model", Auth: "dashboard", Kind: AdminAPIKindJSON, Response: metricsData{}},
-		{Method: "GET", Path: "/admin/api/usage", OperationID: "getUsage", Summary: "Token usage log: range totals plus per-entry detail (9Router-style overview)", Auth: "dashboard", Kind: AdminAPIKindJSON, Response: usageData{}, Query: []AdminAPIQuery{{Name: "range", Description: "today (default) | 24h | 7d | 30d | 60d"}}},
+		{Method: "GET", Path: "/admin/api/usage", OperationID: "getUsage", Summary: "Token usage log: range totals plus per-entry detail (9Router-style overview)", Auth: "dashboard", Kind: AdminAPIKindJSON, Response: usageData{}, Query: []AdminAPIQuery{{Name: "range", Description: "today (default) | 24h | 7d | 30d | 60d"}, {Name: "group_by", Description: "key returns the per-client-key aggregation (keys[] with key_id hex(sha256)[:16]) alongside the range view"}}},
 		{Method: "GET", Path: "/admin/api/version", OperationID: "getVersion", Summary: "Running version plus update check", Auth: "dashboard", Kind: AdminAPIKindJSON, Response: VersionResponse{}, Query: []AdminAPIQuery{{Name: "force", Description: "force=true invalidates the cached update check"}}},
 		{Method: "GET", Path: "/admin/api/events", OperationID: "events", Summary: "Server-sent event stream (dashboard live updates)", Auth: "dashboard", Kind: AdminAPIKindSSE},
 		{Method: "GET", Path: "/admin/api/auth/status", OperationID: "getAuthStatus", Summary: "Dashboard auth state (login mode, factory-default check)", Auth: "dashboard", Kind: AdminAPIKindJSON, Response: AuthStatusResponse{}},
@@ -374,16 +366,14 @@ func AdminAPIPaths() []AdminAPIPath {
 		{Method: "POST", Path: "/admin/tokens/{id}/unlock", OperationID: "tokenUnlock", Summary: "Return one token to rotation", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/lock", OperationID: "tokenLock", Summary: "Take one token out of rotation", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/unlock-lock", OperationID: "tokenUnlockLock", Summary: "Unlock then immediately re-lock (cooldown reset)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
-		{Method: "POST", Path: "/admin/tokens/{id}/maturity", OperationID: "tokenMaturity", Summary: "Set per-token streak-maturity automation", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: MaturityUpdateRequest{}, Response: ResultEnvelope{}},
-		{Method: "POST", Path: "/admin/tokens/{id}/maturity/touch", OperationID: "tokenMaturityTouch", Summary: "Fire one manual maturity touch outside the daily slot", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/bridge-tokens/{key}/lock", OperationID: "bridgeTokenLock", Summary: "Lock one bridge-mode entry", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/bridge-tokens/{key}/unlock", OperationID: "bridgeTokenUnlock", Summary: "Unlock one bridge-mode entry", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/finish", OperationID: "tokenFinish", Summary: "FINISH one token's upstream runs", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/drop-session", OperationID: "tokenDropSession", Summary: "Drop one token's upstream session", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/refund-refresh", OperationID: "tokenRefundRefresh", Summary: "Replay one token's parked pending-refund DELETE (same instance; drops the result if the account changed)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/test", OperationID: "tokenTest", Summary: "Zero-cost upstream probe of one token", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
+		{Method: "POST", Path: "/admin/tokens/test-all", OperationID: "tokensTestAll", Summary: "Zero-cost upstream probe of all tokens", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: []pool.ProbeTokenOutcome{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/session", OperationID: "tokenSpawnSession", Summary: "Ensure one token's upstream session for a model", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: SpawnSessionRequest{}, Response: ResultEnvelope{}},
-		{Method: "POST", Path: "/admin/tokens/test-all", OperationID: "tokenTestAll", Summary: "Probe every pooled token (?auto=1 returns the throttled snapshot)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: []TokenTestOutcome{}, Query: []AdminAPIQuery{{Name: "auto", Description: "auto=1 serves the throttled quota snapshot without probing"}}},
 		{Method: "POST", Path: "/admin/tokens/add", OperationID: "tokenAdd", Summary: "Add one upstream token to the pool and persist to .env", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenAddRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/remove", OperationID: "tokenRemove", Summary: "Remove one pool token (absent index removes the last)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenRemoveRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/swap", OperationID: "tokenSwap", Summary: "Swap two pool positions", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenSwapRequest{}, Response: ResultEnvelope{}},

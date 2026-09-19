@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -52,7 +53,7 @@ func TestOpenWithStatusFreshInit(t *testing.T) {
 	if st.ToVersion != schemaVersion {
 		t.Errorf("ToVersion = %d, want %d", st.ToVersion, schemaVersion)
 	}
-	if want := []int{1, 2, 3, 4}; !reflect.DeepEqual(st.Applied, want) {
+	if want := []int{1, 2, 3, 4, 5}; !reflect.DeepEqual(st.Applied, want) {
 		t.Errorf("Applied = %v, want %v (whole chain ran)", st.Applied, want)
 	}
 	if st.Noop {
@@ -103,7 +104,7 @@ func TestOpenWithStatusLegacyV1AppliesChain(t *testing.T) {
 	if st.FromVersion != 1 {
 		t.Errorf("FromVersion = %d, want 1 (the legacy stamp)", st.FromVersion)
 	}
-	if want := []int{2, 3, 4}; !reflect.DeepEqual(st.Applied, want) {
+	if want := []int{2, 3, 4, 5}; !reflect.DeepEqual(st.Applied, want) {
 		t.Errorf("Applied = %v, want %v (only the pending chain runs)", st.Applied, want)
 	}
 	if st.Noop {
@@ -120,8 +121,8 @@ func TestOpenWithStatusLegacyV1AppliesChain(t *testing.T) {
 }
 
 // TestOpenWithStatusLegacyV4TakeoverThenNoop pins the pre-goose v4 path: the
-// first boot baselines the whole chain (a write, so not a no-op) with every
-// row intact, and the immediate re-boot is the strict no-op.
+// first boot baselines 1..4 (a write, so not a no-op) and runs only 00005,
+// with every row intact — and the immediate re-boot is the strict no-op.
 func TestOpenWithStatusLegacyV4TakeoverThenNoop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-v4.db")
 	raw, err := sql.Open("sqlite", path)
@@ -148,8 +149,8 @@ func TestOpenWithStatusLegacyV4TakeoverThenNoop(t *testing.T) {
 	if fst.FromVersion != 4 || fst.ToVersion != schemaVersion {
 		t.Errorf("takeover from/to = %d->%d, want 4->%d", fst.FromVersion, fst.ToVersion, schemaVersion)
 	}
-	if len(fst.Applied) != 0 {
-		t.Errorf("takeover Applied = %v, want [] (chain baselined, nothing ran)", fst.Applied)
+	if want := []int{5}; !reflect.DeepEqual(fst.Applied, want) {
+		t.Errorf("takeover Applied = %v, want %v (1..4 baselined, only 00005 ran)", fst.Applied, want)
 	}
 	if fst.Noop {
 		t.Error("takeover Noop = true, want false (baseline seeding wrote)")
@@ -192,7 +193,7 @@ func TestOpenSteadyStateStrictNoop(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	beforeHash, beforeMode := fileHash(t, path), fileMode(t, path)
-	if beforeMode != 0o600 {
+	if runtime.GOOS != "windows" && beforeMode != 0o600 {
 		t.Fatalf("mode = %o, want 600 before the no-op re-boot", beforeMode)
 	}
 
@@ -221,7 +222,9 @@ func TestOpenSteadyStateStrictNoop(t *testing.T) {
 	if got := fileHash(t, path); got != beforeHash {
 		t.Error("DB bytes changed across a no-op re-boot (want zero writes)")
 	}
-	if got := fileMode(t, path); got != beforeMode {
-		t.Errorf("DB mode = %o across a no-op re-boot, want %o (unchanged)", got, beforeMode)
+	if runtime.GOOS != "windows" {
+		if got := fileMode(t, path); got != beforeMode {
+			t.Errorf("DB mode = %o across a no-op re-boot, want %o (unchanged)", got, beforeMode)
+		}
 	}
 }

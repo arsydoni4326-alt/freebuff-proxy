@@ -867,8 +867,8 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Probe every pooled token (?auto=1 returns the throttled snapshot) */
-    post: operations["tokenTestAll"];
+    /** Zero-cost upstream probe of all tokens */
+    post: operations["tokensTestAll"];
     delete?: never;
     options?: never;
     head?: never;
@@ -920,40 +920,6 @@ export interface paths {
     put?: never;
     /** Take one token out of rotation */
     post: operations["tokenLock"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/admin/tokens/{id}/maturity": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Set per-token streak-maturity automation */
-    post: operations["tokenMaturity"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/admin/tokens/{id}/maturity/touch": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Fire one manual maturity touch outside the daily slot */
-    post: operations["tokenMaturityTouch"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1109,12 +1075,6 @@ export interface components {
     };
     LogoutResponse: {
       ok: boolean;
-    };
-    MaturityUpdateRequest: {
-      enabled?: boolean | null;
-      mode?: string;
-      target?: number | null;
-      touch_model?: string;
     };
     ModeSwitchRequest: {
       mode: string;
@@ -1288,6 +1248,7 @@ export interface components {
         ts: number;
       }[];
       request_records: {
+        client_key_hash?: string;
         endpoint: string;
         error: string;
         model: string;
@@ -1473,8 +1434,6 @@ export interface components {
         access_tier?: string;
         account_id?: string;
         active_runs: number;
-        allowed_models?: string[];
-        allowlist_skips?: number;
         ban_type?: string;
         banned_until?: string;
         cooldown_active: boolean;
@@ -1552,6 +1511,8 @@ export interface components {
         messages_24h: number;
         oldest_waiter_ms: number;
         pending_refund?: string;
+        pin_skips?: number;
+        pinned_model?: string;
         queue_depth: number;
         queue_position: number;
         queued_waiters: number;
@@ -1627,12 +1588,6 @@ export interface components {
       models: string[];
       token_count: number;
     };
-    tokenTestAllResponse: {
-      instance_id: string;
-      message: string;
-      ok: boolean;
-      token: number;
-    }[];
     tokensData: {
       bridge_token_cards?: {
         active_runs: number;
@@ -1694,21 +1649,17 @@ export interface components {
       maturity_enabled: boolean;
       maturity_window_end?: string;
       maturity_window_start?: string;
+      max_spill_accounts: number;
       mode: string;
       queue_depth: number;
       queue_wait: string;
-      rate_limit_failover: boolean;
-      routing_smart: boolean;
       show_bridge: boolean;
+      slots_per_account: number;
       token_count: number;
-      token_max_concurrent: number;
-      token_rotation?: string;
       tokens: {
         access_tier?: string;
         account_id?: string;
         active_runs: number;
-        allowed_models?: string[];
-        allowlist_skips?: number;
         ban_type?: string;
         banned_until?: string;
         cooldown_active: boolean;
@@ -1787,6 +1738,8 @@ export interface components {
         messages_24h: number;
         oldest_waiter_ms: number;
         pending_refund?: string;
+        pin_skips?: number;
+        pinned_model?: string;
         queue_depth: number;
         queue_position: number;
         queued_waiters: number;
@@ -1846,6 +1799,19 @@ export interface components {
         name: string;
       }[];
     };
+    tokensTestAllResponse: {
+      cooldown_until?: string;
+      cooling: boolean;
+      daily_limit_freebucks: number;
+      daily_spent_freebucks: number;
+      detail?: string;
+      email?: string;
+      index: number;
+      quarantined: boolean;
+      reset_at?: string;
+      spendable_freebucks: number;
+      status: string;
+    }[];
     tracesData: {
       enabled: boolean;
       traces: {
@@ -1872,6 +1838,7 @@ export interface components {
     usageData: {
       entries: {
         cached: number;
+        client_key_hash?: string;
         input: number;
         model: string;
         ok: boolean;
@@ -1880,6 +1847,24 @@ export interface components {
         req_id: string;
         total: number;
         ts_ms: number;
+      }[];
+      keys?: {
+        by_model: {
+          [key: string]: {
+            completion: number;
+            prompt: number;
+            reasoning: number;
+            requests: number;
+            tokens: number;
+          };
+        };
+        first_seen: number;
+        freebucks: number;
+        key_id: string;
+        last_seen: number;
+        requests: number;
+        success_rate: number;
+        total_tokens: number;
       }[];
       range: string;
       totals: {
@@ -2520,6 +2505,8 @@ export interface operations {
       query?: {
         /** @description today (default) | 24h | 7d | 30d | 60d */
         range?: string;
+        /** @description key returns the per-client-key aggregation (keys[] with key_id hex(sha256)[:16]) alongside the range view */
+        group_by?: string;
       };
       header?: never;
       path?: never;
@@ -3099,25 +3086,22 @@ export interface operations {
       };
     };
   };
-  tokenTestAll: {
+  tokensTestAll: {
     parameters: {
-      query?: {
-        /** @description auto=1 serves the throttled quota snapshot without probing */
-        auto?: string;
-      };
+      query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
     requestBody?: never;
     responses: {
-      /** @description Probe every pooled token (?auto=1 returns the throttled snapshot) */
+      /** @description Zero-cost upstream probe of all tokens */
       200: {
         headers: {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["tokenTestAllResponse"];
+          "application/json": components["schemas"]["tokensTestAllResponse"];
         };
       };
     };
@@ -3178,54 +3162,6 @@ export interface operations {
     requestBody?: never;
     responses: {
       /** @description Take one token out of rotation */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ResultEnvelope"];
-        };
-      };
-    };
-  };
-  tokenMaturity: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["MaturityUpdateRequest"];
-      };
-    };
-    responses: {
-      /** @description Set per-token streak-maturity automation */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ResultEnvelope"];
-        };
-      };
-    };
-  };
-  tokenMaturityTouch: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Fire one manual maturity touch outside the daily slot */
       200: {
         headers: {
           [name: string]: unknown;

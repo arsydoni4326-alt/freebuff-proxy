@@ -4,15 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
-	"testing"
-	"time"
-
 	"freebuff-proxy/backend/internal/config"
 	"freebuff-proxy/backend/internal/logring"
 	"freebuff-proxy/backend/internal/pool"
@@ -21,6 +12,14 @@ import (
 	"freebuff-proxy/backend/internal/session"
 	"freebuff-proxy/backend/internal/testutil"
 	"freebuff-proxy/backend/internal/upstream"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 )
 
 // flakyFirstRT fails the very first request with a transient transport error
@@ -401,7 +400,7 @@ func TestHealthz(t *testing.T) {
 	}
 	// Issue #189 strict count; 6→5 when luna-es was dropped (2026-08-23),
 	// 5→6 when stealth/ox-alpha was added (2026-08-26),
-	// 5→6 when upstage/solar-pro4 was served (2026-08-29); fable-5 stays
+	// 5→6 when upstage/solar-pro4 was served (2026-08-29); fable-5.1 stays
 	// out (not actually reachable on free accounts).
 	// 5→6 when meta/muse-spark-1.3-contributor was served (2026-09-04).
 	if out.Models != 6 {
@@ -769,7 +768,7 @@ func TestModelsAllowEmptyIsOpen(t *testing.T) {
 
 // TestSmokeDefaultsToFallbackModel verifies the smoke test with no explicit
 // model probes the cheapest served free row (upstage/solar-pro4), not the
-// alphabetical-first catalog model (anthropic/claude-fable-5, a gated offer)
+// alphabetical-first catalog model (anthropic/claude-fable-5.1, a gated offer)
 // and not the old pinned id.
 func TestSmokeDefaultsToFallbackModel(t *testing.T) {
 	mock := testutil.NewMock()
@@ -1002,7 +1001,7 @@ func TestStrictServedModelsEnforced(t *testing.T) {
 		"google/gemini-2.5-flash-lite",
 		"google/gemini-3.1-flash-lite",
 		"google/gemini-3.5-flash-lite",
-		"anthropic/claude-fable-5",
+		"anthropic/claude-fable-5.1",
 		"crof/kimi-k3-eco",
 		"meta/muse-spark-1.3-contributor",
 	}
@@ -1256,6 +1255,7 @@ func TestMetricsFamiliesContract(t *testing.T) {
 		"freebuff_proxy_rate_limit_events_total":       "counter",
 		"freebuff_proxy_model_locked_total":            "counter",
 		"freebuff_proxy_allowlist_skips_total":         "counter",
+		"freebuff_proxy_pin_skips_total":               "counter",
 		// Custom (bridge quota dashboard + circuit breaker + registry
 		// freshness, Phase 4.2): families surfaced by this build's /metrics.
 		"freebuff_proxy_registry_age_seconds":      "gauge",

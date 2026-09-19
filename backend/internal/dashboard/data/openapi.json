@@ -172,25 +172,6 @@
         ],
         "type": "object"
       },
-      "MaturityUpdateRequest": {
-        "properties": {
-          "enabled": {
-            "nullable": true,
-            "type": "boolean"
-          },
-          "mode": {
-            "type": "string"
-          },
-          "target": {
-            "nullable": true,
-            "type": "integer"
-          },
-          "touch_model": {
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
       "ModeSwitchRequest": {
         "properties": {
           "mode": {
@@ -857,6 +838,9 @@
           "request_records": {
             "items": {
               "properties": {
+                "client_key_hash": {
+                  "type": "string"
+                },
                 "endpoint": {
                   "type": "string"
                 },
@@ -1411,6 +1395,12 @@
                       ],
                       "type": "object"
                     },
+                    "list_prices": {
+                      "additionalProperties": {
+                        "type": "number"
+                      },
+                      "type": "object"
+                    },
                     "monthly": {
                       "nullable": true,
                       "properties": {
@@ -1439,6 +1429,32 @@
                         "remaining",
                         "spent"
                       ],
+                      "type": "object"
+                    },
+                    "off_peak": {
+                      "additionalProperties": {
+                        "properties": {
+                          "end_hour_utc": {
+                            "type": "integer"
+                          },
+                          "price": {
+                            "type": "number"
+                          },
+                          "regular_price": {
+                            "type": "number"
+                          },
+                          "start_hour_utc": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "end_hour_utc",
+                          "price",
+                          "regular_price",
+                          "start_hour_utc"
+                        ],
+                        "type": "object"
+                      },
                       "type": "object"
                     },
                     "plan_id": {
@@ -1585,15 +1601,6 @@
                 "active_runs": {
                   "type": "integer"
                 },
-                "allowed_models": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "allowlist_skips": {
-                  "type": "integer"
-                },
                 "ban_type": {
                   "type": "string"
                 },
@@ -1672,6 +1679,12 @@
                       ],
                       "type": "object"
                     },
+                    "list_prices": {
+                      "additionalProperties": {
+                        "type": "number"
+                      },
+                      "type": "object"
+                    },
                     "monthly": {
                       "nullable": true,
                       "properties": {
@@ -1700,6 +1713,32 @@
                         "remaining",
                         "spent"
                       ],
+                      "type": "object"
+                    },
+                    "off_peak": {
+                      "additionalProperties": {
+                        "properties": {
+                          "end_hour_utc": {
+                            "type": "integer"
+                          },
+                          "price": {
+                            "type": "number"
+                          },
+                          "regular_price": {
+                            "type": "number"
+                          },
+                          "start_hour_utc": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "end_hour_utc",
+                          "price",
+                          "regular_price",
+                          "start_hour_utc"
+                        ],
+                        "type": "object"
+                      },
                       "type": "object"
                     },
                     "plan_id": {
@@ -1760,6 +1799,10 @@
                     "wallet"
                   ],
                   "type": "object"
+                },
+                "freebucks_daily_bonus": {
+                  "nullable": true,
+                  "type": "number"
                 },
                 "has_referral": {
                   "type": "boolean"
@@ -1849,6 +1892,12 @@
                   "type": "integer"
                 },
                 "pending_refund": {
+                  "type": "string"
+                },
+                "pin_skips": {
+                  "type": "integer"
+                },
+                "pinned_model": {
                   "type": "string"
                 },
                 "queue_depth": {
@@ -2173,32 +2222,6 @@
         ],
         "type": "object"
       },
-      "tokenTestAllResponse": {
-        "items": {
-          "properties": {
-            "instance_id": {
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "ok": {
-              "type": "boolean"
-            },
-            "token": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "instance_id",
-            "message",
-            "ok",
-            "token"
-          ],
-          "type": "object"
-        },
-        "type": "array"
-      },
       "tokensData": {
         "properties": {
           "bridge_token_cards": {
@@ -2270,6 +2293,12 @@
                       ],
                       "type": "object"
                     },
+                    "list_prices": {
+                      "additionalProperties": {
+                        "type": "number"
+                      },
+                      "type": "object"
+                    },
                     "monthly": {
                       "nullable": true,
                       "properties": {
@@ -2298,6 +2327,32 @@
                         "remaining",
                         "spent"
                       ],
+                      "type": "object"
+                    },
+                    "off_peak": {
+                      "additionalProperties": {
+                        "properties": {
+                          "end_hour_utc": {
+                            "type": "integer"
+                          },
+                          "price": {
+                            "type": "number"
+                          },
+                          "regular_price": {
+                            "type": "number"
+                          },
+                          "start_hour_utc": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "end_hour_utc",
+                          "price",
+                          "regular_price",
+                          "start_hour_utc"
+                        ],
+                        "type": "object"
+                      },
                       "type": "object"
                     },
                     "plan_id": {
@@ -2414,6 +2469,9 @@
           "maturity_window_start": {
             "type": "string"
           },
+          "max_spill_accounts": {
+            "type": "integer"
+          },
           "mode": {
             "type": "string"
           },
@@ -2423,23 +2481,14 @@
           "queue_wait": {
             "type": "string"
           },
-          "rate_limit_failover": {
-            "type": "boolean"
-          },
-          "routing_smart": {
-            "type": "boolean"
-          },
           "show_bridge": {
             "type": "boolean"
           },
+          "slots_per_account": {
+            "type": "integer"
+          },
           "token_count": {
             "type": "integer"
-          },
-          "token_max_concurrent": {
-            "type": "integer"
-          },
-          "token_rotation": {
-            "type": "string"
           },
           "tokens": {
             "items": {
@@ -2451,15 +2500,6 @@
                   "type": "string"
                 },
                 "active_runs": {
-                  "type": "integer"
-                },
-                "allowed_models": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "allowlist_skips": {
                   "type": "integer"
                 },
                 "ban_type": {
@@ -2540,6 +2580,12 @@
                       ],
                       "type": "object"
                     },
+                    "list_prices": {
+                      "additionalProperties": {
+                        "type": "number"
+                      },
+                      "type": "object"
+                    },
                     "monthly": {
                       "nullable": true,
                       "properties": {
@@ -2568,6 +2614,32 @@
                         "remaining",
                         "spent"
                       ],
+                      "type": "object"
+                    },
+                    "off_peak": {
+                      "additionalProperties": {
+                        "properties": {
+                          "end_hour_utc": {
+                            "type": "integer"
+                          },
+                          "price": {
+                            "type": "number"
+                          },
+                          "regular_price": {
+                            "type": "number"
+                          },
+                          "start_hour_utc": {
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "end_hour_utc",
+                          "price",
+                          "regular_price",
+                          "start_hour_utc"
+                        ],
+                        "type": "object"
+                      },
                       "type": "object"
                     },
                     "plan_id": {
@@ -2628,6 +2700,10 @@
                     "wallet"
                   ],
                   "type": "object"
+                },
+                "freebucks_daily_bonus": {
+                  "nullable": true,
+                  "type": "number"
                 },
                 "has_quota": {
                   "type": "boolean"
@@ -2720,6 +2796,12 @@
                   "type": "integer"
                 },
                 "pending_refund": {
+                  "type": "string"
+                },
+                "pin_skips": {
+                  "type": "integer"
+                },
+                "pinned_model": {
                   "type": "string"
                 },
                 "queue_depth": {
@@ -2966,17 +3048,66 @@
           "has_tokens",
           "in_bridge",
           "maturity_enabled",
+          "max_spill_accounts",
           "mode",
           "queue_depth",
           "queue_wait",
-          "rate_limit_failover",
-          "routing_smart",
           "show_bridge",
+          "slots_per_account",
           "token_count",
-          "token_max_concurrent",
           "tokens"
         ],
         "type": "object"
+      },
+      "tokensTestAllResponse": {
+        "items": {
+          "properties": {
+            "cooldown_until": {
+              "type": "string"
+            },
+            "cooling": {
+              "type": "boolean"
+            },
+            "daily_limit_freebucks": {
+              "type": "number"
+            },
+            "daily_spent_freebucks": {
+              "type": "number"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "email": {
+              "type": "string"
+            },
+            "index": {
+              "type": "integer"
+            },
+            "quarantined": {
+              "type": "boolean"
+            },
+            "reset_at": {
+              "type": "string"
+            },
+            "spendable_freebucks": {
+              "type": "number"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "cooling",
+            "daily_limit_freebucks",
+            "daily_spent_freebucks",
+            "index",
+            "quarantined",
+            "spendable_freebucks",
+            "status"
+          ],
+          "type": "object"
+        },
+        "type": "array"
       },
       "tracesData": {
         "properties": {
@@ -3074,6 +3205,9 @@
                 "cached": {
                   "type": "integer"
                 },
+                "client_key_hash": {
+                  "type": "string"
+                },
                 "input": {
                   "type": "integer"
                 },
@@ -3109,6 +3243,75 @@
                 "req_id",
                 "total",
                 "ts_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "keys": {
+            "items": {
+              "properties": {
+                "by_model": {
+                  "additionalProperties": {
+                    "properties": {
+                      "completion": {
+                        "type": "integer"
+                      },
+                      "prompt": {
+                        "type": "integer"
+                      },
+                      "reasoning": {
+                        "type": "integer"
+                      },
+                      "requests": {
+                        "type": "integer"
+                      },
+                      "tokens": {
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "completion",
+                      "prompt",
+                      "reasoning",
+                      "requests",
+                      "tokens"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "object"
+                },
+                "first_seen": {
+                  "type": "integer"
+                },
+                "freebucks": {
+                  "type": "number"
+                },
+                "key_id": {
+                  "type": "string"
+                },
+                "last_seen": {
+                  "type": "integer"
+                },
+                "requests": {
+                  "type": "integer"
+                },
+                "success_rate": {
+                  "type": "number"
+                },
+                "total_tokens": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "by_model",
+                "first_seen",
+                "freebucks",
+                "key_id",
+                "last_seen",
+                "requests",
+                "success_rate",
+                "total_tokens"
               ],
               "type": "object"
             },
@@ -4175,6 +4378,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "key returns the per-client-key aggregation (keys[] with key_id hex(sha256)[:16]) alongside the range view",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -4977,28 +5189,17 @@
     },
     "/admin/tokens/test-all": {
       "post": {
-        "operationId": "tokenTestAll",
-        "parameters": [
-          {
-            "description": "auto=1 serves the throttled quota snapshot without probing",
-            "in": "query",
-            "name": "auto",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
+        "operationId": "tokensTestAll",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/tokenTestAllResponse"
+                  "$ref": "#/components/schemas/tokensTestAllResponse"
                 }
               }
             },
-            "description": "Probe every pooled token (?auto=1 returns the throttled snapshot)"
+            "description": "Zero-cost upstream probe of all tokens"
           }
         },
         "security": [
@@ -5006,7 +5207,7 @@
             "cookieAuth": []
           }
         ],
-        "summary": "Probe every pooled token (?auto=1 returns the throttled snapshot)",
+        "summary": "Zero-cost upstream probe of all tokens",
         "tags": [
           "tokens"
         ]
@@ -5115,88 +5316,6 @@
           }
         ],
         "summary": "Take one token out of rotation",
-        "tags": [
-          "tokens"
-        ]
-      }
-    },
-    "/admin/tokens/{id}/maturity": {
-      "post": {
-        "operationId": "tokenMaturity",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MaturityUpdateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResultEnvelope"
-                }
-              }
-            },
-            "description": "Set per-token streak-maturity automation"
-          }
-        },
-        "security": [
-          {
-            "cookieAuth": []
-          }
-        ],
-        "summary": "Set per-token streak-maturity automation",
-        "tags": [
-          "tokens"
-        ]
-      }
-    },
-    "/admin/tokens/{id}/maturity/touch": {
-      "post": {
-        "operationId": "tokenMaturityTouch",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResultEnvelope"
-                }
-              }
-            },
-            "description": "Fire one manual maturity touch outside the daily slot"
-          }
-        },
-        "security": [
-          {
-            "cookieAuth": []
-          }
-        ],
-        "summary": "Fire one manual maturity touch outside the daily slot",
         "tags": [
           "tokens"
         ]

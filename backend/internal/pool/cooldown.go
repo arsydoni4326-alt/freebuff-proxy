@@ -10,7 +10,7 @@ import (
 )
 
 // CooldownToken puts token in a cooldown window of duration d (auth-reject
-// recovery, e.g. runs.DefaultCooldown). Out-of-range tokens are ignored.
+// recovery). Out-of-range tokens are ignored.
 func (p *Pool) CooldownToken(token int, d time.Duration) {
 	toks := p.roster.Load()
 	if token < 0 || token >= len(*toks) {
@@ -31,6 +31,10 @@ func (p *Pool) CooldownTokenRateLimit(token int, rle *upstream.RateLimitError) {
 		return
 	}
 	(*toks)[token].runs.CooldownRateLimit(rle)
+	// Smart probe (smart_probe.go): a 429 refusal marks refresh interest —
+	// the remembered reset instant schedules the re-probe once the
+	// cooldown window lifts.
+	p.markProbeDirty((*toks)[token])
 	if rle.Status == "spend_limited" {
 		p.recordSpendLimited(token)
 	}
@@ -71,6 +75,9 @@ func (p *Pool) CooldownTokenBan(token int, be *upstream.BanError) {
 	if tok.runs.BanError() != nil {
 		p.quarantineToken(tok, "banned", be)
 	}
+	// Terminal-hint mirror (hint only, never authoritative): a live ban
+	// persists, an already-lifted one clears instead.
+	p.storeBanHint(tok)
 }
 
 // CooldownTokenCountryBlocked applies a country-block cooldown to token
@@ -84,6 +91,9 @@ func (p *Pool) CooldownTokenCountryBlocked(token int, cbe *upstream.CountryBlock
 		return
 	}
 	(*toks)[token].runs.CooldownCountryBlocked(cbe)
+	// Terminal-hint mirror (hint only): the live window persists so a
+	// restart skips one doomed probe; expiry re-probes.
+	p.storeCountryHint((*toks)[token], (*toks)[token].runs.CooldownUntil())
 }
 
 // indexOfEntry resolves entry's CURRENT 0-based roster position (-1 when
@@ -155,6 +165,8 @@ func (p *Pool) CooldownLeaseBan(lease *Lease, be *upstream.BanError) {
 	if tok.runs.BanError() != nil {
 		p.quarantineToken(tok, "banned", be)
 	}
+	// Terminal-hint mirror (hint only, never authoritative).
+	p.storeBanHint(tok)
 }
 
 // CooldownLeaseCountryBlocked applies a country-block cooldown to the
@@ -165,10 +177,12 @@ func (p *Pool) CooldownLeaseCountryBlocked(lease *Lease, cbe *upstream.CountryBl
 		return
 	}
 	lease.entry.runs.CooldownCountryBlocked(cbe)
+	// Terminal-hint mirror (hint only).
+	p.storeCountryHint(lease.entry, lease.entry.runs.CooldownUntil())
 }
 
 // CooldownBridge puts the bridge entry's token in a cooldown window of
-// duration d (auth-reject recovery, e.g. runs.DefaultCooldown).
+// duration d (auth-reject recovery).
 func (p *Pool) CooldownBridge(lease *Lease, d time.Duration) {
 	if lease == nil || lease.Bridge == nil {
 		return
@@ -194,16 +208,6 @@ func (p *Pool) CooldownBridgeRateLimit(lease *Lease, rle *upstream.RateLimitErro
 	p.recordMismatchEscalation(0, rle) // bridge: tokenIndex 0, shared window
 }
 
-// CooldownBridgeIpCapped applies an ip_capped cooldown to the bridge entry
-// via runs.CooldownIpCapped (full RetryAfter + jitter, per-token daily cap
-// until Pacific midnight — #118).
-func (p *Pool) CooldownBridgeIpCapped(lease *Lease, ice *upstream.IpCappedError) {
-	if lease == nil || lease.Bridge == nil || ice == nil {
-		return
-	}
-	lease.Bridge.runs.CooldownIpCapped(ice)
-}
-
 // CooldownBridgeBan applies a ban cooldown to the bridge entry (remembered
 // so AcquireBridge surfaces 403 banned + resumes-at during the window) and
 // fires the token_banned webhook alert (issue #48, throttled).
@@ -225,6 +229,16 @@ func (p *Pool) CooldownBridgeCountryBlocked(lease *Lease, cbe *upstream.CountryB
 	lease.Bridge.runs.CooldownCountryBlocked(cbe)
 }
 
+// CooldownBridgeIpCapped applies an ip_capped cooldown to the bridge entry
+// (remembered so AcquireBridge surfaces 429 ip_capped + Retry-After during
+// the window instead of re-hitting upstream).
+func (p *Pool) CooldownBridgeIpCapped(lease *Lease, ice *upstream.IpCappedError) {
+	if lease == nil || lease.Bridge == nil || ice == nil {
+		return
+	}
+	lease.Bridge.runs.CooldownIpCapped(ice)
+}
+
 // notifyBan fires the token_banned webhook (issue #48). tokenIndex is the
 // 1-based pooled token index (0 = bridge). model is the requested model
 // when the caller knows it ("" otherwise). Throttled by the sender.
@@ -235,8 +249,10 @@ func (p *Pool) notifyBan(tokenIndex int, model string) {
 	if n == nil {
 		return
 	}
-	n.Send(notify.Event{Event: "token_banned", TokenIndex: tokenIndex, Model: model,
-		Message: "a FreeBuff token was classified banned upstream (403)"})
+	n.Send(notify.Event{
+		Event: "token_banned", TokenIndex: tokenIndex, Model: model,
+		Message: "a FreeBuff token was classified banned upstream (403)",
+	})
 }
 
 // classifyTarget selects the mode-specific recovery policy in
@@ -261,32 +277,25 @@ type classifiedError struct {
 }
 
 // classifyAndCooldown runs the shared upstream-error classification cascade
-// against one entry's run manager (issue #260): asType(err) → the matching
-// runs.Cooldown* so the remembered error is surfaced on the next acquire.
-// The four inline cascade sites (leaseFromOrder ×2, AcquireBridge ×2) and
-// the chat-path wrappers (CooldownToken*/CooldownBridge*) all funnel here,
-// so classification cannot drift between the caller surfaces. Only the
-// mode-agnostic Cooldown* application lives here; the site-specific recovery
-// (pooled quarantine vs bridge eviction, webhook notify index/model,
-// spend_limited ledger, quota fallback, bucket aggregation) stays at each
-// caller using the returned classifiedError.
+// against one entry's run manager (issue #260): asType(err) sets the
+// matching classifiedError flag for the caller. Only a terminal ban writes
+// token state (runs.CooldownBan, so the ban is remembered and the caller
+// can quarantine); every other refusal only classifies — 429s carry their
+// upstream RetryAfter to the caller for surfacing, never a cooldown write.
 func (p *Pool) classifyAndCooldown(runsMgr *runs.RunManager, err error) *classifiedError {
 	c := &classifiedError{}
 	if err == nil {
 		return c
 	}
 	if errors.Is(err, upstream.ErrAuthRejected) {
-		runsMgr.Cooldown(runs.DefaultCooldown)
 		c.authRejected = true
 	}
 	if rle := asRateLimit(err); rle != nil {
 		c.rateLimited = rle
 		c.spendLimited = rle.Status == "spend_limited"
-		runsMgr.CooldownRateLimit(rle)
 	}
 	if ice := asIpCapped(err); ice != nil {
 		c.ipCapped = ice
-		runsMgr.CooldownIpCapped(ice)
 	}
 	if be := asBan(err); be != nil {
 		c.banned = be
@@ -294,22 +303,11 @@ func (p *Pool) classifyAndCooldown(runsMgr *runs.RunManager, err error) *classif
 	}
 	if cbe := asCountryBlocked(err); cbe != nil {
 		c.countryBlocked = cbe
-		runsMgr.CooldownCountryBlocked(cbe)
 	}
 	if lie := asLimitedIp(err); lie != nil {
 		c.limitedIp = lie
 	}
 	return c
-}
-
-// appendIpCapped adds ice to dst unless an equivalent error is present.
-func appendIpCapped(dst []*upstream.IpCappedError, ice *upstream.IpCappedError) []*upstream.IpCappedError {
-	for _, existing := range dst {
-		if existing.Error() == ice.Error() {
-			return dst
-		}
-	}
-	return append(dst, ice)
 }
 
 // appendBan adds be to dst unless an equivalent error is present.
@@ -320,16 +318,6 @@ func appendBan(dst []*upstream.BanError, be *upstream.BanError) []*upstream.BanE
 		}
 	}
 	return append(dst, be)
-}
-
-// appendCountryBlock adds cbe to dst unless an equivalent error is present.
-func appendCountryBlock(dst []*upstream.CountryBlockedError, cbe *upstream.CountryBlockedError) []*upstream.CountryBlockedError {
-	for _, existing := range dst {
-		if existing.Error() == cbe.Error() {
-			return dst
-		}
-	}
-	return append(dst, cbe)
 }
 
 // mismatchEscalation is the issue #140 escalation guard's state for one
@@ -367,9 +355,11 @@ func (p *Pool) recordMismatchEscalation(tokenIndex int, rle *upstream.RateLimitE
 	if n == nil {
 		return
 	}
-	n.Send(notify.Event{Event: "agent_model_mismatch_escalation", TokenIndex: tokenIndex,
+	n.Send(notify.Event{
+		Event: "agent_model_mismatch_escalation", TokenIndex: tokenIndex,
 		Model:   model,
-		Message: "3+ free_mode_invalid_agent_model refusals in 60s on one token — the registry is likely serving a model upstream retired; refresh/restart or check MODELS_ALLOW before upstream escalates to ban"})
+		Message: "3+ free_mode_invalid_agent_model refusals in 60s on one token — the registry is likely serving a model upstream retired; refresh/restart or check MODELS_ALLOW before upstream escalates to ban",
+	})
 }
 
 // UnlockToken clears any cooldown/rate-limit/ban lock on token so Acquire
@@ -383,6 +373,9 @@ func (p *Pool) UnlockToken(token int) error {
 	}
 	(*toks)[token].runs.ClearCooldowns()
 	(*toks)[token].quarantine.Store(nil)
+	// The operator restored the account: drop its terminal hint too, or a
+	// restart would keep skipping one healthy probe per walk.
+	p.clearCooldownHintFor((*toks)[token])
 	p.persistTokenState((*toks)[token])
 	return nil
 }
@@ -451,6 +444,9 @@ func (p *Pool) clearLiftedQuarantine(tok *tokenEntry) bool {
 	if tok.quarantine.CompareAndSwap(q, nil) {
 		p.logger.Info("pool: quarantine lifted (temporary ban expired)",
 			"token_label", tokenEntryLabel(tok), "state", q.reason)
+		// The upstream unban lifted the terminal state: the ban hint is
+		// stale, drop it so the token re-admits immediately.
+		p.clearCooldownHintFor(tok)
 		p.persistTokenState(tok)
 		return true
 	}

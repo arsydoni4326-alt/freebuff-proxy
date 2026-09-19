@@ -28,6 +28,15 @@ var quotaProbeMaxInterval = 30 * time.Minute
 // package that enforces a cooldown or backoff window. A nil cfg keeps the
 // compiled-in defaults (the accessors are nil-receiver safe, but the push
 // itself is skipped so tests with hand-built pools observe no drift).
+// admissionGate is the per-model leader election gate: the leader creates
+// the gate, followers block on gate.ch, and the chosen token is
+// communicated via gate.token/hasToken (guarded by modelAdmissionGateMu).
+type admissionGate struct {
+	ch       chan struct{}
+	token    int
+	hasToken bool
+}
+
 func (p *Pool) applyCooldownTuning(cfg *config.Config) {
 	if cfg == nil {
 		return

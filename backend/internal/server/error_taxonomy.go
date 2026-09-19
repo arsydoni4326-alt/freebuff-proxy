@@ -22,6 +22,10 @@ func openAIErrorType(status int, code string) string {
 		return "rate_limit_exceeded"
 	case "missing_bearer_token":
 		return "invalid_request_error"
+	case "strict_violation", "invalid_tool_arguments":
+		// Strict tool-calling contract failures (strict_tools.go) are
+		// client request errors, never upstream failures.
+		return "invalid_request_error"
 	default:
 		return "upstream_error"
 	}
@@ -34,6 +38,16 @@ func defaultHintForCode(code, message string) string {
 		return "Upstream free tier gate requires official CLI traffic envelope. See FAQ: https://github.com/trefeon/freebuff-proxy#faq"
 	case code == "free_mode_invalid_agent_hierarchy" || strings.Contains(lowerMsg, "free_mode_invalid_agent_hierarchy"):
 		return "Upstream hierarchy gate rejected the subagent (not in its root's allowlist). Retry with a root agent id from the registry."
+	case code == "free_mode_unavailable" || strings.Contains(lowerMsg, "free_mode_unavailable"):
+		return "Free-tier region/egress gate (403, terminal). Anonymous-network blocks: disable VPN/proxy/Tor and retry; recent_limited_country: verify at freebuff.com/account?tab=country. Never a token problem — do not rotate keys."
+	case code == "provider_usage_exhausted":
+		return "Freebuff's shared provider account needs a refill — operator-side, not your credits. Do not buy credits; retry with backoff."
+	case code == "consent_required":
+		return "Wallet balance moved since the spend limit was confirmed — re-pick the model to confirm the wallet spend."
+	case code == "first_tab_discount_changed":
+		return "Stale first-tab quote, nothing charged — pick the model again from the menu."
+	case code == "model_locked":
+		return "The account holds an active session on another model — end it first, then pick again. The proxy never auto-switches models."
 	case code == "free_mode_legacy_luna_agent" || strings.Contains(lowerMsg, "free_mode_legacy_luna_agent"):
 		return "Retired Luna agent — new session required, retry immediately."
 	case code == "free_mode_rate_limited" || strings.Contains(lowerMsg, "free_mode_rate_limited"):
@@ -66,6 +80,10 @@ func defaultHintForCode(code, message string) string {
 		return "Premium peak-hours window — transient. Retry after ~30m."
 	case code == "missing_bearer_token":
 		return "Bridge mode active: pass your FreeBuff token in Authorization: Bearer <token>"
+	case code == "strict_violation":
+		return "A tool declared strict:true but its schema does not meet the strict contract: parameters must be type object with every property listed in required and additionalProperties false."
+	case code == "invalid_tool_arguments":
+		return "The model returned unusable arguments for a tool declared strict:true. Retry the turn; a strict tool's arguments must be a JSON object."
 	case code == "model_not_found":
 		return "Check available models via GET /v1/models"
 	default:
@@ -102,6 +120,16 @@ func chatErrClass(err error) string {
 		return "session_superseded"
 	case *upstream.TurnSpendLimitError:
 		return "turn_spend_limited"
+	case *upstream.NoEndpointsError:
+		return "model_no_endpoints"
+	case *upstream.FreeModeUnavailableError:
+		return "free_mode_unavailable"
+	case *upstream.ProviderUsageError:
+		return "provider_usage_exhausted"
+	case *upstream.ConsentRequiredError:
+		return "consent_required"
+	case *upstream.FirstTabChangedError:
+		return "first_tab_discount_changed"
 	case *upstream.UpstreamError:
 		return "upstream"
 	default:
@@ -128,11 +156,21 @@ func attemptStatus(err error) int {
 		return e.Status
 	case *upstream.SessionLimitError:
 		return e.Status
+	case *upstream.NoEndpointsError:
+		return e.Status
 	case *upstream.WaitingRoomRequiredError:
 		// The canonical 428 waiting_room_required (#94); the marker can
 		// ride 428/429 alike, 428 is the documented gate. No named
 		// net/http constant exists for 428, so spell it out.
 		return 428
+	case *upstream.FreeModeUnavailableError:
+		return e.Status
+	case *upstream.ProviderUsageError:
+		return e.Status
+	case *upstream.ConsentRequiredError:
+		return e.Status
+	case *upstream.FirstTabChangedError:
+		return e.Status
 	case *upstream.RateLimitError:
 		// RateLimitError.Status is the upstream "429" string; parse when
 		// numeric, else the 429 bucket is implicit.

@@ -27,7 +27,7 @@ func cardFromSnapshot(t pool.TokenSnapshot) tokenCard {
 		OldestWaiterMS:   t.OldestWaiterMS,
 		RequestsPerDay:   t.RequestsPerDay,
 		TransientRetries: t.TransientRetries,
-		AllowlistSkips:   t.AllowlistSkips,
+		PinSkips:         t.PinSkips,
 		Locked:           t.Locked,
 	}
 	if !t.CooldownUntil.IsZero() && time.Now().Before(t.CooldownUntil) {
@@ -89,7 +89,7 @@ func cardFromSnapshot(t pool.TokenSnapshot) tokenCard {
 	if t.Maturity != nil {
 		card.Maturity = maturityCardFromSnapshot(t.Maturity)
 	}
-	card.AllowedModels = t.AllowedModels
+	card.PinnedModel = t.PinnedModel
 	return card
 }
 
@@ -158,9 +158,9 @@ type tokenLiveCard struct {
 	BanType             string `json:"ban_type,omitempty"`
 	BannedUntil         string `json:"banned_until,omitempty"`
 	TransientRetries    int64  `json:"transient_retries"`
-	// AllowlistSkips is live (like TransientRetries): every poll refreshes
+	// PinSkips is live (like TransientRetries): every poll refreshes
 	// it, so it stays out of the SPA's static cache.
-	AllowlistSkips int64 `json:"allowlist_skips,omitempty"`
+	PinSkips int64 `json:"pin_skips,omitempty"`
 	// LastRefund / PendingRefund ride the hot poll like Freebucks: a
 	// release or replay can settle or park a refund between full fetches,
 	// and the account card reads the merged view.
@@ -192,7 +192,7 @@ func liveCardFromSnapshot(t pool.TokenSnapshot) tokenLiveCard {
 		TransientRetries: t.TransientRetries,
 		Locked:           t.Locked,
 	}
-	card.AllowlistSkips = t.AllowlistSkips
+	card.PinSkips = t.PinSkips
 	if !t.CooldownUntil.IsZero() && time.Now().Before(t.CooldownUntil) {
 		card.CooldownActive = true
 		card.CooldownUntil = t.CooldownUntil.Format(time.RFC3339)
@@ -238,6 +238,27 @@ func freebucksCardFromInfo(info *upstream.FreebucksInfo) *freebucksCard {
 		Prices:       info.Prices,
 		PriceNotices: info.PriceNotices,
 		QuotaExempt:  info.QuotaExempt,
+	}
+	// ListPrices rides through by reference, display only: prices
+	// (effective) stays the only gating map. Nil-safe with no zero-alloc —
+	// a quote that predates listPrices keeps a nil map so the key omits.
+	if info.ListPrices != nil {
+		card.ListPrices = info.ListPrices
+	}
+	// OffPeak rides through entry by entry into the snake_case card shape,
+	// same nil-safe rule: absent on older servers stays nil, never an
+	// empty allocation.
+	if info.OffPeak != nil {
+		off := make(map[string]freebucksOffPeakCard, len(info.OffPeak))
+		for id, o := range info.OffPeak {
+			off[id] = freebucksOffPeakCard{
+				StartHourUtc: o.StartHourUtc,
+				EndHourUtc:   o.EndHourUtc,
+				Price:        o.Price,
+				RegularPrice: o.RegularPrice,
+			}
+		}
+		card.OffPeak = off
 	}
 	if info.FirstTabDiscount != nil {
 		d := &freebucksFirstTabCard{
