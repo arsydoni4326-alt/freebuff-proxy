@@ -65,6 +65,9 @@ func TestToolMapperRequestRename(t *testing.T) {
 	if got := mapper.RestoreName("read_files"); got != "read_file" {
 		t.Errorf("RestoreName(read_files) = %q, want read_file", got)
 	}
+	if got := mapper.RestoreName("run_terminal_command"); got != "bash" {
+		t.Errorf("RestoreName(run_terminal_command) = %q, want bash", got)
+	}
 	if got := mapper.RestoreName("end_turn"); got != "end_turn" {
 		t.Errorf("RestoreName(end_turn) = %q, want identity", got)
 	}
@@ -74,8 +77,8 @@ func TestToolMapperRequestRename(t *testing.T) {
 // shapes: streaming delta.tool_calls and non-streaming message.tool_calls.
 func TestToolMapperResponseRestore(t *testing.T) {
 	mapper := NewToolMapper([]byte(`{"tools":[
-		{"type":"function","function":{"name":"bash"}},
-		{"type":"function","function":{"name":"write_to_file"}}
+		{"type":"function","function":{"name":"bash","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}},
+		{"type":"function","function":{"name":"write_to_file","parameters":{"type":"object","properties":{"path":{"type":"string"},"instructions":{"type":"string"},"content":{"type":"string"}}}}}
 	]}`))
 	if mapper.Len() != 2 {
 		t.Fatalf("mapper entries = %d, want 2", mapper.Len())
@@ -121,6 +124,68 @@ func TestToolMapperResponseRestore(t *testing.T) {
 	empty := ToolMapper{}
 	if empty.FromUpstreamChunk(streamChunk) {
 		t.Error("identity mapper changed a chunk")
+	}
+}
+
+// TestToolMapperMcpVirtualizedRestore pins the collision-free MCP restore for
+// a virtualized harness name: Claude-Code "Task" becomes "mcp__Task" on the
+// request leg and must restore to the exact client name downstream, on both
+// chunk shapes and the single-name path.
+func TestToolMapperMcpVirtualizedRestore(t *testing.T) {
+	mapper := NewToolMapper([]byte(`{"tools":[
+		{"type":"function","function":{"name":"Task","parameters":{"type":"object"}}}
+	]}`))
+	if mapper.Len() != 1 {
+		t.Fatalf("mapper entries = %d, want 1 (Task virtualized)", mapper.Len())
+	}
+	if got := mapper.RestoreName("mcp__Task"); got != "Task" {
+		t.Errorf("RestoreName(mcp__Task) = %q, want Task", got)
+	}
+	chunk := map[string]any{"choices": []any{
+		map[string]any{"delta": map[string]any{"tool_calls": []any{
+			map[string]any{"function": map[string]any{"name": "mcp__Task"}},
+		}}},
+		map[string]any{"message": map[string]any{"tool_calls": []any{
+			map[string]any{"function": map[string]any{"name": "mcp__Task"}},
+		}}},
+	}}
+	if !mapper.FromUpstreamChunk(chunk) {
+		t.Fatal("chunk with virtualized name unchanged by restore")
+	}
+	for i, sel := range []string{"delta", "message"} {
+		section := chunk["choices"].([]any)[i].(map[string]any)[sel].(map[string]any)
+		fn := section["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)
+		if fn["name"] != "Task" {
+			t.Errorf("%s restored name = %v, want Task", sel, fn["name"])
+		}
+	}
+}
+
+// TestToolMapperMcpNativePassthrough pins that a client-native mcp__* name
+// with NO map entry (real MCP tool, passed through verbatim on the request
+// leg) passes through byte-identical downstream — never blind-stripped.
+func TestToolMapperMcpNativePassthrough(t *testing.T) {
+	mapper := NewToolMapper([]byte(`{"tools":[
+		{"type":"function","function":{"name":"mcp__my_tool","parameters":{"type":"object"}}}
+	]}`))
+	if mapper.Len() != 0 {
+		t.Fatalf("mapper entries = %d, want 0 (native MCP name maps nothing)", mapper.Len())
+	}
+	if got := mapper.RestoreName("mcp__my_tool"); got != "mcp__my_tool" {
+		t.Errorf("RestoreName(mcp__my_tool) = %q, want byte-identical passthrough", got)
+	}
+	chunk := map[string]any{"choices": []any{
+		map[string]any{"delta": map[string]any{"tool_calls": []any{
+			map[string]any{"function": map[string]any{"name": "mcp__my_tool"}},
+		}}},
+	}}
+	if mapper.FromUpstreamChunk(chunk) {
+		t.Error("native MCP name chunk reported change")
+	}
+	delta := chunk["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+	fn := delta["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "mcp__my_tool" {
+		t.Errorf("native MCP name = %v, want mcp__my_tool untouched", fn["name"])
 	}
 }
 
@@ -284,6 +349,12 @@ func TestAllHarnessToolsBidirectionalMapping(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.harness+"/"+tc.clientTool, func(t *testing.T) {
+			props := map[string]any{}
+			if canonicalKeys, ok := canonicalToolParameterKeys[tc.wantOfficial]; ok {
+				for k := range canonicalKeys {
+					props[k] = map[string]any{"type": "string"}
+				}
+			}
 			body, _ := json.Marshal(map[string]any{
 				"model":    "m",
 				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
@@ -292,7 +363,7 @@ func TestAllHarnessToolsBidirectionalMapping(t *testing.T) {
 						"type": "function",
 						"function": map[string]any{
 							"name":       tc.clientTool,
-							"parameters": map[string]any{"type": "object"},
+							"parameters": map[string]any{"type": "object", "properties": props},
 						},
 					},
 				},
@@ -320,6 +391,125 @@ func TestAllHarnessToolsBidirectionalMapping(t *testing.T) {
 			if restored != tc.clientTool {
 				t.Errorf("RestoreName(%q) = %q, want %q", gotOfficial, restored, tc.clientTool)
 			}
+		})
+	}
+}
+
+// TestHarnessToolsetsWireClassification verifies that the real-world toolsets
+// of the major AI coding agents (Claude Code, Hermes, OMP, OpenCode, Pi, Codex,
+// and Cursor) produce wire tools that classify cleanly under upstream detection:
+//
+//   - WireForeignSignal(v) == "" (no foreign signals)
+//   - len(v.Foreign) == 0 (zero foreign harness names on the wire)
+//   - len(v.Hollow) == 0 (zero hollow signature tools on the wire)
+//   - Downstream restoration restores every client tool name byte-for-byte.
+func TestHarnessToolsetsWireClassification(t *testing.T) {
+	// clientToolDef is the harness-row shape; aliased to the shared
+	// universalClientTool so TestHarnessToolsetsWireClassification runs the
+	// same ingress→classify→egress simulation as the universal matrix.
+	type clientToolDef = universalClientTool
+	harnesses := []struct {
+		name  string
+		tools []clientToolDef
+	}{
+		{
+			name: "Claude Code",
+			tools: []clientToolDef{
+				{"Bash", map[string]any{"command": "string"}},
+				{"Read", map[string]any{"file_path": "string"}},
+				{"Edit", map[string]any{"file_path": "string", "old_string": "string", "new_string": "string"}},
+				{"Write", map[string]any{"file_path": "string", "content": "string"}},
+				{"Glob", map[string]any{"pattern": "string", "path": "string"}},
+				{"Grep", map[string]any{"pattern": "string", "path": "string"}},
+				{"Agent", map[string]any{"prompt": "string"}},
+				{"AskUserQuestion", map[string]any{"question": "string"}},
+				{"Task", map[string]any{"description": "string"}},
+				{"Skill", map[string]any{"skill": "string"}},
+				{"KillShell", map[string]any{"shell_id": "string"}},
+				{"BashOutput", map[string]any{"shell_id": "string"}},
+				{"SlashCommand", map[string]any{"command": "string"}},
+				{"EnterPlanMode", map[string]any{}},
+				{"ExitPlanMode", map[string]any{}},
+				{"TodoWrite", map[string]any{"todos": "array"}},
+				{"WebFetch", map[string]any{"url": "string"}},
+				{"WebSearch", map[string]any{"query": "string"}},
+			},
+		},
+		{
+			name: "Hermes",
+			tools: []clientToolDef{
+				{"terminal", map[string]any{"command": "string"}},
+				{"web_extract", map[string]any{"url": "string"}},
+				{"patch", map[string]any{"path": "string", "patch": "string"}},
+				{"todo_list", map[string]any{"action": "string"}},
+				{"skills_list", map[string]any{}},
+				{"skill_view", map[string]any{"name": "string"}},
+				{"skill_manage", map[string]any{"action": "string"}},
+				{"clarify", map[string]any{"question": "string"}},
+			},
+		},
+		{
+			name: "OMP",
+			tools: []clientToolDef{
+				{"bash", map[string]any{"command": "string"}},
+				{"read", map[string]any{"path": "string"}},
+				{"edit", map[string]any{"path": "string", "input": "string"}},
+				{"write", map[string]any{"path": "string", "content": "string"}},
+				{"grep", map[string]any{"pattern": "string"}},
+				{"glob", map[string]any{"pattern": "string"}},
+				{"task", map[string]any{"task": "string"}},
+				{"eval", map[string]any{"code": "string"}},
+				{"hub", map[string]any{"op": "string"}},
+				{"todo", map[string]any{"action": "string"}},
+			},
+		},
+		{
+			name: "OpenCode",
+			tools: []clientToolDef{
+				{"execute_bash", map[string]any{"command": "string"}},
+				{"fuzzy_search", map[string]any{"query": "string"}},
+				{"list_dir", map[string]any{"path": "string"}},
+				{"websearch", map[string]any{"query": "string"}},
+				{"webfetch", map[string]any{"url": "string"}},
+				{"todowrite", map[string]any{"todos": "array"}},
+				{"todoread", map[string]any{}},
+			},
+		},
+		{
+			name: "Pi",
+			tools: []clientToolDef{
+				{"powershell", map[string]any{"command": "string"}},
+				{"read", map[string]any{"path": "string"}},
+				{"edit", map[string]any{"path": "string"}},
+				{"write", map[string]any{"path": "string"}},
+				{"find", map[string]any{"pattern": "string"}},
+				{"bash", map[string]any{"command": "string"}},
+			},
+		},
+		{
+			name: "Codex",
+			tools: []clientToolDef{
+				{"exec_command", map[string]any{"cmd": "string"}},
+				{"write_stdin", map[string]any{"data": "string"}},
+				{"request_user_input", map[string]any{"prompt": "string"}},
+				{"container_exec", map[string]any{"command": "string"}},
+				{"shell", map[string]any{"command": "string"}},
+			},
+		},
+		{
+			name: "Cursor",
+			tools: []clientToolDef{
+				{"Shell", map[string]any{"command": "string"}},
+				{"StrReplace", map[string]any{"path": "string", "old": "string", "new": "string"}},
+				{"AskQuestion", map[string]any{"text": "string"}},
+				{"ReadLints", map[string]any{"paths": "array"}},
+				{"Delete", map[string]any{"path": "string"}},
+			},
+		},
+	}
+	for _, h := range harnesses {
+		t.Run(h.name, func(t *testing.T) {
+			assertHarnessWireClean(t, h.name, h.tools)
 		})
 	}
 }
