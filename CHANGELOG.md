@@ -5,10 +5,123 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.9.1-arsydoni4326-alt]
 
 ### Fixed
-- **Merge conflict resolution with upstream/main (#605 era: dead-code prune,
+- **Merge conflict resolution with upstream/main (#606–#645 era: MASQ pool
+  engine, PIN_MODEL/pin skips, zero-cost smart probe-all, session
+  single-writer cutover), preserving persistent database state** (merge 6 of
+  2026-09-19)
+  - Merge of upstream/main e18a3611 (MASQ — Minimal Account Slot Queue
+    `spill_order`/`spill_queue`/`slot_ledger`, `PIN_MODEL` + `pin_skips`,
+    smart zero-cost probe-all `ProbeAllTokens` + probe honesty #629/#644,
+    cookie/secret .gitignore hardening, `tokens/{id}/drop-session` kept
+    reporting, `SLOTS_PER_ACCOUNT`/`MAX_SPILL_ACCOUNTS`/`QUEUE_WAIT`/
+    `SMART_PROBE_*` knobs) into the DB-persistence lineage (36a19168 = merge
+    5 + v1.8.14 tag). All 25 conflict paths resolved; staged and committed
+    as `7b8e6932` during this session.
+  - Resolution policy: **additive union plus new-engine adoption** — every
+    DB-persistence feature of this lineage kept untouched; upstream's MASQ
+    acquire engine adopted; our features re-ported onto the new engine
+    where upstream replaced the old surface.
+  - **Database persistence kept intact**: `session/store.go` (sessions_persist
+    + runs blob + Freebucks/deep-clone fields), `pool_persist.go` keeps our
+    pool-side per-token quota cache (`pool/probe/quota/*`) **and** adopts
+    upstream's terminal-cooldown hints (`pool/cooldown/*`) + bridge survivor
+    blob — the upstream "retire and drain" of `pool/probe/quota/*` was NOT
+    adopted (this lineage's own writer/restore stays authoritative); boot
+    chain `cli_serve.go` → `SetTokenStateStore`/`RestoreTokenState` +
+    quota boot seed (ADR-0024) + maturity blob restore (ADR-0026) all
+    preserved and re-wired.
+  - **Feature re-ports onto the MASQ engine**: MODEL_LOCKS gating +
+    `allowlist_skips` fail-fast/filter in `Acquire`; limited-ip unfit
+    marking re-added at the admission site + server chat hooks
+    (clear-on-success / mark-on-`ErrModelIPLimited`); bridge ip_capped
+    remembered-error consult; `TOKEN_ROTATION=random` head rotation;
+    `maturitySnapshot` view on `/healthz`; cooldown-tuning live push
+    (`applyCooldownTuning`) restored in `New`/`SetConfig`; `config/cooldown.go`
+    knob accessors restored (upstream had excised them).
+  - `config` trio (`config_keys.go`, `config_load.go`, config.go,
+    config_validate.go): full two-way union — our lineage defaults/overlays
+    (health, bridge breaker, spend, cooldown *Ms knobs, quota probes,
+    maturity, routing) plus upstream's MASQ/PIN/SMART_PROBE knobs; both
+    `SMART_PROBE_BACKOFF_MAX` (string) and `SMART_PROBE_BACKOFF_MAX_MS` feed
+    one Config field (string wins, Ms falls back to 30m).
+  - `server`: `admin_tokens.go` consolidated handler file adopted upstream's
+    zero-cost `ProbeAllTokens` probe-all + precious-keep drop-session
+    reporting (kept-deleted `admin_tokens_probe.go`/`admin_tokens_routes.go`
+    stay deleted); maturity admin routes re-registered; `health.go` emits
+    `pin_skips_total` (upstream) **and** `allowlist_skips_total` (ours);
+    `engine_attempt.go` re-ports the unfit clear/mark hooks.
+  - `snapshot.go`/`pool.go`/`bridge.go`/`pool_lifecycle.go`: field-level
+    unions — our `TokenValue`/health-score/quota-boot/park/breaker/gate
+    fields plus upstream's MASQ lanes, pin view, cooldown-hint mirror.
+  - Restored from our lineage (upstream deleted): `config/cooldown.go`
+    (+accessors), `cli/quota_seed.go`, `cli/maturity_store.go`,
+    `pool/maturity.go` (+tests), `pool/unfit.go`, `pool/model_locks.go`,
+    `pool/quota_bootseed.go`, `pool/quota_visitprobe.go`,
+    `pool/cooldown_tuning.go`, `session/session_park.go`,
+    `server/admin_maturity.go`.
+- **Known limitations recorded** (honest behavioral notes):
+  - `ROUTING_SMART`/`TokenMaxConcurrent` knob surface stays in config/healthz
+    but the MASQ walk is the live engine — the smart-routing scorer and
+    `AUTO_ROTATE_ON_EXHAUSTION` ordering live on the (kept, dead-callable for
+    tests) `acquire_order.go` engine and are dormant until re-ported onto
+    the spill walk (tracked in `session.md`).
+  - Upstream excised its bounded-cooldown classifier windows (#621): ours'
+    `COOLDOWN_FANOUT_MS`/`OPAQUE_MS`/`LOADSHED_MS`/`PEAK_HOURS_MS` knobs no
+    longer retune the upstream classifier (its `SetCooldownTuning` is a
+    documented no-op); `COOLDOWN_DEFAULT_MS`/`COUNTRY_BLOCK_MS`/`CEILING_MS`/
+    `IP_MAX_READMITS`/`IP_JITTER_RATIO`/`SESSION_PARK_*`/`SESSION_POLL_MAX_MS`/
+    `MATURITY_BACKOFF_MS`/`SMART_PROBE_BACKOFF_MAX_MS` remain live on the
+    runs/pool/session enforcement points.
+  - Pre-existing failures on our own branch reproduced unchanged at pristine
+    `36a19168` (not caused by this merge): 8 `session` store tests
+    (`TestStoreReadErrorDoesNotClobberFile*`, `TestStorePendingMutation*`,
+    `TestLegacyFileImportsOnceThenArchives`, `TestLegacyImportIdentical*`,
+    `TestResumePersistedOnRestart`, `TestStoreVersionMismatchIgnoredThenReplaced`).
+    The server-suite rotating flake (`TestConcurrentReloadAndChat`) passes
+    solo x3.
+
+### Added
+- Upstream #606–#645 adoption: MASQ slot/spill engine (`spill_order.go`,
+  `spill_queue.go`, `slot_ledger.go`), `PIN_MODEL` + `pin_skips`,
+  `ProbeAllTokens` zero-cost probe-all (server handler + `RenderProbeAllResults`),
+  precious-keep drop-session reporting (`RenderDropSessionResult`),
+  `cooldown_hint.go` terminal-hint + bridge-survivor persistence,
+  `SLOTS_PER_ACCOUNT`/`MAX_SPILL_ACCOUNTS` knobs, hardened .gitignore
+  secret patterns, refreshed frontend bundle + admin manifest (68 rows),
+  extra e2e/mock suites.
+
+### Preserved
+- SQLite token database with `session_state` table for session persistence
+  (`SESSION_PERSIST`, Phase 4 DB durability) — untouched by the merge.
+- Token state store (locks, quarantines, cooldowns, spend/usage ledgers)
+  with `RestoreTokenState` at boot; pool_state pool-side quota-cache writer +
+  ledger/admission restore (`RestorePoolPersist` from `Pool.Start`) plus the
+  new cooldown-hint/survivor restore; DB settings overlay (ADR-0019) with
+  the `config:migrated_env_v1` marker.
+- Health scoring suite (`HEALTH_SCORE_ENABLED`), background token health
+  probes (`TOKEN_HEALTH_PROBES`), bridge circuit breaker observability
+  (`BreakerSnapshot` → /healthz + /metrics), per-token bridge rate limiting,
+  refund tracking (`lastRefund`/`pendingRefund`) and the refund-refresh
+  route.
+- Quota auto-probe scheduler (ADR-0022) + ADR-0024 boot seed; maturity
+  automation with the DB maturity blob (MaturityStore) contract unchanged;
+  session-park gate, ip_capped daily budget + jitter, cooldown-tuning knobs
+  (runs/pool side).
+
+### Technical Details
+- Merge verified: all 25 conflict paths resolved; `go build ./backend/...`
+  green, `go vet ./backend/...` clean, `gofmt` clean; hermetic tests
+  (`env -u AUTH_TOKENS -u ADMIN_TOKEN go test -count=1`): `config` ok,
+  `store` ok, `pool` ok (full suite incl. re-ported model-locks/random/
+  limited-ip/cooldown tuning/maturity snapshots), `session` shows only the
+  8 pre-existing failures (see above), `server` ok, `dashboard` ok (manifest
+  parity incl. restored maturity rows), `cli` ok. Frontend: `svelte-check`
+  0 errors; `dist` rebuilt from the merged `frontend/src` (per AGENTS.md).
+  Noted in `session.md`.
+
   settings display desync fix, restart-only key flags), preserving persistent
   database state** (merge 5 of 2026-09-17)
   - Merge of upstream/main 328261be (dead frontend-file prune
