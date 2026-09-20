@@ -41,6 +41,8 @@ drift tracking.
 - [x] Session persistence across restarts
 - [x] SQLite token DB: dashboard token add/remove persists to `auth_tokens`; Phase 1 anti-ban state (admin locks + terminal quarantines) in `token_state`, restored at startup — the `-config` JSON file is never rewritten
 - [x] Admin dashboard (Svelte 5): Overview, Tokens, Models, Config, Logs, Setup
+- [x] Update-available modal on every dashboard load (fork update source,
+  merge-guarded — `frontend/src/lib/README_ARSYDONI_UPDATE.md`)
 - [x] Hot config reload (`/admin/reload`, config studio)
 - [x] CLI diagnostics: `-doctor`, `-test-token`, `-setup`, `-version`, `-update`
 - [x] Service install (`-install-service`) for systemd/launchd/Task Scheduler

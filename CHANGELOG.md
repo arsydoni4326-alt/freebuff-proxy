@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Update-available modal on every dashboard load (ARSYDONI UPDATE SOURCE,
+  merge-guarded — see `frontend/src/lib/README_ARSYDONI_UPDATE.md`)**
+  - `backend/internal/updatecheck`: repo pin moved to the fork
+    (`arsydoni4326-alt/freebuff-proxy`); new `Info` fetch returns the latest
+    release tag, that tag's commit (best-effort `commits/<tag>` lookup), and
+    the release body (that release's changelog only); `Latest` remains the
+    tag-only view. Same 6h cache, single-flight, and fail-open/backoff
+    semantics.
+  - `GET /admin/api/version` (`VersionResponse`) now carries optional
+    `latest_commit` + `changelog`; the update URL points at the fork's
+    releases page.
+  - `frontend/src/lib/updateCheck_arsydoni.js` +
+    `frontend/src/lib/components/UpdateModal_Arsydoni.svelte`: `App.svelte`
+    checks once per page load and opens the modal whenever `has_update` is
+    true (shown again on every refresh while outdated; nothing renders when
+    current). Modal shows installed version, latest version + short commit
+    hash, and the latest release's changelog.
+  - Tests: `updatecheck` Info/best-effort-commit/skip tests,
+    `updateCheck_arsydoni.test.js`, `e2e/update-modal-arsydoni.spec.ts`.
+
 ## [v1.12.2]
 
 ### Fixed
