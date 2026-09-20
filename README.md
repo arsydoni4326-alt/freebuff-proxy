@@ -1,12 +1,13 @@
 # freebuff-proxy
 
-Go wire gateway in front of FreeBuff, with OpenAI-compatible and Anthropic
-endpoints plus an embedded Svelte dashboard.
+Go wire gateway in front of the upstream service: pooled multi-account
+OpenAI-compatible and Anthropic-compatible endpoints, an embedded Svelte
+dashboard, optional browser-like TLS stealth, and automatic session lifecycle.
 
 ## What it is
 
 - Speaks OpenAI chat (`POST /v1/chat/completions`, `GET /v1/models`) and an
-  Anthropic-compatible layer, then translates to the FreeBuff wire protocol.
+  Anthropic-compatible layer, then translates to the upstream wire protocol.
 - Runs in pooled, bridge, or hybrid mode (`EffectiveMode`):
   - **Pooled** — `AUTH_TOKENS` set + `BRIDGE_ENABLED=0`; pool only.
   - **Bridge** — `AUTH_TOKENS` empty; each request carries its own token.
@@ -18,9 +19,9 @@ endpoints plus an embedded Svelte dashboard.
   version + short commit hash + that release's changelog — whenever the
   gateway is outdated (never when current). Merge-guarded fork feature:
   see `frontend/src/lib/README_ARSYDONI_UPDATE.md`.
-- Freebucks metering follows the wire `prices` map: charged once per session-hour
-  at session start, refunded on early `DELETE`, refilled on a Pacific-midnight
-  cadence.
+- Credit metering follows the wire `prices` map (upstream credits, wire fields
+  `freebucks*`): charged once per session-hour at session start, refunded on
+  early `DELETE`, refilled on a Pacific-midnight cadence.
 
 ## Quickstart
 

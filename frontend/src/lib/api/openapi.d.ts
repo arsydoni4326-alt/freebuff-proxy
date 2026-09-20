@@ -249,7 +249,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Served-model catalog view model */
+    /** Full model catalog view model (tiers, withdrawal and live offer state) */
     get: operations["getModels"];
     put?: never;
     post?: never;
@@ -1359,12 +1359,22 @@ export interface components {
         efforts?: string[];
         id: string;
         notice?: string;
+        offer?: {
+          joinable: boolean;
+          reason?: string;
+          remaining: number;
+          total: number;
+          user_remaining: number;
+        } | null;
         pool?: string;
         price: number;
         price_label?: string;
         quota: string;
+        replacement?: string;
         served: boolean;
         tagline?: string;
+        tiers?: string[];
+        withdrawn: boolean;
       }[];
     };
     overviewData: {
@@ -1389,6 +1399,9 @@ export interface components {
             available: boolean;
             holder_surface?: string;
           } | null;
+          list_prices?: {
+            [key: string]: number;
+          };
           monthly?: {
             limit: number;
             percent_used: number;
@@ -1397,6 +1410,14 @@ export interface components {
             reset_time_zone?: string;
             spent: number;
           } | null;
+          off_peak?: {
+            [key: string]: {
+              end_hour_utc: number;
+              price: number;
+              regular_price: number;
+              start_hour_utc: number;
+            };
+          };
           plan_id?: string;
           price_notices?: {
             [key: string]: string;
@@ -1461,6 +1482,9 @@ export interface components {
             available: boolean;
             holder_surface?: string;
           } | null;
+          list_prices?: {
+            [key: string]: number;
+          };
           monthly?: {
             limit: number;
             percent_used: number;
@@ -1469,6 +1493,14 @@ export interface components {
             reset_time_zone?: string;
             spent: number;
           } | null;
+          off_peak?: {
+            [key: string]: {
+              end_hour_utc: number;
+              price: number;
+              regular_price: number;
+              start_hour_utc: number;
+            };
+          };
           plan_id?: string;
           price_notices?: {
             [key: string]: string;
@@ -1487,6 +1519,7 @@ export interface components {
             next_bonus_at?: string;
           };
         } | null;
+        freebucks_daily_bonus?: number | null;
         has_referral: boolean;
         has_standing: boolean;
         index: number;
@@ -1613,6 +1646,9 @@ export interface components {
             available: boolean;
             holder_surface?: string;
           } | null;
+          list_prices?: {
+            [key: string]: number;
+          };
           monthly?: {
             limit: number;
             percent_used: number;
@@ -1621,6 +1657,14 @@ export interface components {
             reset_time_zone?: string;
             spent: number;
           } | null;
+          off_peak?: {
+            [key: string]: {
+              end_hour_utc: number;
+              price: number;
+              regular_price: number;
+              start_hour_utc: number;
+            };
+          };
           plan_id?: string;
           price_notices?: {
             [key: string]: string;
@@ -1687,6 +1731,9 @@ export interface components {
             available: boolean;
             holder_surface?: string;
           } | null;
+          list_prices?: {
+            [key: string]: number;
+          };
           monthly?: {
             limit: number;
             percent_used: number;
@@ -1695,6 +1742,14 @@ export interface components {
             reset_time_zone?: string;
             spent: number;
           } | null;
+          off_peak?: {
+            [key: string]: {
+              end_hour_utc: number;
+              price: number;
+              regular_price: number;
+              start_hour_utc: number;
+            };
+          };
           plan_id?: string;
           price_notices?: {
             [key: string]: string;
@@ -1713,6 +1768,7 @@ export interface components {
             next_bonus_at?: string;
           };
         } | null;
+        freebucks_daily_bonus?: number | null;
         has_quota: boolean;
         has_referral: boolean;
         has_standing: boolean;
@@ -2220,7 +2276,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Served-model catalog view model */
+      /** @description Full model catalog view model (tiers, withdrawal and live offer state) */
       200: {
         headers: {
           [name: string]: unknown;
