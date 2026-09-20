@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.12.2]
+
+### Fixed
+- **Merge-resolution slips from the v1.12.1-arsydoni4326-alt union** (caught
+  by the Docker image build + pool test suite)
+  - `pool/pool_persist.go`: re-collect `quotaEntries []*tokenEntry` under the
+    roster lock in `snapshotPoolState` — the issue-#656 ledger-capture
+    refactor dropped the declaration while the quota persistence loop kept
+    consuming it (`undefined: quotaEntries` broke `go build -tags dashboard`,
+    i.e. the Docker image build).
+  - `pool/ledger_persist.go`: `applySpendTo` (token_state restore path)
+    recomputes the incremental `spendLedger.rollingTotal` after rebuilding
+    `rolling` — the merge fixed `installLedger` (pool_state path) but missed
+    this twin, so restarts read `Rolling24h = 0` from the hot snapshot path
+    (`TestSpendLedgerPersistsAndRestores` regression).
+
 ## [v1.9.1-arsydoni4326-alt]
 
 ### Fixed
