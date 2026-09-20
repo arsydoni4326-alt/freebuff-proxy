@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,7 +23,9 @@ import (
 )
 
 // DefaultRepo is the upstream repo whose releases the indicator checks.
-const DefaultRepo = "trefeon/freebuff-proxy"
+// ARSYDONI UPDATE SOURCE (merge-guarded): this fork's repo — the dashboard
+// update modal depends on it; see frontend/src/lib/README_ARSYDONI_UPDATE.md.
+const DefaultRepo = "arsydoni4326-alt/freebuff-proxy"
 
 // CacheTTL is how long a fetched latest-release tag is reused (issue #50:
 // "cached 6h").
@@ -32,6 +35,22 @@ const CacheTTL = 6 * time.Hour
 // on it).
 const fetchTimeout = 3 * time.Second
 
+// commitTimeout bounds the best-effort tag→commit lookup; a slow or missing
+// commit answer degrades to an empty Commit, never an error.
+const commitTimeout = 2 * time.Second
+
+// notesLimit caps the stored release-notes body (the update modal renders a
+// short "what's changed" digest, not the full notes page).
+const notesLimit = 8 << 10
+
+// Info is one update-check answer: the latest release tag, the commit that
+// tag points at, and the release notes (that release's changelog only).
+type Info struct {
+	Tag    string
+	Commit string
+	Notes  string
+}
+
 // Checker is a concurrency-safe, in-memory-cached latest-release lookup.
 // The zero value is not usable — use New.
 type Checker struct {
@@ -40,7 +59,7 @@ type Checker struct {
 	logger *slog.Logger // decision Debug sink (nil = slog.Default())
 
 	mu       sync.Mutex
-	latest   string
+	info     Info
 	fetched  time.Time
 	fetching bool
 }
@@ -70,22 +89,29 @@ func (c *Checker) Invalidate() {
 	c.mu.Unlock()
 }
 
-// Latest returns the latest release tag (e.g. "v0.9.3") from the in-memory
-// cache, fetching it when the last attempt — successful or failed — is
-// older than CacheTTL. A fetch failure returns the previously cached tag
-// (or "") with the error and still records the attempt, so subsequent
-// calls back off for CacheTTL instead of re-fetching. The cache is
-// refreshed single-flight so concurrent renders share one GET. Each lookup
-// emits a Debug line with the decision (cached|fetched|failed) and the
-// lookup duration (T18).
+// Latest returns the latest release tag (e.g. "v0.9.3"). It is the
+// tag-only view over Info — see Info for the fetch/cache/backoff semantics.
 func (c *Checker) Latest(ctx context.Context) (string, error) {
+	info, err := c.Info(ctx)
+	return info.Tag, err
+}
+
+// Info returns the cached update answer (latest release tag, that tag's
+// commit, and the release notes), fetching it when the last attempt —
+// successful or failed — is older than CacheTTL. A fetch failure returns
+// the previously cached answer (or zeros) with the error and still records
+// the attempt, so subsequent calls back off for CacheTTL instead of
+// re-fetching. The cache is refreshed single-flight so concurrent renders
+// share one GET. Each lookup emits a Debug line with the decision
+// (cached|fetched|failed) and the lookup duration (T18).
+func (c *Checker) Info(ctx context.Context) (Info, error) {
 	start := time.Now()
 	c.mu.Lock()
 	if time.Since(c.fetched) < CacheTTL {
-		tag := c.latest
+		info := c.info
 		c.mu.Unlock()
 		c.logger.Debug("update check decision", "decision", "cached", "ms", time.Since(start).Milliseconds())
-		return tag, nil
+		return info, nil
 	}
 	if c.fetching {
 		// Another render is mid-fetch: wait for it rather than stacking a
@@ -96,28 +122,28 @@ func (c *Checker) Latest(ctx context.Context) (string, error) {
 			select {
 			case <-ctx.Done():
 				c.mu.Lock()
-				tag := c.latest
+				info := c.info
 				c.mu.Unlock()
 				c.logger.Debug("update check decision", "decision", "cached", "ms", time.Since(start).Milliseconds())
-				return tag, ctx.Err()
+				return info, ctx.Err()
 			case <-time.After(50 * time.Millisecond):
 			}
 			c.mu.Lock()
 		}
-		tag := c.latest
+		info := c.info
 		c.mu.Unlock()
 		c.logger.Debug("update check decision", "decision", "cached", "ms", time.Since(start).Milliseconds())
-		return tag, nil
+		return info, nil
 	}
 	c.fetching = true
 	c.mu.Unlock()
 
-	tag, err := c.fetchLatest(ctx)
+	info, err := c.fetchInfo(ctx)
 
 	c.mu.Lock()
 	c.fetching = false
-	if err == nil && tag != "" {
-		c.latest = tag
+	if err == nil && info.Tag != "" {
+		c.info = info
 		c.fetched = time.Now()
 	} else {
 		// Keep the previous value and stamp the attempt: the CacheTTL window
@@ -126,42 +152,100 @@ func (c *Checker) Latest(ctx context.Context) (string, error) {
 		// api.github.com on every render (review P2).
 		c.fetched = time.Now()
 	}
-	got := c.latest
+	got := c.info
 	c.mu.Unlock()
 	decision := "fetched"
-	if err != nil || tag == "" {
+	if err != nil || info.Tag == "" {
 		decision = "failed"
 	}
 	c.logger.Debug("update check decision", "decision", decision, "ms", time.Since(start).Milliseconds())
 	return got, err
 }
 
-// fetchLatest GETs https://api.github.com/repos/<repo>/releases/latest and
-// extracts tag_name.
-func (c *Checker) fetchLatest(ctx context.Context) (string, error) {
+// fetchInfo resolves the latest release (tag + notes) and then — best
+// effort — the commit that release tag points at. A releases failure aborts
+// before the commit lookup; a commit failure degrades to an empty Commit
+// without failing the whole answer.
+func (c *Checker) fetchInfo(ctx context.Context) (Info, error) {
+	tag, notes, err := c.fetchRelease(ctx)
+	if err != nil {
+		return Info{}, err
+	}
+	return Info{Tag: tag, Notes: notes, Commit: c.fetchTagCommit(ctx, tag)}, nil
+}
+
+// fetchRelease GETs https://api.github.com/repos/<repo>/releases/latest and
+// extracts tag_name plus the release body — the notes for that one release,
+// which is the changelog source for the dashboard's update modal.
+func (c *Checker) fetchRelease(ctx context.Context) (tag string, notes string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://api.github.com/repos/"+c.repo+"/releases/latest", nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "freebuff-proxy-updatecheck/1.0")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("github releases/latest: status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("github releases/latest: status %d", resp.StatusCode)
 	}
 	var decoded struct {
 		TagName string `json:"tag_name"`
+		Body    string `json:"body"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return strings.TrimSpace(decoded.TagName), nil
+	return strings.TrimSpace(decoded.TagName), truncateNotes(decoded.Body), nil
+}
+
+// fetchTagCommit resolves the release tag to its commit SHA (the short hash
+// shown next to the version in the update modal). Best-effort: any failure,
+// including the commitTimeout deadline, returns "".
+func (c *Checker) fetchTagCommit(ctx context.Context, tag string) string {
+	if tag == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, commitTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/repos/"+c.repo+"/commits/"+url.PathEscape(tag), nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "freebuff-proxy-updatecheck/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return ""
+	}
+	var decoded struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(decoded.SHA)
+}
+
+// truncateNotes caps the release notes at notesLimit so a pathological
+// release body cannot bloat the cache or the version API answer.
+func truncateNotes(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > notesLimit {
+		s = s[:notesLimit]
+	}
+	return s
 }
 
 // UpdateAvailable reports whether latest is newer than current ("" current

@@ -1,5 +1,41 @@
 # Session: SQLite Token Database + UI
 
+## Latest: update-available modal, fork update source (2026-09-20)
+
+- **Feature**: dashboard shows a modal on every page load while
+  `GET /admin/api/version` reports `has_update`; nothing renders when
+  current. Modal shows installed version, latest version + short commit
+  hash, and the latest release's changelog (release body only, not
+  history). Update source pinned to `arsydoni4326-alt/freebuff-proxy`
+  (`releases/latest` + best-effort `commits/<tag>`), per user request.
+- **Merge-guard (user requirement: never replaced/removed on upstream
+  merge)**: feature files carry distinct `_Arsydoni`/`arsydoni` names and
+  `ARSYDONI UPDATE SOURCE` markers; merge policy + file inventory in
+  `frontend/src/lib/README_ARSYDONI_UPDATE.md`. Backend anchor:
+  `updatecheck.DefaultRepo` + `dashboard.releaseURL`; frontend anchor:
+  `App.svelte` boot call + modal mount. CHANGELOG entry under [Unreleased].
+- **Backend**: `updatecheck.Checker` gained `Info` (Tag/Commit/Notes;
+  `Latest` kept as tag-only wrapper) — same 6h cache, single-flight,
+  fail-open, backoff. Commit lookup is best-effort (2s timeout, empty on
+  failure, skipped when releases/latest fails). `VersionResponse` gained
+  optional `latest_commit`/`changelog` (wire + openapi.json + generated
+  `openapi.d.ts` all updated).
+- **Frontend**: `lib/updateCheck_arsydoni.js` (fetch/normalize),
+  `lib/components/UpdateModal_Arsydoni.svelte` (canonical `Modal.svelte`
+  template, warning-tone icon, `Later`/`View release` footer),
+  `App.svelte` wired (`versionInfo` now the full normalized payload; the
+  old inline version fetch was replaced, not duplicated). dist rebuilt
+  (`backend/internal/dashboard/dist`) — includes the feature.
+- **Verification**: `go build ./backend/...`, vet clean, gofmt clean;
+  `updatecheck` suite green; `dashboard` short suite green;
+  `TestUpdateBadgeRendered` green; `svelte-check` 0 errors; unit tests
+  24/24; e2e `update-modal-arsydoni.spec.ts` 3/3 (modal opens with
+  version+commit+changelog, dismiss + reopen on next load, stays closed
+  when current); `shell-a11y` + `dashboard` e2e 60/60 (no regression:
+  fixture `has_update:false` renders no modal); prettier clean on touched
+  files. Pre-existing lint errors in `Config.svelte`/`Overview.svelte`
+  noted, untouched (scope discipline).
+
 ## Latest: merge-resolution compile + restore fixes (2026-09-20, HEAD 5c30ade2)
 
 - **Build fix (Docker `go build -tags dashboard` was failing)**:

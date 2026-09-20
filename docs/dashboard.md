@@ -34,6 +34,19 @@ labeled **Account #1, #2, …** everywhere (1-based, in pool order) so the
 first credential reads as account 1, never index 0.
 
 ### 1. Overview
+### 1. Overview
+- **Update-Available Modal (ARSYDONI UPDATE SOURCE, merge-guarded)**: On
+  every dashboard page load, the gateway's update check
+  (`GET /admin/api/version`, sourced from the
+  [arsydoni4326-alt/freebuff-proxy](https://github.com/arsydoni4326-alt/freebuff-proxy)
+  releases) runs once. When a newer release exists, a modal opens showing
+  the installed version, the latest release version with its short commit
+  hash, and that release's changelog (latest release only, not history).
+  The modal re-appears on every refresh for as long as the gateway is
+  outdated, and never renders when the gateway is current. The feature's
+  files and merge policy are documented in
+  `frontend/src/lib/README_ARSYDONI_UPDATE.md` — do not remove these on
+  upstream merges (additive-union resolution).
 - **System Status Line**: Live badge displaying active mode (`Pooled`, `Bridge` or `Hybrid`), proxy version, process uptime, and request count.
 - **Key Performance Indicators (KPIs)**: 6 tabular-mono counters:
   - Total Pool Tokens
