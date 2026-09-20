@@ -8,7 +8,7 @@ Leaf package: self-update version checks against the GitHub repo. Fetches the la
 
 ## Public API (stable surface)
 
-- `Checker`, `New(repo, client)`; `UpdateAvailable(current, latest) bool`, `CompareVersions(a, b) int`; `Info` fetch with cache (tag + release notes + tag commit), `Latest` as the tag-only view.
+- `Checker`, `New(repo, client)`; `UpdateAvailable(current, latest) bool`, `CompareVersions(a, b) int`; `Info` fetch with cache (tag + release notes + tag commit), `Latest` as the tag-only view; `Head(ctx)` (main-branch head commit, own HeadTTL cache) + `CommitOutdated(running, head)` — the primary update signal (ARSYDONI UPDATE SOURCE, merge-guarded).
 
 ## Allowed dependencies
 
@@ -25,6 +25,7 @@ Everything internal, especially `config` (repo/client are caller-supplied) and `
 - Version comparison is total and correct (`TestCompareVersions`, `TestUpdateAvailable`) — a wrong "update available" either spams operators or hides security fixes.
 - The tag→commit lookup is best-effort (`TestInfoCommitLookupIsBestEffort`); a releases failure never reaches the commit endpoint (`TestInfoReleaseFailureSkipsCommitLookup`).
 - `DefaultRepo` is the fork's repo `arsydoni4326-alt/freebuff-proxy` (ARSYDONI UPDATE SOURCE, merge-guarded — see `frontend/src/lib/README_ARSYDONI_UPDATE.md`).
+- Head-lookup failure backs off for HeadTTL (`TestHeadFailureBacksOff`); `CommitOutdated` never reports outdated on unknown inputs (`TestCommitOutdated`) — fail-open both ways.
 
 ## Tests that protect it
 

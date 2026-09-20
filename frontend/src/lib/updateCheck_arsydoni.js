@@ -3,8 +3,11 @@
  * in this directory). Single owner of the dashboard's update-available
  * lookup: GET /admin/api/version (VersionResponse in
  * backend/internal/dashboard/admin_wire.go), sourced from the
- * arsydoni4326-alt/freebuff-proxy releases. App.svelte runs it once per
- * page load and opens UpdateModal_Arsydoni.svelte when has_update is true.
+ * arsydoni4326-alt/freebuff-proxy main branch: the running build's commit
+ * hash is compared against the branch head, so every pushed commit — not
+ * only tagged releases — marks the build outdated. App.svelte runs it once
+ * per page load and opens UpdateModal_Arsydoni.svelte when has_update is
+ * true.
  * Do not delete, inline, or repoint this module on upstream merges.
  */
 import { fetchAPI } from "./api/client.js";
@@ -23,6 +26,7 @@ export function normalizeVersionPayload(data) {
     latest_version: String(d.latest_version ?? ""),
     update_url: String(d.update_url ?? ""),
     latest_commit: String(d.latest_commit ?? ""),
+    current_commit: String(d.current_commit ?? ""),
     changelog: String(d.changelog ?? ""),
   };
 }

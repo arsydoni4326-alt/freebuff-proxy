@@ -3,6 +3,10 @@ WORKDIR /src
 # Define the build arguments passed from GitHub Actions
 ARG APP_VERSION=v0.0.0
 ARG APP_COMMIT=unknown
+# COMMIT is the CI/docker-build.sh spelling of the same stamp (deploy.yaml
+# passes build-arg COMMIT; the Dockerfile previously never declared it, so
+# the commit was silently never embedded).
+ARG COMMIT=unknown
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -17,7 +21,7 @@ RUN set -eux;   \
             -buildvcs=false \
             -trimpath \
             -tags dashboard \
-            -ldflags="-s -w -X 'main.Version=${APP_VERSION}' -X 'main.Commit=${APP_COMMIT}' -X 'main.BuildDate=${BUILD_DATE}' -X 'main.Version=${VERSION}'" \
+            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
             -tags dashboard \
             -o /out/freebuff-proxy ./backend/cmd/freebuff-proxy ;  \
     chmod +x /out/freebuff-proxy

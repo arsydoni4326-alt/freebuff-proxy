@@ -81,7 +81,11 @@ type Server struct {
 	// version is the running release tag (""/dev for dev builds); the
 	// dashboard badge compares it against the latest GitHub release (#50b).
 	// updates is the cached latest-release checker (nil = no badge).
+	// commit is the running build's commit hash (ARSYDONI UPDATE SOURCE,
+	// merge-guarded): the dashboard's primary update signal compares it
+	// against the repo's main-branch head. "" for dev builds.
 	version string
+	commit  string
 	updates *updatecheck.Checker
 
 	// authClient drives the headless OAuth login wizard (issue #62): a
@@ -155,6 +159,16 @@ func WithVersion(version string, updates *updatecheck.Checker) Option {
 	}
 }
 
+// WithCommit wires the running build's commit hash (ARSYDONI UPDATE SOURCE,
+// merge-guarded): the dashboard's primary update signal compares it against
+// the repo's main-branch head, so any push to main marks the build outdated
+// without a release. Empty (dev builds) degrades to the tag comparison.
+func WithCommit(commit string) Option {
+	return func(s *Server) {
+		s.commit = commit
+	}
+}
+
 // WithLoginClient wires the token-less upstream client that drives the
 // headless OAuth login wizard (issue #62). A nil client disables the
 // wizard endpoints with 503.
@@ -210,7 +224,7 @@ func New(cfg *config.Config, p *pool.Pool, reg *registry.Registry, logger *slog.
 	if cfg.DashboardEnabled {
 		dashOpts := []dashboard.Option{}
 		if s.version != "" {
-			dashOpts = append(dashOpts, dashboard.WithVersion(s.version, s.updates))
+			dashOpts = append(dashOpts, dashboard.WithVersion(s.version, s.updates, s.commit))
 		}
 		if s.hist != nil {
 			dashOpts = append(dashOpts, dashboard.WithHistory(s.hist))

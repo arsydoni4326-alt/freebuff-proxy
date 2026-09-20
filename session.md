@@ -1,6 +1,40 @@
 # Session: SQLite Token Database + UI
 
-## Latest: update-available modal, fork update source (2026-09-20)
+## Latest: update check switched to commit-hash comparison (2026-09-20)
+
+- **Change (user request: no GitHub release needed for the update modal)**:
+  the primary update signal is now the commit hash. `updatecheck.Checker`
+  gained `Head(ctx)` (GET `commits/main`, 10-min `HeadTTL` cache,
+  single-flight, fail-open/backoff like the release cache) and the package
+  gained `CommitOutdated(running, head)` — outdated iff the embedded
+  running commit differs from main's head (short-vs-full SHA safe);
+  unknown inputs degrade to no-update. `APIVersion` now sets
+  `has_update` from `CommitOutdated(d.commit, head)` and falls back to
+  `UpdateAvailable(version, tag)` only when `d.commit == ""`. The response
+  additionally carries `current_commit` (running build's stamp).
+- **Commit stamping chain fixed**: the Dockerfile previously had
+  `-X 'main.Commit=${APP_COMMIT}'` against a nonexistent symbol, and
+  deploy.yaml's `COMMIT` build-arg was never declared — the commit was
+  silently never embedded. Now: `main.go` declares `commit` var;
+  Dockerfile declares `ARG COMMIT` and stamps `-X main.commit=${COMMIT}`;
+  docker-compose passes `COMMIT` from the host (git dir excluded from
+  context); deploy.yaml already passes `COMMIT` (now effective);
+  .goreleaser stamps `-X main.commit={{.FullCommit}}`. Verified live:
+  `go build -ldflags "-X main.commit=9999999"` + `-version` prints it,
+  and `commits/main` of the fork answers `bc97619d...` (2026-09-20).
+- **Frontend**: `UpdateModal_Arsydoni` shows Installed version+commit vs
+  Latest commit (+latest release in parens); description updated to the
+  commit-mismatch wording; `normalizeVersionPayload` carries
+  `current_commit`. dist rebuilt.
+- **Verification**: build+vet+gofmt clean; updatecheck suite green
+  (incl. new TestCommitOutdated, TestHeadFetchesAndCaches,
+  TestHeadFailureBacksOff — one initial test-expectation bug of mine
+  fixed: short-prefix of the SAME commit is equal, not outdated);
+  dashboard/server/config/cli suites green; svelte-check 0 errors; e2e
+  update-modal spec 3/3; shell-a11y+dashboard 62/62. `modelOptions.test.js`
+  1 failure reproduced on pristine HEAD (stash) — pre-existing, unrelated.
+
+## Previous: update-available modal, fork update source (2026-09-20)
 
 - **Feature**: dashboard shows a modal on every page load while
   `GET /admin/api/version` reports `has_update`; nothing renders when

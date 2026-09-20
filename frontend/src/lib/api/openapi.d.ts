@@ -1200,8 +1200,10 @@ export interface components {
       has_update: boolean;
       latest_version: string;
       update_url: string;
-      /** Short commit hash of the latest release tag (best effort; absent when unavailable) */
+      /** Repo main-branch head commit (absent when the GitHub lookup fails) */
       latest_commit?: string;
+      /** Commit hash the running build was built from (absent for dev builds) */
+      current_commit?: string;
       /** Release notes of the latest release only (best effort; absent when unavailable) */
       changelog?: string;
     };

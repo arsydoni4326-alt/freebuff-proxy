@@ -14,6 +14,7 @@ describe("normalizeVersionPayload", () => {
         latest_version: "v1.13.0",
         update_url: "https://example.com/releases",
         latest_commit: "0123456789abcdef",
+        current_commit: "9999999",
         changelog: "- a",
       }),
       {
@@ -22,6 +23,7 @@ describe("normalizeVersionPayload", () => {
         latest_version: "v1.13.0",
         update_url: "https://example.com/releases",
         latest_commit: "0123456789abcdef",
+        current_commit: "9999999",
         changelog: "- a",
       },
     );
@@ -34,6 +36,7 @@ describe("normalizeVersionPayload", () => {
       latest_version: "",
       update_url: "",
       latest_commit: "",
+      current_commit: "",
       changelog: "",
     });
     assert.equal(normalizeVersionPayload({ has_update: 1 }).has_update, true);
