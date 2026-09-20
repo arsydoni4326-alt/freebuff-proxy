@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"time"
+	_ "time/tzdata"
 
 	// Embed the IANA tzdata so NextPacificMidnight keeps exact DST math on
 	// minimal images (alpine:3.20 has no /usr/share/zoneinfo) and Windows
@@ -30,7 +31,6 @@ import (
 	"freebucks-proxy/backend/internal/telemetry"
 	"freebucks-proxy/backend/internal/updatecheck"
 	"freebucks-proxy/backend/internal/upstream"
-	_ "time/tzdata"
 
 	history "freebucks-proxy/backend/internal/store"
 )
