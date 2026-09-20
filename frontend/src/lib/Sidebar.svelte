@@ -1,6 +1,9 @@
 <script>
   import { Menu, X, LogOut } from "@lucide/svelte";
   import Button from "./components/Button.svelte";
+  // ARSYDONI UPDATE SOURCE (merge-guarded — lib/README_ARSYDONI_UPDATE.md):
+  // manual update-status check in the sidebar footer.
+  import UpdateCheckButtonArsydoni from "./components/UpdateCheckButton_Arsydoni.svelte";
 
   /**
    * @prop {string} activeTab
@@ -285,10 +288,11 @@
             >{shortVersion}</span
           >
         </div>
-        <div class="flex items-center justify-end">
+        <div class="flex items-center justify-between gap-2">
+          <UpdateCheckButtonArsydoni />
           <a
             href={versionInfo?.update_url ??
-              "https://github.com/trefeon/freebuff-proxy/releases"}
+              "https://github.com/arsydoni4326-alt/freebuff-proxy/releases"}
             target="_blank"
             rel="noopener noreferrer"
             class="text-[var(--fp-dim)] hover:text-[var(--fp-muted)] transition-colors normal-case tracking-normal text-[10px]"

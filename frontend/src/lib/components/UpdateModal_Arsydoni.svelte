@@ -3,6 +3,7 @@
   // lib/README_ARSYDONI_UPDATE.md. Do not remove on upstream merges.
   import {
     ArrowUpCircle,
+    CircleCheck,
     ExternalLink,
     GitCommitHorizontal,
   } from "@lucide/svelte";
@@ -12,9 +13,12 @@
   import { shortCommit } from "../updateCheck_arsydoni.js";
 
   /**
-   * UpdateModal_Arsydoni — "update available" dialog. App.svelte opens it
-   * on every dashboard load while GET /admin/api/version reports
-   * has_update; it never renders when the gateway is current.
+   * UpdateModal_Arsydoni — update-status dialog with two states. Default
+   * (outdated): warning tone, commit + changelog, "View release" action —
+   * App.svelte opens it on every dashboard load while GET /admin/api/version
+   * reports has_update, and it never renders when the gateway is current.
+   * Up-to-date state: success tone, no changelog, "Close" action — used by
+   * UpdateCheckButton_Arsydoni when a manual check finds nothing new.
    *
    * @prop {boolean} open
    * @prop {Record<string, string|boolean>} [info] — normalized version payload
@@ -27,19 +31,32 @@
   const headCommit = $derived(shortCommit(info?.latest_commit));
   const changelog = $derived(String(info?.changelog || "").trim());
   const url = $derived(info?.update_url || "");
+  // Up-to-date state: a manual check with no mismatch renders the success
+  // variant (no changelog block, no "View release" action).
+  const upToDate = $derived(!info?.has_update);
 </script>
 
 <Modal
   bind:open
-  title={$tr("Update available")}
-  description={$tr("The running build is behind the latest commit on main.")}
+  title={$tr(upToDate ? "Up to date" : "Update available")}
+  description={$tr(
+    upToDate
+      ? "The running build matches the latest commit on main."
+      : "The running build is behind the latest commit on main.",
+  )}
   size="lg"
 >
   {#snippet icon()}
     <div
-      class="p-2.5 rounded shrink-0 bg-[var(--fp-warning)]/15 text-[var(--fp-warning)] border border-[var(--fp-warning)]/30"
+      class="p-2.5 rounded shrink-0 {upToDate
+        ? 'bg-[var(--fp-success)]/15 text-[var(--fp-success)] border border-[var(--fp-success)]/30'
+        : 'bg-[var(--fp-warning)]/15 text-[var(--fp-warning)] border border-[var(--fp-warning)]/30'}"
     >
-      <ArrowUpCircle size={20} />
+      {#if upToDate}
+        <CircleCheck size={20} />
+      {:else}
+        <ArrowUpCircle size={20} />
+      {/if}
     </div>
   {/snippet}
 
@@ -65,7 +82,9 @@
       <span class="flex items-center gap-2 min-w-0 flex-wrap">
         {#if headCommit}
           <span
-            class="fp-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--fp-warning)]/15 text-[var(--fp-warning)] inline-flex items-center gap-1"
+            class="fp-mono text-[10px] px-1.5 py-0.5 rounded inline-flex items-center gap-1 {upToDate
+              ? 'bg-[var(--fp-success)]/15 text-[var(--fp-success)]'
+              : 'bg-[var(--fp-warning)]/15 text-[var(--fp-warning)]'}"
           >
             <GitCommitHorizontal size={11} />
             {headCommit}
@@ -79,7 +98,7 @@
       </span>
     </div>
 
-    {#if changelog}
+    {#if changelog && !upToDate}
       <div>
         <div
           class="text-xs font-semibold text-[var(--fp-muted)] uppercase tracking-wider mb-1.5"
@@ -96,10 +115,14 @@
   </div>
 
   {#snippet footer()}
-    <Button variant="ghost" onclick={() => (open = false)}>
-      {$tr("Later")}
+    <Button
+      variant={upToDate ? "primary" : "ghost"}
+      onclick={() => (open = false)}
+      data-autofocus={upToDate ? true : undefined}
+    >
+      {$tr(upToDate ? "Close" : "Later")}
     </Button>
-    {#if url}
+    {#if !upToDate && url}
       <a
         href={url}
         target="_blank"
