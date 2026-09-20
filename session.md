@@ -1,6 +1,32 @@
 # Session: SQLite Token Database + UI
 
-## Latest: merge upstream/main e18a3611 (#606–#645 era: MASQ pool engine, PIN_MODEL, zero-cost probe-all, session single-writer) into develop — merge 6 of 2026-09-19
+## Latest: merge-resolution compile + restore fixes (2026-09-20, HEAD 5c30ade2)
+
+- **Build fix (Docker `go build -tags dashboard` was failing)**:
+  `pool_persist.go` referenced `quotaEntries` (undefined) — the issue-#656
+  ledger-capture refactor (commit d6645f4f lineage) dropped the pre-merge
+  local `quotaEntries []*tokenEntry` declaration while keeping the quota
+  loop that consumes it. Restored the collection under the roster lock
+  (entries appended BEFORE the `ledger == nil` skip, matching 36a19168),
+  consumed outside the lock per the established Snapshot() order.
+- **Restore fix (merge slip, caught by test)**:
+  `TestSpendLedgerPersistsAndRestores` failed (`restored Rolling24h = 0,
+  want 500`). Root cause: issue-#656 introduced the incremental
+  `spendLedger.rollingTotal` (invariant `rollingTotal == sum(rolling[].tokens)`,
+  maintained by add/rolling24h/installLedger). The merge recomputed it in
+  `installLedger` (pool_state path, pool_persist.go) but MISSED the twin
+  restore path `applySpendTo` (token_state path, ledger_persist.go:95) —
+  applySpendTo rebuilt `rolling` without recomputing `rollingTotal`, so
+  `RestoreTokenState`-restored pools read Rolling24h = 0 from the hot
+  snapshot path. Fixed by mirroring installLedger's recompute loop.
+- **Verification**: go build + vet + gofmt clean; pool short suite green
+  (-short -count=1, hermetic env); docker-equivalent build verified
+  (`CGO_ENABLED=1 go build -tags dashboard ./backend/cmd/freebuff-proxy`).
+- Files touched: `backend/internal/pool/pool_persist.go` (quotaEntries
+  restore), `backend/internal/pool/ledger_persist.go` (rollingTotal
+  recompute in applySpendTo).
+
+## Previous: merge upstream/main e18a3611 (#606–#645 era: MASQ pool engine, PIN_MODEL, zero-cost probe-all, session single-writer) into develop — merge 6 of 2026-09-19
 
 - **Merge resolved and COMMITTED** as `7b8e6932` (parents 36a19168 +
   e18a3611). Note: a merge commit landed during this working session (repo
