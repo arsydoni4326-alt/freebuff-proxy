@@ -49,7 +49,10 @@ first credential reads as account 1, never index 0.
   when the running commit matches `main`'s head (dev builds fall back to
   the release-tag comparison). The feature's files and merge policy are
   documented in `frontend/src/lib/README_ARSYDONI_UPDATE.md` — do not
-  remove these on upstream merges (additive-union resolution).
+  remove these on upstream merges (additive-union resolution). A manual
+  **"Check for Updates" button** in the sidebar footer forces a
+  cache-bypassing check and shows the same status dialog (up-to-date
+  renders a success state; a failed check only raises a toast).
 - **System Status Line**: Live badge displaying active mode (`Pooled`, `Bridge` or `Hybrid`), proxy version, process uptime, and request count.
 - **Key Performance Indicators (KPIs)**: 6 tabular-mono counters:
   - Total Pool Tokens
