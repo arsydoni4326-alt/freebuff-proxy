@@ -103,6 +103,14 @@ func applySpendTo(sp *spendLedger, st SpendPersistState) {
 			sp.rolling[i] = spendEntry{at: e.At, tokens: e.Tokens}
 		}
 	}
+	// Recompute the incremental rolling total from the restored rows
+	// (invariant: rollingTotal == sum of rolling[].tokens) so the hot
+	// snapshot path (rolling24h) reads the restored window instead of a
+	// stale zero (issue #656).
+	sp.rollingTotal = 0
+	for _, e := range sp.rolling {
+		sp.rollingTotal += e.tokens
+	}
 	sp.dayUsed = st.DayUsed
 	sp.dayStart = st.DayStart
 	sp.weekUsed = st.WeekUsed

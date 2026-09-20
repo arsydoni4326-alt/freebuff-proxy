@@ -218,8 +218,15 @@ func (p *Pool) snapshotPoolState() (staged []poolKV, liveLedgers, liveQuotas, li
 	p.roster.mu.Lock()
 	captures := make([]ledgerCapture, 0, len(*p.roster.toks.Load()))
 	keys := make([]string, 0, len(*p.roster.toks.Load()))
+	// The entry list is also copied for the quota snapshot below (sessions
+	// read outside this lock).
+	quotaEntries := make([]*tokenEntry, 0, len(*p.roster.toks.Load()))
 	for _, entry := range *p.roster.toks.Load() {
-		if entry == nil || entry.ledger == nil {
+		if entry == nil {
+			continue
+		}
+		quotaEntries = append(quotaEntries, entry)
+		if entry.ledger == nil {
 			continue
 		}
 		key := poolLedgerKey(poolTokenHash(entry.token))
