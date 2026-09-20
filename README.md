@@ -14,10 +14,11 @@ dashboard, optional browser-like TLS stealth, and automatic session lifecycle.
   - **Hybrid** (default with `AUTH_TOKENS`) — `API_KEYS` credential uses the
     pool, any other credential relays upstream as a bridge token.
 - Dashboard at `/admin` (Svelte SPA embedded in the binary). On every page
-  load the dashboard checks this fork's GitHub releases
-  (`arsydoni4326-alt/freebuff-proxy`) and shows an update-available modal —
-  version + short commit hash + that release's changelog — whenever the
-  gateway is outdated (never when current). Merge-guarded fork feature:
+  load the dashboard compares the running build's commit hash against
+  `main` of `arsydoni4326-alt/freebuff-proxy` and shows an update-available
+  modal — version + commit hashes + that release's changelog — whenever the
+  build is behind (never when current; no release needed, any push to main
+  counts). Merge-guarded fork feature:
   see `frontend/src/lib/README_ARSYDONI_UPDATE.md`.
 - Credit metering follows the wire `prices` map (upstream credits, wire fields
   `freebucks*`): charged once per session-hour at session start, refunded on

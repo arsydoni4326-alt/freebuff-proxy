@@ -39,14 +39,17 @@ first credential reads as account 1, never index 0.
   every dashboard page load, the gateway's update check
   (`GET /admin/api/version`, sourced from the
   [arsydoni4326-alt/freebuff-proxy](https://github.com/arsydoni4326-alt/freebuff-proxy)
-  releases) runs once. When a newer release exists, a modal opens showing
-  the installed version, the latest release version with its short commit
-  hash, and that release's changelog (latest release only, not history).
-  The modal re-appears on every refresh for as long as the gateway is
-  outdated, and never renders when the gateway is current. The feature's
-  files and merge policy are documented in
-  `frontend/src/lib/README_ARSYDONI_UPDATE.md` — do not remove these on
-  upstream merges (additive-union resolution).
+  `main` branch) runs once. The primary signal is the commit hash: the
+  running build's commit (stamped at build time) is compared against
+  `main`'s head, so every push — not only tagged releases — marks the
+  build outdated. When outdated, a modal opens showing the installed
+  version + commit, `main`'s head commit (and latest release version),
+  and the latest release's changelog (latest release only, not history).
+  The modal re-appears on every refresh while outdated, and never renders
+  when the running commit matches `main`'s head (dev builds fall back to
+  the release-tag comparison). The feature's files and merge policy are
+  documented in `frontend/src/lib/README_ARSYDONI_UPDATE.md` — do not
+  remove these on upstream merges (additive-union resolution).
 - **System Status Line**: Live badge displaying active mode (`Pooled`, `Bridge` or `Hybrid`), proxy version, process uptime, and request count.
 - **Key Performance Indicators (KPIs)**: 6 tabular-mono counters:
   - Total Pool Tokens

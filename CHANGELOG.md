@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Update check now compares commit hashes (ARSYDONI UPDATE SOURCE)** —
+  the running build's commit (stamped at build time via
+  `-X main.commit=...`) is compared against the fork's `main` branch head
+  (`commits/main`, 10-minute cache): every push to `main` marks the build
+  outdated, no GitHub release required. Release-tag comparison remains the
+  fallback for dev builds without a stamped commit. The Dockerfile now
+  declares the `COMMIT` build-arg (previously the CI-passed commit was
+  silently dropped), and docker-compose/deploy/goreleaser stamp it too.
+
 ## [v1.13.0]
 
 ### Added
