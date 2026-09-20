@@ -13,6 +13,7 @@ services:
       # the host: the nearest tag, or the short SHA past it.
       args:
         VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
     # GHCR default pull path, local build override: `docker compose pull` fetches
     # ghcr.io/trefeon/freebuff-proxy; `docker compose build` uses the local context below.
     # `VERSION=x docker compose up -d --build` rebuilds locally from context;

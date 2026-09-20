@@ -24,6 +24,14 @@ import (
 // When building without GoReleaser it stays "dev".
 var version = "dev"
 
+// commit is the running build's commit hash, injected at build time
+// (-ldflags -X main.commit=...). It is the primary update-check signal
+// (ARSYDONI UPDATE SOURCE): the dashboard compares it against the repo's
+// main-branch head, so any pushed commit — not only tagged releases — marks
+// the running build outdated. Empty for dev builds (degrades to the
+// release-tag comparison).
+var commit = ""
+
 // tokenListFlag is a tri-state flag value for -validate-tokens: the flag
 // package parses a bare "-validate-tokens" as Set("true") (validate the
 // configured tokens), "-validate-tokens=tok1,tok2" as the override list,
@@ -119,6 +127,9 @@ func main() {
 
 	if *showVersion {
 		fmt.Println("freebuff-proxy", version)
+		if commit != "" {
+			fmt.Println("commit", commit)
+		}
 		os.Exit(0)
 	}
 	if *testToken {
@@ -156,5 +167,5 @@ func main() {
 		service.Status()
 	}
 
-	os.Exit(cli.Serve(*configPath, *verbose, version))
+	os.Exit(cli.Serve(*configPath, *verbose, version, commit))
 }

@@ -214,16 +214,20 @@ type ConfigSaveResponse struct {
 	RestartOnly []string `json:"restart_only,omitempty"`
 }
 
-// VersionResponse is the GET /admin/api/version answer. LatestCommit and
-// Changelog are best-effort extras (ARSYDONI UPDATE SOURCE — the fork's
-// update modal, frontend/src/lib/UpdateModal_Arsydoni.svelte): absent when
-// the GitHub lookup could not provide them.
+// VersionResponse is the GET /admin/api/version answer. latest_commit is
+// the repo's main-branch head (ARSYDONI UPDATE SOURCE — the fork's update
+// modal, frontend/src/lib/UpdateModal_Arsydoni.svelte) and changelog the
+// latest release body; both are absent when the GitHub lookup could not
+// provide them. has_update is true when the running build's commit differs
+// from latest_commit (primary signal), or — for dev builds without a stamped
+// commit — when latest_version is newer than current_version.
 type VersionResponse struct {
 	CurrentVersion string `json:"current_version"`
 	HasUpdate      bool   `json:"has_update"`
 	LatestVersion  string `json:"latest_version"`
 	UpdateURL      string `json:"update_url"`
 	LatestCommit   string `json:"latest_commit,omitempty"`
+	CurrentCommit  string `json:"current_commit,omitempty"`
 	Changelog      string `json:"changelog,omitempty"`
 }
 

@@ -31,6 +31,13 @@ const DefaultRepo = "arsydoni4326-alt/freebuff-proxy"
 // "cached 6h").
 const CacheTTL = 6 * time.Hour
 
+// HeadTTL is how long a fetched main-branch head commit is reused. It is
+// deliberately much shorter than CacheTTL: the commit check is the primary
+// update signal (every push to main counts, no release needed), so page
+// refreshes should notice new commits within minutes while still keeping
+// the GitHub API at background-poll cadence.
+const HeadTTL = 10 * time.Minute
+
 // fetchTimeout bounds one GitHub API call (the dashboard must never block
 // on it).
 const fetchTimeout = 3 * time.Second
@@ -62,6 +69,13 @@ type Checker struct {
 	info     Info
 	fetched  time.Time
 	fetching bool
+
+	// head is the fork's default-branch (main) head commit, cached for
+	// HeadTTL. It is the primary "is the running build outdated" signal:
+	// comparing the running build's commit against main needs no release.
+	head        string
+	headFetched time.Time
+	headFetch   bool
 }
 
 // New builds a checker for repo (owner/name). client is used for the
@@ -82,11 +96,99 @@ func (c *Checker) SetLogger(l *slog.Logger) {
 	c.logger = l
 }
 
-// Invalidate clears the cache timestamp so the next Latest call re-fetches.
+// Invalidate clears the cache timestamps so the next Latest/Info/Head call
+// re-fetches.
 func (c *Checker) Invalidate() {
 	c.mu.Lock()
 	c.fetched = time.Time{}
+	c.headFetched = time.Time{}
 	c.mu.Unlock()
+}
+
+// Head returns the fork's default-branch (main) head commit SHA, cached for
+// HeadTTL with the same fail-open/backoff shape as Info: a failed fetch
+// still stamps the attempt (so page refreshes never hammer the GitHub API)
+// and returns the previously cached value ("" on first failure) with the
+// error. Single-flight like the release lookup.
+func (c *Checker) Head(ctx context.Context) (string, error) {
+	start := time.Now()
+	c.mu.Lock()
+	if time.Since(c.headFetched) < HeadTTL {
+		sha := c.head
+		c.mu.Unlock()
+		return sha, nil
+	}
+	if c.headFetch {
+		// Another caller is mid-fetch: wait for it instead of stacking a
+		// second GET (mirrors the Info single-flight waiter).
+		for c.headFetch {
+			c.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				c.mu.Lock()
+				sha := c.head
+				c.mu.Unlock()
+				return sha, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+			c.mu.Lock()
+		}
+		sha := c.head
+		c.mu.Unlock()
+		return sha, nil
+	}
+	c.headFetch = true
+	c.mu.Unlock()
+
+	sha, err := c.fetchHead(ctx)
+
+	c.mu.Lock()
+	c.headFetch = false
+	if err == nil && sha != "" {
+		c.head = sha
+		c.headFetched = time.Now()
+	} else {
+		// Stamp the attempt even on failure: the HeadTTL window covers
+		// failed lookups too, so frequent page refreshes back off instead
+		// of hammering api.github.com (same policy as the release cache).
+		c.headFetched = time.Now()
+	}
+	got := c.head
+	c.mu.Unlock()
+	decision := "fetched"
+	if err != nil || sha == "" {
+		decision = "failed"
+	}
+	c.logger.Debug("update head decision", "decision", decision, "ms", time.Since(start).Milliseconds())
+	return got, err
+}
+
+// fetchHead GETs https://api.github.com/repos/<repo>/commits/<branch> and
+// extracts the head commit SHA of the default branch.
+func (c *Checker) fetchHead(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/repos/"+c.repo+"/commits/main", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "freebuff-proxy-updatecheck/1.0")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("github commits/main: status %d", resp.StatusCode)
+	}
+	var decoded struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&decoded); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(decoded.SHA), nil
 }
 
 // Latest returns the latest release tag (e.g. "v0.9.3"). It is the
@@ -256,6 +358,28 @@ func UpdateAvailable(current, latest string) bool {
 		return false
 	}
 	return CompareVersions(latest, current) > 0
+}
+
+// CommitOutdated is the ARSYDONI UPDATE SOURCE primary signal (merge-guarded
+// — see frontend/src/lib/README_ARSYDONI_UPDATE.md): the running build is
+// outdated when its embedded commit hash differs from the repo's main-branch
+// head — no release required, every push to main counts. Unknown inputs are
+// never outdated: runningCommit "" (dev builds without a stamped commit) or
+// an empty head (GitHub unreachable) degrade to no-update.
+func CommitOutdated(runningCommit, headCommit string) bool {
+	runningCommit = strings.TrimSpace(runningCommit)
+	headCommit = strings.TrimSpace(headCommit)
+	if runningCommit == "" || headCommit == "" {
+		return false
+	}
+	// A running build may embed the short hash while the API answers with
+	// the full SHA (and vice versa): outdated only when the short forms
+	// clearly differ.
+	n := len(runningCommit)
+	if len(headCommit) < n {
+		n = len(headCommit)
+	}
+	return runningCommit[:n] != headCommit[:n]
 }
 
 // CompareVersions compares two version strings ("v0.9.3", "0.10.1",
