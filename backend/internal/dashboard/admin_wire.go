@@ -214,12 +214,17 @@ type ConfigSaveResponse struct {
 	RestartOnly []string `json:"restart_only,omitempty"`
 }
 
-// VersionResponse is the GET /admin/api/version answer.
+// VersionResponse is the GET /admin/api/version answer. LatestCommit and
+// Changelog are best-effort extras (ARSYDONI UPDATE SOURCE — the fork's
+// update modal, frontend/src/lib/UpdateModal_Arsydoni.svelte): absent when
+// the GitHub lookup could not provide them.
 type VersionResponse struct {
 	CurrentVersion string `json:"current_version"`
 	HasUpdate      bool   `json:"has_update"`
 	LatestVersion  string `json:"latest_version"`
 	UpdateURL      string `json:"update_url"`
+	LatestCommit   string `json:"latest_commit,omitempty"`
+	Changelog      string `json:"changelog,omitempty"`
 }
 
 // TokenAddRequest is the POST /admin/tokens/add body (raw upstream token).
