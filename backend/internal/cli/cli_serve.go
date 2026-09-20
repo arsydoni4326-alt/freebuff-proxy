@@ -42,7 +42,7 @@ import (
 // per token, start the background registry refresh and pool, serve HTTP, and
 // drain gracefully on a shutdown signal. It returns the process exit code
 // (0 normal, 1 server failure); the caller maps it to os.Exit.
-func Serve(configPath string, verbose bool, version string) int {
+func Serve(configPath string, verbose bool, version, commit string) int {
 	// DB settings overlay (ADR-0019): the store opens BEFORE the first Load
 	// so UI-persisted knobs apply from boot (env > db > file > default).
 	// DB_PATH resolves from the process environment alone, so no config is
@@ -466,11 +466,15 @@ func Serve(configPath string, verbose bool, version string) int {
 	if err != nil {
 		slog.Warn("dashboard login client unavailable (login wizard disabled)", "err", err)
 	}
-	serverOpts := []server.Option{server.WithLoginClient(loginClient)}
+	serverOpts := []server.Option{server.WithLoginClient(loginClient), server.WithCommit(commit)}
 	// Dashboard history (ADR-0016): nil-safe, live-only views when unset.
 	serverOpts = append(serverOpts, server.WithHistory(histStore))
 	// Issue #50b: release update indicator — the dashboard badge compares
 	// the running version against the latest GitHub release (6h cache).
+	// ARSYDONI UPDATE SOURCE (merge-guarded): commit is the running build's
+	// commit hash; the dashboard's primary update signal compares it against
+	// the repo's main-branch head (CommitOutdated), so every push to main —
+	// not only tagged releases — marks the build outdated.
 	serverOpts = append(serverOpts, server.WithVersion(version, updatecheck.New(updatecheck.DefaultRepo, nil)))
 
 	// Custom (SQLite token DB): reconcile the pool with the database's

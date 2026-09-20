@@ -283,3 +283,95 @@ func TestLatestLogsDecision(t *testing.T) {
 		t.Errorf("failed lookup log missing decision=failed: %s", sinkFail.String())
 	}
 }
+
+// TestCommitOutdated pins the ARSYDONI UPDATE SOURCE primary signal: the
+// running build is outdated iff its embedded commit differs from main's
+// head; unknown inputs (dev builds, unreachable GitHub) are never outdated.
+func TestCommitOutdated(t *testing.T) {
+	full := "0123456789abcdef0123456789abcdef01234567"
+	other := "fedcba9876543210fedcba9876543210fedcba98"
+	cases := []struct {
+		running, head string
+		want          bool
+	}{
+		{full[:7], full, false},     // same commit, short running vs full head
+		{full, full[:7], false},     // same commit, full running vs short head
+		{full[:7], other, true},     // different commits (short vs full)
+		{full, other[:7], true},     // different commits (full vs short)
+		{"9999999", full[:7], true}, // clearly different short forms
+		{full[:7], full[:7], false}, // equal short forms
+		{full, full, false},         // equal full forms
+		{"", full[:7], false},       // dev build → never outdated
+		{full[:7], "", false},       // head unknown → fail-open
+		{"  ", full[:7], false},     // whitespace-only → dev build
+	}
+	for _, tc := range cases {
+		if got := CommitOutdated(tc.running, tc.head); got != tc.want {
+			t.Errorf("CommitOutdated(%q, %q) = %v, want %v", tc.running, tc.head, got, tc.want)
+		}
+	}
+}
+
+// TestHeadFetchesAndCaches: Head fetches commits/main, caches for HeadTTL,
+// and single-flights concurrent callers.
+func TestHeadFetchesAndCaches(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if !strings.Contains(r.URL.Path, "/commits/main") {
+			t.Errorf("path = %q, want /commits/main", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"sha":"0123456789abcdef0123456789abcdef01234567"}`))
+	}))
+	defer srv.Close()
+	c := New(DefaultRepo, &http.Client{Transport: &rewriteTransport{target: srv.URL}, Timeout: fetchTimeout})
+
+	sha, err := c.Head(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "0123456789abcdef0123456789abcdef01234567" {
+		t.Errorf("sha = %q, want the mocked sha", sha)
+	}
+	if hits != 1 {
+		t.Errorf("hits = %d, want 1", hits)
+	}
+	// Cached: second call within HeadTTL must not hit the network.
+	if _, err := c.Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Errorf("hits after cache reuse = %d, want 1", hits)
+	}
+	// Invalidate clears the head cache too.
+	c.Invalidate()
+	if _, err := c.Head(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if hits != 2 {
+		t.Errorf("hits after Invalidate = %d, want 2", hits)
+	}
+}
+
+// TestHeadFailureBacksOff: a failed head fetch stamps the attempt, so a
+// second call within HeadTTL does not re-hit the network (page-refresh
+// hammering guard).
+func TestHeadFailureBacksOff(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	c := New(DefaultRepo, &http.Client{Transport: &rewriteTransport{target: srv.URL}, Timeout: fetchTimeout})
+
+	if sha, err := c.Head(context.Background()); err == nil || sha != "" {
+		t.Fatalf("Head = %q, %v; want empty + error on first failure", sha, err)
+	}
+	if sha, err := c.Head(context.Background()); err != nil || sha != "" {
+		t.Errorf("second Head = %q, %v; want empty + nil error (backoff hit)", sha, err)
+	}
+	if hits != 1 {
+		t.Errorf("hits = %d, want 1 (first failure must back off for HeadTTL)", hits)
+	}
+}

@@ -6,7 +6,8 @@ const root = "http://127.0.0.1:4173/admin/";
 // ARSYDONI UPDATE SOURCE: payload shape mirrors VersionResponse
 // (backend/internal/dashboard/admin_wire.go).
 const updatePayload = {
-  current_version: "v1.12.2",
+  current_version: "v1.13.0",
+  current_commit: "9999999",
   has_update: true,
   latest_version: "v1.13.0",
   update_url: "https://github.com/arsydoni4326-alt/freebuff-proxy/releases",
@@ -22,6 +23,7 @@ test.describe("arsydoni update modal", () => {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText("v1.13.0");
+    await expect(dialog).toContainText("9999999");
     await expect(dialog).toContainText("0123456");
     await expect(dialog).toContainText("Update-available modal");
     await expect(

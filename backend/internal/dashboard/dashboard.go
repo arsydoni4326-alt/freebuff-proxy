@@ -45,8 +45,11 @@ type Dashboard struct {
 	// version is the running release tag ("" / "dev" for dev builds) and
 	// updates is the release-update indicator (issue #50b); the layout
 	// shows a badge when a newer GitHub release exists. Both may be left
-	// unset (no badge).
+	// unset (no badge). commit is the running build's commit hash
+	// (ARSYDONI UPDATE SOURCE, merge-guarded): the primary update signal
+	// compares it against the repo's main-branch head — no release needed.
 	version string
+	commit  string
 	updates *updatecheck.Checker
 
 	// usageRing is the in-memory token-usage log backing GET /admin/api/usage
@@ -72,11 +75,14 @@ type Dashboard struct {
 type Option func(*Dashboard)
 
 // WithVersion wires the running release tag and the update checker for the
-// header badge (issue #50b). Nil checker disables the badge.
-func WithVersion(version string, updates *updatecheck.Checker) Option {
+// header badge (issue #50b). Nil checker disables the badge. commit is the
+// running build's commit hash (ARSYDONI UPDATE SOURCE, merge-guarded): the
+// primary update signal compares it against the repo's main-branch head.
+func WithVersion(version string, updates *updatecheck.Checker, commit string) Option {
 	return func(d *Dashboard) {
 		d.version = version
 		d.updates = updates
+		d.commit = commit
 	}
 }
 
@@ -147,17 +153,31 @@ func (d *Dashboard) APIVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	resp := VersionResponse{
 		CurrentVersion: d.version,
+		CurrentCommit:  d.commit,
 		UpdateURL:      releaseURL,
 	}
-	if d.version != "" && d.updates != nil && r.Context() != nil {
+	if d.updates != nil && r.Context() != nil {
 		if r.URL != nil && r.URL.Query().Get("force") == "true" {
 			d.updates.Invalidate()
 		}
+		// ARSYDONI UPDATE SOURCE (merge-guarded): the running commit is the
+		// primary signal — a mismatch against the repo's main-branch head
+		// means outdated, no release required. When the running commit is
+		// unknown (dev builds), fall back to the release-tag comparison.
+		if head, err := d.updates.Head(r.Context()); err == nil && head != "" {
+			resp.LatestCommit = head
+			if updatecheck.CommitOutdated(d.commit, head) {
+				resp.HasUpdate = true
+			}
+		}
 		if info, err := d.updates.Info(r.Context()); err == nil && info.Tag != "" {
 			resp.LatestVersion = info.Tag
+			if info.Commit == "" {
+				info.Commit = resp.LatestCommit
+			}
 			resp.LatestCommit = info.Commit
 			resp.Changelog = info.Notes
-			if updatecheck.UpdateAvailable(d.version, info.Tag) {
+			if d.commit == "" && updatecheck.UpdateAvailable(d.version, info.Tag) {
 				resp.HasUpdate = true
 			}
 		}

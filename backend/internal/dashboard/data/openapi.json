@@ -33,10 +33,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "current_password",
-          "new_password"
-        ],
+        "required": ["current_password", "new_password"],
         "type": "object"
       },
       "ChangePasswordResponse": {
@@ -48,10 +45,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "message",
-          "ok"
-        ],
+        "required": ["message", "ok"],
         "type": "object"
       },
       "ConfigSaveResponse": {
@@ -69,10 +63,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "message",
-          "ok"
-        ],
+        "required": ["message", "ok"],
         "type": "object"
       },
       "DiagResponse": {
@@ -93,20 +84,13 @@
                   "type": "boolean"
                 }
               },
-              "required": [
-                "message",
-                "name",
-                "ok",
-                "warn"
-              ],
+              "required": ["message", "name", "ok", "warn"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "checks"
-        ],
+        "required": ["checks"],
         "type": "object"
       },
       "LoginCompletedResponse": {
@@ -121,10 +105,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "status",
-          "token_index"
-        ],
+        "required": ["status", "token_index"],
         "type": "object"
       },
       "LoginRequest": {
@@ -133,9 +114,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "token"
-        ],
+        "required": ["token"],
         "type": "object"
       },
       "LoginStartResponse": {
@@ -153,12 +132,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "expires_at",
-          "fingerprint",
-          "flow_id",
-          "login_url"
-        ],
+        "required": ["expires_at", "fingerprint", "flow_id", "login_url"],
         "type": "object"
       },
       "LogoutResponse": {
@@ -167,9 +141,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "ok"
-        ],
+        "required": ["ok"],
         "type": "object"
       },
       "ModeSwitchRequest": {
@@ -178,9 +150,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "mode"
-        ],
+        "required": ["mode"],
         "type": "object"
       },
       "NoticesResponse": {
@@ -220,13 +190,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "id",
-                "message",
-                "title",
-                "tone",
-                "type"
-              ],
+              "required": ["id", "message", "title", "tone", "type"],
               "type": "object"
             },
             "type": "array"
@@ -267,12 +231,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "count",
-          "notices",
-          "peak_hours",
-          "upstream_sha"
-        ],
+        "required": ["count", "notices", "peak_hours", "upstream_sha"],
         "type": "object"
       },
       "PageStateRequest": {
@@ -281,18 +240,14 @@
             "type": "object"
           }
         },
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "type": "object"
       },
       "PageStateResponse": {
         "properties": {
           "data": {}
         },
-        "required": [
-          "data"
-        ],
+        "required": ["data"],
         "type": "object"
       },
       "ReloadResponse": {
@@ -307,11 +262,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "auth_tokens",
-          "message",
-          "status"
-        ],
+        "required": ["auth_tokens", "message", "status"],
         "type": "object"
       },
       "RequireLoginRequest": {
@@ -339,11 +290,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "message",
-          "ok",
-          "require_login"
-        ],
+        "required": ["message", "ok", "require_login"],
         "type": "object"
       },
       "RestartResponse": {
@@ -355,10 +302,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "message",
-          "ok"
-        ],
+        "required": ["message", "ok"],
         "type": "object"
       },
       "ResultEnvelope": {
@@ -373,10 +317,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "message",
-          "ok"
-        ],
+        "required": ["message", "ok"],
         "type": "object"
       },
       "SettingsListResponse": {
@@ -438,22 +379,13 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "key",
-                "restart_only",
-                "secret",
-                "source",
-                "value"
-              ],
+              "required": ["key", "restart_only", "secret", "source", "value"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "degraded",
-          "settings"
-        ],
+        "required": ["degraded", "settings"],
         "type": "object"
       },
       "SettingsPostRequest": {
@@ -463,10 +395,7 @@
           },
           "value": {}
         },
-        "required": [
-          "key",
-          "value"
-        ],
+        "required": ["key", "value"],
         "type": "object"
       },
       "SettingsPostResponse": {
@@ -487,12 +416,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "code",
-          "message",
-          "ok",
-          "restart_only"
-        ],
+        "required": ["code", "message", "ok", "restart_only"],
         "type": "object"
       },
       "SmokeRequest": {
@@ -507,11 +431,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "model",
-          "prompt",
-          "token"
-        ],
+        "required": ["model", "prompt", "token"],
         "type": "object"
       },
       "SmokeResponse": {
@@ -535,10 +455,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "ms",
-                "name"
-              ],
+              "required": ["ms", "name"],
               "type": "object"
             },
             "type": "array"
@@ -550,14 +467,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "model",
-          "ms",
-          "ok",
-          "phases",
-          "preview",
-          "token"
-        ],
+        "required": ["model", "ms", "ok", "phases", "preview", "token"],
         "type": "object"
       },
       "SpawnSessionRequest": {
@@ -574,9 +484,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "token"
-        ],
+        "required": ["token"],
         "type": "object"
       },
       "TokenRemoveRequest": {
@@ -644,6 +552,10 @@
           "changelog": {
             "type": "string",
             "description": "Release notes of the latest release only (best effort; absent when unavailable)"
+          },
+          "current_commit": {
+            "type": "string",
+            "description": "Commit hash the running build was built from (absent for dev builds)"
           }
         },
         "required": [
@@ -669,11 +581,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "key",
-                "secret",
-                "value"
-              ],
+              "required": ["key", "secret", "value"],
               "type": "object"
             },
             "type": "array"
@@ -685,11 +593,7 @@
             "type": "boolean"
           }
         },
-        "required": [
-          "effective",
-          "env_content",
-          "has_env_file"
-        ],
+        "required": ["effective", "env_content", "has_env_file"],
         "type": "object"
       },
       "getConfigMetaResponse": {
@@ -764,12 +668,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "fields",
-                "level",
-                "message",
-                "time"
-              ],
+              "required": ["fields", "level", "message", "time"],
               "type": "object"
             },
             "type": "array"
@@ -831,14 +730,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "fields",
-                "id",
-                "level",
-                "msg",
-                "req_id",
-                "ts"
-              ],
+              "required": ["fields", "id", "level", "msg", "req_id", "ts"],
               "type": "object"
             },
             "type": "array"
@@ -925,21 +817,13 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "fields",
-                "level",
-                "msg",
-                "ts"
-              ],
+              "required": ["fields", "level", "msg", "ts"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "enabled",
-          "entries"
-        ],
+        "required": ["enabled", "entries"],
         "type": "object"
       },
       "logsImportReport": {
@@ -954,11 +838,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "imported",
-          "rejected",
-          "skipped_duplicate"
-        ],
+        "required": ["imported", "rejected", "skipped_duplicate"],
         "type": "object"
       },
       "logsRollupData": {
@@ -982,12 +862,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "errors",
-                "ok",
-                "total",
-                "ts"
-              ],
+              "required": ["errors", "ok", "total", "ts"],
               "type": "object"
             },
             "type": "array"
@@ -1005,11 +880,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "errors",
-                "name",
-                "total"
-              ],
+              "required": ["errors", "name", "total"],
               "type": "object"
             },
             "type": "array"
@@ -1027,11 +898,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "errors",
-                "name",
-                "total"
-              ],
+              "required": ["errors", "name", "total"],
               "type": "object"
             },
             "type": "array"
@@ -1049,11 +916,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "errors",
-                "token_idx",
-                "total"
-              ],
+              "required": ["errors", "token_idx", "total"],
               "type": "object"
             },
             "type": "array"
@@ -1091,12 +954,7 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "count",
-              "p50",
-              "p90",
-              "p99"
-            ],
+            "required": ["count", "p50", "p90", "p99"],
             "type": "object"
           },
           "until": {
@@ -1138,11 +996,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "detail",
-                "kind",
-                "ts"
-              ],
+              "required": ["detail", "kind", "ts"],
               "type": "object"
             },
             "type": "array"
@@ -1151,11 +1005,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "enabled",
-          "events",
-          "token"
-        ],
+        "required": ["enabled", "events", "token"],
         "type": "object"
       },
       "metricsData": {
@@ -1211,10 +1061,7 @@
                 "type": "number"
               }
             },
-            "required": [
-              "direction",
-              "percentage"
-            ],
+            "required": ["direction", "percentage"],
             "type": "object"
           },
           "retries_spark": {
@@ -1229,10 +1076,7 @@
                 "type": "number"
               }
             },
-            "required": [
-              "direction",
-              "percentage"
-            ],
+            "required": ["direction", "percentage"],
             "type": "object"
           },
           "sample_count": {
@@ -1362,11 +1206,7 @@
             "type": "array"
           }
         },
-        "required": [
-          "agents",
-          "count",
-          "models"
-        ],
+        "required": ["agents", "count", "models"],
         "type": "object"
       },
       "overviewData": {
@@ -1437,10 +1277,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "amount",
-                        "available"
-                      ],
+                      "required": ["amount", "available"],
                       "type": "object"
                     },
                     "list_prices": {
@@ -1532,9 +1369,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "limit_usd"
-                      ],
+                      "required": ["limit_usd"],
                       "type": "object"
                     },
                     "wallet": {
@@ -1549,19 +1384,11 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "balance",
-                        "monthly_bonus"
-                      ],
+                      "required": ["balance", "monthly_bonus"],
                       "type": "object"
                     }
                   },
-                  "required": [
-                    "balance",
-                    "daily",
-                    "spend",
-                    "wallet"
-                  ],
+                  "required": ["balance", "daily", "spend", "wallet"],
                   "type": "object"
                 },
                 "key": {
@@ -1721,10 +1548,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "amount",
-                        "available"
-                      ],
+                      "required": ["amount", "available"],
                       "type": "object"
                     },
                     "list_prices": {
@@ -1816,9 +1640,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "limit_usd"
-                      ],
+                      "required": ["limit_usd"],
                       "type": "object"
                     },
                     "wallet": {
@@ -1833,19 +1655,11 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "balance",
-                        "monthly_bonus"
-                      ],
+                      "required": ["balance", "monthly_bonus"],
                       "type": "object"
                     }
                   },
-                  "required": [
-                    "balance",
-                    "daily",
-                    "spend",
-                    "wallet"
-                  ],
+                  "required": ["balance", "daily", "spend", "wallet"],
                   "type": "object"
                 },
                 "freebucks_daily_bonus": {
@@ -1926,11 +1740,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "enabled",
-                    "mode",
-                    "target"
-                  ],
+                  "required": ["enabled", "mode", "target"],
                   "type": "object"
                 },
                 "messages_24h": {
@@ -2021,11 +1831,7 @@
                         "type": "number"
                       }
                     },
-                    "required": [
-                      "id",
-                      "label",
-                      "points"
-                    ],
+                    "required": ["id", "label", "points"],
                     "type": "object"
                   },
                   "type": "array"
@@ -2202,12 +2008,7 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "limit",
-                "recent",
-                "reset_at",
-                "ts"
-              ],
+              "required": ["limit", "recent", "reset_at", "ts"],
               "type": "object"
             },
             "type": "array"
@@ -2216,12 +2017,7 @@
             "type": "integer"
           }
         },
-        "required": [
-          "enabled",
-          "model",
-          "snapshots",
-          "token"
-        ],
+        "required": ["enabled", "model", "snapshots", "token"],
         "type": "object"
       },
       "setupData": {
@@ -2335,10 +2131,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "amount",
-                        "available"
-                      ],
+                      "required": ["amount", "available"],
                       "type": "object"
                     },
                     "list_prices": {
@@ -2430,9 +2223,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "limit_usd"
-                      ],
+                      "required": ["limit_usd"],
                       "type": "object"
                     },
                     "wallet": {
@@ -2447,19 +2238,11 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "balance",
-                        "monthly_bonus"
-                      ],
+                      "required": ["balance", "monthly_bonus"],
                       "type": "object"
                     }
                   },
-                  "required": [
-                    "balance",
-                    "daily",
-                    "spend",
-                    "wallet"
-                  ],
+                  "required": ["balance", "daily", "spend", "wallet"],
                   "type": "object"
                 },
                 "key": {
@@ -2622,10 +2405,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "amount",
-                        "available"
-                      ],
+                      "required": ["amount", "available"],
                       "type": "object"
                     },
                     "list_prices": {
@@ -2717,9 +2497,7 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "limit_usd"
-                      ],
+                      "required": ["limit_usd"],
                       "type": "object"
                     },
                     "wallet": {
@@ -2734,19 +2512,11 @@
                           "type": "string"
                         }
                       },
-                      "required": [
-                        "balance",
-                        "monthly_bonus"
-                      ],
+                      "required": ["balance", "monthly_bonus"],
                       "type": "object"
                     }
                   },
-                  "required": [
-                    "balance",
-                    "daily",
-                    "spend",
-                    "wallet"
-                  ],
+                  "required": ["balance", "daily", "spend", "wallet"],
                   "type": "object"
                 },
                 "freebucks_daily_bonus": {
@@ -2830,11 +2600,7 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "enabled",
-                    "mode",
-                    "target"
-                  ],
+                  "required": ["enabled", "mode", "target"],
                   "type": "object"
                 },
                 "messages_24h": {
@@ -3011,11 +2777,7 @@
                         "type": "number"
                       }
                     },
-                    "required": [
-                      "id",
-                      "label",
-                      "points"
-                    ],
+                    "required": ["id", "label", "points"],
                     "type": "object"
                   },
                   "type": "array"
@@ -3082,10 +2844,7 @@
                   "type": "string"
                 }
               },
-              "required": [
-                "id",
-                "name"
-              ],
+              "required": ["id", "name"],
               "type": "object"
             },
             "type": "array"
@@ -3193,10 +2952,7 @@
                         "type": "string"
                       }
                     },
-                    "required": [
-                      "ms",
-                      "name"
-                    ],
+                    "required": ["ms", "name"],
                     "type": "object"
                   },
                   "type": "array"
@@ -3226,23 +2982,13 @@
                   "type": "integer"
                 }
               },
-              "required": [
-                "error",
-                "model",
-                "ms",
-                "status",
-                "time",
-                "token"
-              ],
+              "required": ["error", "model", "ms", "status", "time", "token"],
               "type": "object"
             },
             "type": "array"
           }
         },
-        "required": [
-          "enabled",
-          "traces"
-        ],
+        "required": ["enabled", "traces"],
         "type": "object"
       },
       "usageData": {
@@ -3386,21 +3132,11 @@
                 "type": "integer"
               }
             },
-            "required": [
-              "cached",
-              "cost",
-              "input",
-              "output",
-              "requests"
-            ],
+            "required": ["cached", "cost", "input", "output", "requests"],
             "type": "object"
           }
         },
-        "required": [
-          "entries",
-          "range",
-          "totals"
-        ],
+        "required": ["entries", "range", "totals"],
         "type": "object"
       }
     },
@@ -3444,9 +3180,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/": {
@@ -3470,9 +3204,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/auth/status": {
@@ -3496,9 +3228,7 @@
           }
         ],
         "summary": "Dashboard auth state (login mode, factory-default check)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/api/change-password": {
@@ -3532,9 +3262,7 @@
           }
         ],
         "summary": "Rotate the admin dashboard password",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/api/config": {
@@ -3558,9 +3286,7 @@
           }
         ],
         "summary": "Effective config (sensitive: raw .env read)",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       }
     },
     "/admin/api/config/meta": {
@@ -3584,9 +3310,7 @@
           }
         ],
         "summary": "Configuration catalog (the settings form schema)",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       }
     },
     "/admin/api/events": {
@@ -3610,9 +3334,7 @@
           }
         ],
         "summary": "Server-sent event stream (dashboard live updates)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/logs": {
@@ -3665,9 +3387,7 @@
           }
         ],
         "summary": "Recent log ring view model",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/logs/export": {
@@ -3711,9 +3431,7 @@
           }
         ],
         "summary": "Streamed versioned export of request_records plus log_entries",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/logs/history": {
@@ -3793,9 +3511,7 @@
           }
         ],
         "summary": "Persisted log records",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/logs/import": {
@@ -3819,9 +3535,7 @@
           }
         ],
         "summary": "Gap-fill restore of an export document (INSERT OR IGNORE, 64MB cap)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/logs/rollup": {
@@ -3874,9 +3588,7 @@
           }
         ],
         "summary": "Request-outcome rollup: counts, group-bys, error rate, TTFB percentiles, time buckets",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/maturity/history": {
@@ -3929,9 +3641,7 @@
           }
         ],
         "summary": "Streak/standing transitions",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/metrics": {
@@ -3955,9 +3665,7 @@
           }
         ],
         "summary": "Latency and throughput view model",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/models": {
@@ -3981,9 +3689,7 @@
           }
         ],
         "summary": "Full model catalog view model (tiers, withdrawal and live offer state)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/notices": {
@@ -4007,9 +3713,7 @@
           }
         ],
         "summary": "Upstream announcements and live broadcasts",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/overview": {
@@ -4044,9 +3748,7 @@
           }
         ],
         "summary": "Overview view model (pool, models, quota, upstream sync)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/pages/{id}": {
@@ -4080,9 +3782,7 @@
           }
         ],
         "summary": "Per-page UI snapshot (absent row reads back empty, never 404)",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       },
       "put": {
         "operationId": "putPageState",
@@ -4124,9 +3824,7 @@
           }
         ],
         "summary": "Upsert one per-page UI snapshot (data must be a JSON object)",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       }
     },
     "/admin/api/quota/history": {
@@ -4188,9 +3886,7 @@
           }
         ],
         "summary": "Per-model quota samples",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/require-login": {
@@ -4224,9 +3920,7 @@
           }
         ],
         "summary": "Enable/disable dashboard login (open mode is loopback-only)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/api/settings": {
@@ -4250,9 +3944,7 @@
           }
         ],
         "summary": "DB settings overlay: effective values plus source tiers",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       },
       "post": {
         "operationId": "saveSetting",
@@ -4284,9 +3976,7 @@
           }
         ],
         "summary": "Validate, persist and hot-apply one overlay knob",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       }
     },
     "/admin/api/settings/{key}": {
@@ -4320,9 +4010,7 @@
           }
         ],
         "summary": "Drop one overlay row (falls back to .env/env/default)",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       }
     },
     "/admin/api/setup": {
@@ -4346,9 +4034,7 @@
           }
         ],
         "summary": "Setup wizard view model",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/tokens": {
@@ -4383,9 +4069,7 @@
           }
         ],
         "summary": "Token cards view model",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/traces": {
@@ -4409,9 +4093,7 @@
           }
         ],
         "summary": "Recent chat traces",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/usage": {
@@ -4455,9 +4137,7 @@
           }
         ],
         "summary": "Token usage log: range totals plus per-entry detail (9Router-style overview)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/api/version": {
@@ -4492,9 +4172,7 @@
           }
         ],
         "summary": "Running version plus update check",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/assets/": {
@@ -4513,9 +4191,7 @@
           }
         },
         "summary": "Static dashboard assets",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/bridge-tokens/{key}/lock": {
@@ -4549,9 +4225,7 @@
           }
         ],
         "summary": "Lock one bridge-mode entry",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/bridge-tokens/{key}/unlock": {
@@ -4585,9 +4259,7 @@
           }
         ],
         "summary": "Unlock one bridge-mode entry",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/config": {
@@ -4611,9 +4283,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       },
       "post": {
         "operationId": "saveConfig",
@@ -4645,9 +4315,7 @@
           }
         ],
         "summary": "Write the raw .env text, reload and report restart-only/overridden keys",
-        "tags": [
-          "settings"
-        ]
+        "tags": ["settings"]
       }
     },
     "/admin/diag": {
@@ -4671,9 +4339,7 @@
           }
         ],
         "summary": "Configuration and upstream reachability checks",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/login": {
@@ -4692,9 +4358,7 @@
           }
         },
         "summary": "Login page shell (HTML)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       },
       "post": {
         "operationId": "login",
@@ -4721,9 +4385,7 @@
           }
         },
         "summary": "Dashboard login (sets the fb_admin session cookie; 302 to /admin on success)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/login/start": {
@@ -4758,9 +4420,7 @@
           }
         ],
         "summary": "Start a device-login browser flow (?isolated=false for the stable fingerprint)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/login/status": {
@@ -4795,9 +4455,7 @@
           }
         ],
         "summary": "Poll one device-login flow (pending: status alone; completed: token_index plus user)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/logout": {
@@ -4816,9 +4474,7 @@
           }
         },
         "summary": "Dashboard logout (clears the fb_admin session cookie)",
-        "tags": [
-          "auth"
-        ]
+        "tags": ["auth"]
       }
     },
     "/admin/logs": {
@@ -4842,9 +4498,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/metrics": {
@@ -4868,9 +4522,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/mode": {
@@ -4904,9 +4556,7 @@
           }
         ],
         "summary": "Switch bridge/pooled mode (loopback rules apply)",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/models": {
@@ -4930,9 +4580,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/playground": {
@@ -4956,9 +4604,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/playground/chat": {
@@ -4982,9 +4628,7 @@
           }
         ],
         "summary": "Prompt through the real chat handler with streaming forced (SSE answer)",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/reload": {
@@ -5008,9 +4652,7 @@
           }
         ],
         "summary": "Reload configuration from disk and apply live (Bearer ADMIN_TOKEN)",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/restart": {
@@ -5034,9 +4676,7 @@
           }
         ],
         "summary": "Validate config and restart the gateway process",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/setup": {
@@ -5060,9 +4700,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     },
     "/admin/smoke": {
@@ -5096,9 +4734,7 @@
           }
         ],
         "summary": "Zero-cost upstream probe with SSE preview (DEVTOOLS_ENABLED gate)",
-        "tags": [
-          "system"
-        ]
+        "tags": ["system"]
       }
     },
     "/admin/tokens": {
@@ -5122,9 +4758,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/add": {
@@ -5158,9 +4792,7 @@
           }
         ],
         "summary": "Add one upstream token to the pool and persist to .env",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/remove": {
@@ -5194,9 +4826,7 @@
           }
         ],
         "summary": "Remove one pool token (absent index removes the last)",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/swap": {
@@ -5230,9 +4860,7 @@
           }
         ],
         "summary": "Swap two pool positions",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/test-all": {
@@ -5256,9 +4884,7 @@
           }
         ],
         "summary": "Zero-cost upstream probe of all tokens",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/drop-session": {
@@ -5292,9 +4918,7 @@
           }
         ],
         "summary": "Drop one token's upstream session",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/finish": {
@@ -5328,9 +4952,7 @@
           }
         ],
         "summary": "FINISH one token's upstream runs",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/lock": {
@@ -5364,9 +4986,7 @@
           }
         ],
         "summary": "Take one token out of rotation",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/refund-refresh": {
@@ -5400,9 +5020,7 @@
           }
         ],
         "summary": "Replay one token's parked pending-refund DELETE (same instance; drops the result if the account changed)",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/session": {
@@ -5446,9 +5064,7 @@
           }
         ],
         "summary": "Ensure one token's upstream session for a model",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/test": {
@@ -5482,9 +5098,7 @@
           }
         ],
         "summary": "Zero-cost upstream probe of one token",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/unlock": {
@@ -5518,9 +5132,7 @@
           }
         ],
         "summary": "Return one token to rotation",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/tokens/{id}/unlock-lock": {
@@ -5554,9 +5166,7 @@
           }
         ],
         "summary": "Unlock then immediately re-lock (cooldown reset)",
-        "tags": [
-          "tokens"
-        ]
+        "tags": ["tokens"]
       }
     },
     "/admin/traces": {
@@ -5580,9 +5190,7 @@
           }
         ],
         "summary": "SPA shell (HTML)",
-        "tags": [
-          "views"
-        ]
+        "tags": ["views"]
       }
     }
   }
