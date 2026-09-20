@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   normalizeVersionPayload,
   shortCommit,
+  versionEndpoint,
 } from "./updateCheck_arsydoni.js";
 
 describe("normalizeVersionPayload", () => {
@@ -40,6 +41,14 @@ describe("normalizeVersionPayload", () => {
       changelog: "",
     });
     assert.equal(normalizeVersionPayload({ has_update: 1 }).has_update, true);
+  });
+});
+
+describe("versionEndpoint", () => {
+  it("appends force=true only when requested", () => {
+    assert.equal(versionEndpoint(false), "/admin/api/version");
+    assert.equal(versionEndpoint(), "/admin/api/version");
+    assert.equal(versionEndpoint(true), "/admin/api/version?force=true");
   });
 });
 

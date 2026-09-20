@@ -23,7 +23,12 @@ commit matches `main`'s head again. When up to date, nothing renders.
 ## Files that make up the feature (keep all of them)
 
 - `frontend/src/lib/updateCheck_arsydoni.js` — fetch + normalize
-- `frontend/src/lib/components/UpdateModal_Arsydoni.svelte` — the modal
+- `frontend/src/lib/components/UpdateModal_Arsydoni.svelte` — the status
+  dialog (outdated: warning + changelog + "View release"; up-to-date:
+  success + "Close")
+- `frontend/src/lib/components/UpdateCheckButton_Arsydoni.svelte` — the
+  sidebar-footer "Check for Updates" button: forces a cache-bypassing
+  check (`?force=true`) and shows the status dialog (errors toast)
 - `frontend/src/lib/README_ARSYDONI_UPDATE.md` — this merge policy
 - `frontend/src/App.svelte` — boot call + modal mount (search "ARSYDONI")
 - `backend/internal/updatecheck/updatecheck.go` — `DefaultRepo` pin + `Info`
