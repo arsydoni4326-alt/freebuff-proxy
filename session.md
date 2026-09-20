@@ -1,6 +1,24 @@
 # Session: SQLite Token Database + UI
 
-## Latest: update check switched to commit-hash comparison (2026-09-20)
+## Latest: "Check for Updates" button (2026-09-20)
+
+- **Feature**: `UpdateCheckButton_Arsydoni.svelte` in the sidebar footer.
+  Pressing it forces a cache-bypassing check (`versionEndpoint(true)` →
+  `?force=true`, which the backend handles via `updatecheck.Invalidate`)
+  and opens the status dialog. `UpdateModal_Arsydoni` now renders two
+  states: outdated (warning icon/title, changelog block, "Later" + "View
+  release") and up-to-date (`CircleCheck` success icon, "Up to date"
+  title, no changelog, primary "Close" with data-autofocus). Check
+  failures toast and never open the dialog. The stale trefeon fallback
+  URL in the Sidebar footer link was corrected to the fork.
+- **Svelte note**: `class:` directives are invalid on components — lucide
+  icons take the `class` prop (used a conditional class for the spinner).
+- **Verification**: svelte-check 0 errors; unit 45 pass (1 pre-existing
+  modelOptions failure, unchanged); e2e update spec 5/5 (button: up-to-date
+  dialog with forced=true asserted, outdated dialog with both commits;
+  modal boot suite unchanged); shell-a11y 6/6; dist rebuilt.
+
+## Previous: update check switched to commit-hash comparison (2026-09-20)
 
 - **Change (user request: no GitHub release needed for the update modal)**:
   the primary update signal is now the commit hash. `updatecheck.Checker`

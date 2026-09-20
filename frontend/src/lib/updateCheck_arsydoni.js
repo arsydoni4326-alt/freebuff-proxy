@@ -14,6 +14,16 @@ import { fetchAPI } from "./api/client.js";
 import { adminApi } from "./api/paths.js";
 
 /**
+ * Version endpoint URL. `force` makes the gateway invalidate its update
+ * cache (updatecheck.Invalidate) before answering, so a manual check
+ * always reflects the repo state right now.
+ * @param {boolean} [force]
+ */
+export function versionEndpoint(force = false) {
+  return force ? `${adminApi.version}?force=true` : adminApi.version;
+}
+
+/**
  * Normalize the version payload to a stable shape; unknown/absent fields
  * degrade to empty strings so the modal can hide them.
  * @param {unknown} data - raw GET /admin/api/version body
@@ -40,7 +50,8 @@ export function shortCommit(sha) {
 /**
  * One update check. Throws on network/auth failure — callers decide how to
  * degrade (App.svelte logs a warning and skips the modal).
+ * @param {boolean} [force] - bypass the gateway's update cache
  */
-export async function checkForUpdate() {
-  return normalizeVersionPayload(await fetchAPI(adminApi.version));
+export async function checkForUpdate(force = false) {
+  return normalizeVersionPayload(await fetchAPI(versionEndpoint(force)));
 }
