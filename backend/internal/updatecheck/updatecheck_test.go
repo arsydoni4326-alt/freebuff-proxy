@@ -60,10 +60,14 @@ func TestLatestFetchesAndCaches(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
-		if !strings.Contains(r.URL.Path, "/releases/latest") {
-			t.Errorf("path = %q, want /releases/latest", r.URL.Path)
+		switch {
+		case strings.Contains(r.URL.Path, "/releases/latest"):
+			_, _ = w.Write([]byte(`{"tag_name":"v0.9.4","body":"- fix A"}`))
+		case strings.Contains(r.URL.Path, "/commits/"):
+			_, _ = w.Write([]byte(`{"sha":"0123456789abcdef0123456789abcdef01234567"}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"tag_name":"v0.9.4"}`))
 	}))
 	defer srv.Close()
 
@@ -73,23 +77,99 @@ func TestLatestFetchesAndCaches(t *testing.T) {
 	tr := &rewriteTransport{target: srv.URL}
 	c := New(DefaultRepo, &http.Client{Transport: tr, Timeout: fetchTimeout})
 
-	latest, err := c.Latest(context.Background())
+	info, err := c.Info(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if latest != "v0.9.4" {
-		t.Errorf("latest = %q, want v0.9.4", latest)
+	if info.Tag != "v0.9.4" {
+		t.Errorf("tag = %q, want v0.9.4", info.Tag)
 	}
-	if hits != 1 {
-		t.Errorf("fetches = %d, want 1", hits)
+	if info.Commit != "0123456789abcdef0123456789abcdef01234567" {
+		t.Errorf("commit = %q, want the mocked sha", info.Commit)
+	}
+	if info.Notes != "- fix A" {
+		t.Errorf("notes = %q, want the release body", info.Notes)
+	}
+	if hits != 2 {
+		t.Errorf("fetches = %d, want 2 (releases/latest + commits/<tag>)", hits)
 	}
 
 	// Cached: a second call within CacheTTL must not hit the network.
-	if _, err := c.Latest(context.Background()); err != nil {
+	if _, err := c.Info(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if hits != 1 {
-		t.Errorf("fetches = %d after cache reuse, want still 1", hits)
+	if hits != 2 {
+		t.Errorf("fetches = %d after cache reuse, want still 2", hits)
+	}
+
+	// Latest stays the tag-only view over the same cache.
+	tag, err := c.Latest(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag != "v0.9.4" {
+		t.Errorf("Latest = %q, want v0.9.4", tag)
+	}
+	if hits != 2 {
+		t.Errorf("fetches = %d after Latest cache reuse, want still 2", hits)
+	}
+}
+
+// TestInfoCommitLookupIsBestEffort: a failing commit endpoint must not fail
+// the update answer — the tag and notes survive with an empty Commit.
+func TestInfoCommitLookupIsBestEffort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/commits/") {
+			w.WriteHeader(500)
+			return
+		}
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","body":"notes"}`))
+	}))
+	defer srv.Close()
+	c := New(DefaultRepo, &http.Client{Transport: &rewriteTransport{target: srv.URL}, Timeout: fetchTimeout})
+
+	info, err := c.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info = %v; want success despite commit failure", err)
+	}
+	if info.Tag != "v1.2.3" || info.Notes != "notes" {
+		t.Errorf("info = %+v, want tag v1.2.3 + notes", info)
+	}
+	if info.Commit != "" {
+		t.Errorf("commit = %q, want empty on commit-lookup failure", info.Commit)
+	}
+}
+
+// TestInfoReleaseFailureSkipsCommitLookup: a releases/latest failure aborts
+// before the commit endpoint is contacted (cheap failure path).
+func TestInfoReleaseFailureSkipsCommitLookup(t *testing.T) {
+	var commitHits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/commits/") {
+			commitHits++
+			_, _ = w.Write([]byte(`{"sha":"x"}`))
+			return
+		}
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	c := New(DefaultRepo, &http.Client{Transport: &rewriteTransport{target: srv.URL}, Timeout: fetchTimeout})
+
+	if info, err := c.Info(context.Background()); err == nil || info.Tag != "" {
+		t.Fatalf("Info = %+v, %v; want empty + error on releases failure", info, err)
+	}
+	if commitHits != 0 {
+		t.Errorf("commit endpoint hits = %d, want 0 (releases failure must short-circuit)", commitHits)
+	}
+}
+
+func TestTruncateNotes(t *testing.T) {
+	if got := truncateNotes("  hi  "); got != "hi" {
+		t.Errorf("truncateNotes trims: got %q", got)
+	}
+	big := strings.Repeat("x", notesLimit+100)
+	if got := truncateNotes(big); len(got) != notesLimit {
+		t.Errorf("truncateNotes cap: len = %d, want %d", len(got), notesLimit)
 	}
 }
 

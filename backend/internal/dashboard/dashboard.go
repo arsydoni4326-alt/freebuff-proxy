@@ -98,7 +98,9 @@ func New(cfg func() *config.Config, p *pool.Pool, reg *registry.Registry, logger
 }
 
 // releaseURL is where the update badge points (the releases page).
-const releaseURL = "https://github.com/trefeon/freebuff-proxy/releases"
+// ARSYDONI UPDATE SOURCE (merge-guarded): this fork's repo, matching
+// updatecheck.DefaultRepo and frontend/src/lib/README_ARSYDONI_UPDATE.md.
+const releaseURL = "https://github.com/arsydoni4326-alt/freebuff-proxy/releases"
 
 // pickDefaultModel selects the catalog fallback (the mimo row) when present, or the first available model.
 func pickDefaultModel(models []string) string {
@@ -151,9 +153,11 @@ func (d *Dashboard) APIVersion(w http.ResponseWriter, r *http.Request) {
 		if r.URL != nil && r.URL.Query().Get("force") == "true" {
 			d.updates.Invalidate()
 		}
-		if latest, err := d.updates.Latest(r.Context()); err == nil && latest != "" {
-			resp.LatestVersion = latest
-			if updatecheck.UpdateAvailable(d.version, latest) {
+		if info, err := d.updates.Info(r.Context()); err == nil && info.Tag != "" {
+			resp.LatestVersion = info.Tag
+			resp.LatestCommit = info.Commit
+			resp.Changelog = info.Notes
+			if updatecheck.UpdateAvailable(d.version, info.Tag) {
 				resp.HasUpdate = true
 			}
 		}

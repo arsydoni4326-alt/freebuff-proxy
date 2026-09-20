@@ -12,7 +12,12 @@ endpoints plus an embedded Svelte dashboard.
   - **Bridge** — `AUTH_TOKENS` empty; each request carries its own token.
   - **Hybrid** (default with `AUTH_TOKENS`) — `API_KEYS` credential uses the
     pool, any other credential relays upstream as a bridge token.
-- Dashboard at `/admin` (Svelte SPA embedded in the binary).
+- Dashboard at `/admin` (Svelte SPA embedded in the binary). On every page
+  load the dashboard checks this fork's GitHub releases
+  (`arsydoni4326-alt/freebuff-proxy`) and shows an update-available modal —
+  version + short commit hash + that release's changelog — whenever the
+  gateway is outdated (never when current). Merge-guarded fork feature:
+  see `frontend/src/lib/README_ARSYDONI_UPDATE.md`.
 - Freebucks metering follows the wire `prices` map: charged once per session-hour
   at session start, refunded on early `DELETE`, refilled on a Pacific-midnight
   cadence.

@@ -10,6 +10,10 @@
   import Alert from "./lib/components/Alert.svelte";
   import Button from "./lib/components/Button.svelte";
   import EmptyState from "./lib/components/EmptyState.svelte";
+  // ARSYDONI UPDATE CHECK (merge-guarded — lib/README_ARSYDONI_UPDATE.md):
+  // the modal opens on every page load while the gateway reports an update.
+  import UpdateModalArsydoni from "./lib/components/UpdateModal_Arsydoni.svelte";
+  import { checkForUpdate } from "./lib/updateCheck_arsydoni.js";
   import { fetchAPI } from "./lib/api/client.js";
   import { adminApi, adminActions } from "./lib/api/paths.js";
   import {
@@ -53,6 +57,7 @@
   let versionInfo = $state(null);
   let isDefaultAdminToken = $derived($authState.isDefaultAdminToken);
   let showChangePasswordModal = $state(false);
+  let showUpdateModalArsydoni = $state(false);
 
   // Page mount resolved from the same nav registry the Sidebar filters
   // (issue #290): one source of truth for the page set.
@@ -133,17 +138,15 @@
       persistHash();
     }
 
-    // Fetch version / update check. fetchAPI (not raw fetch): it routes the
-    // admin base and surfaces the session-expired 401/redirect so the
-    // login banner fires instead of swallowing an HTML error (issue #244).
-    fetchAPI(adminApi.version)
-      .then((data) => {
-        versionInfo = {
-          current_version: data.current_version || "",
-          has_update: data.has_update || false,
-          latest_version: data.latest_version || "",
-          update_url: data.update_url || "",
-        };
+    // ARSYDONI UPDATE CHECK (merge-guarded — lib/README_ARSYDONI_UPDATE.md):
+    // runs once per page load; the modal opens whenever the gateway reports
+    // an update and stays closed when current. fetchAPI (not raw fetch): it
+    // routes the admin base and surfaces the session-expired 401/redirect so
+    // the login banner fires instead of swallowing an HTML error (issue #244).
+    checkForUpdate()
+      .then((info) => {
+        versionInfo = info;
+        showUpdateModalArsydoni = info.has_update;
       })
       .catch((e) => console.warn("version check failed", e));
 
@@ -193,6 +196,13 @@
   {/if}
 
   <ConfirmModal />
+
+  {#if versionInfo?.has_update}
+    <UpdateModalArsydoni
+      bind:open={showUpdateModalArsydoni}
+      info={versionInfo}
+    />
+  {/if}
 
   <Toaster />
 

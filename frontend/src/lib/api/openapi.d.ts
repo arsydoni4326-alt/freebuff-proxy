@@ -1200,6 +1200,10 @@ export interface components {
       has_update: boolean;
       latest_version: string;
       update_url: string;
+      /** Short commit hash of the latest release tag (best effort; absent when unavailable) */
+      latest_commit?: string;
+      /** Release notes of the latest release only (best effort; absent when unavailable) */
+      changelog?: string;
     };
     configData: {
       effective: {
