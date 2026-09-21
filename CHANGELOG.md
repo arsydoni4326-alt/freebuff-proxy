@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.17.0] - 2026-09-21
+
+### Changed
+- **Merged `upstream/main` drift slice (#672–#675)** — upstream-drift workflow
+  gains a `repository_dispatch` fast-path (type `freebuff-cli-release` with
+  `client_payload.version`, fired by the new `scripts/watch-freebuff-release.sh`
+  reference poller intended for infra-box cron), a `version_dedupe` job that
+  stands downstream jobs down when an open PR already carries the live version,
+  and an auto re-pin stage (`scripts/repin-all.sh --bot <live-version>`) that
+  advances both pins (vendor-version.txt + snapshots.json) atomically after the
+  version's drift PRs merge — never auto-merging.
+- **New script `scripts/drift-impact.sh`** — export→consumer impact map over the
+  exact drift report; exit 1 announces impact entries (never fails the job).
+
+### Fixed
+- **Merge completed over upstream's history rewrite** — upstream rewrote the
+  history carrying #667–#671 (new SHAs), so the stale merge-base surfaced ~70
+  spurious "both added" conflicts against content `develop` had already merged,
+  plus re-additions of fork-deleted files. Resolved against the true merge
+  point (`a1f10950`): fork-deleted files (`server_init.go`, `server_routes.go`,
+  `admin_tokens_ops/probe/routes.go`, `dashboard_history.go`) stay deleted —
+  their content already lives in the fork's merged `server.go`,
+  `admin_tokens.go`, and `history.go`.
+
+### Preserved
+- All merge-guarded fork features, byte-identical to pre-merge HEAD (see
+  `frontend/src/lib/README_ARSYDONI_UPDATE.md`): the ARSYDONI UPDATE SOURCE
+  update modal + sidebar "Check for Updates" button sourced from
+  `arsydoni4326-alt/freebuff-proxy` (`updatecheck.DefaultRepo`, commit-hash
+  signal, e2e fixtures), the SQLite token database (`internal/tokendb`), the
+  bridge circuit breaker, the passive risk engine, and the fork's
+  `DRIFT_WEBHOOK_URL` webhook-alert step — re-kept inside the adopted
+  upstream-drift workflow.
+
+### Technical Details
+- Resolution policy: every path where HEAD and `upstream/main` were
+  byte-identical took the fork side; all real conflicts kept the fork
+  implementation (HEAD matched the fork, `upstream/main` was the plain
+  pre-fork variant). The only adopted deltas are the #672–#675 files:
+  `.github/workflows/upstream-drift.yml`, `scripts/drift-impact.sh`,
+  `scripts/watch-freebuff-release.sh`.
+- Verified: `go build ./backend/...`, `go vet` green; short backend lane green
+  except the 12 known pre-existing failures (pool limited-IP trio, session
+  legacy-file/store group, upstream 402 classification — unchanged from
+  v1.16.0); bash syntax checks on all four drift scripts; workflow YAML parses.
+
+## [v1.16.0] - 2026-09-21
 ## [v1.16.0] - 2026-09-21
 
 ### Changed

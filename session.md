@@ -1,6 +1,46 @@
 # Session: SQLite Token Database + UI
 
-## Latest: upstream rename merge (freebucks-proxy, 2026-09-21)
+## Latest: upstream drift-slice merge #672–#675 (2026-09-21, post-v1.16.0)
+
+- **Discovery**: upstream (`trefeon/freebucks-proxy`) rewrote the history
+  carrying #667–#671 (same PRs, new SHAs — e.g. rename commit is `7ee43d02`
+  now, was `131ef485`). The in-progress merge against `upstream/main`
+  (82e98eee) therefore had a stale merge-base (`567fd839`) and surfaced 86
+  conflicted paths: 76 spurious "both added" (content identical or fork
+  already carried it) + re-additions of fork-deleted files.
+- **Resolution method**: compared each conflicted path as
+  `HEAD:<file>` vs `MERGE_HEAD:<file>`. 76 were identical → took either side.
+  Every real-diff path showed HEAD = fork implementation, MERGE_HEAD = plain
+  pre-fork variant (verified by symbol greps: fork-only `TokenValue`,
+  `HealthScore`, breaker config, `DefaultRepo = arsydoni4326-alt/...`,
+  `var commit`/HeadTTL, ARSYDONI modal imports, webhook step) → took HEAD
+  (`--ours`). True merge point confirmed as `a1f10950`: the full
+  a1f10950..MERGE_HEAD delta is 8 files / +942 lines, all upstream
+  #672–#675 drift content.
+- **Fork-deleted re-additions dropped** (content already in HEAD elsewhere):
+  `dashboard_history.go` (→ `history.go`), `server_init.go`/`server_routes.go`
+  (→ `server.go`), `admin_tokens_ops/probe/routes.go` (→ `admin_tokens.go`),
+  and MERGE_HEAD's stale dist bundle (`index-FjvIvZ_8.js`/`index-B3Zy4fXa.css`;
+  HEAD serves `index-CqmrXinL.js`). `git rm --cached` + worktree rm.
+- **Adopted upstream delta**: `.github/workflows/upstream-drift.yml` re-based
+  onto MERGE_HEAD's version (dispatch fast-path, version_dedupe, auto
+  re-pin job) with the fork's "Notify webhook on drift" step
+  (`DRIFT_WEBHOOK_URL`) re-inserted after the drift-detection step; plus new
+  `scripts/drift-impact.sh` and `scripts/watch-freebuff-release.sh`.
+- **Index audit before commit**: `git diff --cached --stat HEAD` showed
+  exactly the 3 intended files and nothing else — no fork feature touched
+  (spot-verified: updatecheck DefaultRepo + HeadTTL + commit signal,
+  Overview freebucks cards, health circuit_breaker block all intact).
+- **Verification**: go build / go vet green; short backend lane green except
+  the same 12 pre-existing failures as v1.16.0 (pool limited-IP trio,
+  session legacy/store group, upstream 402 matrix — byte-identical set);
+  bash -n on the four drift scripts; workflow YAML parse OK (js-yaml).
+- **Committed** as `ce0367aa` (chore(merge) ...) with true two-parent
+  topology; CHANGELOG v1.17.0 written. Staged artifacts (`git rm --cached`
+  leftovers like `data/openapi.json` state) re-verified clean.
+- **Next**: git flow release v1.17.0.
+
+## Previous: upstream rename merge (freebucks-proxy, 2026-09-21)
 
 - **Merge in progress at session start**: `upstream/main` (a1f10950, delta
   #668–#671: docs, the `freebuff-proxy` → `freebucks-proxy` rename, security
