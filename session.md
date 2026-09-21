@@ -14,8 +14,13 @@
   `freebucks-proxy`, matching the already-present
   `ENTRYPOINT ["/usr/local/bin/freebucks-proxy"]` (which would otherwise
   have broken next at container start).
-- **Git flow**: `bugfix/dockerfile-build-path` → squash into `develop` →
-  `release/v1.17.1` → `main` + tag `v1.17.1`.
+- **Git flow**: `bugfix/dockerfile-build-path` → merged into `develop`
+  (fast-forward, branch deleted). Release: `release/v1.17.1` was started
+  before the bugfix merge landed (parallel command race), so it cut from the
+  pre-fix commit; its merge into `main` did not carry the fix. Repair:
+  merged `develop` into `main` directly (78677289), re-created annotated tag
+  `v1.17.1` on the corrected `main` head. Verified `52a3b642` is an ancestor
+  of both `main` and `develop`.
 - **Verification**: `go build ./backend/cmd/freebucks-proxy` package path
   resolves locally; Dockerfile path audit greps clean of the old
   `freebuff-proxy` spelling.
