@@ -120,7 +120,7 @@ Code quality & tests:
 - [x] Load test for thundering-herd creation — `TestBridgeThunderingHerd` (40 concurrent requests, 20 distinct tokens, all complete)
 
 Metrics & observability:
-- [x] Bridge-specific Prometheus metrics (entries, evictions, cooldowns) — `freebuff_proxy_bridge_entries_total`, `cooling_down_total`, `dead_tokens_total`, `locked_total`, `requests_total`, `active_runs`, `quota_remaining`
+- [x] Bridge-specific Prometheus metrics (entries, evictions, cooldowns) — `freebucks_proxy_bridge_entries_total`, `cooling_down_total`, `dead_tokens_total`, `locked_total`, `requests_total`, `active_runs`, `quota_remaining`
 - [x] Per-entry quota introspection in `/admin` without plaintext token exposure — `BridgeSnapshot` returns hashed key + quota/messages/spend/ban, no raw token
 - [x] `/healthz` bridge indicators (entry count, cooling-down, dead-token) — exposed as `bridge_tokens` count and `bridge_entries[]` with `dead_token`, `cooldown_until`, `locked` per entry
 
@@ -204,7 +204,7 @@ are organized by priority and impact. These complement the existing roadmap item
 
 1. **Circuit Breaker Observability**
    - [x] Expose circuit breaker state in `/healthz` (open/closed, failure count, cooldown remaining)
-   - [x] Add Prometheus metrics: `freebuff_proxy_bridge_breaker_open`, `freebuff_proxy_bridge_breaker_failures`
+   - [x] Add Prometheus metrics: `freebucks_proxy_bridge_breaker_open`, `freebucks_proxy_bridge_breaker_failures`
    - [ ] Surface breaker state in dashboard Overview page
 
 2. **Bridge Mode Quota Introspection Dashboard**

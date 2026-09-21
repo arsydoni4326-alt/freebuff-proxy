@@ -34,7 +34,7 @@ endpoint change (see AI-CODE-REVIEW.md).
 | Method + Path | Output | Notes |
 |---|---|---|
 | `GET /healthz` | liveness + pool snapshot: status, uptime, models, per-token snapshot incl. per-model `quota` map, `bridge_tokens`, spend | does NOT probe upstream (container stays healthy during upstream outages) |
-| `GET /metrics` | Prometheus text: uptime, model count, per-token 24h messages/requests/runs/cooldown, `freebuff_proxy_quota_recent`/`_limit` | dynamic labels escaped; no per-request labels |
+| `GET /metrics` | Prometheus text: uptime, model count, per-token 24h messages/requests/runs/cooldown, `freebucks_proxy_quota_recent`/`_limit` | dynamic labels escaped; no per-request labels |
 
 ## `/admin` (operator surface)
 

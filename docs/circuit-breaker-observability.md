@@ -65,28 +65,28 @@ GET /healthz
 Two new gauge metrics are exported:
 
 ```
-# HELP freebuff_proxy_bridge_breaker_open 1 when the circuit breaker is blocking requests, 0 otherwise
-# TYPE freebuff_proxy_bridge_breaker_open gauge
-freebuff_proxy_bridge_breaker_open 0
+# HELP freebucks_proxy_bridge_breaker_open 1 when the circuit breaker is blocking requests, 0 otherwise
+# TYPE freebucks_proxy_bridge_breaker_open gauge
+freebucks_proxy_bridge_breaker_open 0
 
-# HELP freebuff_proxy_bridge_breaker_failures Current number of transient failures in the circuit breaker sliding window
-# TYPE freebuff_proxy_bridge_breaker_failures gauge
-freebuff_proxy_bridge_breaker_failures 1
+# HELP freebucks_proxy_bridge_breaker_failures Current number of transient failures in the circuit breaker sliding window
+# TYPE freebucks_proxy_bridge_breaker_failures gauge
+freebucks_proxy_bridge_breaker_failures 1
 ```
 
 | Metric | Type | Values | Description |
 |---|---|---|---|
-| `freebuff_proxy_bridge_breaker_open` | gauge | `0` or `1` | `1` when the breaker is blocking; `0` when closed or disabled |
-| `freebuff_proxy_bridge_breaker_failures` | gauge | `≥ 0` | Current failure count in the sliding window |
+| `freebucks_proxy_bridge_breaker_open` | gauge | `0` or `1` | `1` when the breaker is blocking; `0` when closed or disabled |
+| `freebucks_proxy_bridge_breaker_failures` | gauge | `≥ 0` | Current failure count in the sliding window |
 
 **PromQL examples:**
 
 ```promql
 # Alert when breaker is open
-freebuff_proxy_bridge_breaker_open == 1
+freebucks_proxy_bridge_breaker_open == 1
 
 # Track failure trend
-rate(freebuff_proxy_bridge_breaker_failures[5m])
+rate(freebucks_proxy_bridge_breaker_failures[5m])
 ```
 
 **Zero-value defaults:** When bridge mode is inactive or the breaker is disabled, both metrics emit `0` so pre-provisioned dashboards and alerts receive consistent data.
@@ -171,7 +171,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 
 
 1. **Dashboard:** Red "Breaker Open" badge on Overview page
-2. **Prometheus alert:** `freebuff_proxy_bridge_breaker_open == 1` fires
+2. **Prometheus alert:** `freebucks_proxy_bridge_breaker_open == 1` fires
 3. **Logs:** `pool: bridge circuit breaker opened` WARN line
 4. **Client impact:** Bridge requests return `503 upstream_retryable` with `Retry-After`
 
@@ -180,7 +180,7 @@ env -u AUTH_TOKENS -u ADMIN_TOKEN go test ./...
 When the breaker trips, the underlying issue is upstream instability (5xx/network):
 
 1. Check upstream service status (if known)
-2. Review recent `freebuff_proxy_bridge_requests_total` for error patterns
+2. Review recent `freebucks_proxy_bridge_requests_total` for error patterns
 3. Check if the failures are from specific tokens or all bridge entries
 4. Review the `failure_count` trend to determine if failures are accumulating or burst
 

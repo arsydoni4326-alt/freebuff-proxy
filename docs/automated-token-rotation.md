@@ -311,11 +311,11 @@ HEALTH_SCORE_ENABLED=true
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `freebuff_proxy_token_health_score` | gauge | `token` | Current health score (0–100) per token. |
-| `freebuff_proxy_token_exhaustion_warnings_total` | counter | `token`, `model` | Cumulative exhaustion warnings surfaced. |
-| `freebuff_proxy_token_state` | gauge | `token`, `state` | Current lifecycle state (0=inactive, 1=active, 2=degraded, 3=exhausted, 4=dead). |
-| `freebuff_proxy_token_probe_total` | counter | `token`, `result` | Health probe results (success/failure). |
-| `freebuff_proxy_token_failover_total` | counter | `reason` | Failover events by reason (exhaustion, cooldown, error, ban). |
+| `freebucks_proxy_token_health_score` | gauge | `token` | Current health score (0–100) per token. |
+| `freebucks_proxy_token_exhaustion_warnings_total` | counter | `token`, `model` | Cumulative exhaustion warnings surfaced. |
+| `freebucks_proxy_token_state` | gauge | `token`, `state` | Current lifecycle state (0=inactive, 1=active, 2=degraded, 3=exhausted, 4=dead). |
+| `freebucks_proxy_token_probe_total` | counter | `token`, `result` | Health probe results (success/failure). |
+| `freebucks_proxy_token_failover_total` | counter | `reason` | Failover events by reason (exhaustion, cooldown, error, ban). |
 
 ### `/healthz` Extensions
 

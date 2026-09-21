@@ -448,8 +448,8 @@ If upstream sources are unreachable and the live registry is returning stale dat
 |---|---|---|
 | `/healthz` | `registry.fallback` | `false` (live) |
 | `/healthz` | `registry.age_seconds` | < `REGISTRY_REFRESH` (default 6h) |
-| `/metrics` | `freebuff_proxy_registry_fallback` | `0` (live) |
-| `/metrics` | `freebuff_proxy_registry_age_seconds` | < 21600 |
+| `/metrics` | `freebucks_proxy_registry_fallback` | `0` (live) |
+| `/metrics` | `freebucks_proxy_registry_age_seconds` | < 21600 |
 | CI | `upstream-drift` workflow | Green |
 
 ### When to Manually Sync
@@ -473,7 +473,7 @@ If upstream sources are unreachable and the live registry is returning stale dat
 ### Phase 4.2: Warning-Level Alerts
 
 - [x] Add Slack/Discord webhook notification on CI drift detection — `upstream-drift.yml` fires a best-effort webhook POST when drift is detected and the `DRIFT_WEBHOOK_URL` secret is set
-- [x] Add Prometheus metric for registry staleness — `freebuff_proxy_registry_age_seconds` and `freebuff_proxy_registry_fallback` gauges in `/metrics`
+- [x] Add Prometheus metric for registry staleness — `freebucks_proxy_registry_age_seconds` and `freebucks_proxy_registry_fallback` gauges in `/metrics`
 - [x] Add `/healthz` field for registry freshness — `registry` object with `fallback`, `last_refresh`, `age_seconds`
 - [x] Add dashboard indicator for last successful upstream sync — `registry_fallback` and `registry_last_refresh` fields in overview data
 
@@ -555,13 +555,13 @@ a stale offline path without inspecting logs:
 ### `/metrics` (Prometheus)
 
 ```
-# HELP freebuff_proxy_registry_age_seconds Seconds since the last successful live model registry refresh (0 = never refreshed)
-# TYPE freebuff_proxy_registry_age_seconds gauge
-freebuff_proxy_registry_age_seconds 0
+# HELP freebucks_proxy_registry_age_seconds Seconds since the last successful live model registry refresh (0 = never refreshed)
+# TYPE freebucks_proxy_registry_age_seconds gauge
+freebucks_proxy_registry_age_seconds 0
 
-# HELP freebuff_proxy_registry_fallback 1 when the registry is serving the offline hardcoded fallback, 0 when live-refreshed
-# TYPE freebuff_proxy_registry_fallback gauge
-freebuff_proxy_registry_fallback 1
+# HELP freebucks_proxy_registry_fallback 1 when the registry is serving the offline hardcoded fallback, 0 when live-refreshed
+# TYPE freebucks_proxy_registry_fallback gauge
+freebucks_proxy_registry_fallback 1
 ```
 
 ### Dashboard (Overview)
