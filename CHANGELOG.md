@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.17.1] - 2026-09-21
+
+### Fixed
+- **Docker image build (`go-builder` stage)** — the `go build` step targeted
+  the non-existent package path `./backend/cmd/freebuff-proxy`, failing with
+  `stat /src/backend/cmd/freebuff-proxy: directory not found`. The actual
+  package directory is `backend/cmd/freebucks-proxy`. The build output and
+  runtime-stage `COPY` now standardize on the `freebucks-proxy` binary name,
+  matching the pre-existing `ENTRYPOINT ["/usr/local/bin/freebucks-proxy"]`,
+  so the image builds end-to-end again.
+
 ## [v1.17.0] - 2026-09-21
 
 ### Changed

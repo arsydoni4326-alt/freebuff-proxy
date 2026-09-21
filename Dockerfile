@@ -23,8 +23,8 @@ RUN set -eux;   \
             -tags dashboard \
             -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
             -tags dashboard \
-            -o /out/freebuff-proxy ./backend/cmd/freebuff-proxy ;  \
-    chmod +x /out/freebuff-proxy
+            -o /out/freebucks-proxy ./backend/cmd/freebucks-proxy ;  \
+    chmod +x /out/freebucks-proxy
 
 FROM debian:trixie-slim
 SHELL ["/bin/bash", "-c"]
@@ -49,7 +49,7 @@ RUN set -eux; \
     useradd -s /bin/bash -d /app -m app
 
 WORKDIR /app
-COPY --from=go-builder /out/freebuff-proxy /usr/local/bin/freebuff-proxy
+COPY --from=go-builder /out/freebucks-proxy /usr/local/bin/freebucks-proxy
 USER app
 RUN set -eux; \
     mkdir -p /app/dump /app/logs

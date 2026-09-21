@@ -1,5 +1,25 @@
 # Session: SQLite Token Database + UI
 
+## Latest: Dockerfile build-path bugfix (2026-09-21, post-v1.17.0)
+
+- **Failure**: `docker build` (GH Actions buildx, `go-builder` stage 6/6)
+  exited 1 with `stat /src/backend/cmd/freebuff-proxy: directory not found`.
+- **Root cause**: the `go build` package path in `Dockerfile` used
+  `./backend/cmd/freebuff-proxy`, but the repo's package directory is
+  `backend/cmd/freebucks-proxy` (extra "s" — same spelling as the module
+  name). `ls ./backend/cmd` shows only `freebucks-proxy`, `openapi-emit`,
+  `wiregen`.
+- **Fix**: build target changed to `./backend/cmd/freebucks-proxy`; build
+  output and runtime `COPY --from=go-builder` standardized on
+  `freebucks-proxy`, matching the already-present
+  `ENTRYPOINT ["/usr/local/bin/freebucks-proxy"]` (which would otherwise
+  have broken next at container start).
+- **Git flow**: `bugfix/dockerfile-build-path` → squash into `develop` →
+  `release/v1.17.1` → `main` + tag `v1.17.1`.
+- **Verification**: `go build ./backend/cmd/freebucks-proxy` package path
+  resolves locally; Dockerfile path audit greps clean of the old
+  `freebuff-proxy` spelling.
+
 ## Latest: upstream drift-slice merge #672–#675 (2026-09-21, post-v1.16.0)
 
 - **Discovery**: upstream (`trefeon/freebucks-proxy`) rewrote the history
