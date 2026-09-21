@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // quotaBootProbeWindow is the post-boot window virgin-token probes stagger

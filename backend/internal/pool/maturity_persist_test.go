@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 // memMaturityStore is a map-backed MaturityStore double: proves the pool

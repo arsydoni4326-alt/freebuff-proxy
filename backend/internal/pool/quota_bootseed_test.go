@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/testutil"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // seededPool builds a one-token pool with a fresh (unprobed) manager.

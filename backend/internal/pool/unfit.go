@@ -3,7 +3,7 @@ package pool
 import (
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // modelUnfitTTL is how long a (egress, model) pair stays marked unfit after

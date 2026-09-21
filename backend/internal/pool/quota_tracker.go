@@ -4,8 +4,8 @@ import (
 	"sort"
 	"time"
 
-	"freebuff-proxy/backend/internal/modelcat"
-	"freebuff-proxy/backend/internal/session"
+	"freebucks-proxy/backend/internal/modelcat"
+	"freebucks-proxy/backend/internal/session"
 )
 
 // PremiumQuotaSnapshot is the per-token premium quota view (5/day pacific_day

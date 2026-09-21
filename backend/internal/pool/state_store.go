@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"freebuff-proxy/backend/internal/runs"
+	"freebucks-proxy/backend/internal/runs"
 )
 
 // TokenStateStore persists per-token operational state across restarts. A nil

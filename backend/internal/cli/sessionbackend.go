@@ -10,10 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 
-	"freebuff-proxy/backend/internal/store"
-	"freebuff-proxy/backend/internal/tokendb"
+	"freebucks-proxy/backend/internal/store"
+	"freebucks-proxy/backend/internal/tokendb"
 
-	"freebuff-proxy/backend/internal/session"
+	"freebucks-proxy/backend/internal/session"
 )
 
 // sqliteSessionBackend adapts *tokendb.DB to session.StateBackend. The blob

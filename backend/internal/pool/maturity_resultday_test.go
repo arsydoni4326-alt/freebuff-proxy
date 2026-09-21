@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 // Every ledger write stamps tonight's Pacific day: a pre-flight skip, a

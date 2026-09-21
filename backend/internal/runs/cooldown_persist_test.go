@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 func TestCooldownStateRoundTripAuth(t *testing.T) {

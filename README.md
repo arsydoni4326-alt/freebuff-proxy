@@ -1,8 +1,9 @@
-# freebuff-proxy
+# freebucks-proxy
 
-Go wire gateway in front of the upstream service: pooled multi-account
-OpenAI-compatible and Anthropic-compatible endpoints, an embedded Svelte
-dashboard, optional browser-like TLS stealth, and automatic session lifecycle.
+freebucks-proxy is a Go wire gateway in front of the upstream service: pooled
+multi-account OpenAI-compatible and Anthropic-compatible endpoints, an embedded
+Svelte dashboard, optional browser-like TLS stealth, and automatic session
+lifecycle.
 
 ## What it is
 
@@ -28,20 +29,28 @@ dashboard, optional browser-like TLS stealth, and automatic session lifecycle.
 
 ```sh
 cp .env.example .env   # then edit: AUTH_TOKENS, ADMIN_TOKEN, ...
-go build ./backend/...
-go run ./backend/cmd/freebuff-proxy
+task build             # frontend bundle + gateway binary (output in bin/)
+task dev               # run the gateway from source
 ```
+
+Both tasks are defined in `Taskfile.yml`. With plain Go instead of a Task
+runner, `go build ./backend/...` compiles everything and the gateway's main
+package lives under `backend/cmd/`.
 
 Run from GHCR (release image, no local build):
 
 ```sh
 cp .env.example .env   # then edit: AUTH_TOKENS, ADMIN_TOKEN, ...
-VERSION=v1.7.0 docker compose pull
-VERSION=v1.7.0 docker compose up -d
+export VERSION="$(gh release view --json tagName -q .tagName)"
+docker compose pull
+docker compose up -d
 ```
 
-Pin `VERSION` to the release tag; verify `GET /healthz` → 200, and note
-`/admin` sits behind the login gate (redirects to `/admin/login`).
+That resolves the newest release tag (prereleases excluded); pin `VERSION` to it
+for a reproducible deploy, or leave `VERSION` unset to follow the `latest` image.
+`gh` resolves the repository from the checkout — pass `--repo <owner>/<name>` if
+you run it elsewhere. Verify `GET /healthz` → 200, and note `/admin` sits behind
+the login gate (redirects to `/admin/login`).
 
 Then:
 
@@ -54,8 +63,8 @@ Defaults that matter (`.env.example`): `SAFE_MODE=true` (anti-ban preset),
 
 Configuration persistence: the first boot imports the effective config
 (process env wins over `.env` over defaults) into the dashboard DB
-(`data/freebuff.db`, mode `0600`) as `config:` overlay rows plus a
-`config:migrated_env_v1` marker — later boots are no-ops via the marker.
+(`DB_PATH`, a SQLite file under `data/`, mode `0600`) as `config:` overlay rows
+plus a `config:migrated_env_v1` marker — later boots are no-ops via the marker.
 The DB is then the persisted home the dashboard saves write to, secrets
 included (`AUTH_TOKENS`, `ADMIN_TOKEN`, `API_KEYS`, `WEBHOOK_URL` rows);
 keep its `0600` mode on copies/backups. Explicit process env still wins at
@@ -63,21 +72,21 @@ runtime, so a migrated row never overrides the environment.
 
 ## Update safety (read before every recreate)
 
-Two-path layout: the live store is `/app/data/freebuff.db` on the `db_data`
-named volume (`DB_PATH`, compose-level — an overlay row can never repoint
+Two-path layout: the live store is the `DB_PATH` file on the `db_data` named
+volume (compose pins it under `/app/data` — an overlay row can never repoint
 the open file), while the host checkout bind (`.:/app/state`, the working
-directory) holds `.env`, logs, and the pre-volume bind DB at
-`./data/freebuff.db`. A fresh volume auto-imports that bind DB on first
-boot — display history plus the full operator state (settings overlay with
-secrets, pages, sessions, tokens, pool blobs), per-table, idempotent,
-secrets as opaque DB values — then later boots are strict no-ops. Legacy
-files are never deleted. Never copy a live DB with plain `cp` of the
-`.db`/`-wal`/`-shm` trio; stop first or use the backup script.
+directory) holds `.env`, logs, and the pre-volume bind DB under `./data/`.
+A fresh volume auto-imports that bind DB on first boot — display history plus
+the full operator state (settings overlay with secrets, pages, sessions,
+tokens, pool blobs), per-table, idempotent, secrets as opaque DB values — then
+later boots are strict no-ops. Legacy files are never deleted. Never copy a
+live DB with plain `cp` of the `.db`/`-wal`/`-shm` trio; stop first or use the
+backup script.
 
 Every update runs three commands (any trip = roll back, never cut traffic):
 
 ```sh
-docker compose stop freebuff-proxy
+docker compose stop                           # whole stack, incl. the optional https front
 scripts/backup-state.sh                      # snapshot + count manifest
 docker compose up -d --build                  # recreate on the same volume
 ADMIN_TOKEN="$ADMIN_TOKEN" scripts/verify-state.sh   # healthz + 401 probe + migrate.noop + manifest counts
@@ -90,6 +99,34 @@ row counts matching the backup manifest (operator tables exact,
 boots `fresh=true` while it carries the bind DB — confirm the
 `carried legacy state` log line against the manifest, restart once, then
 the gate goes green.
+
+### One-time: the `freebucks-proxy` rename
+
+The project was renamed from `freebuff-proxy` (repository, binary, compose
+service, container, image). Two things need care exactly once:
+
+```sh
+git remote set-url origin https://github.com/trefeon/freebucks-proxy.git
+docker compose down --remove-orphans   # clears the pre-rename container
+```
+
+- `--remove-orphans` matters: the service was renamed, so the old container is
+  no longer part of the stack — leaving it running means two gateways sharing
+  one account pool, which burns quota twice and supersedes sessions.
+- The image path follows the repository name (`ghcr.io/trefeon/freebucks-proxy`),
+  so it exists only once a release is published after the rename. Until then,
+  pin `VERSION` to a tag from the previous image path or wait for that release.
+- The DB filename and session-state filename are deliberately unchanged
+  (`DB_PATH`, `SESSION_STATE_FILE`): the live volume keeps its store, and
+  pointing either at a new name on an existing volume would open an empty DB.
+- Installed as a background service? Its unit/task name and install paths
+  changed too. Uninstall the old one before installing the new: run the old
+  binary with `-uninstall-service` (pre-rename systemd unit
+  `freebuff-proxy.service`, launchd `com.freebuff-proxy`, or the
+  `freebuff-proxy` scheduled task), then move your `.env` from the old config
+  directory to the new one — the renamed installer writes `freebucks-proxy`
+  paths, so the old service would otherwise keep serving from the same account
+  pool while the new one starts empty.
 
 ## Layout
 

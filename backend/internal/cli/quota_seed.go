@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"freebuff-proxy/backend/internal/pool"
-	history "freebuff-proxy/backend/internal/store"
+	"freebucks-proxy/backend/internal/pool"
+	history "freebucks-proxy/backend/internal/store"
 )
 
 // quotaSeedStoreLimit bounds the boot-seed read: one row per (token, model)

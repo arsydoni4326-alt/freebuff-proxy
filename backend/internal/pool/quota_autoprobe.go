@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"time"
 
-	"freebuff-proxy/backend/internal/session"
+	"freebucks-proxy/backend/internal/session"
 )
 
 // quotaAutoProbeWindow is the pre-reset window the daily probe slot is drawn

@@ -1,6 +1,60 @@
 # Session: SQLite Token Database + UI
 
-## Latest: "Check for Updates" button (2026-09-20)
+## Latest: upstream rename merge (freebucks-proxy, 2026-09-21)
+
+- **Merge in progress at session start**: `upstream/main` (a1f10950, delta
+  #668–#671: docs, the `freebuff-proxy` → `freebucks-proxy` rename, security
+  scrub, __pycache__ drop) into `develop` (fork with merge-guarded features).
+  24 conflicted paths resolved as follows.
+- **Resolution policy** (no fork feature changed):
+  - Import paths → `freebucks-proxy/backend/...` everywhere (staged go.mod
+    already said `module freebucks-proxy`); fork-only imports (tokendb,
+    crypto/rand) kept.
+  - ARSYDONI UPDATE SOURCE kept: `updatecheck.DefaultRepo =
+    arsydoni4326-alt/freebuff-proxy`, dashboard releaseURL, Sidebar fallback +
+    UpdateCheckButton, e2e fixture `update_url` + `latest_commit`/`changelog`/
+    `current_commit` fields.
+  - Prometheus: fork families (bridge_*/breaker_*/registry_*/allowlist_skips)
+    migrated from the pre-rename `freebuff_proxy_` prefix to
+    `freebucks_proxy_`; upstream's deprecated alias section re-emits them (+
+    core families) under the old prefix, so scrapers keep resolving.
+  - Files deleted by the fork stay deleted (`server_init.go` — its content
+    lives in `server.go` — and legacy `admin_tokens_ops/probe/routes.go`);
+    upstream's delta to them was rename-only.
+  - `dist/` resolved by rebuilding the bundle after the merge.
+- **Merge slips caught by tests (fixed)**:
+  - `main.go` `-version` printed `freebuff-proxy` (2 cmd tests failed) — now
+    `freebucks-proxy`.
+  - openapi-emit invariant: fork routes (`tokens/remove-specific`,
+    `tokens/list`, `tokens/{id}/maturity`, `tokens/{id}/maturity/touch`) had
+    manifest rows but no `AdminAPIPaths` row (pre-existing on the fork side,
+    surfaced by upstream's stricter test) — added rows + wire types
+    (`TokenRemoveSpecificRequest`, `TokenListResponse`,
+    `TokenMaturityRequest`), regenerated `data/openapi.json` (note: that dir
+    is gitignored; needs `git add -f`).
+- **Also migrated in this merge sweep**: 45 fork-side files outside the
+  conflict set still imported `freebuff-proxy/backend/...` (repo-wide sed) —
+  required after the staged go.mod module rename.
+- **Verification**: build/vet/gofmt clean; short lane: all packages green
+  except the 12 pre-existing failures (pool unfit/limited-IP trio, session
+  legacy-file/store group, upstream 402 classification) — reproduced
+  byte-identical on a pristine /tmp worktree at pre-merge HEAD (249395f9).
+  cmd + openapi-emit now pass. svelte-check 0 errors/27 warnings; unit 45/46
+  (pre-existing `modelOptions` failure, unchanged); dist rebuilt
+  (`index-CqmrXinL.js`) and committed; `go build -tags dashboard` green;
+  dashboard + server suites green on the fresh bundle.
+- **Pre-existing failure inventory (not from this merge, unchanged)**:
+  pool: TestAcquireLimitedIpMarksModel, TestAcquireAllTokensLimitedSurfacesLimitedIp,
+  TestAcquireBanBeatsLimitedIp; session: TestLegacyFileImportsOnceThenArchives,
+  TestLegacyImportIdenticalReimportSilent, TestResumePersistedOnRestart,
+  TestStoreReadErrorDoesNotClobberFile, TestStoreReadErrorDoesNotClobberFileUnreadableFile,
+  TestStorePendingMutationSurvivesReadFailure, TestStorePendingMutationSurvivesReadFailurePortable,
+  TestStoreVersionMismatchIgnoredThenReplaced; upstream:
+  TestProtocolRegressionErrorMatrix/402_out_of_credits; frontend unit:
+  modelOptions.test.js "drops withdrawn and tier-only rows".
+- **Next**: commit the merge, then git flow release for v1.16.0.
+
+## Previous: "Check for Updates" button (2026-09-20)
 
 - **Feature**: `UpdateCheckButton_Arsydoni.svelte` in the sidebar footer.
   Pressing it forces a cache-bypassing check (`versionEndpoint(true)` →

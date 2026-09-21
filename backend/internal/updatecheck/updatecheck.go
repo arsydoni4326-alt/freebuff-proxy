@@ -172,7 +172,7 @@ func (c *Checker) fetchHead(ctx context.Context) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "freebuff-proxy-updatecheck/1.0")
+	req.Header.Set("User-Agent", "freebucks-proxy-updatecheck/1.0")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", err

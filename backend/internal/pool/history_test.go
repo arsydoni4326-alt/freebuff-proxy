@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 // recordingSink captures maturity history events for assertions.

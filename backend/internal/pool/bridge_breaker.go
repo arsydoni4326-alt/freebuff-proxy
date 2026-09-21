@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"time"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // isBridgeTransientFailure reports whether err is a genuine transient

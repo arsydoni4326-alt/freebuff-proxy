@@ -3,8 +3,8 @@ package cli
 import (
 	"log/slog"
 
-	"freebuff-proxy/backend/internal/pool"
-	history "freebuff-proxy/backend/internal/store"
+	"freebucks-proxy/backend/internal/pool"
+	history "freebucks-proxy/backend/internal/store"
 )
 
 // poolMaturityStore adapts the history store to pool.MaturityStore

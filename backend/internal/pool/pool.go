@@ -32,12 +32,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/notify"
-	"freebuff-proxy/backend/internal/registry"
-	"freebuff-proxy/backend/internal/runs"
-	"freebuff-proxy/backend/internal/session"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/notify"
+	"freebucks-proxy/backend/internal/registry"
+	"freebucks-proxy/backend/internal/runs"
+	"freebucks-proxy/backend/internal/session"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // usageWindow is the rolling window of per-token successful chat history:
@@ -226,7 +226,7 @@ type TokenSnapshot struct {
 	// ModelLocked tallies model-lock session releases keyed by from → to
 	// model pair (issue #160): each model_locked admission releases the
 	// old slot and re-admits with the requested model. Surfaced per-token
-	// in /metrics as freebuff_proxy_model_locked_total.
+	// in /metrics as freebucks_proxy_model_locked_total.
 	ModelLocked map[string]map[string]int64
 	// HealthScore is a composite 0–100 vitality indicator computed from
 	// quota, cooldown, spend, error rate, and session freshness (Phase 5.1,

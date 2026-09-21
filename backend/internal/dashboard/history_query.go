@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"freebuff-proxy/backend/internal/store"
+	"freebucks-proxy/backend/internal/store"
 )
 
 // --- history queries (ADR-0016) ---

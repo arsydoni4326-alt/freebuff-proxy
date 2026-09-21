@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 // fireGateClock returns a fake clock at offset before the next Pacific

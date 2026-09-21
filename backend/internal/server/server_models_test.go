@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/logring"
-	"freebuff-proxy/backend/internal/pool"
-	"freebuff-proxy/backend/internal/registry"
-	"freebuff-proxy/backend/internal/server"
-	"freebuff-proxy/backend/internal/session"
-	"freebuff-proxy/backend/internal/testutil"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/logring"
+	"freebucks-proxy/backend/internal/pool"
+	"freebucks-proxy/backend/internal/registry"
+	"freebucks-proxy/backend/internal/server"
+	"freebucks-proxy/backend/internal/session"
+	"freebucks-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/upstream"
 	"io"
 	"log/slog"
 	"net/http"
@@ -460,7 +460,7 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, data)
 	}
 	body := string(data)
-	if !strings.Contains(body, "freebuff_proxy_uptime_seconds") || !strings.Contains(body, "freebuff_proxy_models_total") {
+	if !strings.Contains(body, "freebucks_proxy_uptime_seconds") || !strings.Contains(body, "freebucks_proxy_models_total") {
 		t.Errorf("metrics missing expected keys: %s", body)
 	}
 }
@@ -892,10 +892,10 @@ func TestMetricsQuotaLines(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		`freebuff_proxy_quota_recent{token="1",model="z-ai/glm-5.2",period="pacific_day"} 4`,
-		`freebuff_proxy_quota_limit{token="1",model="z-ai/glm-5.2",period="pacific_day"} 5`,
-		`freebuff_proxy_quota_remaining{token="1",model="z-ai/glm-5.2",period="pacific_day"} 1`,
-		fmt.Sprintf(`freebuff_proxy_session_remaining_seconds{token="1",model="%s"}`, modelA),
+		`freebucks_proxy_quota_recent{token="1",model="z-ai/glm-5.2",period="pacific_day"} 4`,
+		`freebucks_proxy_quota_limit{token="1",model="z-ai/glm-5.2",period="pacific_day"} 5`,
+		`freebucks_proxy_quota_remaining{token="1",model="z-ai/glm-5.2",period="pacific_day"} 1`,
+		fmt.Sprintf(`freebucks_proxy_session_remaining_seconds{token="1",model="%s"}`, modelA),
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %s in:\n%s", want, body)
@@ -936,8 +936,8 @@ func TestMetricsLabelEscaping(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		`freebuff_proxy_quota_recent{token="1",model="weird\"model",period="p\"d"} 4`,
-		`freebuff_proxy_quota_limit{token="1",model="weird\"model",period="p\"d"} 5`,
+		`freebucks_proxy_quota_recent{token="1",model="weird\"model",period="p\"d"} 4`,
+		`freebucks_proxy_quota_limit{token="1",model="weird\"model",period="p\"d"} 5`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %s in:\n%s", want, body)
@@ -989,12 +989,12 @@ func TestMetricsTransientRetryCounters(t *testing.T) {
 		t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, data)
 	}
 	body := string(data)
-	if !strings.Contains(body, `freebuff_proxy_transient_retries_total{token="1"} 1`) {
+	if !strings.Contains(body, `freebucks_proxy_transient_retries_total{token="1"} 1`) {
 		t.Errorf("metrics missing transient retry line: %s", body)
 	}
 	// No TLS fingerprint is pinned in this setup, so no rotation happened
 	// and the fingerprint value line must not be emitted (only when > 0).
-	if strings.Contains(body, "freebuff_proxy_fingerprint_rotations_total{token=\"1\"}") {
+	if strings.Contains(body, "freebucks_proxy_fingerprint_rotations_total{token=\"1\"}") {
 		t.Errorf("metrics emitted a fingerprint rotation value with no rotation: %s", body)
 	}
 }
@@ -1273,7 +1273,7 @@ func TestHealthzRegistryFreshness(t *testing.T) {
 }
 
 // TestMetricsRegistryFreshness verifies Phase 4.2: /metrics exposes
-// freebuff_proxy_registry_age_seconds and freebuff_proxy_registry_fallback gauges.
+// freebucks_proxy_registry_age_seconds and freebucks_proxy_registry_fallback gauges.
 func TestMetricsRegistryFreshness(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -1285,12 +1285,12 @@ func TestMetricsRegistryFreshness(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		"# HELP freebuff_proxy_registry_age_seconds",
-		"# TYPE freebuff_proxy_registry_age_seconds gauge",
-		"freebuff_proxy_registry_age_seconds 0",
-		"# HELP freebuff_proxy_registry_fallback",
-		"# TYPE freebuff_proxy_registry_fallback gauge",
-		"freebuff_proxy_registry_fallback 1",
+		"# HELP freebucks_proxy_registry_age_seconds",
+		"# TYPE freebucks_proxy_registry_age_seconds gauge",
+		"freebucks_proxy_registry_age_seconds 0",
+		"# HELP freebucks_proxy_registry_fallback",
+		"# TYPE freebucks_proxy_registry_fallback gauge",
+		"freebucks_proxy_registry_fallback 1",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q in:\n%s", want, body)
@@ -1298,42 +1298,65 @@ func TestMetricsRegistryFreshness(t *testing.T) {
 	}
 }
 
+// TestMetricsFamiliesContract pins the /metrics exposition contract: the
+// EXACT set of Prometheus families — presence AND absence of unknown
+// additions, so a new family forces a conscious update here (the review
+// found families drifting untracked). The expected list mirrors
+// handleMetrics (server/health.go) plus the package counter it reads
+// (telemetry.ModelUnavailableSkips). freebucks_proxy_log_events_total is
+// emitted only when the dashboard log ring is wired, so it is pinned in the
+// ring variant below and must be ABSENT without one. Every family is also
+// re-emitted under the deprecated pre-rename prefix (see
+// TestMetricsLegacyNamespaceAlias), so withAliases widens the contract to
+// cover that alias section instead of failing it as unknown.
 func TestMetricsFamiliesContract(t *testing.T) {
 	// metricsFamilies maps family name -> TYPE value (the full contract
 	// minus the ring-conditional log_events_total).
 	metricsFamilies := map[string]string{
-		"freebuff_proxy_uptime_seconds":                "gauge",
-		"freebuff_proxy_models_total":                  "gauge",
-		"freebuff_proxy_tokens_total":                  "gauge",
-		"freebuff_proxy_rate_limit_rejected_total":     "counter",
-		"freebuff_proxy_model_unavailable_skips_total": "counter",
-		"freebuff_proxy_token_messages_24h":            "gauge",
-		"freebuff_proxy_token_requests_total":          "counter",
-		"freebuff_proxy_token_active_runs":             "gauge",
-		"freebuff_proxy_token_cooldown_active":         "gauge",
-		"freebuff_proxy_quota_recent":                  "gauge",
-		"freebuff_proxy_quota_limit":                   "gauge",
-		"freebuff_proxy_quota_remaining":               "gauge",
-		"freebuff_proxy_session_remaining_seconds":     "gauge",
-		"freebuff_proxy_transient_retries_total":       "counter",
-		"freebuff_proxy_fingerprint_rotations_total":   "counter",
-		"freebuff_proxy_rate_limit_events_total":       "counter",
-		"freebuff_proxy_model_locked_total":            "counter",
-		"freebuff_proxy_allowlist_skips_total":         "counter",
-		"freebuff_proxy_pin_skips_total":               "counter",
+		"freebucks_proxy_uptime_seconds":                "gauge",
+		"freebucks_proxy_models_total":                  "gauge",
+		"freebucks_proxy_tokens_total":                  "gauge",
+		"freebucks_proxy_rate_limit_rejected_total":     "counter",
+		"freebucks_proxy_model_unavailable_skips_total": "counter",
+		"freebucks_proxy_token_messages_24h":            "gauge",
+		"freebucks_proxy_token_requests_total":          "counter",
+		"freebucks_proxy_token_active_runs":             "gauge",
+		"freebucks_proxy_token_cooldown_active":         "gauge",
+		"freebucks_proxy_quota_recent":                  "gauge",
+		"freebucks_proxy_quota_limit":                   "gauge",
+		"freebucks_proxy_quota_remaining":               "gauge",
+		"freebucks_proxy_session_remaining_seconds":     "gauge",
+		"freebucks_proxy_transient_retries_total":       "counter",
+		"freebucks_proxy_fingerprint_rotations_total":   "counter",
+		"freebucks_proxy_rate_limit_events_total":       "counter",
+		"freebucks_proxy_model_locked_total":            "counter",
+		"freebucks_proxy_allowlist_skips_total":         "counter",
+		"freebucks_proxy_pin_skips_total":               "counter",
 		// Custom (bridge quota dashboard + circuit breaker + registry
 		// freshness, Phase 4.2): families surfaced by this build's /metrics.
-		"freebuff_proxy_registry_age_seconds":      "gauge",
-		"freebuff_proxy_registry_fallback":         "gauge",
-		"freebuff_proxy_bridge_entries_total":      "gauge",
-		"freebuff_proxy_bridge_cooling_down_total": "gauge",
-		"freebuff_proxy_bridge_dead_tokens_total":  "gauge",
-		"freebuff_proxy_bridge_locked_total":       "gauge",
-		"freebuff_proxy_bridge_active_runs":        "gauge",
-		"freebuff_proxy_bridge_requests_total":     "counter",
-		"freebuff_proxy_bridge_quota_remaining":    "gauge",
-		"freebuff_proxy_bridge_breaker_failures":   "gauge",
-		"freebuff_proxy_bridge_breaker_open":       "gauge",
+		"freebucks_proxy_registry_age_seconds":      "gauge",
+		"freebucks_proxy_registry_fallback":         "gauge",
+		"freebucks_proxy_bridge_entries_total":      "gauge",
+		"freebucks_proxy_bridge_cooling_down_total": "gauge",
+		"freebucks_proxy_bridge_dead_tokens_total":  "gauge",
+		"freebucks_proxy_bridge_locked_total":       "gauge",
+		"freebucks_proxy_bridge_active_runs":        "gauge",
+		"freebucks_proxy_bridge_requests_total":     "counter",
+		"freebucks_proxy_bridge_quota_remaining":    "gauge",
+		"freebucks_proxy_bridge_breaker_failures":   "gauge",
+		"freebucks_proxy_bridge_breaker_open":       "gauge",
+	}
+
+	// withAliases widens want with the deprecated pre-rename alias of every
+	// family (same TYPE value), which handleMetrics re-emits for existing
+	// scrapers until that section is removed.
+	withAliases := func(want map[string]string) map[string]string {
+		out := make(map[string]string, 2*len(want))
+		for name, tval := range want {
+			out[name] = tval
+			out[strings.Replace(name, "freebucks", "freebuff", 1)] = tval
+		}
+		return out
 	}
 
 	// assertFamilies checks every expected family has a HELP and a TYPE
@@ -1407,13 +1430,13 @@ func TestMetricsFamiliesContract(t *testing.T) {
 			t.Fatalf("metrics status = %d, want 200", resp.StatusCode)
 		}
 		body := string(data)
-		assertFamilies(t, body, metricsFamilies)
+		assertFamilies(t, body, withAliases(metricsFamilies))
 		// The populated server's request counter must carry a real row.
-		if !strings.Contains(body, `freebuff_proxy_token_requests_total{token="1"} 1`) {
+		if !strings.Contains(body, `freebucks_proxy_token_requests_total{token="1"} 1`) {
 			t.Errorf("populated server missing token_requests_total{token=\"1\"} 1 row:\n%s", body)
 		}
 		// No ring wired: the log-ring family must be absent.
-		if strings.Contains(body, "freebuff_proxy_log_events_total") {
+		if strings.Contains(body, "freebucks_proxy_log_events_total") {
 			t.Error("log_events_total emitted without a dashboard log ring")
 		}
 	})
@@ -1436,12 +1459,12 @@ func TestMetricsFamiliesContract(t *testing.T) {
 			t.Fatalf("metrics status = %d, want 200", resp.StatusCode)
 		}
 		body := string(data)
-		want := map[string]string{"freebuff_proxy_log_events_total": "counter"}
+		want := map[string]string{"freebucks_proxy_log_events_total": "counter"}
 		for name, tval := range metricsFamilies {
 			want[name] = tval
 		}
-		assertFamilies(t, body, want)
-		if !strings.Contains(body, `freebuff_proxy_log_events_total{level="info",msg="chat request"}`) {
+		assertFamilies(t, body, withAliases(want))
+		if !strings.Contains(body, `freebucks_proxy_log_events_total{level="info",msg="chat request"}`) {
 			t.Errorf("log_events_total missing the chat request row:\n%s", body)
 		}
 	})
@@ -1544,7 +1567,7 @@ func TestHealthzCircuitBreakerEnabled(t *testing.T) {
 }
 
 // TestMetricsCircuitBreaker verifies that /metrics exports
-// freebuff_proxy_bridge_breaker_open and freebuff_proxy_bridge_breaker_failures.
+// freebucks_proxy_bridge_breaker_open and freebucks_proxy_bridge_breaker_failures.
 func TestMetricsCircuitBreaker(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -1556,16 +1579,62 @@ func TestMetricsCircuitBreaker(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		"# HELP freebuff_proxy_bridge_breaker_open",
-		"# TYPE freebuff_proxy_bridge_breaker_open gauge",
-		"freebuff_proxy_bridge_breaker_open 0",
-		"# HELP freebuff_proxy_bridge_breaker_failures",
-		"# TYPE freebuff_proxy_bridge_breaker_failures gauge",
-		"freebuff_proxy_bridge_breaker_failures 0",
+		"# HELP freebucks_proxy_bridge_breaker_open",
+		"# TYPE freebucks_proxy_bridge_breaker_open gauge",
+		"freebucks_proxy_bridge_breaker_open 0",
+		"# HELP freebucks_proxy_bridge_breaker_failures",
+		"# TYPE freebucks_proxy_bridge_breaker_failures gauge",
+		"freebucks_proxy_bridge_breaker_failures 0",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q in:\n%s", want, body)
 		}
+	}
+}
+
+// TestMetricsLegacyNamespaceAlias pins the compat contract of the FreeBucks
+// rename: /metrics still re-emits the families under the deprecated
+// pre-rename prefix, marked as deprecated, so scrapers and dashboards pinned
+// to the old names keep resolving until that section is removed. A family's
+// alias is its name with the product segment swapped back — the same
+// derivation handleMetrics uses — so the old namespace is never re-pinned
+// here a second time.
+func TestMetricsLegacyNamespaceAlias(t *testing.T) {
+	// legacy is the pre-rename alias of a live family name.
+	legacy := func(family string) string {
+		return strings.Replace(family, "freebucks", "freebuff", 1)
+	}
+
+	ts, _ := newTestServer(t, nil) // no mocks → zero tokens
+	resp, data := doJSON(t, http.MethodGet, ts.URL+"/metrics", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status = %d, want 200: %s", resp.StatusCode, data)
+	}
+	body := string(data)
+
+	if !strings.Contains(body, "# Deprecated:") {
+		t.Errorf("metrics missing the deprecated alias section marker:\n%s", body)
+	}
+	for _, family := range []string{
+		"freebucks_proxy_uptime_seconds",
+		"freebucks_proxy_models_total",
+		"freebucks_proxy_tokens_total",
+		"freebucks_proxy_token_requests_total",
+		// Merge-guarded fork families (bridge/breaker/registry) ride the
+		// same alias derivation as the core families.
+		"freebucks_proxy_registry_age_seconds",
+		"freebucks_proxy_bridge_entries_total",
+		"freebucks_proxy_bridge_breaker_open",
+	} {
+		for _, want := range []string{"# HELP " + legacy(family) + " ", "# TYPE " + legacy(family) + " "} {
+			if !strings.Contains(body, want) {
+				t.Errorf("legacy alias %q missing from /metrics (compat contract):\n%s", want, body)
+			}
+		}
+	}
+	// The alias section carries real samples, not just headers.
+	if want := legacy("freebucks_proxy_tokens_total") + " 0"; !strings.Contains(body, want) {
+		t.Errorf("legacy alias sample row %q missing from /metrics:\n%s", want, body)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 	"errors"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // QuotaVisitProbeMaxAge is the staleness bound for the visit auto-probe
