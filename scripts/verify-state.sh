@@ -9,7 +9,7 @@
 #   C. Authed GET /admin/api/settings reports a strict no-op boot:
 #      migrate.fresh=false, migrate.noop=true, migrate.applied=[],
 #      migrate.marker=true (fresh=true means the live store is empty — the
-#      exact shape of the vps-sg outage).
+#      exact shape of a past production outage with an empty live store).
 #   D. Live per-table row counts equal the backup manifest on the five
 #      operator-state tables (settings, pages_state, sessions_persist,
 #      tokens, pool_state); display-history tables (log_entries,
@@ -22,12 +22,12 @@
 #   scripts/verify-state.sh [--base URL] [--manifest FILE] [--container NAME]
 #   ADMIN_TOKEN must be in the environment (read once for the login cookie,
 #   never printed or logged).
-# Defaults: base http://127.0.0.1:3457, container freebuff-proxy, manifest =
+# Defaults: base http://127.0.0.1:3457, container freebucks-proxy, manifest =
 # newest ./state-recovery/*/manifest.txt.
 set -euo pipefail
 
 BASE="http://127.0.0.1:3457"
-CONTAINER="freebuff-proxy"
+CONTAINER="freebucks-proxy"
 MANIFEST=""
 while [ $# -gt 0 ]; do
   case "$1" in

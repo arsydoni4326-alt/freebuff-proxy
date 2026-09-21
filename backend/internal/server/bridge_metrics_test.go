@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 func TestBridgeMetricsEmitted(t *testing.T) {
@@ -31,19 +31,19 @@ func TestBridgeMetricsEmitted(t *testing.T) {
 	}
 	body := string(data)
 	for _, want := range []string{
-		"# HELP freebuff_proxy_bridge_entries_total",
-		"# TYPE freebuff_proxy_bridge_entries_total gauge",
-		"freebuff_proxy_bridge_entries_total 1",
-		"# HELP freebuff_proxy_bridge_cooling_down_total",
-		"freebuff_proxy_bridge_cooling_down_total 0",
-		"# HELP freebuff_proxy_bridge_dead_tokens_total",
-		"freebuff_proxy_bridge_dead_tokens_total 0",
-		"# HELP freebuff_proxy_bridge_locked_total",
-		"freebuff_proxy_bridge_locked_total 0",
-		"# HELP freebuff_proxy_bridge_requests_total",
-		`freebuff_proxy_bridge_requests_total{token_label=`,
-		"# HELP freebuff_proxy_bridge_active_runs",
-		"# HELP freebuff_proxy_bridge_quota_remaining",
+		"# HELP freebucks_proxy_bridge_entries_total",
+		"# TYPE freebucks_proxy_bridge_entries_total gauge",
+		"freebucks_proxy_bridge_entries_total 1",
+		"# HELP freebucks_proxy_bridge_cooling_down_total",
+		"freebucks_proxy_bridge_cooling_down_total 0",
+		"# HELP freebucks_proxy_bridge_dead_tokens_total",
+		"freebucks_proxy_bridge_dead_tokens_total 0",
+		"# HELP freebucks_proxy_bridge_locked_total",
+		"freebucks_proxy_bridge_locked_total 0",
+		"# HELP freebucks_proxy_bridge_requests_total",
+		`freebucks_proxy_bridge_requests_total{token_label=`,
+		"# HELP freebucks_proxy_bridge_active_runs",
+		"# HELP freebucks_proxy_bridge_quota_remaining",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics missing %q in:\n%s", want, body)

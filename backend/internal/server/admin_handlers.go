@@ -13,14 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/dashboard"
-	"freebuff-proxy/backend/internal/pool"
-	"freebuff-proxy/backend/internal/ratelimit"
-	"freebuff-proxy/backend/internal/registry"
-	"freebuff-proxy/backend/internal/store"
-	"freebuff-proxy/backend/internal/tokendb"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/dashboard"
+	"freebucks-proxy/backend/internal/pool"
+	"freebucks-proxy/backend/internal/ratelimit"
+	"freebucks-proxy/backend/internal/registry"
+	"freebucks-proxy/backend/internal/store"
+	"freebucks-proxy/backend/internal/tokendb"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 type adminHandlers struct {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/testutil"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // limitedBody is the upstream limited_ip refusal wire shape: a 409

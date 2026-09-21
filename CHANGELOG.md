@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.16.0] - 2026-09-21
+
+### Changed
+- **Merged `upstream/main` through the `freebucks-proxy` rename (#668–#671)** —
+  module path (`freebuff-proxy` → `freebucks-proxy`), Go import paths across
+  the whole backend, binary name, and the Prometheus namespace
+  (`freebuff_proxy_*` → `freebucks_proxy_*`). The pre-rename metric
+  namespace keeps resolving through the upstream deprecated alias section on
+  `/metrics` (marked `# Deprecated:`, one emit path, TODO remove after one
+  release); the merge-guarded fork families (bridge_*, breaker_*,
+  registry_*, allowlist_skips) were migrated onto the new namespace and now
+  ride the same alias derivation as the core families.
+
+### Fixed
+- **Merge-resolution slips caught by the test suites**
+  - `backend/cmd/freebucks-proxy/main.go`: `-version` printed the pre-rename
+    product name (`freebuff-proxy dev`); now matches the renamed binary
+    (`TestVersionFlagPrintsVersion`, `TestLifecycleSetupDoctorVersion`).
+  - `backend/internal/dashboard/admin_wire.go`: the fork's token routes
+    (`POST /admin/tokens/remove-specific`, `GET /admin/tokens/list`,
+    `POST /admin/tokens/{id}/maturity`, `POST /admin/tokens/{id}/maturity/touch`)
+    existed in the route mapper and the admin manifest but had no
+    `AdminAPIPaths` row — the openapi-emit table/manifest invariant now holds
+    (`TokenRemoveSpecificRequest` / `TokenListResponse` /
+    `TokenMaturityRequest` added), and `data/openapi.json` was regenerated.
+
+### Preserved
+- All merge-guarded fork features (see `frontend/src/lib/README_ARSYDONI_UPDATE.md`):
+  the ARSYDONI UPDATE SOURCE update modal + sidebar "Check for Updates"
+  button sourced from `arsydoni4326-alt/freebuff-proxy` (release URL,
+  `updatecheck.DefaultRepo`, commit-hash comparison, fixtures), and the
+  SQLite token database (`internal/tokendb`, dashboard token
+  add/remove/list/remove-specific surface).
+- Persistent SQLite state (sessions, cooldowns, spend ledgers, token state).
+
+### Technical Details
+- Resolution policy: upstream's delta since the merge base was the rename
+  plus docs/security chores; fork-only files (tokendb, update modal,
+  bridge/breaker/registry metrics) were kept with new import paths; files
+  the fork deleted (`server_init.go`-equivalent code merged into
+  `server.go`, legacy `admin_tokens_ops/probe/routes.go`) stay deleted —
+  upstream's delta to them was rename-only.
+- Verified: `go build ./backend/...`, `go vet`, `gofmt` clean; short backend
+  lane green except the 12 known pre-existing failures (pool unfit/limited-IP
+  trio, session legacy-file/store trio groups, upstream 402 classification —
+  all reproduced byte-identical on a pristine worktree at pre-merge HEAD);
+  svelte-check 0 errors; unit 45/46 (1 pre-existing `modelOptions` failure);
+  dist rebuilt and committed (bundle `index-CqmrXinL.js`), dashboard tag
+  build green; e2e fixtures carry the fork update fields.
+
 ## [v1.15.0]
 
 ### Added

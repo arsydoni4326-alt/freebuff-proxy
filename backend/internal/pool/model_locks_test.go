@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 // TestAcquireModelLocksRouteBySlot pins issue #325: slot 0 locked to modelA

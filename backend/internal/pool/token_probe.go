@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // probeResult captures the outcome of a single background health probe.

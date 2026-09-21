@@ -29,7 +29,6 @@ api_keys*
 *api_key*
 *vps*key*
 *vps*keys*
-*vps-sg*
 tokens.txt
 credentials.json
 creds.json
@@ -64,8 +63,8 @@ out/
 bin/
 tmp/
 uicheck/
-freebuff-proxy
-freebuff-proxy.exe
+freebucks-proxy
+freebucks-proxy.exe
 *.test
 *.out
 coverage.out

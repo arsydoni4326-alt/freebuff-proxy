@@ -11,10 +11,10 @@ package pool
 import (
 	"time"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/runs"
-	"freebuff-proxy/backend/internal/session"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/runs"
+	"freebucks-proxy/backend/internal/session"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // quotaProbeMaxInterval caps the quota-probe 429-backoff doubling

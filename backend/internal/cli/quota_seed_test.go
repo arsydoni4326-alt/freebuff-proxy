@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/pool"
-	history "freebuff-proxy/backend/internal/store"
+	"freebucks-proxy/backend/internal/pool"
+	history "freebucks-proxy/backend/internal/store"
 )
 
 // fakeSeedStore is the store half of the boot-seed seam.

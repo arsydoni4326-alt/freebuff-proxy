@@ -1,4 +1,4 @@
-# AGENTS.md — freebuff-proxy operating guide
+# AGENTS.md — freebucks-proxy operating guide
 
 Machine-readable rules for agents working in this repo. Human overview lives in
 `README.md`; visual grammar in `DESIGN.md`; multi-agent workflow in
@@ -7,10 +7,10 @@ Machine-readable rules for agents working in this repo. Human overview lives in
 ## 1. Identity
 
 - Go 1.26 (`go.mod`) gateway for the upstream wire protocol. OpenAI-compatible surfaces
-  (`/v1/chat/completions`, `/v1/models` — see `backend/cmd/freebuff-proxy/e2e_test.go`,
+  (`/v1/chat/completions`, `/v1/models` — see `backend/cmd/freebucks-proxy/e2e_test.go`,
   `backend/internal/cli/cli_serve.go`) plus an Anthropic translation layer
   (`backend/internal/server/anthropic*.go`).
-- Svelte 5 dashboard (`frontend/`, `freebuff-proxy-dashboard`) embedded via
+- Svelte 5 dashboard (`frontend/`, `freebucks-proxy-dashboard`) embedded via
   `go:embed` (`backend/internal/dashboard/assets_embed.go`) and served at `/admin`.
   Health probe: `GET /healthz` → 200.
 - Modes (`backend/internal/config/config.go:HybridBridgeMode/EffectiveMode`):
@@ -96,7 +96,7 @@ dotenv → static → live → SSE hash → store refresh.
 1. Feature branch off `origin/main` in a `/tmp` worktree (never the shared
    checkout — it carries uncommitted user work) → PR → exact required-check
    contexts green (`analyze`, `dependency-review`, `frontend`, `golangci`,
-   `test` — audit via `gh api repos/trefeon/freebuff-proxy/branches/main/protection
+   `test` — audit via `gh api repos/trefeon/freebucks-proxy/branches/main/protection
    --jq .required_status_checks.contexts`; CI jobs `test`+`frontend`, lint job
    `golangci`, CodeQL job `analyze`, `dependency-review` job) → squash merge,
    then **always return to `main` and delete merged branches**. Never claim
@@ -112,11 +112,11 @@ dotenv → static → live → SSE hash → store refresh.
    (`-D` when squash-merged, the tip is never an ancestor).
 2. Conventional Commits (`feat|fix|chore|docs|…(scope): subject`).
 3. Never stage/commit unless asked. Never commit secrets, `reference/`, or devdocs.
-4. No local docker. Preview on acerblue from a `/tmp` worktree (never the shared
+4. No local docker. Preview on a review host from a `/tmp` worktree (never the shared
    checkout — it carries uncommitted user work):
    `docker build --network=host` + compose up, then `GET /healthz` → 200.
    GHCR preview: `docker compose pull && VERSION=x docker compose up -d` runs the
-   release image; pin `VERSION` to the release tag. Prod is VPS SG.
+   release image; pin `VERSION` to the release tag. Prod is the production VPS.
 5. Frontend `dist` is rebuilt and committed before merge when `frontend/src`
    changes (dist-freshness CI diffs the bundle). For fast audits or static
    reviews, skip dist rebuild/e2e and run `npm --prefix frontend run check` (typecheck ~3s).
@@ -152,5 +152,20 @@ dotenv → static → live → SSE hash → store refresh.
   reproduce on pristine `main` before blaming the branch.
 - `archtest.test.exe` "Access is denied" on Windows is the AV block; hand-verify
   via import grep, CI Linux is the real proof.
-- Public repo: zero secrets in code, transcripts, or comments. Rotate on
-  suspicion; test live with user-provided keys only.
+- Public repo hygiene (ZERO private leaks — this repo is public):
+  - NEVER commit hostnames (review/prod hosts), public or private IPs,
+    key-file names containing hostnames, local usernames/paths
+    (`C:/Users/…`, `/home/…`, `/tmp/fb-…`), or infra names
+    (Tailscale/cloudflared/DNS). Write "a review host" / "production" /
+    `http://127.0.0.1:3457` / `api-keys.local` instead. Past comments that
+    cited real hosts were scrubbed 2026-09-20 — do not reintroduce them.
+  - NEVER commit secrets: real keys live only in untracked `.env`/shell env
+    (gitignored); tracked tree holds placeholders only
+    (`ADMIN_TOKEN=123456` factory default). Test fixtures use synthetic
+    values (`SENTINEL-*`, sequential hex) allowlisted in `.gitleaks.toml`.
+  - Pre-push on a public repo: `gitleaks git -v --redact .` (history) +
+    `gitleaks dir -v --redact .` (tree); baseline 2026-09-20 = 7 findings,
+    all verified false positives, trufflehog 0 verified. New findings must
+    be explained before push. History mentions of old hostnames are
+    grandfathered — a filter-repo rewrite is NOT approved for those alone.
+  - Test live with user-provided keys only; rotate on suspicion.

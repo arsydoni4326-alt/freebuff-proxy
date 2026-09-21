@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/testutil"
 )
 
 // touchRunSatisfied is the run check: upstream advances streaks on agent-run

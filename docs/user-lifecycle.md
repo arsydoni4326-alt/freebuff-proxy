@@ -218,7 +218,7 @@ curl -s http://127.0.0.1:3457/healthz
  "bridge_tokens":0,"bridge_entries":[]}
 ```
 
-The quota gauges live at `GET /metrics` as `freebuff_proxy_quota_recent`/`_limit`.
+The quota gauges live at `GET /metrics` as `freebucks_proxy_quota_recent`/`_limit`.
 If the port is bound non-loopback and `ADMIN_TOKEN` is unset, sensitive dashboard routes require a loopback client.
 
 ## 6. Edit config
@@ -257,7 +257,7 @@ Dashboard first: the Tokens page OAuth login wizard mints a fresh token in the b
 ## 8. Quota Tracker review
 
 Each model's live session quota surfaces on `/healthz` (per-token `quota`
-map) and `/metrics` (`freebuff_proxy_quota_recent` / `freebuff_proxy_quota_limit`).
+map) and `/metrics` (`freebucks_proxy_quota_recent` / `freebucks_proxy_quota_limit`).
 Dashboard first: the Quota Tracker page plus **Tokens → Test All** (`POST /admin/tokens/test-all`) give the same live read in the browser. CLI second: `-test-token` gives a one-shot, zero-cost read that prints the quota and exits `0` (healthy) or `1` (bad).
 
 ```bash

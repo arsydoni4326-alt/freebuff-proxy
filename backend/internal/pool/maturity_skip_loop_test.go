@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/modelcat"
-	"freebuff-proxy/backend/internal/testutil"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/modelcat"
+	"freebucks-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // maturitySkipLoopGate returns a clock 4m30s before the next Pacific

@@ -11,7 +11,7 @@ import (
 	"encoding/binary"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // countryBlockCooldown is the token cooldown applied when upstream reports a

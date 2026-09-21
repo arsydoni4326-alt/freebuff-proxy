@@ -19,8 +19,8 @@ package dashboard
 import (
 	"encoding/json"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/pool"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/pool"
 )
 
 // AdminAPIQuery is one documented query parameter.
@@ -256,6 +256,27 @@ type TokenRemoveRequest struct {
 	Token *int `json:"token,omitempty"`
 }
 
+// TokenRemoveSpecificRequest is the POST /admin/tokens/remove-specific body.
+type TokenRemoveSpecificRequest struct {
+	Token string `json:"token"`
+}
+
+// TokenListResponse is the GET /admin/tokens/list body: the raw token values
+// the pool is serving from (SQLite token DB when active, config otherwise).
+type TokenListResponse struct {
+	Tokens []string `json:"tokens"`
+	Count  int      `json:"count"`
+}
+
+// TokenMaturityRequest is the POST /admin/tokens/{id}/maturity body
+// (per-token streak-maintenance preferences; compat API).
+type TokenMaturityRequest struct {
+	Enabled    bool   `json:"enabled"`
+	Target     int    `json:"target,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	TouchModel string `json:"touch_model,omitempty"`
+}
+
 // SpawnSessionRequest is the POST /admin/tokens/{id}/session body.
 type SpawnSessionRequest struct {
 	Model string `json:"model,omitempty"`
@@ -385,7 +406,11 @@ func AdminAPIPaths() []AdminAPIPath {
 		{Method: "POST", Path: "/admin/tokens/{id}/session", OperationID: "tokenSpawnSession", Summary: "Ensure one token's upstream session for a model", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: SpawnSessionRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/add", OperationID: "tokenAdd", Summary: "Add one upstream token to the pool and persist to .env", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenAddRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/remove", OperationID: "tokenRemove", Summary: "Remove one pool token (absent index removes the last)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenRemoveRequest{}, Response: ResultEnvelope{}},
+		{Method: "POST", Path: "/admin/tokens/remove-specific", OperationID: "tokenRemoveSpecific", Summary: "Remove one pool token by its raw value (SQLite token DB surface)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenRemoveSpecificRequest{}, Response: ResultEnvelope{}},
+		{Method: "GET", Path: "/admin/tokens/list", OperationID: "tokenList", Summary: "List raw pool tokens from the SQLite token DB (or config fallback)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: TokenListResponse{}},
 		{Method: "POST", Path: "/admin/tokens/swap", OperationID: "tokenSwap", Summary: "Swap two pool positions", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenSwapRequest{}, Response: ResultEnvelope{}},
+		{Method: "POST", Path: "/admin/tokens/{id}/maturity", OperationID: "tokenMaturity", Summary: "Store one token's streak-maintenance preferences (compat API)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenMaturityRequest{}, Response: ResultEnvelope{}},
+		{Method: "POST", Path: "/admin/tokens/{id}/maturity/touch", OperationID: "tokenMaturityTouch", Summary: "Fire one manual maturity touch outside the daily slot", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/mode", OperationID: "modeSwitch", Summary: "Switch bridge/pooled mode (loopback rules apply)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: ModeSwitchRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/diag", OperationID: "diag", Summary: "Configuration and upstream reachability checks", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: DiagResponse{}},
 		{Method: "POST", Path: "/admin/api/change-password", OperationID: "changePassword", Summary: "Rotate the admin dashboard password", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: ChangePasswordRequest{}, Response: ChangePasswordResponse{}},

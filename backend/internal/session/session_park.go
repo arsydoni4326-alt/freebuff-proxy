@@ -22,7 +22,7 @@ import (
 	cryptoRand "crypto/rand"
 	"encoding/binary"
 	"errors"
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 	"time"
 )
 

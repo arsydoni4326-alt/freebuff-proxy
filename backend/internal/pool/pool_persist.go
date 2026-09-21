@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // pool_persist.go — pool runtime write-through cache (DB-unified-storage).

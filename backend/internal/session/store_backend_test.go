@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"freebuff-proxy/backend/internal/upstream"
+	"freebucks-proxy/backend/internal/upstream"
 )
 
 // memoryBackend is a thread-safe in-memory StateBackend test double.

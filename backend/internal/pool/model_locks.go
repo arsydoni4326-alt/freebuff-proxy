@@ -3,8 +3,8 @@ package pool
 import (
 	"fmt"
 
-	"freebuff-proxy/backend/internal/config"
-	"freebuff-proxy/backend/internal/registry"
+	"freebucks-proxy/backend/internal/config"
+	"freebucks-proxy/backend/internal/registry"
 )
 
 // Model-allowlist routing (MODEL_LOCKS, issue #325): each pool slot may be

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	history "freebuff-proxy/backend/internal/store"
+	history "freebucks-proxy/backend/internal/store"
 )
 
 // The boot adapter round-trips through a real history store file keyed by
