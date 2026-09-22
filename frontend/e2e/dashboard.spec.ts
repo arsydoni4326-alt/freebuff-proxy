@@ -1697,7 +1697,7 @@ test.describe("dashboard hermetic mocks", () => {
     );
   });
 
-  test("Models lists 13 rows with tiers, withdrawals, and the live offer", async ({
+  test("Models lists 14 rows with tiers, withdrawals, and the live offer", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -1716,16 +1716,30 @@ test.describe("dashboard hermetic mocks", () => {
       page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible();
 
-    // Served stat tells the truth about 13 rows: 6 served of 13 listed.
-    await expect(page.getByText("6 of 13")).toBeVisible();
-    await expect(page.getByText("13 registered · 49 agents")).toBeVisible();
+    // Served stat tells the truth about 14 rows: 6 served of 14 listed (the
+    // two Pro-only rows are plan-locked, never served).
+    await expect(page.getByText("6 of 14")).toBeVisible();
+    await expect(page.getByText("14 registered · 50 agents")).toBeVisible();
     // Tier column renders; the pool column stays gone.
     await expect(page.getByText("Tier").first()).toBeVisible();
     await expect(page.locator("table").getByText("Pool")).toHaveCount(0);
     // 13 rows in the desktop table; tier cells render in both the table
     // and the mobile cards.
-    await expect(page.locator("table tbody tr")).toHaveCount(13);
-    await expect(page.getByTestId("model-tier")).toHaveCount(26);
+    await expect(page.locator("table tbody tr")).toHaveCount(14);
+    await expect(page.getByTestId("model-tier")).toHaveCount(28);
+    // Plan-required rows (Gemini 3.8 Flash, MiMo 2.6 Pro) draw locked: the
+    // "Paid plan" badge and upstream's sentence, never a served state.
+    // Scoped to the table: the mobile cards carry the same annotation, so an
+    // unscoped count is two renderings per row.
+    await expect(
+      page.getByRole("table").getByTestId("model-plan-required"),
+    ).toHaveCount(2);
+    await expect(
+      page.getByRole("table").getByTestId("model-plan-required").first(),
+    ).toContainText("Included with a paid plan.");
+    await expect(
+      page.getByRole("table").getByText("Paid plan", { exact: true }),
+    ).toHaveCount(2);
     // Per-row tiers + status copy, scoped to the desktop table (one
     // rendering per row; the mobile cards carry the same copy).
     const table = page.getByRole("table");
@@ -1752,7 +1766,7 @@ test.describe("dashboard hermetic mocks", () => {
       ],
       ["openai/gpt-5.6-luna", ["full", "paid plan"], "served"],
       ["upstage/solar-pro4", ["limited", "full"], "served"],
-      ["google/gemini-3.8-flash", ["paid plan"], "unserved"],
+      ["google/gemini-3.8-flash", ["full", "paid plan"], "Paid plan"],
       ["meta/muse-spark-1.2-contributor", ["full"], "served"],
       [
         "z-ai/glm-5.2",
@@ -1766,6 +1780,7 @@ test.describe("dashboard hermetic mocks", () => {
         "served",
       ],
       ["mimo/mimo-v2.5", ["limited", "full"], "served"],
+      ["mimo/mimo-v2.6-pro", ["full", "paid plan"], "Paid plan"],
       [
         "anthropic/claude-fable-5.1",
         ["limited trial", "3 of 10 sessions left"],
@@ -1815,7 +1830,7 @@ test.describe("dashboard hermetic mocks", () => {
       page.getByRole("heading", { name: "Usage", exact: true }),
     ).toBeVisible();
     const rows = page.locator("table tbody tr");
-    await expect(rows).toHaveCount(13);
+    await expect(rows).toHaveCount(14);
     await expect(rows.first()).toContainText("openai/gpt-5.6-luna");
   });
   test("Models offer row names the spent trial", async ({ page }) => {
