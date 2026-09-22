@@ -20,6 +20,10 @@ import (
 	"freebucks-proxy/backend/internal/runs"
 	"freebucks-proxy/backend/internal/session"
 	"freebucks-proxy/backend/internal/upstream"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // maxClientTokenLen is the maximum allowed length of a client-supplied
@@ -73,6 +77,10 @@ type bridgeEntry struct {
 	// ledger is the entry's usage + spend state (issue #263); guarded by
 	// Pool.bridgeMu like lastUsed.
 	ledger *AccountLedger
+	// seat counts this entry's turns between their session admission and
+	// their lease release (seat.go), the same account-seat gate the pooled
+	// entries use.
+	seat seatCounter
 	// nextPollAt / pollFailures carry the session-liveness poll schedule;
 	// touched only by the maintain goroutine (bridgeSessionPollTick).
 	nextPollAt   time.Time
@@ -203,6 +211,19 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		}
 	}
 
+	// Seat accounting (seat.go), mirroring the pooled admitOnLane: this
+	// bridge turn counts from before its session admission until its lease
+	// is released, so the session's pre-emptive re-admit cannot rotate the
+	// seat out from under a completion that is about to ride it. Every
+	// error return below drops the count through the deferred release.
+	entry.seat.acquire()
+	seatLeased := false
+	defer func() {
+		if !seatLeased {
+			entry.seat.release()
+		}
+	}()
+
 	// MASQ slot-ledger lane (slot_ledger.go, SLOTS_PER_ACCOUNT): the
 	// bridge entry gets the same hard wall as a pooled token - one
 	// live-turn lane per (entry, model) with a FIFO queue. It is taken
@@ -226,7 +247,7 @@ func (p *Pool) AcquireBridge(ctx context.Context, clientToken, model string) (*L
 		permit, parked, slotErr := p.slotAcquire(ctx, slotKey{entry: entry, model: model}, 0, slotCap, slotDepth, slotWait)
 		if slotErr != nil {
 			if slotIsQueueExhausted(slotErr) {
-				p.logger.Debug("pool: bridge live-turn queue exhausted", "token", bridgeTokenLabel(entry), "err", slotErr)
+				p.logger.Debug("pool: bridge live-turn queue exhausted", "token", bridgeTokenLabel(entry), "model", model, "err", slotErr)
 				return nil, slotQueueRateLimit(slotErr.(*slotQueueExhaustedError), model, slotCap, p.slotLive(slotKey{entry: entry, model: model}))
 			}
 			return nil, slotErr
@@ -304,7 +325,7 @@ admitRetry:
 			// session create so the admission does not bounce off the same
 			// 428 again (mirrors the fixed-token path in acquire.go).
 			if cfg.WaitingRoomChain && entry.client.ConsumeWaitingRoomChain() {
-				p.logger.Debug("pool: bridge firing waiting-room pre-session chain", "token", bridgeTokenLabel(entry))
+				p.logger.Debug("pool: bridge firing waiting-room pre-session chain", "token", bridgeTokenLabel(entry), "model", model)
 				entry.client.FireWaitingRoomChain(ctx)
 			}
 			sessionStart := time.Now()
@@ -331,7 +352,7 @@ admitRetry:
 			// A 401 means this client token is dead upstream: evict the
 			// entry so the next request recreates it fresh instead of
 			// riding a dead credential. No cooldown write.
-			p.logger.Debug("pool: bridge entry evicting on auth rejection")
+			p.logger.Debug("pool: bridge entry evicting on auth rejection", "token", bridgeTokenLabel(entry), "model", model, "err", err)
 			p.bridgeEvictToken(clientToken)
 		}
 		if rle := c.rateLimited; rle != nil {
@@ -423,7 +444,7 @@ sessionReady:
 		if c.authRejected {
 			// Dead client token: evict so the next request recreates it
 			// fresh. No cooldown write.
-			p.logger.Debug("pool: bridge entry evicting on auth rejection")
+			p.logger.Debug("pool: bridge entry evicting on auth rejection", "token", bridgeTokenLabel(entry), "model", model, "err", err)
 			p.bridgeEvictToken(clientToken)
 		}
 		if rle := c.rateLimited; rle != nil {
@@ -459,8 +480,9 @@ sessionReady:
 		return nil, fmt.Errorf("bridge: entry evicted during admission; retry the request")
 	}
 	bridgeLeaseAttrs := []any{
+		"token", bridgeTokenLabel(entry),
 		"model", effectiveModel, "agent", effectiveAgentID, "instance_id", ss.InstanceID,
-		"country", ss.CountryCode,
+		"country", ss.CountryCode, "ms", time.Since(runStart).Milliseconds(),
 	}
 	if queueWait > 0 {
 		// Queue-wait telemetry: a granted park used to be invisible (only
@@ -478,6 +500,7 @@ sessionReady:
 	p.idleFinished = false
 	p.lastActiveMu.Unlock()
 	slotLeased = true // the lease owns the slot now; the defer must not release it
+	seatLeased = true // the lease owns the seat count too (LeaseRelease/LeaseAbandon releases it)
 	return &Lease{
 		Token: -1, Model: effectiveModel, AgentID: effectiveAgentID, Run: run, SessionInstanceID: ss.InstanceID,
 		Bridge: entry, routeSlot: routeSlot, QueueWait: queueWait, AcquiredAt: time.Now(),

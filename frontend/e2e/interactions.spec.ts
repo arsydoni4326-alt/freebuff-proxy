@@ -245,10 +245,10 @@ test.describe("operator interactions (hermetic mocks)", () => {
   }) => {
     const f = loadFixtures();
     await mockDashboard(page, f, {}, { loginPage: true });
-    await page.goto("http://127.0.0.1:4173/admin/#plans");
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await page.getByRole("button", { name: "Allowances" }).click();
     await expect(
-      page.getByRole("heading", { name: "Usage", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
@@ -318,7 +318,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     });
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Probe all" })).toHaveCount(
       0,
@@ -449,7 +449,7 @@ test.describe("operator interactions (hermetic mocks)", () => {
     });
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Log out" }).click();
     await logout;
@@ -510,11 +510,11 @@ test.describe("operator interactions (hermetic mocks)", () => {
     await mockSettingsOverlay(page, posted);
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
-    // Pool controls moved behind the Controls tab.
-    await page.getByRole("button", { name: "Controls" }).click();
+    // Pool controls moved behind the Strategy tab.
+    await page.getByRole("button", { name: "Strategy" }).click();
     const drain = page.getByRole("radio", { name: "Drain" });
     const balance = page.getByRole("radio", { name: "Balance" });
-    // Catalog defaults (2 slots, 30s wait, depth 16, unbounded spill)
+    // Catalog defaults (3 slots, 30s wait, depth 16, unbounded spill)
     // classify as Balance.
     await expect(balance).toHaveAttribute("aria-checked", "true");
 
@@ -540,11 +540,11 @@ test.describe("operator interactions (hermetic mocks)", () => {
       (r) => r.method() === "POST" && r.url().includes("/admin/api/settings"),
       { timeout: 10000 },
     );
-    await slots.fill("3");
+    await slots.fill("4");
     await slotsReq;
     await expect
       .poll(() => posted.find((p) => p.key === "SLOTS_PER_ACCOUNT")?.value)
-      .toBe("3");
+      .toBe("4");
 
     // The deleted rotation/failover keys are never written by this card.
     expect(posted.find((p) => p.key === "TOKEN_ROTATION")).toBeUndefined();
@@ -708,8 +708,8 @@ test.describe("operator interactions (hermetic mocks)", () => {
     );
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await metaResp;
-    // Pool controls moved behind the Controls tab.
-    await page.getByRole("button", { name: "Controls" }).click();
+    // Pool controls moved behind the Strategy tab.
+    await page.getByRole("button", { name: "Strategy" }).click();
 
     // Absent from .env, the bridge switch defaults to on.
     const bridge = page.getByRole("switch", { name: "BRIDGE_ENABLED" });
@@ -809,14 +809,14 @@ test.describe("operator interactions (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#overview");
     for (const [link, heading] of [
-      ["Pool", "Pool"],
-      ["Usage", "Usage"],
+      ["Accounts", "Accounts"],
+      ["Models", "Models"],
       ["Logs", "Logs"],
       ["Settings", "Settings"],
     ] as Array<[string, string]>) {
       await nav.getByRole("link", { name: link }).click();
       await expect(
-        page.getByRole("heading", { name: heading, exact: true }),
+        page.getByRole("heading", { level: 1, name: heading, exact: true }),
       ).toBeVisible();
     }
   });

@@ -13,7 +13,14 @@ import (
 // LeaseRelease decrements the leased run's inflight counter. Call when the
 // request completes or fails. Safe on nil leases.
 func (p *Pool) LeaseRelease(lease *Lease) {
-	if lease == nil || lease.Run == nil {
+	if lease == nil {
+		return
+	}
+	// Seat accounting first (seat.go): the count taken before this lease's
+	// session admission must drop whatever happens below, including the run
+	// row being gone.
+	lease.releaseSeat()
+	if lease.Run == nil {
 		return
 	}
 	t := lease.leaseTarget()
@@ -49,7 +56,13 @@ func (p *Pool) LeaseRelease(lease *Lease) {
 // run keep it alive. The server calls this instead of LeaseRelease when it
 // observes a client disconnect.
 func (p *Pool) LeaseAbandon(lease *Lease) {
-	if lease == nil || lease.Run == nil {
+	if lease == nil {
+		return
+	}
+	// Seat accounting first (seat.go), mirroring LeaseRelease: a cancelled
+	// chat frees the seat even when the run row is gone.
+	lease.releaseSeat()
+	if lease.Run == nil {
 		return
 	}
 	t := lease.leaseTarget()
@@ -176,7 +189,16 @@ func (p *Pool) InvalidateLeaseSessionWithReason(lease *Lease, reason string, sta
 	// MASQ precious (precious.go): see InvalidateSessionWithReason —
 	// superseded still drops.
 	if reason != session.ReasonSuperseded && p.keepSession(lease.entry) {
-		p.logger.Debug("pool: keeping precious session", "reason", reason)
+		// Swap-safe attribution (see InvalidateLeaseSession): the lease's
+		// own entry resolves the live display index, never the
+		// snapshot-time Token.
+		attrs := []any{"reason", reason, "model", lease.Model}
+		if li := p.indexOfEntry(lease.entry); li >= 0 {
+			attrs = append([]any{"token", li + 1}, attrs...)
+		} else {
+			attrs = append([]any{"token", tokenEntryLabel(lease.entry)}, attrs...)
+		}
+		p.logger.Debug("pool: keeping precious session", attrs...)
 		return
 	}
 	lease.entry.session.InvalidateInstanceWithReason(lease.SessionInstanceID, reason, status)
@@ -402,16 +424,17 @@ func (p *Pool) DropTokenSession(ctx context.Context, token int) (bool, error) {
 	// session — model switches re-admit naturally through the session
 	// manager, so the drop would only churn a healthy upstream slot.
 	if p.keepSession(entry) {
-		p.logger.Info("pool: keeping precious session", "token", token, "model", snap.Model, "instance", snap.InstanceID)
+		p.logger.Info("pool: keeping precious session", "token", token+1, "model", snap.Model, "instance", snap.InstanceID)
 		return true, nil
 	}
-	p.logger.Info("pool: dropping session", "token", token, "model", snap.Model, "instance", snap.InstanceID)
+	p.logger.Info("pool: dropping session", "token", token+1, "model", snap.Model, "instance", snap.InstanceID)
+	dropStart := time.Now()
 	entry.runs.FinishAllRuns(ctx)
 	if err := entry.session.EndSession(ctx); err != nil {
-		p.logger.Warn("pool: drop session EndSession failed", "token", token, "err", err)
+		p.logger.Warn("pool: drop session EndSession failed", "token", token+1, "model", snap.Model, "ms", time.Since(dropStart).Milliseconds(), "err", err)
 		return false, err
 	}
-	p.logger.Info("pool: session dropped", "token", token, "model", snap.Model)
+	p.logger.Info("pool: session dropped", "token", token+1, "model", snap.Model, "ms", time.Since(dropStart).Milliseconds())
 	return false, nil
 }
 

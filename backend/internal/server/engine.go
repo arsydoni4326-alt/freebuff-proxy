@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
 	"freebucks-proxy/backend/internal/convert"
 	"freebucks-proxy/backend/internal/phasetiming"
 	"freebucks-proxy/backend/internal/pool"
+	"freebucks-proxy/backend/internal/upstream"
 	"io"
 	"net/http"
 	"time"
@@ -13,9 +15,10 @@ import (
 // --- Shared completion engine (protocol-neutral) ---
 //
 // The acquire→upstream→relay core every completion surface runs on:
-// chatCore (lease acquisition, bridge routing, phase timing, endpoint log
-// lines), chatAttempt (retry-once recovery with session invalidation and
-// token cooldowns), and the plain SSE plumbing every relay shares
+// chatCore (lease acquisition, bridge routing, the ErrRunInvalid
+// rotate-and-retry-once, phase timing, endpoint log lines), chatAttempt
+// (one acquire→chat attempt with session/run invalidation and token
+// cooldowns on refusal), and the plain SSE plumbing every relay shares
 // (relayReadLoop, lineChunk, keepaliveInterval). Protocol policy does NOT
 // live here — each surface's handler, wire translation, stream relay and
 // error envelope live in its own file:
@@ -62,13 +65,16 @@ func (b *timedBackend) Acquire(ctx context.Context, model string) (*pool.Lease, 
 // token lease (bridge routing included), call upstream with
 // retry-once recovery, then relay the forced stream to the client through
 // relay. kind names the endpoint in request/done log lines.
-func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, stream bool, normalized []byte, reasoningEffort, kind string, relay relayFunc) {
-	// Issue #140: the tool-name tolerance map. The handlers normalize
-	// with NormalizeRequestMapped, which renames mapped client tools to
-	// official signature names IN the normalized body; the mapper that maps
-	// them BACK is rebuilt here from the client's ORIGINAL body so response
-	// relays can restore names the client dispatched on.
-	toolMap := convert.NewToolMapper(originalBodyFromContext(r.Context()))
+func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, stream bool, normalized []byte, toolMap convert.ToolMapper, reasoningEffort, kind string, relay relayFunc) {
+	// Issue #140: the tool-name tolerance map. toolMap is the SAME mapper the
+	// handler normalized with (NormalizeRequestMapped) — never a rebuild from
+	// the client body, because the request leg's name-uniqueness dedupe only
+	// exists on that instance: a later client tool whose resolved wire name is
+	// already taken virtualizes to mcp__<client name> inside ToUpstream
+	// (issue #685: opencode v2 offers bash + execute — CodeMode's model-facing
+	// tool, packages/codemode/docs/codemode.md — both mapping to
+	// run_terminal_command, so the model called the virtualized mcp__execute
+	// and a rebuilt mapper leaked that name to a client that never offered it).
 	// D1: the access wrapper minted the request's correlation id; direct
 	// handler calls (tests) mint here so it is never empty. The value is
 	// threaded into the request context AND into ChatOptions.RequestID so
@@ -170,6 +176,16 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	}
 	be = &timedBackend{chatBackend: be, phases: phases}
 	up, lease, err = s.chatAttempt(ctx, model, normalized, st, be)
+	if err != nil && ctx.Err() == nil && errors.Is(err, upstream.ErrRunInvalid) {
+		// The lease's agent run is gone upstream (e.g. a resumed run whose FINISH
+		// raced this request: live 2026-09-21T07:05:05Z, upstream 400 runId Not
+		// Running surfaced as a bare 502). chatAttempt already Invalidated the run
+		// (in-memory + persisted record removed), so the re-acquire below cannot
+		// re-adopt it: rotate-and-retry-once, the sentinel's documented contract
+		// (upstream/errors.go).
+		st.retried = true
+		up, lease, err = s.chatAttempt(ctx, model, normalized, st, be)
+	}
 	if err != nil {
 		// Acquire-time rate limit (pool returned nil lease): attribute the
 		// binding token + limited set onto the trace line. Post-acquire
@@ -264,6 +280,6 @@ func (s *Server) chatCore(w http.ResponseWriter, r *http.Request, model string, 
 	st.usageInput, st.usageOutput, st.usageCached, st.usageReasoning, st.usageTotal = stats.usageInput, stats.usageOutput, stats.usageCached, stats.usageReasoning, stats.usageTokens
 	phases.Since(phasetiming.TotalMS, start)
 	ms := time.Since(start).Milliseconds()
-	s.logger.Info(kind+" done", chatDoneAttrs(reqID, model, lease.AgentID, stream, ms, stats.chunks, stats.bytes, reasoningEffort)...)
+	s.logger.Info(kind+" done", chatDoneAttrs(reqID, model, lease.AgentID, stream, ms, stats.chunks, stats.bytes, reasoningEffort, stats.aborted)...)
 	s.traceChat(lease, model, ms, "ok", "", phases.All(), st)
 }

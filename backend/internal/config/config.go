@@ -146,8 +146,10 @@ type Config struct {
 	RunsDrainTTL      time.Duration
 	// SessionReAdmitLead is how long before session expiry a pre-emptive
 	// async re-admit is triggered (issue #99, SESSION_RE_ADMIT_LEAD default
-	// 60s): the request rides the old session while the refresh runs in the
-	// background; the next request gets the new instance.
+	// 60s). The rotation never supersedes an in-flight turn: while another
+	// request holds the account's seat the trigger defers and the session
+	// rides its grace drain, and the request that trips the trigger is
+	// served by the fresh instance. 0 disables.
 	SessionReAdmitLead time.Duration
 	// SessionProbeCacheTTL is how long the last successful session state is
 	// reused before a fresh upstream poll (issue #60, SESSION_PROBE_CACHE_TTL
@@ -300,13 +302,14 @@ type Config struct {
 	// Live-apply (read per Acquire).
 	TokenMaxConcurrent int
 	// SlotsPerAccount caps concurrent live turns per pooled account-model
-	// lane (SLOTS_PER_ACCOUNT; default 2, the approved anti-ban pacing): a
-	// token leases a new turn for a model only while fewer than this many
-	// are live on that account for that model, so one account may hold 2
-	// turns of model A and 2 of model B at the same time. 0 = unlimited
-	// (no slot gating at all, for full operator control); negative values
-	// floor to 0. The strictest anti-ban posture is 1 (bunker: fully
-	// sequential turns per account-model lane).
+	// lane (SLOTS_PER_ACCOUNT; default 3): a token leases a new turn for a
+	// model only while fewer than this many are live on that account for
+	// that model, so one account may hold 3 turns of model A and 3 of
+	// model B at the same time. 2 was the default and the conservative
+	// pacing until 2026-09-22, when a ~5h live run at 3 drew no upstream
+	// flag; 1 is the strictest posture (bunker: fully sequential turns per
+	// account-model lane). 0 = unlimited (no slot gating at all, for full
+	// operator control); negative values floor to 0.
 	// Live-apply (read per Acquire).
 	SlotsPerAccount int
 	// QueueWait bounds how long one Acquire parks on a full token's FIFO

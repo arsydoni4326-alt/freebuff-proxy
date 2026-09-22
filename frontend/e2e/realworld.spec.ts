@@ -170,10 +170,10 @@ test.describe("real-world data", () => {
     page,
   }) => {
     await mockDashboard(page, loadFixtures(RW));
-    await page.goto(admin("plans"));
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.goto(admin("tokens"));
+    await page.getByRole("button", { name: "Allowances" }).click();
     await expect(
-      page.getByRole("heading", { name: "Usage", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
@@ -210,7 +210,7 @@ test.describe("real-world data", () => {
     ];
     await mockDashboard(page, f, { tokens });
     await page.goto(admin("plans"));
-    await page.getByRole("button", { name: "Models" }).click();
+    await page.getByRole("button", { name: "Catalog" }).click();
     await expect(page.getByTestId("models-note")).toContainText(
       "identical for every account in the region",
     );
@@ -226,7 +226,7 @@ test.describe("real-world data", () => {
   }) => {
     await mockDashboard(page, loadFixtures(RW));
     await page.goto(admin("plans"));
-    await page.getByRole("button", { name: "Models" }).click();
+    await page.getByRole("button", { name: "Catalog" }).click();
     // Vendor-catalog copy tracks the tier catalog (the Labor-Day promo
     // notice and Free/Premium cost badges are gone from served rows).
     await expect(page.getByText("Smart & Fast").first()).toBeVisible();
@@ -237,8 +237,8 @@ test.describe("real-world data", () => {
     await expect(page.getByText("paid plan").first()).toBeVisible();
     await expect(page.getByText("limited trial").first()).toBeVisible();
     // Served stat tells the truth about 13 rows.
-    await expect(page.getByText("6 of 13")).toBeVisible();
-    await expect(page.getByText("13 registered · 49 agents")).toBeVisible();
+    await expect(page.getByText("6 of 14")).toBeVisible();
+    await expect(page.getByText("14 registered · 50 agents")).toBeVisible();
     // Five withdrawn rows name their replacement in both renderings.
     await expect(page.getByTestId("model-withdrawn")).toHaveCount(10);
     // The offer row shows the live campaign counts in both renderings.
@@ -276,7 +276,7 @@ test.describe("real-world data", () => {
     await mockDashboard(page, loadFixtures(RW));
     await page.goto(admin("tokens"));
     // Pool controls moved behind the Controls tab.
-    await page.getByRole("button", { name: "Controls" }).click();
+    await page.getByRole("button", { name: "Strategy" }).click();
     // Exact label match: the live catalog's RATE_LIMIT_BURST row documents
     // itself as "2 × RATE_LIMIT_PER_IP", so a substring locator is ambiguous
     // once the pack describes the real rows.

@@ -105,7 +105,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
 
     const input = page.locator("#add-token-input");
@@ -152,7 +152,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
 
     const input = page.locator("#add-token-input");
@@ -343,7 +343,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
 
     const startReq = page.waitForRequest(
@@ -459,7 +459,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
     // --- add token (POST /admin/tokens/add) ---
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
     const addToken = "cb_" + "y".repeat(24);
     const addReq = page.waitForRequest(
@@ -549,7 +549,7 @@ test.describe("operator UX journey (hermetic mocks)", () => {
 
     await page.goto("http://127.0.0.1:4173/admin/#tokens");
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
 
     // Logout answers ok:true and expires the session cookie (like the Go
@@ -636,10 +636,10 @@ test.describe("operator UX journey (hermetic mocks)", () => {
       { loginPage: true },
     );
 
-    await page.goto("http://127.0.0.1:4173/admin/#plans");
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await page.getByRole("button", { name: "Allowances" }).click();
     await expect(
-      page.getByRole("heading", { name: "Usage", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
 
     // Accounts are pooled, so per-account cards render (not the empty pool state).
@@ -709,8 +709,8 @@ test.describe("operator UX journey (hermetic mocks)", () => {
       });
     });
 
-    await page.goto("http://127.0.0.1:4173/admin/#plans");
-    await page.getByRole("button", { name: "Accounts" }).click();
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await page.getByRole("button", { name: "Allowances" }).click();
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
     ).toBeVisible();

@@ -11,6 +11,7 @@
   import TokenTable from "./tokens/TokenTable.svelte";
   import SegmentedControl from "../components/SegmentedControl.svelte";
   import MaturityPanel from "../components/MaturityPanel.svelte";
+  import AllowancesPanel from "../components/AllowancesPanel.svelte";
   import TrafficSettings from "./settings/TrafficSettings.svelte";
   import StrategyPresetCard from "./settings/StrategyPresetCard.svelte";
   import AdvancedSettings from "./settings/AdvancedSettings.svelte";
@@ -438,8 +439,10 @@
       const want = sessionStorage.getItem("fp-page-tab:tokens");
       if (want !== null) {
         sessionStorage.removeItem("fp-page-tab:tokens");
-        if (want === "accounts" || want === "controls" || want === "warming")
-          tab = want;
+        if (want === "fleet" || want === "accounts") tab = "accounts";
+        else if (want === "allowances") tab = "allowances";
+        else if (want === "streaks" || want === "warming") tab = "warming";
+        else if (want === "strategy" || want === "controls") tab = "controls";
       }
     } catch {
       /* storage blocked: default tab stands */
@@ -487,13 +490,13 @@
 </script>
 
 <PageShell
-  crumb="freebucks-proxy / Admin / pool.conf"
-  title={$tr("Pool")}
+  crumb="freebucks-proxy / Admin / accounts.conf"
+  title={$tr("Accounts")}
   description={$tr(
-    "Upstream credentials, device login, and streak enrollment — allowances live on Usage",
+    "Upstream account fleet, allowances, daily streaks, and pool strategy.",
   )}
-  {loading}
-  {error}
+  loading={tab === "accounts" ? loading : false}
+  error={tab === "accounts" ? error : ""}
   onRetry={() => {
     error = "";
     refreshTokens();
@@ -587,11 +590,12 @@
       <SegmentedControl
         bind:value={tab}
         options={[
-          { id: "accounts", label: $tr("Accounts") },
-          { id: "warming", label: $tr("Warming") },
-          { id: "controls", label: $tr("Controls") },
+          { id: "accounts", label: $tr("Fleet") },
+          { id: "allowances", label: $tr("Allowances") },
+          { id: "warming", label: $tr("Streaks") },
+          { id: "controls", label: $tr("Strategy") },
         ]}
-        ariaLabel={$tr("Tokens sections")}
+        ariaLabel={$tr("Accounts sections")}
       />
     </div>
   </div>
@@ -754,5 +758,7 @@
       onSaved={settingsOverlaySaved}
       degraded={$settingsDegraded}
     />
+  {:else if tab === "allowances"}
+    <AllowancesPanel />
   {/if}
 </PageShell>

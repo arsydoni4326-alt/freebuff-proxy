@@ -5,9 +5,30 @@ reference client for everything the proxy mirrors on the wire. Audience:
 freebucks-proxy maintainers (session/wire parity, registry rows, error taxonomy)
 and users driving the CLI through the gateway.
 
-- **Audited pin**: the gitignored upstream vendor clone @ `2b165f749` (= npm
-  `freebuff@0.0.180`).
-  Previous audit pin: `e2b911eca` (= `0.0.178`) — see §14 for the delta.
+- **Audited pin**: `8ed5d3e5e` — the gitignored upstream vendor clone's tip, and
+  the tree the citations corrected in this revision were verified against.
+  Previous audit pins: `2b165f749` (npm `0.0.180`, §14) and before it
+  `e2b911eca` (= npm `0.0.178`).
+- **Vendor tip at this revision**: `d77544748`, nine commits past the audit pin.
+  That batch touches four files and changes no CLI surface and no wire shape
+  (`bun.lock`, a comment-only addition in `common/src/constants/freebuff-models.ts`,
+  a new SDK usage-receipts test, a one-line `sdk/src/impl/model-provider.ts`
+  switch to `includeUsage: true`) — see §14.7. Every citation below is pinned to
+  the audit tree (`8ed5d3e5e`): content is unchanged at the tip, but the 16
+  comment lines that batch inserted at `freebuff-models.ts:257` shift every later
+  line number in that one file by +16 (`:2054` here reads `:2070` at the tip), so
+  re-read a cite there by symbol, not by number.
+- **Recorded wiregen pin**: `backend/internal/wirefacts/testdata/wire/snapshots.json:2-3`
+  records `upstream_sha 2b165f749…` with `vendor_version 0.0.180`, and
+  `scripts/vendor-version.txt:1` reads `0.0.180`. That manifest's
+  `cli/src/components/freebuff-model-selector.tsx` hash (`snapshots.json:30-31`,
+  `5ecfb9ff…`) no longer matches the tip (`7fc1341d…`) — the selector is a
+  wire-tracked file (`scripts/check-upstream.sh:126`), so **drift exists**: the
+  manifest pin is 24 commits behind the vendor tip (15 to the audit pin, §14.6,
+  plus 9 more, §14.7).
+  The vendor clone *path* lives in `scripts/check-upstream.sh` (`:90-98`); that
+  script holds no pin — its ref defaults to the floating `main` (`:81`) and a
+  full-SHA ref is only *gated* against `snapshots.json` (`:229-244`).
 - **Citations**: every `path:line` is relative to the gitignored upstream vendor
   clone (its path and pin live in `scripts/check-upstream.sh`).
   `freebuff/cli/release/package.json` version lags the npm tag in some
@@ -478,10 +499,10 @@ The CLI ships no model list and no price table of its own: `common/src/constants
 
 | set | role / contents | cite |
 |---|---|---|
-| `FREEBUFF_MODELS` | CLI/Desktop picker — six rows in pick order: GLM 5.3 Flash, DeepSeek V4 Flash, Luna, MiMo 2.5, Solar Pro 4, Muse Spark 1.2 | `common/src/constants/freebuff-models.ts:2054-2140` |
-| `FREEBUFF_WEB_MODELS` | Web picker: Web-only rows + `...FREEBUFF_MODELS`. Gemini 3.8 Flash is listed here and in no other catalog, because Pro is enforced on Web alone | `:2445-2475` |
+| `FREEBUFF_MODELS` | CLI/Desktop picker — eight rows in pick order: GLM 5.3 Flash, DeepSeek V4 Flash, GPT-5.6 Luna, MiMo 2.6 Flash, MiMo 2.6 Pro, Solar Pro 4, Gemini 3.8 Flash, Muse Spark 1.2. The two MiMo rows ride a `...(FREEBUFF_ENABLE_MIMO_MODELS_IN_UI ? [MIMO_V25_MODEL, MIMO_V26_PRO_MODEL] : [])` spread (flag `true` at this pin, `:942`); the two Pro-only rows are drawn locked, never hidden | `common/src/constants/freebuff-models.ts:2054-2140` |
+| `FREEBUFF_WEB_MODELS` | Web picker: Web-only rows + `...FREEBUFF_MODELS`. Gemini 3.8 Flash left this list on 2026-09-21, when it rejoined `FREEBUFF_MODELS` as a Pro-only row enforced on every surface | `:2445-2475` |
 | `FREEBUFF_WEB_ALL_MODELS` | `FREEBUFF_WEB_GOD_ONLY_MODELS` (Kimi K3 Eco, GPT-5.6 Luna-ES) + `FREEBUFF_WEB_MODELS` | `:2477-2485` |
-| `SUPPORTED_FREEBUFF_MODELS` | 13 recognised rows — the picker rows **plus** paused/withdrawn ids, kept so released binaries hold ids the server can coerce rather than refuse | `:2011-2025` |
+| `SUPPORTED_FREEBUFF_MODELS` | 14 recognised rows — the picker rows **plus** paused/withdrawn ids, kept so released binaries hold ids the server can coerce rather than refuse | `:2011-2025` |
 | admission | `isFreebuffSessionModelId` = `SUPPORTED` ∪ Web ids (god-only included); no picker reads this union directly | `:3306-3318` |
 
 - Nesting on the client is `FREEBUFF_MODELS` ⊂ `FREEBUFF_WEB_MODELS` ⊂ `FREEBUFF_WEB_ALL_MODELS`; `SUPPORTED_FREEBUFF_MODELS` is a sibling superset used only for recognition and coercion.
@@ -496,7 +517,8 @@ The CLI ships no model list and no price table of its own: `common/src/constants
 | `z-ai/glm-5.3-flash` | OpenRouter (Merge Gateway lane); `provider.max_price` ceiling `$0.14` in / `$0.45` out per M | UNLIMITED, `premium:false` | `low/high/max` → **max** (both `reasoningEffort` and `defaultEffort`) | **5 on every tier** | yes, text+image+video | `FREEBUFF_MODELS[0]` = `DEFAULT_FREEBUFF_MODEL_ID`; limited-tier hero; `isNew`; `dataUse:'service'`; unmetered (`:1719-1795`, `:2789-2790`, `:2934-2935`, `:2928`, `:215`, `:258-261`, `:828`) |
 | `deepseek/deepseek-v4-flash` | DeepSeek direct; legacy alias `fireworks/deepseek-v4-flash` | UNLIMITED, `premium:false` | `low/high/max` → high | 15 base, **+10 inside peak** (`common/src/util/__tests__/freebuff-peak-price.test.ts:37,42,47`), 10 off-peak (fixture) | yes (since 2026-09-10) | displayName `'DeepSeek V4.1 Flash'`; the **limited-tier coercion target**; `unavailableFallback` = Luna; `warning` = AI-training notice, `dataUse:'training'`; `isNew` (`:1329-1445`, `:2922-2923`, `:1394-1396`) |
 | `openai/gpt-5.6-luna` | OpenRouter, `provider.order` = `openai`; ceiling `$0.5`/`$3.0` | PREMIUM | through-max → high | 20 (picker fixture for this row) | yes (text+image+file) | `dataUse:'service'` and no AI-training notice; draws the shared daily premium pool; per-model pool sub-cap (`:1611-1641`, `:1622-1628`, `:330`, `cli/src/components/__tests__/freebuff-model-selector.test.tsx:1253`) |
-| `mimo/mimo-v2.5` | MiMo 2.5 (Xiaomi) | UNLIMITED, `premium:false` | none — provider exposes only disabled/high, no ladder | 10 (fixture) | yes | `FALLBACK_FREEBUFF_MODEL_ID`, the always-joinable step-down; no `supersededBy` on purpose (`:1299-1327`, `:2901-2902`, `cli/src/utils/__tests__/freebucks.test.ts:34`) |
+| `mimo/mimo-v2.5` | MiMo 2.6 Flash (Xiaomi) — the wire id keeps its `v2.5` spelling; upstream renamed the row's `displayName` 2026-09-21 without minting a new id | UNLIMITED, `premium:false` | none — provider exposes only disabled/high, no ladder | 10 (fixture) | yes | `FALLBACK_FREEBUFF_MODEL_ID`, the always-joinable step-down; no `supersededBy` on purpose (`:1299-1327`, `:2901-2902`, `cli/src/utils/__tests__/freebucks.test.ts:34`) |
+| `mimo/mimo-v2.6-pro` | MiMo 2.6 Pro (Xiaomi) | PRO-ONLY (`FREEBUFF_PRO_ONLY_EVERY_SURFACE_MODEL_IDS`), own id and own root agent (`base2-free-mimo-2-6-pro`) | none | 30 | yes | new 2026-09-21; the picker draws it locked (`PlanRequiredLabel` / `PlanRequiredLine`, no price) and the server refuses the admission, so this gateway catalogs it but never serves it (the wire id per entitlement rule keeps Pro off the Flash id) (`:181-185`, `:3194`, `common/src/util/freebuff-model-selection.ts:20-31`) |
 | `upstage/solar-pro4` | OpenRouter, endpoint `upstage`, `allow_fallbacks:false` | UNLIMITED (`premium` comes from the entitlement = false); `limitedAccess:true` | none — the route exposes no effort parameter | 0 during promo, then 5, then 10 (schedule) | no | tagline `'Limited-time trial'`; price schedule staged in `freebuff-solar-promo.ts`, not in the catalog (`:1643-1654`, `common/src/constants/freebuff-model-entitlements.ts:5-14`, `common/src/constants/freebuff-solar-promo.ts:4-7,11-41`) |
 | `meta/muse-spark-1.2-contributor` | Meta dev API (`muse-spark-1.2-contributor`) | PREMIUM, `premium:true` | through-xhigh → xhigh | n/a | no | `warning` = AI-training notice + fallback tooltip ('queues when busy, then answers on DeepSeek V4.1 Flash'); retired from the Web picker 2026-09-02, still in `FREEBUFF_MODELS` so every surface reaches it (`:1882-1902`, `:903-904`, `:2517-2525`) |
 
@@ -649,6 +671,16 @@ Off-peak badges come from the wire block (`info.offPeak[modelId]`), e.g. tooltip
 Resolution order: restricted set → budget set → `freebucks_plan` → capacity (`:30-36`). No CLI module imports this file (only its test), so these strings reach users solely through the server's verbatim `spend_limited.message` (`landing:976`).
 
 **Signup block** (`common/src/constants/freebuff-signup-block.ts`) is web-login copy, not CLI: 9 reasons, also the `?error=` code — `captcha_missing`, `captcha_invalid`, `recaptcha_missing`, `recaptcha_invalid`, `mailbox_already_registered`, `privacy_egress`, `untrusted_client_ip`, `ip_signup_velocity`, `prefix_signup_velocity` (`:11-26`). Guard `isSignupBlockReason` (`:64-68`).
+
+The copy is the operationally important half, because it is the only public statement of what the gates key on — **creating an account is gated on egress and on per-network velocity** (`SIGNUP_BLOCK_MESSAGES`, `:35-58`; pinned copy in-repo: `backend/internal/wirefacts/testdata/wire/common/src/constants/freebuff-signup-block.ts`):
+
+| Reason | Copy (verbatim) |
+|---|---|
+| `privacy_egress` | `Accounts cannot be created over a VPN, proxy, or hosting provider. Please turn it off and try again — you can turn it back on afterwards.` |
+| `ip_signup_velocity` | `Too many accounts have been created from this network today. Please try again tomorrow, or contact support if you are on a shared connection.` |
+| `prefix_signup_velocity` | the same copy — the signal is accounts sharing an email prefix, not the IP alone |
+
+The decision logic lives in `@codebuff/auth/signup-gate`, which is **not** in the public snapshot, so no threshold is public: the wording is all that ships, and it describes a daily window. Note the asymmetry with §10's `ip_capped` — "hosting provider" is named as a refusal cause for *creation*, while an existing session from that same egress is only admission-capped. Email-domain weight is separate and public (vendor clone only — this file is not mirrored in-repo): `common/src/util/disposable-email.ts` classifies `disposable` (the header comment calls a *referred* account on one of those providers a strong farm signal), `privacy_relay` (carries weight only as corroboration — "must never gate a reward or trigger action on its own") and `mainstream_privacy` (classified so callers can see it; deliberately not priced), matched by exact domain or any subdomain.
 
 **Standing / Access Level** (`common/src/constants/freebuff-standing.ts`) — presentational half only: `FREEBUFF_TRUST_LEVELS = ['new','verified','established','core']` (index-ordered), `FREEBUFF_TRUST_MIN_LEVEL='new'`, `FREEBUFF_TRUST_FALLBACK_LEVEL='established'` (a resolver failure must NOT drop everyone to `new`), labels `Getting started | Verified | Established | Core member`; the wire `FreebuffStandingInfo` rides **only** the pre-join `status:'none'` response (`:20-26,33-46,61-76,100-123`).
 
@@ -878,6 +910,70 @@ Does not invalidate:
 - Row 25 (strict gates) and the proxy-only rows — unaffected by anything in this batch.
 
 Doc gaps to add (not invalidations): the new server error code `free_mode_cost_mode_required` (`common/src/constants/freebuff-cost-mode.ts:63-66`) appears in no limitation row, and the new prepaid subscription fields (`freebuff-session.ts:104,369,374`) are unmapped in the session-envelope rows.
+
+### 14.6 Delta `0.0.180` → `8ed5d3e5e` (15 commits past the wiregen pin)
+
+The citations corrected in this revision were verified against `8ed5d3e5e`, not
+against the recorded pin. What changed between the pin and the tip:
+
+| item | value |
+|---|---|
+| from | `2b165f749` — the recorded wiregen pin (`snapshots.json:2-3`), npm `freebuff@0.0.180`, `2026-09-19 17:58:17 +0000` |
+| to | `8ed5d3e5e` — vendor clone tip, `2026-09-20 07:32:06 +0000` |
+| commits | 15, every one `Sync public snapshot from freebuff-private` |
+| scale | 16 files, ≈ +563 / −167 |
+| version file | `freebuff/cli/release/package.json` reads `0.0.180` at **both** ends — the npm tag no longer identifies a revision, cite the SHA |
+| pin / drift | `snapshots.json:30-31` pins `cli/src/components/freebuff-model-selector.tsx` at `5ecfb9ff…`; the tip hashes `7fc1341d…`. That file is wire-tracked (`scripts/check-upstream.sh:126`), so the recorded pin is **stale** — "zero drift" is false |
+
+**File inventory** (`git diff --numstat 2b165f749..8ed5d3e5e`, class key as in §14.2):
+
+| class | files (+/−) |
+|---|---|
+| **B** (picker) | `cli/src/components/freebuff-model-selector.tsx` 6/35 |
+| **B** (pricing copy) | `common/src/util/freebuff-off-peak-price.ts` 2/12 |
+| **B** (SDK) | `sdk/src/compact-run-state.ts` 72/0 · `sdk/src/index.ts` 4/1 |
+| **A** (acquisition / CAPI) | `common/src/meta-capi.ts` 16/5 · `common/src/paid-social-capi.ts` 41/16 · `common/src/util/meta-conversions.ts` 23/0 · `common/src/util/paid-social-conversions.ts` 26/11 · `common/src/matching-hash.ts` 14/0 (new) · `common/src/util/acquisition-matching.ts` 23/0 (new) |
+| **T** | `sdk/src/__tests__/truncate-run-state.test.ts` 121/0 (new) · `cli/src/components/__tests__/freebuff-model-selector.test.tsx` 78/12 · `common/src/__tests__/meta-capi.test.ts` 46/10 · `common/src/__tests__/paid-social-capi.test.ts` 37/8 · `common/src/util/__tests__/freebuff-off-peak-price.test.ts` 8/3 |
+| **C** | `bun.lock` 46/54 |
+
+**Picker chips removed (B).** `rowDetails` loses all three pricing chips — the off-peak detail copy, `'Limited-time first-tab discount'`, and the peak-pricing tooltip (with its `freebucksPeakCopy` import) — leaving the accent `highlight` on the price detail (`:453-457`) as the row's only first-tab signal. Dead exports left behind, each with no non-test CLI caller in the public snapshot:
+
+- `freebucksOffPeakCopy` (`common/src/util/freebuff-off-peak-price.ts:11-44`) — also lost its `detail` field in the same commit, so it now returns `{active, badge, tooltip}` with the shortened tooltip.
+- `freebucksPeakCopy` (`common/src/util/freebuff-peak-price.ts:44-64`) — a peaked row shows the surcharge only inside the quoted price and keeps the catalog tagline, so no surface explains the peak window any more.
+- `firstTabDiscountCopy` (`common/src/util/freebuff-first-tab-discount.ts:79-87`) — its last CLI caller was the selector's ask-line fallback, which is now a literal `return undefined`.
+
+`taglineFor` (`:351-358`) gained `FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID`, so that row's server `priceNotices` tagline is suppressed in favour of the catalog tagline.
+
+**Pricing / lookalike-CAPI (A), no CLI surface.** `common/src/matching-hash.ts:8-14` adds the one `hashMatchingEmail` normalizer (trim, lowercase, unsalted SHA-256) shared by Meta `em`, TikTok `email` and X `hashed_email`; `hashPaidSocialEmail` becomes an alias of it. `common/src/util/acquisition-matching.ts:8-12,20-23` adds `validHashedEmailHex` / `validMatchingIpAddress` shape checks. Meta bodies now carry `em` and `client_ip_address` and send `client_user_agent` on native events too; `meta-conversions.ts` adds `META_CLICK_COOKIE` / `validMetaClickId` / `metaClickCookieValue` (`fb.1.<ms>.<fbclid>`) so a click survives a blocked pixel. TikTok gains a per-`surface` activation page, `ttp`, hashed email and IP, with the registration/activation split now an explicit error.
+
+**SDK additions (SDK-only).** `truncateRunStateAtUserTurn({runState, keepUserTurns})` (`sdk/src/compact-run-state.ts:127-161`) truncates a persisted `RunState` at a user-turn boundary, returning `null` when the boundary cannot be honestly placed, never mutating its input; re-exported at `sdk/src/index.ts:39-43`. **SDK-only** — no `cli/` caller exists.
+
+**No chat-wire file changed in this delta.** `cli/src/utils/error-handling.ts`, `cli/src/hooks/helpers/send-message.ts`, `cli/src/hooks/use-freebuff-session.ts`, `common/src/constants/freebuff-errors.ts` and `cli/src/utils/polling-backoff.ts` are all untouched, so §10's limit/error matrix and the P0/P1 verdicts in `CLI-Limitations.md` stand unchanged by this batch.
+
+**Docs corrected against this delta:** §8.3's row-detail order and line cites, §9.7's first-tab and off-peak lines, §11's peak/off-peak notes, §12's config-dir test path, and the pin blocks at the top of this document and of `CLI-Limitations.md`.
+
+### 14.7 Delta `8ed5d3e5e` → `d77544748` (9 commits further past the wiregen pin)
+
+Nine commits, four files, **no CLI surface and no wire shape change** — this is
+the batch that landed after the previous revision's audit pin, so the content of
+every §8/§9/§10 citation above is unchanged (line numbers inside
+`common/src/constants/freebuff-models.ts` past `:256` shift by +16; see the note
+at the top of this document):
+
+| File | Change | Class |
+|---|---|---|
+| `common/src/constants/freebuff-models.ts` | +16 comment lines inserted at `:257` (the GLM 5.3 Flash price-ceiling rationale; the `FREEBUFF_GLM_V53_FLASH_MAX_PRICE` values are untouched at `$0.14` in / `$0.45` out per M). Every later cite into this file moves +16 at the tip (`:2054` → `:2070`) | **C** (comment; line shift) |
+| `sdk/src/impl/model-provider.ts` | `includeUsage: undefined` → `true` in the BYOK/custom-provider branch of `getModelForRequest` (`:288-291`), so SDK-served streams ask the provider for usage | **B** (SDK only) |
+| `sdk/src/impl/__tests__/usage-receipts.test.ts` | +87, new test for the above | **T** |
+| `bun.lock` | lockfile churn | **C** |
+
+Nothing in `cli/src/` changed in this batch: `error-handling.ts`,
+`hooks/helpers/send-message.ts`, `hooks/use-freebuff-session.ts`,
+`utils/freebuff-session-api.ts` and `components/freebuff-model-selector.tsx`
+are all untouched, so §6/§8/§10 and the `CLI-Limitations.md` verdicts stand.
+The one behavior a proxy can observe: an SDK client using a custom provider now
+asks for usage in the stream (`stream_options.include_usage`), which the
+gateway already accepts and relays.
 
 ## 15. Proxy cross-reference
 

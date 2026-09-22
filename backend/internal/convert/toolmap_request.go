@@ -1,7 +1,10 @@
 package convert
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -222,6 +225,82 @@ func isForeignHarness(name string) bool {
 	return ForeignHarnessToolNames[name] || strings.HasPrefix(strings.ToLower(name), "cron")
 }
 
+// Wire tool-name grammar. The upstream is an OpenAI-shaped tools endpoint, and
+// every function name on the wire must match ^[A-Za-z0-9_-]{1,64}$ ("must be
+// a-z, A-Z, 0-9, or contain underscores and dashes, with a maximum length of
+// 64"). Client harnesses do not all obey it — reference/agents/Codewhale
+// registers `web.run` (crates/tui/src/tools/web_run.rs:356) — and ONE illegal
+// name fails the whole upstream request, so an illegal client name is
+// legalized for the wire and restored to the client's own name downstream.
+// This is the universal path for clients whose tools the mapping table does
+// not know: unknown-but-legal names already pass through verbatim, and
+// unknown-and-illegal names now fit the wire instead of breaking the request.
+const (
+	wireToolNameMaxLen = 64
+	wireVirtualPrefix  = "mcp__"
+	// 8 hex chars of sha256 over the client name: two distinct client names
+	// can collapse onto one substituted/truncated base, so the tail carries
+	// the uniqueness the base cannot.
+	wireHashTailLen = 8
+)
+
+// isWireToolNameRune reports whether r may appear in a wire tool name.
+func isWireToolNameRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') || r == '_' || r == '-'
+}
+
+// wireToolNameOK reports whether name already satisfies the wire grammar
+// (length is bytes, matching the upstream's own limit check).
+func wireToolNameOK(name string) bool {
+	if name == "" || len(name) > wireToolNameMaxLen {
+		return false
+	}
+	for _, r := range name {
+		if !isWireToolNameRune(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeWireBase maps every non-grammar rune to '_' and guarantees a
+// non-empty, ASCII-only base.
+func sanitizeWireBase(name string) string {
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		if isWireToolNameRune(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "tool"
+	}
+	return b.String()
+}
+
+// wireVirtualName returns the wire name for a client tool that cannot put its
+// own name on the wire (grammar violation, or a name collision). A legal name
+// that fits keeps the historic mcp__<client name>; anything else is
+// ASCII-legalized, bounded to the wire limit and given a hash-of-the-original
+// tail, so distinct client names never collapse onto one wire name.
+func wireVirtualName(clientName string) string {
+	if wireToolNameOK(clientName) && len(wireVirtualPrefix)+len(clientName) <= wireToolNameMaxLen {
+		return wireVirtualPrefix + clientName
+	}
+	sum := sha256.Sum256([]byte(clientName))
+	tail := hex.EncodeToString(sum[:wireHashTailLen/2])
+	budget := wireToolNameMaxLen - len(wireVirtualPrefix) - 1 - len(tail)
+	base := sanitizeWireBase(clientName)
+	if len(base) > budget {
+		base = base[:budget]
+	}
+	return wireVirtualPrefix + base + "_" + tail
+}
+
 // resolveUpstreamTool decides the wire name for a client tool.
 // Tools mapped in clientToOfficial are mapped to their official codebuff signature tool.
 // Unmapped foreign harness tools (matching ForeignHarnessToolNames exact casing)
@@ -241,6 +320,13 @@ func resolveUpstreamTool(origName string, params map[string]any) string {
 		return official
 	}
 
+	// Universal grammar gate: names the wire cannot carry are legalized here,
+	// before the pass-through rules below — one illegal name fails the whole
+	// upstream request, so "pass through verbatim" is not an option for them.
+	if !wireToolNameOK(origName) {
+		return wireVirtualName(origName)
+	}
+
 	if strings.Contains(origName, "__") {
 		return origName
 	}
@@ -249,7 +335,7 @@ func resolveUpstreamTool(origName string, params map[string]any) string {
 	// "AskUserQuestion" from Claude Code, or "browser_exec" from OpenClaw).
 	// Lowercase agentic tools like OMP's "task" are not in ForeignHarnessToolNames.
 	if ForeignHarnessToolNames[origName] || strings.HasPrefix(lower, "cron") {
-		return "mcp__" + origName
+		return wireVirtualName(origName)
 	}
 
 	return origName
@@ -297,9 +383,12 @@ func NewToolMapper(body []byte) ToolMapper {
 		upstreamName := resolveUpstreamTool(name, t.Function.Parameters)
 		if upstreamName != "" && upstreamName != name {
 			m.clientToUpstream[name] = upstreamName
-			// First occurrence wins the reverse slot: later client tools
-			// resolving to the same wire name virtualize in ToUpstream, so
-			// the reverse map must keep the first winner, not the last.
+			// Provisional reverse slot so a mapper used WITHOUT ToUpstream
+			// still restores. Ownership is finalized by ToUpstream's ordered
+			// pass, which knows which client tool actually claimed the shared
+			// wire name: here only the array order is visible, and a client
+			// tool whose own name IS the wire name may appear after a mapped
+			// one (see TestToolMapperWireNameOwnerRoundTrips).
 			if _, taken := m.upstreamToClient[upstreamName]; !taken {
 				m.upstreamToClient[upstreamName] = name
 			}
@@ -321,6 +410,12 @@ func NewToolMapper(body []byte) ToolMapper {
 // virtualize to mcp__<original> — restore already handles the namespace.
 // Strict upstreams (DeepSeek, Muse Spark, MiMo) reject duplicate tool names
 // outright ("Tool names must be unique"), so dedupe is unconditional.
+//
+// This pass is also what decides OWNERSHIP of every wire name: the client tool
+// that keeps (or claims) a wire name is the one that name restores to, and a
+// virtualized tool owns the mcp__<name> it was given. Name uniqueness depends
+// on array order, so only this ordered pass can answer that question — a
+// reverse map built up front (NewToolMapper) is a provisional guess.
 func (m ToolMapper) ToUpstream(payload map[string]any) {
 	tools, ok := payload["tools"].([]any)
 	if !ok {
@@ -344,9 +439,6 @@ func (m ToolMapper) ToUpstream(payload map[string]any) {
 		if !hit {
 			params, _ := fn["parameters"].(map[string]any)
 			upstreamName = resolveUpstreamTool(name, params)
-			if m.upstreamToClient != nil && upstreamName != "" && upstreamName != name {
-				m.upstreamToClient[upstreamName] = name
-			}
 		}
 		if upstreamName != "" && upstreamName != name {
 			fn["name"] = upstreamName
@@ -363,8 +455,15 @@ func (m ToolMapper) ToUpstream(payload map[string]any) {
 		if used[finalName] {
 			// Duplicate wire name: virtualize this later occurrence so the
 			// wire stays name-unique. Both entries stay callable; restore
-			// maps mcp__<original> back to the client name downstream.
-			virt := "mcp__" + name
+			// maps the virtual name back to the client name downstream.
+			// wireVirtualName also guarantees the result is a legal wire
+			// name; the counter keeps it unique even when the client offered
+			// the very same illegal name twice (whose virtualization is
+			// idempotent, so the plain form would collide with itself).
+			virt := wireVirtualName(name)
+			for i := 2; used[virt]; i++ {
+				virt = wireVirtualName(name + "#" + strconv.Itoa(i))
+			}
 			if m.upstreamToClient != nil {
 				m.upstreamToClient[virt] = name
 			}
@@ -373,6 +472,19 @@ func (m ToolMapper) ToUpstream(payload map[string]any) {
 			}
 			fn["name"] = virt
 			finalName = virt
+		} else if name == finalName {
+			// The client's own name IS the wire name (nothing was renamed),
+			// so THIS tool owns the slot: NewToolMapper pre-registers reverse
+			// slots in array order but cannot know which client tool claims a
+			// shared wire name, so a mapped tool's entry here would hand this
+			// tool's calls to the wrong client tool (Roo-Code offers both
+			// write_file and write_to_file->write_file).
+			delete(m.upstreamToClient, finalName)
+		} else {
+			// First claimer of a renamed wire name owns the reverse slot.
+			if m.upstreamToClient != nil {
+				m.upstreamToClient[finalName] = name
+			}
 		}
 		used[finalName] = true
 	}

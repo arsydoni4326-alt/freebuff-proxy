@@ -10,11 +10,11 @@ package runs
 import (
 	cryptoRand "crypto/rand"
 	"fmt"
-	"sync/atomic"
-	"time"
-
 	"freebucks-proxy/backend/internal/session"
 	"freebucks-proxy/backend/internal/upstream"
+	"log/slog"
+	"sync/atomic"
+	"time"
 )
 
 // newTraceSessionID mints a UUIDv4 trace session id from crypto/rand,
@@ -199,8 +199,12 @@ func (m *RunManager) persistRun(run *Run) {
 	})
 }
 
-// removeRun drops the run from the session-state store (issue #40): the
-// run was FINISHed upstream, so a restart must not resurrect it.
+// removeRun drops the run from the session-state store (issue #40). Records
+// are removed at FINISH DISPATCH — not only after the FINISH response —
+// because a run whose FINISH is in flight is already dead upstream: leaving
+// the record behind lets a restart-resume (or a rotate() store-resume)
+// resurrect a draining run whose chats upstream rejects. A run is only
+// resumable from the store while it is genuinely active.
 func (m *RunManager) removeRun(run *Run) {
 	if m.store == nil || m.key == "" || run == nil {
 		return
@@ -238,6 +242,11 @@ func (m *RunManager) ReleaseAbandoned(run *Run) {
 	if run.Status == "" {
 		run.Status = "cancelled"
 	}
+	// Lifecycle record: the last lease abandoned the run, so it leaves the
+	// active set (or the draining queue re-queues it) and FINISHes with the
+	// status above. inflight is 0 here by construction — the early return
+	// above kept the run alive while other requests were still in flight.
+	slog.Debug("runs: run abandoned", "run_id", run.RunID, "agent_id", run.AgentID, "agent", run.AgentID, "status", run.Status, "inflight", run.inflight)
 	// If it is still the current run, drop it from the active set so no
 	// new acquire reuses it, then FINISH it. Join the draining list BEFORE
 	// enqueueing (mirrors rotate): if the FINISH fails transiently,

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"freebucks-proxy/backend/internal/testutil"
+	"freebucks-proxy/backend/internal/upstream"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -13,9 +15,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"freebucks-proxy/backend/internal/testutil"
-	"freebucks-proxy/backend/internal/upstream"
 )
 
 func TestCreateActive(t *testing.T) {
@@ -564,6 +563,54 @@ func TestTerminalEventReasons(t *testing.T) {
 	})
 }
 
+// TestLifecycleLinesCarryInstanceModelStatus pins the debug-log coverage
+// contract on the hot session lines: the fast-path reused record carries
+// instance_id + model + status, and the invalidated/ended records carry the
+// cached model alongside their reason/status.
+func TestLifecycleLinesCarryInstanceModelStatus(t *testing.T) {
+	mock := testutil.NewMock()
+	defer mock.Close()
+	mgr := newTestManager(t, mock)
+	const model = "deepseek/deepseek-v4-flash"
+	mgr.SetSessionStateForTest("active", "inst-test-1", model, time.Now().Add(time.Hour), time.Time{})
+
+	var buf bytes.Buffer
+	restore := captureLogs(&buf)
+	defer restore()
+	if _, err := mgr.EnsureSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, `msg="session reused"`) ||
+		!strings.Contains(got, "instance_id=inst-test-1") ||
+		!strings.Contains(got, "model="+model) ||
+		!strings.Contains(got, "status=active") {
+		t.Errorf("reused log missing instance_id/model/status:\n%s", got)
+	}
+
+	buf.Reset()
+	mgr.InvalidateWithReason("expired", 400)
+	got = buf.String()
+	if !strings.Contains(got, `msg="session invalidated"`) ||
+		!strings.Contains(got, "reason=expired") ||
+		!strings.Contains(got, "status=400") ||
+		!strings.Contains(got, "model="+model) {
+		t.Errorf("invalidated log missing reason/status/model:\n%s", got)
+	}
+
+	mgr.SetSessionStateForTest("active", "inst-test-1", model, time.Now().Add(time.Hour), time.Time{})
+	buf.Reset()
+	if err := mgr.EndSession(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got = buf.String()
+	if !strings.Contains(got, `msg="session ended"`) ||
+		!strings.Contains(got, "reason=ended") ||
+		!strings.Contains(got, "model="+model) {
+		t.Errorf("ended log missing reason=ended/model:\n%s", got)
+	}
+}
+
 // TestReAdmitStormDetector pins that more than 3 invalidations within 60s
 // emit exactly ONE "session re-admit storm" summary with the count,
 // duration_ms, superseded, and burned_slots fields; isolated invalidations
@@ -673,7 +720,9 @@ func TestReAdmitStormTracksPreemptiveTriggers(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Second call: cached active with ~5s left (10s expiry, 60s lead) —
-	// triggers the pre-emptive re-admit and rides the old session.
+	// trips the pre-emptive re-admit; this request waits for and is served by
+	// the instance the re-admit lands, so what the assertion below pins is
+	// the trigger, not an instance swap (the mock serves one instance id).
 	if _, err := m.EnsureSession(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -697,10 +746,9 @@ func TestReAdmitStormTracksPreemptiveTriggers(t *testing.T) {
 }
 
 // TestPreemptiveReAdmitOncePerExpiry pins issue #132: a pre-emptive re-admit
-// fires at most ONCE per expiry window. Every request in the lead window
-// must ride the old session instead of re-triggering a fresh upstream
-// create — the observed 22-trigger / 30-create storm around a single
-// expiry.
+// fires at most ONCE per expiry window. The trigger plus five further
+// requests inside the window produce exactly one upstream create — the
+// observed 22-trigger / 30-create storm around a single expiry.
 func TestPreemptiveReAdmitOncePerExpiry(t *testing.T) {
 	mock := testutil.NewMock()
 	defer mock.Close()
@@ -723,7 +771,7 @@ func TestPreemptiveReAdmitOncePerExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if instance != "inst-abc-123" {
-		t.Fatalf("triggered request instance = %q, want the old session being ridden", instance)
+		t.Fatalf("triggered request instance = %q, want the instance the mock serves", instance)
 	}
 	// Let the async create land.
 	deadline := time.Now().Add(3 * time.Second)

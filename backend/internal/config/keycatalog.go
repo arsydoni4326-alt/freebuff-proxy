@@ -135,8 +135,8 @@ var keyCatalog = []KeyDef{
 	},
 	{
 		Key: "LOG_LEVEL", Group: GroupGeneral, Kind: "select", Enum: []string{"debug", "info", "warn", "error", "trace"}, Essential: true, RestartOnly: true,
-		Default:     "info",
-		Description: `Log level (trace = wire-level bodies). Restart-only: the logger is configured once at boot and a reload never reconfigures it.`,
+		Default:     "debug",
+		Description: `Log level. Release builds default to debug so GitHub error reports carry context out of the box; trace adds wire bodies. Restart-only: the logger is configured once at boot and a reload never reconfigures it.`,
 	},
 	{
 		Key: "SAFE_MODE", Group: GroupGeneral, Kind: "bool", Essential: true,
@@ -263,7 +263,7 @@ var keyCatalog = []KeyDef{
 	{
 		Key: "SESSION_RE_ADMIT_LEAD", Group: GroupPool, Kind: "text", Hidden: true,
 		Default:     "60s",
-		Description: `Re-admit a session pre-emptively when less than this remains: the request rides the old session while the refresh runs in the background.`,
+		Description: `Re-admit a session pre-emptively when less than this remains. The rotation waits until the account's seat is idle (upstream keeps one session per account, so a fresh admission supersedes any turn still in flight); a request that finds the seat busy rides the old session through its grace drain, and the request that trips the re-admit is served by the fresh session.`,
 	},
 	{
 		Key: "SESSION_STATE_FILE", Group: GroupPool, Kind: "text", RestartOnly: true, Hidden: true,
@@ -272,8 +272,8 @@ var keyCatalog = []KeyDef{
 	},
 	{
 		Key: "SLOTS_PER_ACCOUNT", Group: GroupPool, Kind: "int",
-		Default:     "2",
-		Description: `Cap on concurrent live turns per account-model lane (default 2, the approved anti-ban pacing; 0 = unlimited, no slot gating at all). A lease is granted only while the account holds fewer live turns for that model; excess waiters park FIFO until QUEUE_WAIT elapses. Applies live on reload. BUNKER PRESET: 1 — fully sequential turns per account-model lane, zero parallel fingerprint.`,
+		Default:     "3",
+		Description: `Cap on concurrent live turns per account-model lane (default 3; 2 is the conservative posture and 1 the strictest — fully sequential turns per lane, zero parallel fingerprint; 0 = unlimited, no slot gating at all). A lease is granted only while the account holds fewer live turns for that model; excess waiters park FIFO until QUEUE_WAIT elapses. Applies live on reload.`,
 	},
 	{
 		Key: "SMART_PROBE_BACKOFF_MAX", Group: GroupPool, Kind: "text",

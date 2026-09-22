@@ -8,13 +8,17 @@ ARG APP_COMMIT=unknown
 # the commit was silently never embedded).
 ARG COMMIT=unknown
 COPY go.mod go.sum ./
-RUN go mod download
+# BuildKit cache mounts keep rebuilds fast and the build layer small:
+# the module cache survives across builds (no re-download), and the
+# go-build cache speeds recompiles without bloating the final image.
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go mod download
 COPY . .
 ARG VERSION=dev
 # Custom build: dashboard-tagged, CGO-enabled binary (SQLite token DB) on a
 # Debian trixie-slim runtime with TZ data for exact Pacific-midnight math.
 RUN set -eux;   \
     export BUILD_DATE="$(date +%Y-%m-%d)";   \
+    --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=1 \
         GOOS=linux \
         go build \
