@@ -73,9 +73,9 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
 
     await page.goto(admin("tokens"));
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Controls" }).click();
+    await page.getByRole("button", { name: "Strategy" }).click();
     const slots = page.locator('input[aria-label="SLOTS_PER_ACCOUNT"]');
     await expect(slots).toBeVisible();
 
@@ -112,9 +112,9 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
 
     await page.goto(admin("tokens"));
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Controls" }).click();
+    await page.getByRole("button", { name: "Strategy" }).click();
     const slots = page.locator('input[aria-label="SLOTS_PER_ACCOUNT"]');
     await slots.fill("4");
 
@@ -303,32 +303,30 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
     ).toBeVisible();
   });
 
-  test("pool Accounts/Warming/Controls tabs switch panels", async ({
-    page,
-  }) => {
+  test("pool Fleet/Streaks/Strategy tabs switch panels", async ({ page }) => {
     const f = loadFixtures();
     await mockDashboard(page, f, {}, { loginPage: true });
     await mockSettingsOverlay(page, []);
 
     await page.goto(admin("tokens"));
     await expect(
-      page.getByRole("heading", { name: "Pool", exact: true }),
+      page.getByRole("heading", { name: "Accounts", exact: true }),
     ).toBeVisible();
-    // Accounts is the default tab.
+    // Fleet is the default tab.
     await expect(page.getByText("Account #1").first()).toBeVisible();
 
-    await page.getByRole("button", { name: "Warming" }).click();
+    await page.getByRole("button", { name: "Streaks" }).click();
     await expect(page.getByLabel("MATURITY_TOUCH_MODEL")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Warming" })).toHaveAttribute(
+    await expect(page.getByRole("button", { name: "Streaks" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await page.getByRole("button", { name: "Controls" }).click();
+    await page.getByRole("button", { name: "Strategy" }).click();
     await expect(
       page.getByRole("radio", { name: "Drain", exact: true }),
     ).toBeVisible();
 
-    await page.getByRole("button", { name: "Accounts", exact: true }).click();
+    await page.getByRole("button", { name: "Fleet", exact: true }).click();
     await expect(page.getByText("Account #1").first()).toBeVisible();
   });
 
@@ -618,9 +616,11 @@ test.describe("interactables DB-first (mocked gateway + overlay)", () => {
     // no Logging entry.
     const tabs = page.getByRole("group", { name: "Activity view" });
     await expect(tabs.getByRole("button")).toHaveCount(4);
-    await expect(tabs.getByRole("button", { name: "Live" })).toBeVisible();
+    await expect(tabs.getByRole("button", { name: "Requests" })).toBeVisible();
     await expect(tabs.getByRole("button", { name: "Metrics" })).toBeVisible();
-    await expect(tabs.getByRole("button", { name: "Team" })).toBeVisible();
+    await expect(
+      tabs.getByRole("button", { name: "Client Keys" }),
+    ).toBeVisible();
     await expect(tabs.getByRole("button", { name: "Traces" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Logging" })).toHaveCount(0);
 
