@@ -88,6 +88,12 @@
   );
   let maturityOff = $derived(globalLoaded && !globalEnabled);
   let modelRows = $state([]);
+  let liveListPrices = $derived.by(() => {
+    for (const t of data?.tokens ?? []) {
+      if (t.freebucks?.list_prices) return t.freebucks.list_prices;
+    }
+    return null;
+  });
   function touchOpts() {
     return sharedTouchOptions(modelRows, touchSelectVal);
   }
@@ -529,7 +535,7 @@
           >
             <option value="auto">Auto (cheapest unmetered)</option>
             {#each touchOpts() as opt (opt.id)}
-              <option value={opt.id}>{touchLabel(opt)}</option>
+              <option value={opt.id}>{touchLabel(opt, liveListPrices)}</option>
             {/each}
           </select>
           <span class="ml-auto">
@@ -545,7 +551,9 @@
         </div>
       </div>
       <p class="fp-num text-[11px] leading-relaxed text-[var(--fp-dim)]">
-        {$tr("Nightly window 23:45–00:00 Pacific")}
+        {$tr(
+          "Nightly window 23:45–00:00 Pacific (06:45–07:00 UTC / 13:45–14:00 WIB)",
+        )}
         ·
         {$tr(
           "one touch per Pacific day, classified from 23:45 and fired in the final 5 minutes before reset to rescue the expiring day",

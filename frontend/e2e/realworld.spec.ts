@@ -20,7 +20,7 @@ test.describe("real-world data", () => {
     ).toISOString();
     await mockDashboard(page, { ...f, notices });
     await page.goto(admin("overview"));
-    await expect(page.getByText("Pool total")).toBeVisible();
+    await expect(page.getByText("Fleet accounts")).toBeVisible();
     await expect(page.getByText("548")).toBeVisible();
     await expect(
       page.getByText("Official Upstream Announcement"),
@@ -268,7 +268,9 @@ test.describe("real-world data", () => {
     await expect(traceTable.getByText("acquire_ms")).toBeVisible();
     await page.goto(admin("activity"));
     await page.getByRole("button", { name: "Metrics" }).click();
-    await expect(page.getByText("Per-token metrics").first()).toBeVisible();
+    await expect(
+      page.getByText("Account fleet activity").first(),
+    ).toBeVisible();
     await expect(page.getByText("Requests (24h)").first()).toBeVisible();
   });
 

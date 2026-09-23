@@ -27,8 +27,8 @@ test.describe("dashboard hermetic mocks", () => {
       )
       .catch(() => {});
     await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
-    // Overview KPI row shows Pool total / Banned etc (rendered from fixture)
-    await expect(page.getByText("Pool total")).toBeVisible();
+    // Overview KPI row shows Fleet accounts / Banned etc (rendered from fixture)
+    await expect(page.getByText("Fleet accounts")).toBeVisible();
     // Pool status lives in the Pool Tokens table rows (the standalone At-risk
     // section is gone): overview must not render it anymore.
     await expect(
@@ -2047,13 +2047,14 @@ test.describe("dashboard hermetic mocks", () => {
     await expect(page.locator('svg[role="img"]').first()).toBeVisible();
     // Per-token table rows carry the fixture requests_24h counts (2 and 4).
     await expect(
-      page.getByRole("heading", { name: "Per-token metrics" }),
+      page.getByRole("heading", { name: "Account fleet activity" }),
     ).toBeVisible();
     const perTokenTable = page.locator("table", {
       has: page.getByRole("columnheader", { name: "Requests (24h)" }),
     });
+    await expect(perTokenTable).toBeVisible();
     await expect(
-      perTokenTable.getByRole("columnheader", { name: "Token" }),
+      perTokenTable.getByRole("columnheader", { name: "Account" }),
     ).toBeVisible();
     await expect(
       perTokenTable.getByRole("columnheader", { name: "Requests (24h)" }),
@@ -2068,7 +2069,9 @@ test.describe("dashboard hermetic mocks", () => {
       ).toHaveCount(0);
     }
     const metricRows = perTokenTable.locator("tbody tr");
+    await expect(metricRows.nth(0)).toContainText("Account #1");
     await expect(metricRows.nth(0)).toContainText("2");
+    await expect(metricRows.nth(1)).toContainText("Account #2");
     await expect(metricRows.nth(1)).toContainText("4");
     await expect(metricRows).toHaveCount(2);
   });
