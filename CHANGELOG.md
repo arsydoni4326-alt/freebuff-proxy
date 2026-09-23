@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.18.4] - 2026-09-23
 
 ### Fixed
 - **Update-check commit stamp wiring (ARSYDONI UPDATE SOURCE)** — the
@@ -23,7 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already present and merge-guarded in source and in the served bundle
   (`index-BT44S9Xr.js`); only the build stamp wiring was broken.
 
-## [v1.18.3] - 2026-09-23
 ## [v1.18.3] - 2026-09-23
 
 ### Fixed
@@ -105,7 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   legacy-file/store group, upstream 402 classification — unchanged from
   v1.16.0); bash syntax checks on all four drift scripts; workflow YAML parses.
 
-## [v1.16.0] - 2026-09-21
 ## [v1.16.0] - 2026-09-21
 
 ### Changed
