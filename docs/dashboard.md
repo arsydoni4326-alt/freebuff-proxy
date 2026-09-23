@@ -53,6 +53,13 @@ first credential reads as account 1, never index 0.
   **"Check for Updates" button** in the sidebar footer forces a
   cache-bypassing check and shows the same status dialog (up-to-date
   renders a success state; a failed check only raises a toast).
+  The commit signal depends on the build-time stamp (`-X main.commit`),
+  wired through the `APP_COMMIT` build arg in the Dockerfile and carried
+  by every caller (`docker-compose.yml` arg key, `docker-build.sh`
+  `--build-arg`, `deploy.yaml`, `.goreleaser.yml`); a caller left on a
+  stale arg name silently loses the stamp and the check degrades to the
+  release-tag comparison — on any rename, move all of them in one commit
+  (see `frontend/src/lib/README_ARSYDONI_UPDATE.md`).
 - **System Status Line**: Live badge displaying active mode (`Pooled`, `Bridge` or `Hybrid`), proxy version, process uptime, and request count.
 - **Key Performance Indicators (KPIs)**: 6 tabular-mono counters:
   - Total Pool Tokens

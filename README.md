@@ -176,7 +176,12 @@ The bash installer prompts for an install method (easy, manual binary, Docker Co
 ```bash
 cp .env.example .env   # dev clone: seed the template next to the compose file, then set AUTH_TOKENS
 git fetch --tags 2>/dev/null || true
-VERSION=$(git describe --tags 2>/dev/null || echo dev) docker compose up -d --build
+# COMMIT stamps the binary's commit hash — the dashboard "Check for Updates"
+# primary signal (vs the repo's main head). Omitting it silently degrades
+# the update check to the release-tag comparison.
+VERSION=$(git describe --tags 2>/dev/null || echo dev) \
+COMMIT=$(git rev-parse --short HEAD) \
+docker compose up -d --build
 ```
 
 **Or** download a release binary from [Releases](https://github.com/trefeon/freebuff-proxy/releases) (Linux/macOS/Windows × amd64/arm64), unzip it, right-click the extracted folder → **Open in Terminal**, and run `./start-proxy.sh` (Windows: `.\start-proxy.cmd`; the `.cmd` wrappers bypass the PowerShell execution policy). `start-proxy.*` resolves `.env` from your platform config directory, so it works no matter which directory you launch it from. The bundled scripts also include a headless token generator (`gen-token.sh` / `gen-token.cmd`).

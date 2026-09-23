@@ -30,10 +30,11 @@ jobs:
         id: git_meta
         run: |
           # Fallback to 'unknown' if no tags exist yet
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
-          COMMIT=$(git rev-parse --short HEAD)
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "COMMIT=$COMMIT" >> $GITHUB_OUTPUT
+          APP_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          APP_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_DATE="$(date +%Y-%m-%d)"
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_OUTPUT
+          echo "APP_COMMIT=$APP_COMMIT" >> $GITHUB_OUTPUT
           echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
 
       # QEMU is required to emulate the arm64 architecture on the x86 runner
@@ -74,8 +75,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           file: ./Dockerfile
           build-args: |
-            VERSION=${{ steps.git_meta.outputs.VERSION }}
-            COMMIT=${{ steps.git_meta.outputs.COMMIT }}
+            APP_VERSION=${{ steps.git_meta.outputs.APP_VERSION }}
+            APP_COMMIT=${{ steps.git_meta.outputs.APP_COMMIT }}
             BUILD_DATE=${{ steps.git_meta.outputs.BUILD_DATE }}
           # platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
