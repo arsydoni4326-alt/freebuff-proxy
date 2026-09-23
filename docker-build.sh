@@ -48,10 +48,15 @@ case "$choice" in
     # Build and start the services with a local-only image tag
 
     echo "Building the Docker image..."
+    # ARSYDONI UPDATE SOURCE (merge-guarded): the build-arg names MUST match
+    # the Dockerfile's ARG declarations (APP_VERSION/APP_COMMIT/BUILD_DATE —
+    # renamed from VERSION/COMMIT in 8d08107f). APP_COMMIT feeds the binary's
+    # commit stamp (-X main.commit), which is the dashboard "Check for
+    # Updates" primary signal: a wrong name silently loses the stamp.
     docker build \
       -t ${IMAGE_NAME} \
-      --build-arg VERSION="${VERSION}" \
-      --build-arg COMMIT="${COMMIT}" \
+      --build-arg APP_VERSION="${VERSION}" \
+      --build-arg APP_COMMIT="${COMMIT}" \
       --build-arg BUILD_DATE="${BUILD_DATE}" .
 
     echo "Starting the services..."

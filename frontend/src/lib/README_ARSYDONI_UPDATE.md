@@ -46,9 +46,13 @@ upstream's change AND this feature. Never resolve by deleting the
 the head-commit comparison — primary signal —, `releases/latest` for the
 version + notes, `commits/<tag>` for the release commit) — do not repoint
 it. The running commit must be stamped at build time (`-X main.commit=...`):
-the Dockerfile (`ARG COMMIT`), docker-compose.yml, deploy.yaml, and
-.goreleaser.yml all wire it; a build without the stamp degrades to the
-release-tag comparison.
+the Dockerfile (`ARG APP_COMMIT` — renamed from `COMMIT` in 8d08107f),
+docker-compose.yml (`APP_COMMIT:` arg key), docker-build.sh
+(`--build-arg APP_COMMIT=`), deploy.yaml, and .goreleaser.yml all wire it; a
+build without the stamp degrades to the release-tag comparison. If a rename
+ever touches these build-arg names again, ALL of them must move together in
+the same commit — a name mismatch between the Dockerfile ARG and any caller
+silently drops the stamp (the build still succeeds, the update signal dies).
 
 ## Tests that protect it
 
