@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Update-check commit stamp wiring (ARSYDONI UPDATE SOURCE)** — the
+  Dockerfile ldflags rename in `8d08107f` (`VERSION`/`COMMIT` →
+  `APP_VERSION`/`APP_COMMIT`) was not carried into its two callers:
+  `docker-build.sh` and `docker-compose.yml` still passed the old names,
+  which the Dockerfile no longer declares. Local/compose builds silently
+  lost the `main.commit` stamp, degrading the dashboard "Check for
+  Updates" signal to the release-tag comparison (or nothing on dev tags).
+  Both callers now pass `APP_VERSION`/`APP_COMMIT`/`BUILD_DATE`, matching
+  the Dockerfile ARGs. The merge-guard policy in
+  `frontend/src/lib/README_ARSYDONI_UPDATE.md` documents that any future
+  build-arg rename must move all callers in the same commit.
+- **Verified intact**: the button, backend endpoint, and update signal were
+  already present and merge-guarded in source and in the served bundle
+  (`index-BT44S9Xr.js`); only the build stamp wiring was broken.
+
+## [v1.18.3] - 2026-09-23
 ## [v1.18.3] - 2026-09-23
 
 ### Fixed

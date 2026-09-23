@@ -8,12 +8,19 @@ services:
       # times out with a TLS handshake error on hosts whose bridge-network
       # egress is flaky (the documented deployment box needs this too).
       network: host
-      # Version stamped into the binary (ldflags -X main.version). The .git
-      # dir is excluded from the build context, so it is resolved here on
-      # the host: the nearest tag, or the short SHA past it.
+      # Version stamped into the binary (ldflags -X main.version /
+      # -X main.commit — ARSYDONI UPDATE SOURCE, merge-guarded: the commit
+      # stamp is the update check's primary signal, see
+      # frontend/src/lib/README_ARSYDONI_UPDATE.md). The .git dir is
+      # excluded from the build context, so it is resolved here on the
+      # host: the nearest tag, or the short SHA past it. The compose keys
+      # MUST carry the Dockerfile's ARG names (APP_VERSION/APP_COMMIT) —
+      # the Dockerfile no longer declares VERSION/COMMIT, so stale names
+      # would be silently ignored and the commit stamp lost.
       args:
-        VERSION: ${VERSION:-dev}
-        COMMIT: ${COMMIT:-unknown}
+        APP_VERSION: ${VERSION:-dev}
+        APP_COMMIT: ${COMMIT:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
     # GHCR default pull path, local build override: `docker compose pull` fetches
     # ghcr.io/trefeon/freebucks-proxy; `docker compose build` uses the local context below.
     # `VERSION=x docker compose up -d --build` rebuilds locally from context;
