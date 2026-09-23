@@ -114,6 +114,7 @@ func (m *Manager) adoptOwner() (CLIOwner, bool) {
 // is enabled it adopts the CLI's active session (or refuses to create a
 // competing one); otherwise it creates a fresh session exactly as before.
 func (m *Manager) adoptOrCreate(ctx context.Context, requestedModel string) (*upstream.SessionState, error) {
+	admitStart := time.Now()
 	m.mu.Lock()
 	adopt := m.adopt
 	m.mu.Unlock()
@@ -407,6 +408,7 @@ func (m *Manager) releaseHeldSlotForTarget(ctx context.Context, targetModel stri
 // old instance is still authoritative must NOT invalidate the cached session
 // (the caller is riding it) — return instead of committing nil and looping.
 func (m *Manager) refresh(ctx context.Context, requestedModel string, preemptive bool) error {
+	admitStart := time.Now()
 	targetModel := requestedModel
 	// Issue #158: a model cached unavailable skips the 409 admission
 	// roundtrip entirely (see modelUnavailableShortCircuit).

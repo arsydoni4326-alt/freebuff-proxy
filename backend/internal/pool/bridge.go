@@ -20,10 +20,6 @@ import (
 	"freebucks-proxy/backend/internal/runs"
 	"freebucks-proxy/backend/internal/session"
 	"freebucks-proxy/backend/internal/upstream"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // maxClientTokenLen is the maximum allowed length of a client-supplied
