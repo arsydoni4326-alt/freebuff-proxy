@@ -7,7 +7,6 @@ ARG BUILD_DATE=2025-09-09
 # COMMIT is the CI/docker-build.sh spelling of the same stamp (deploy.yaml
 # passes build-arg COMMIT; the Dockerfile previously never declared it, so
 # the commit was silently never embedded).
-ARG COMMIT=unknown
 COPY go.mod go.sum ./
 # BuildKit cache mounts keep rebuilds fast and the build layer small:
 # the module cache survives across builds (no re-download), and the
@@ -23,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
             -buildvcs=false \
             -trimpath \
             -tags dashboard \
-            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X 'main.BuildDate=${BUILD_DATE}'" \
+            -ldflags="-s -w -X main.version=${APP_VERSION} -X main.commit=${APP_COMMIT} -X 'main.BuildDate=${BUILD_DATE}'" \
             -tags dashboard \
             -o /out/freebucks-proxy ./backend/cmd/freebucks-proxy ;  \
     chmod +x /out/freebucks-proxy
@@ -33,7 +32,18 @@ SHELL ["/bin/bash", "-c"]
 ENV TZ="Asia/Jakarta"
 RUN set -eux; 	\
     [ ! -f /etc/localtime ] && ln -s /usr/share/zoneinfo/$TZ /etc/localtime; 	\
-    echo $TZ > /etc/timezone
+    echo $TZ > /etc/timezone;\
+    apt-get update
+RUN set -eux;     \
+    apt install -y --no-install-recommends tzdata ca-certificates;     \
+    apt-mark showmanual > /savedAptMark.txt
+RUN set -eux;   \
+    apt-mark auto '.*' > /dev/null ;	\
+    apt-mark manual $(cat /savedAptMark.txt) > /dev/null; 	\
+    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false;     \
+    apt-get clean;     \
+    apt-get autoclean;     \
+    rm -rf /var/lib/apt/lists/*
     
 RUN set -eux; \
     useradd -s /bin/bash -d /app -m app

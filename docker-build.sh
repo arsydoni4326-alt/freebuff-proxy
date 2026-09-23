@@ -50,7 +50,6 @@ case "$choice" in
     echo "Building the Docker image..."
     docker build \
       -t ${IMAGE_NAME} \
-      --no-cache \
       --build-arg VERSION="${VERSION}" \
       --build-arg COMMIT="${COMMIT}" \
       --build-arg BUILD_DATE="${BUILD_DATE}" .
@@ -62,8 +61,6 @@ case "$choice" in
   3) docker run --rm \
     --name freebuff-cli \
     -v "$(pwd)/.env:/app/.env" \
-    -v "$(pwd)/.freebuff-session-state.json:/app/.freebuff-session-state.json" \
-    -v "$(pwd)/config.json:/app/config.json" \
     -v "$(pwd)/data:/app/data" \
     --network host \
     $IMAGE_NAME
