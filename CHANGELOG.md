@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.18.3] - 2026-09-23
+
+### Fixed
+- **Docker image build (`go-builder` stage)** — merge `805942fc` rewrote
+  `backend/internal/session/session_admission.go` and dropped the
+  `admitStart := time.Now()` declarations from both `adoptOrCreate` and
+  `refresh` while keeping the `queueElapsedHuman(admitStart)` log calls, so
+  `go build` failed with `undefined: admitStart` (lines 167/573) and the
+  release binary was never produced (`chmod: cannot access
+  '/out/freebucks-proxy'`). Both declarations are restored exactly as
+  introduced by `ebb00810` — log-only, zero behavior change.
+- **Second independent build breaker** — `backend/internal/pool/bridge.go`
+  carried a duplicated import block from the same merge (`strings`, `sync`,
+  `sync/atomic`, `time` re-declared then unused), failing `go build
+  ./backend/...` on its own. The duplicate block is removed.
+- **Verification**: `go build ./backend/...` green; the exact Dockerfile
+  `go build` command produces a working binary; gofmt/vet green; admission
+  session tests green.
+
+### Changed
+- **`session.md` untracked** — merge `805942fc` added `session.md` to
+  `.gitignore` (agent session state, never public); the tracked copy is
+  removed from the index (file remains on disk locally).
+
 ## [v1.17.1] - 2026-09-21
 
 ### Fixed
