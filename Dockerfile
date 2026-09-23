@@ -3,6 +3,7 @@ WORKDIR /src
 # Define the build arguments passed from GitHub Actions
 ARG APP_VERSION=v0.0.0
 ARG APP_COMMIT=unknown
+ARG BUILD_DATE=2025-09-09
 # COMMIT is the CI/docker-build.sh spelling of the same stamp (deploy.yaml
 # passes build-arg COMMIT; the Dockerfile previously never declared it, so
 # the commit was silently never embedded).
@@ -13,19 +14,16 @@ COPY go.mod go.sum ./
 # go-build cache speeds recompiles without bloating the final image.
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go mod download
 COPY . .
-ARG VERSION=dev
 # Custom build: dashboard-tagged, CGO-enabled binary (SQLite token DB) on a
 # Debian trixie-slim runtime with TZ data for exact Pacific-midnight math.
-RUN set -eux;   \
-    export BUILD_DATE="$(date +%Y-%m-%d)";   \
-    --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=1 \
         GOOS=linux \
         go build \
             -buildvcs=false \
             -trimpath \
             -tags dashboard \
-            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X 'main.BuildDate=${BUILD_DATE}'" \
             -tags dashboard \
             -o /out/freebucks-proxy ./backend/cmd/freebucks-proxy ;  \
     chmod +x /out/freebucks-proxy
@@ -35,19 +33,7 @@ SHELL ["/bin/bash", "-c"]
 ENV TZ="Asia/Jakarta"
 RUN set -eux; 	\
     [ ! -f /etc/localtime ] && ln -s /usr/share/zoneinfo/$TZ /etc/localtime; 	\
-    echo $TZ > /etc/timezone; 	\
-    apt-get update
-RUN set -eux;     \
-    apt install -y --no-install-recommends \
-        tzdata ca-certificates;     \
-    apt-mark showmanual > /savedAptMark.txt
-RUN set -eux;   \
-    apt-mark auto '.*' > /dev/null ;	\
-    apt-mark manual $(cat /savedAptMark.txt) > /dev/null; 	\
-    apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false;     \
-    apt-get clean;     \
-    apt-get autoclean;     \
-    rm -rf /var/lib/apt/lists/*
+    echo $TZ > /etc/timezone
     
 RUN set -eux; \
     useradd -s /bin/bash -d /app -m app

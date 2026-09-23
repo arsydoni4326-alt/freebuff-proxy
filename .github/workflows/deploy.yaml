@@ -34,6 +34,7 @@ jobs:
           COMMIT=$(git rev-parse --short HEAD)
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "COMMIT=$COMMIT" >> $GITHUB_OUTPUT
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
 
       # QEMU is required to emulate the arm64 architecture on the x86 runner
       - name: Set up QEMU
@@ -75,6 +76,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.git_meta.outputs.VERSION }}
             COMMIT=${{ steps.git_meta.outputs.COMMIT }}
+            BUILD_DATE=${{ steps.git_meta.outputs.BUILD_DATE }}
           # platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
