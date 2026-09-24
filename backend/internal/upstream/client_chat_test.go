@@ -104,8 +104,11 @@ func TestChatCompletionsEnvelope(t *testing.T) {
 	if got := h.Get("Authorization"); got != "Bearer tok-a" {
 		t.Errorf("Authorization = %q", got)
 	}
-	if got := h.Get("Accept"); got != "application/json, text/event-stream" {
-		t.Errorf("Accept = %q", got)
+	// No proxy-only Accept header: the CLI's chat POST carries exactly
+	// Authorization + the ai-sdk UA (+ optional acting-user-id) via the
+	// ai-sdk fetch (model-provider.ts), never an explicit Accept.
+	if got := h.Get("Accept"); got != "" {
+		t.Errorf("Accept = %q on the chat POST, want absent (proxy-only header)", got)
 	}
 	if got := h.Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q", got)
@@ -617,6 +620,52 @@ func TestInjectEnvelopeBranchMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("provider routing keys pass through, deny stays", func(t *testing.T) {
+		out, err := injectEnvelope([]byte(`{"model":"m","provider":{"order":["Anthropic","Google"],"allow_fallbacks":true,"data_collection":"allow"}}`), "free", ChatOptions{RunID: "r"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(out, &payload); err != nil {
+			t.Fatal(err)
+		}
+		prov, ok := payload["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("provider missing in %v", payload)
+		}
+		order, ok := prov["order"].([]any)
+		if !ok || len(order) != 2 || order[0] != "Anthropic" || order[1] != "Google" {
+			t.Errorf("provider.order = %v, want [Anthropic Google] passed through", prov["order"])
+		}
+		if prov["allow_fallbacks"] != true {
+			t.Errorf("provider.allow_fallbacks = %v, want true passed through", prov["allow_fallbacks"])
+		}
+		if prov["data_collection"] != "deny" {
+			t.Errorf("provider.data_collection = %v, want deny (client allow never honored)", prov["data_collection"])
+		}
+	})
+
+	t.Run("provider mistyped routing keys dropped", func(t *testing.T) {
+		out, err := injectEnvelope([]byte(`{"model":"m","provider":{"order":"Anthropic","allow_fallbacks":"yes"}}`), "free", ChatOptions{RunID: "r"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(out, &payload); err != nil {
+			t.Fatal(err)
+		}
+		prov, ok := payload["provider"].(map[string]any)
+		if !ok {
+			t.Fatalf("provider missing in %v", payload)
+		}
+		if _, ok := prov["order"]; ok {
+			t.Errorf("provider.order = %v, want dropped (mistyped string)", prov["order"])
+		}
+		if _, ok := prov["allow_fallbacks"]; ok {
+			t.Errorf("provider.allow_fallbacks = %v, want dropped (mistyped string)", prov["allow_fallbacks"])
+		}
+	})
+
 	t.Run("client stop preserved", func(t *testing.T) {
 		out, err := injectEnvelope([]byte(`{"model":"m","stop":["custom"]}`), "free", ChatOptions{RunID: "r"})
 		if err != nil {
@@ -920,7 +969,7 @@ func TestChatSendsActingUserID(t *testing.T) {
 
 // TestWaitingRoomChainWireFidelity verifies #124: the pre-session ad chain
 // matches the CLI wire shape — header UA Freebuff-CLI/1.0.0 (never the
-// old 2.0.42 login UA), body userAgent = the Chrome-124 browser UA,
+// old 2.0.42 login UA), body userAgent = the Chrome-151 browser UA,
 // device carries the host IANA timezone/locale, messages stays [] with no
 // sessionId (fresh waiting-room), and the streak GET carries newRequest's
 // bunUserAgent (the real CLI's request() sets no override → Bun default).
@@ -968,7 +1017,7 @@ func TestWaitingRoomChainWireFidelity(t *testing.T) {
 	if got := adsHeaders.Get("User-Agent"); got != freebuffCliUA {
 		t.Errorf("ads header User-Agent = %q, want %q", got, freebuffCliUA)
 	}
-	// Body userAgent: the platform-consistent Chrome-124 browser UA (ad
+	// Body userAgent: the platform-consistent Chrome-151 browser UA (ad
 	// targeting) — must agree with the device block's os.
 	if got := adsBody["userAgent"]; got != adBrowserUserAgent() {
 		t.Errorf("ads body userAgent = %q, want %q", got, adBrowserUserAgent())
