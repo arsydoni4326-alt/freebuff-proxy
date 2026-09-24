@@ -81,18 +81,26 @@ type catalogInputs struct {
 	// admit on every surface. They stay in the catalog (the picker draws them
 	// locked) but never in the served set.
 	planRequiredIDs []string
-	limitedIDs      []string // LIMITED_FREEBUFF_MODEL_IDS wire ids
-	paidIDs         []string // FREEBUFF_PLAN_METERED_CATALOG_MODEL_IDS wire ids
-	offerIDs        []string // FREEBUFF_LIMITED_OFFER_MODEL_IDS wire ids
-	pausedNames     []string // FREEBUFF_PAUSED_FREE_MODEL_IDS row refs
-	fields          map[string]map[string]string
-	ctx             map[string]int // wire id -> context window
-	defaultID       string
-	fallbackID      string
-	glm52ID         string
-	glm53ID         string
-	solarID         string
-	defaultCtx      int
+	// subscriptionProIDs is FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS, published
+	// from freebuff-subscriptions.ts as FREEBUFF_SUBSCRIPTION_PRO_MODEL_IDS:
+	// the static paid-session boundary a viewer with no server verdict falls
+	// back to. It differs from planRequiredIDs by the US-exempt GPT-6 Luna
+	// row, which stays catalog-Pro-only without being refused on every
+	// surface.
+	subscriptionProIDs []string
+	limitedIDs         []string // LIMITED_FREEBUFF_MODEL_IDS wire ids
+	paidIDs            []string // FREEBUFF_PLAN_METERED_CATALOG_MODEL_IDS wire ids
+	offerIDs           []string // FREEBUFF_LIMITED_OFFER_MODEL_IDS wire ids
+	pausedNames        []string // FREEBUFF_PAUSED_FREE_MODEL_IDS row refs
+	fields             map[string]map[string]string
+	ctx                map[string]int // wire id -> context window
+	defaultID          string
+	fallbackID         string
+	glm52ID            string
+	glm53ID            string
+	solarID            string
+	solarMiniID        string
+	defaultCtx         int
 }
 
 func loadCatalogInputs(registryDir, commit string) (*catalogInputs, error) {
@@ -130,22 +138,34 @@ func loadCatalogInputs(registryDir, commit string) (*catalogInputs, error) {
 	for k, v := range parseMimoMembers(cfgSrc) {
 		c.ids["mimoModels."+k] = v
 	}
-	if m := regexp.MustCompile(`modelId:\s*'([^']+)'`).FindStringSubmatch(entSrc); m != nil {
-		c.ids["FREEBUFF_SOLAR_PRO_4_ENTITLEMENT.modelId"] = "'" + m[1] + "'"
-		c.ids["FREEBUFF_SOLAR_PRO_4_MODEL_ID"] = "'" + m[1] + "'"
-	} else {
-		return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: no modelId literal at upstream commit %s", commit)
-	}
-	if m := regexp.MustCompile(`fullAccess:\s*\{\s*premium:\s*(true|false)`).FindStringSubmatch(entSrc); m != nil {
-		c.ids["FREEBUFF_SOLAR_PRO_4_ENTITLEMENT.fullAccess.premium"] = m[1]
-	} else {
-		return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: no fullAccess.premium flag at upstream commit %s", commit)
-	}
-	// LIMITED_FREEBUFF_MODEL_IDS spreads solar in behind this flag.
-	if m := regexp.MustCompile(`limitedAccess:\s*(true|false)`).FindStringSubmatch(entSrc); m != nil {
-		c.ids["FREEBUFF_SOLAR_PRO_4_ENTITLEMENT.limitedAccess"] = m[1]
-	} else {
-		return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: no limitedAccess flag at upstream commit %s", commit)
+	// Every *_ENTITLEMENT block registers its ids and flags, member by
+	// member: registry spreads and row fields reference them by name
+	// (MODEL.limitedAccess, ENT.fullAccess.premium, ENT.modelId), so a new
+	// entitlement (Solar Mini 4 alongside Solar Pro 4) resolves without
+	// teaching the emitter its name. Anything missing fails explicitly.
+	for _, m := range regexp.MustCompile(`export const (FREEBUFF_[A-Z0-9_]+_ENTITLEMENT) = \{`).FindAllStringSubmatch(entSrc, -1) {
+		ent := m[1]
+		body, ok := balancedBody(entSrc, ent, commit)
+		if !ok {
+			return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: %s braces unbalanced at upstream commit %s", ent, commit)
+		}
+		mid := regexp.MustCompile(`modelId:\s*'([^']+)'`).FindStringSubmatch(body)
+		if mid == nil {
+			return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: %s has no modelId literal at upstream commit %s", ent, commit)
+		}
+		c.ids[ent+".modelId"] = "'" + mid[1] + "'"
+		c.ids[strings.TrimSuffix(ent, "_ENTITLEMENT")+"_MODEL_ID"] = "'" + mid[1] + "'"
+		mp := regexp.MustCompile(`fullAccess:\s*\{\s*premium:\s*(true|false)`).FindStringSubmatch(body)
+		if mp == nil {
+			return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: %s has no fullAccess.premium flag at upstream commit %s", ent, commit)
+		}
+		c.ids[ent+".fullAccess.premium"] = mp[1]
+		// LIMITED_FREEBUFF_MODEL_IDS spreads solar in behind this flag.
+		ml := regexp.MustCompile(`limitedAccess:\s*(true|false)`).FindStringSubmatch(body)
+		if ml == nil {
+			return nil, fmt.Errorf("wiregen: freebuff-model-entitlements.ts: %s has no limitedAccess flag at upstream commit %s", ent, commit)
+		}
+		c.ids[ent+".limitedAccess"] = ml[1]
 	}
 	resolve := func(ref, what string) (string, error) {
 		return resolveCatalogRef(c.ids, ref, what, commit)
@@ -184,6 +204,16 @@ func loadCatalogInputs(registryDir, commit string) (*catalogInputs, error) {
 	// Tier membership lists, after the row loop so row ids resolve. Full is
 	// not listed: it is FREEBUFF_MODELS membership above, and the generator
 	// reads it per row.
+	//
+	// FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS is the CATALOG definition of the
+	// paid-session boundary; freebuff-subscriptions.ts re-exports it verbatim
+	// as FREEBUFF_SUBSCRIPTION_PRO_MODEL_IDS. It is read here rather than from
+	// the subscription module because only freebuff-models.ts is mirrored, and
+	// the re-export is a plain alias (`= FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS`),
+	// not a second spelling. FREEBUFF_LIMITED_TIER_PLAN_ONLY_MODEL_IDS is
+	// deliberately absent: it spreads that whole list (a bare
+	// `...FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS` spread), a shape
+	// splitConditionalSpread rejects by design.
 	for _, l := range []struct {
 		dst  *[]string
 		name string
@@ -192,6 +222,7 @@ func loadCatalogInputs(registryDir, commit string) (*catalogInputs, error) {
 		{&c.paidIDs, "FREEBUFF_PLAN_METERED_CATALOG_MODEL_IDS"},
 		{&c.offerIDs, "FREEBUFF_LIMITED_OFFER_MODEL_IDS"},
 		{&c.planRequiredIDs, "FREEBUFF_PRO_ONLY_EVERY_SURFACE_MODEL_IDS"},
+		{&c.subscriptionProIDs, "FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS"},
 	} {
 		v, err := parseTierList(models, c.ids, l.name, commit)
 		if err != nil {
@@ -222,6 +253,7 @@ func loadCatalogInputs(registryDir, commit string) (*catalogInputs, error) {
 		{&c.glm52ID, "FREEBUFF_GLM_V52_MODEL_ID"},
 		{&c.glm53ID, "FREEBUFF_GLM_V53_FLASH_MODEL_ID"},
 		{&c.solarID, "FREEBUFF_SOLAR_PRO_4_MODEL_ID"},
+		{&c.solarMiniID, "FREEBUFF_SOLAR_MINI_4_MODEL_ID"},
 	} {
 		ref := singleRef(models, s.name)
 		if ref == "" {
@@ -305,10 +337,12 @@ var effortsPinned = map[string][]string{
 // catalogRow is one emitted Catalog entry.
 type catalogRow struct {
 	id, display, tagline, notice string
+	tooltip                      string
 	badges                       []string
 	tiers                        []string
 	served, premium              bool
 	planRequired                 bool
+	experimental                 bool
 	pausedReplacement            string
 	ctx                          int
 	efforts                      []string
@@ -426,6 +460,13 @@ func buildCatalogRows(c *catalogInputs) ([]catalogRow, error) {
 		default:
 			return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s tagline=%q is not a string at upstream commit %s", n, t, c.commit)
 		}
+		// The picker row tooltip, only when upstream spells it as a string
+		// literal. A bare identifier (the MUSE_SPARK rows pass a shared
+		// notice const) carries no copy the emitter can resolve, so it is
+		// deliberately left empty rather than guessed at.
+		if v, ok := f["taglineTooltip"]; ok && isTSQuoted(v) {
+			r.tooltip, _ = tsUnquote(v)
+		}
 		if id == c.glm52ID {
 			if f["tagline"] != "'Unlock by referring friends'" {
 				return nil, fmt.Errorf("wiregen: freebuff-models.ts: GLM 5.2 tagline moved at upstream commit %s; re-check the pinned referral copy", c.commit)
@@ -480,6 +521,16 @@ func buildCatalogRows(c *catalogInputs) ([]catalogRow, error) {
 					return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s isNew=%q at upstream commit %s", n, v, c.commit)
 				}
 				r.badges = append(r.badges, "NEW")
+			}
+			// BETA rows stay user-pickable but are never the automatic
+			// default: an anonymous host can reprice, rename or withdraw the
+			// row without notice (modelcat gates the auto-touch/default
+			// selection on this flag).
+			if v, ok := f["experimental"]; ok {
+				if v != "true" {
+					return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s experimental=%q at upstream commit %s", n, v, c.commit)
+				}
+				r.experimental = true
 			}
 		}
 		rows = append(rows, r)
@@ -711,6 +762,27 @@ func stripTSComment(line string) string {
 	return line
 }
 
+// braceDelta counts unquoted braces: +1 per {, -1 per }. Quoted segments
+// (the notice strings inside supersededBy) never contribute, so a brace in
+// prose cannot unbalance the skip.
+func braceDelta(s string) int {
+	n := 0
+	var q byte
+	for i := range s {
+		switch c := s[i]; {
+		case q != 0 && c == q:
+			q = 0
+		case q == 0 && (c == '\'' || c == '"' || c == '`'):
+			q = c
+		case q == 0 && c == '{':
+			n++
+		case q == 0 && c == '}':
+			n--
+		}
+	}
+	return n
+}
+
 // parseModelsList reads FREEBUFF_MODELS, evaluating
 // `...(FLAG ? [ROW, ...] : [])` spreads against the parsed bool consts. The
 // spread is read as one item, so a gated run of rows wrapped across lines
@@ -924,12 +996,15 @@ func bracketBody(src string, open int, name, commit string) (string, error) {
 // rowFieldOK names every field a SUPPORTED row object may carry. Handled
 // fields are parsed above; the rest are presence-validated only, so a
 // brand-new field fails here instead of slipping past silently.
+// supersededBy is presence-validated AND skipped: the saved-pick migration
+// it drives lives in the upstream clients (the proxy coerces unserved picks
+// to its fallback), so the pointer must parse but emits nothing.
 var rowFieldOK = map[string]bool{
 	"id": true, "displayName": true, "tagline": true, "availability": true,
 	"unavailableFallback": true, "warning": true, "dataUse": true,
 	"premium": true, "multimodal": true, "reasoningEffort": true,
 	"efforts": true, "defaultEffort": true, "experimental": true,
-	"taglineTooltip": true, "isNew": true,
+	"taglineTooltip": true, "isNew": true, "supersededBy": true,
 }
 
 // parseRowFields extracts the top-level `key: value` fields of row NAME.
@@ -974,13 +1049,33 @@ func parseRowFields(src, name, commit string) (map[string]string, error) {
 		return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s braces unbalanced at upstream commit %s", name, commit)
 	}
 	out := map[string]string{}
+	keyOnly := regexp.MustCompile(`^([A-Za-z]+):$`)
 	fre := regexp.MustCompile(`^([A-Za-z]+):\s*(.+?)\s*,?\s*$`)
-	for _, ln := range strings.Split(src[loc[1]:end], "\n") {
-		t := strings.TrimSpace(stripTSComment(ln))
+	lines := strings.Split(src[loc[1]:end], "\n")
+	for i := 0; i < len(lines); i++ {
+		t := strings.TrimSpace(stripTSComment(lines[i]))
 		if t == "" {
 			continue
 		}
 		m := fre.FindStringSubmatch(t)
+		if m == nil && keyOnly.MatchString(t) {
+			// The value opens on the line after its key (`taglineTooltip:`
+			// then a quoted string on its own continuation line). Join it, but
+			// only when the continuation really is a value for this key: a
+			// missing continuation, or one that opens another field, keeps the
+			// fail-loud parse error instead of silently dropping the key.
+			j := i + 1
+			for j < len(lines) && strings.TrimSpace(stripTSComment(lines[j])) == "" {
+				j++
+			}
+			if j < len(lines) {
+				if cont := strings.TrimSpace(stripTSComment(lines[j])); !keyOnly.MatchString(cont) && !fre.MatchString(cont) {
+					t += " " + cont
+					i = j
+					m = fre.FindStringSubmatch(t)
+				}
+			}
+		}
 		if m == nil {
 			return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s: cannot parse field line %q at upstream commit %s", name, t, commit)
 		}
@@ -988,6 +1083,16 @@ func parseRowFields(src, name, commit string) (map[string]string, error) {
 			return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s: unknown field %q at upstream commit %s (teach the emitter, then re-run)", name, m[1], commit)
 		}
 		out[m[1]] = m[2]
+		// An object value (supersededBy) spans lines: consume through its
+		// closing brace so the inner keys never read as row fields. A
+		// value that opens and closes on one line needs no skipping.
+		for open := braceDelta(m[2]); open > 0; {
+			i++
+			if i >= len(lines) {
+				return nil, fmt.Errorf("wiregen: freebuff-models.ts: row %s field %q braces unbalanced at upstream commit %s", name, m[1], commit)
+			}
+			open += braceDelta(strings.TrimSpace(stripTSComment(lines[i])))
+		}
 	}
 	return out, nil
 }
@@ -1043,6 +1148,11 @@ type ModelInfo struct {
 	// every surface. The picker draws the row locked (PlanRequiredLabel, no
 	// price) instead of hiding it, so a client can see what a plan buys.
 	PlanRequired bool
+	// Experimental mirrors upstream FreebuffModelOption.experimental (the BETA
+	// badge): the row stays user-pickable but is never the automatic default
+	// (auto-touch, smoke probe, session fallback), because an anonymous host
+	// can reprice, rename or withdraw it without notice.
+	Experimental bool
 	// ContextWindow mirrors FREEBUFF_MODEL_CONTEXT_WINDOWS in tokens; 0
 	// means upstream falls back to DefaultContextWindow.
 	ContextWindow int
@@ -1051,6 +1161,10 @@ type ModelInfo struct {
 	Efforts []string
 	// Tagline is the upstream catalog description (used in picker & catalog).
 	Tagline string
+	// TaglineTooltip mirrors upstream FreebuffModelOption.taglineTooltip:
+	// the row tooltip the CLI shows next to the tagline. Empty when upstream
+	// carries no string literal for the row.
+	TaglineTooltip string
 	// Notice is the upstream warning or special offer (e.g. AI training, promo).
 	Notice string
 	// Badges are the capability/freshness chips (e.g. Reasoning: max*, Images, NEW).
@@ -1065,6 +1179,9 @@ var Catalog = []ModelInfo{
 		fmt.Fprintf(&b, "\t{ID: %q, DisplayName: %q", r.id, r.display)
 		if r.tagline != "" {
 			fmt.Fprintf(&b, ",\n\t\tTagline: %q", r.tagline)
+		}
+		if r.tooltip != "" {
+			fmt.Fprintf(&b, ",\n\t\tTaglineTooltip: %q", r.tooltip)
 		}
 		if len(r.badges) > 0 {
 			fmt.Fprintf(&b, ",\n\t\tBadges: []string{%s}", quotedList(r.badges))
@@ -1092,6 +1209,9 @@ var Catalog = []ModelInfo{
 		}
 		if r.pausedReplacement != "" {
 			fmt.Fprintf(&b, ",\n\t\tPausedReplacement: %q", r.pausedReplacement)
+		}
+		if r.experimental {
+			b.WriteString(",\n\t\tExperimental: true")
 		}
 		b.WriteString("},\n")
 	}
@@ -1123,9 +1243,12 @@ const (
 	PlanRequiredLine  = "Included with a paid plan."
 )
 
-// SubscriptionProModelIDs mirrors upstream FREEBUFF_PRO_ONLY_EVERY_SURFACE_MODEL_IDS
-// (re-exported as FREEBUFF_SUBSCRIPTION_PRO_MODEL_IDS): the rows that require a
-// paid plan on CLI and Desktop, refused by the server on every surface.
+// SubscriptionProModelIDs mirrors upstream FREEBUFF_SUBSCRIPTION_PRO_MODEL_IDS,
+// the freebuff-subscriptions.ts name for FREEBUFF_PRO_ONLY_CATALOG_MODEL_IDS: the
+// static paid-session boundary a viewer with no server verdict falls back to.
+// It is NOT the every-surface refusal set (ModelInfo.PlanRequired /
+// FREEBUFF_PRO_ONLY_EVERY_SURFACE_MODEL_IDS): GPT-6 Luna is listed here but
+// carries a US exemption, so the server does not refuse it on every surface.
 var SubscriptionProModelIDs = []string{%s}
 
 // IsSubscriptionPro mirrors upstream isFreebuffSubscriptionProModelId:
@@ -1145,19 +1268,20 @@ const DeepSeekV4FlashModelID = "deepseek/deepseek-v4-flash"
 
 // LimitedTierModelIDs mirrors upstream LIMITED_FREEBUFF_MODEL_IDS: the four models
 // available to limited-access tier accounts (GLM 5.3 Flash, DeepSeek V4 Flash,
-// MiMo 2.6 Flash — the wire id keeps its v2.5 spelling —, Solar Pro 4).
+// MiMo 2.6 Flash — the wire id keeps its v2.5 spelling —, Solar Mini 4, which
+// took Solar Pro 4's slot on 2026-09-23).
 var LimitedTierModelIDs = []string{
 	Glm53ModelID,
 	DeepSeekV4FlashModelID,
 	LimitedModelID,
-	SolarPro4ModelID,
+	SolarMini4ModelID,
 }
 
 // IsLimitedTierAllowed reports whether the model is available on the limited tier
 // without requiring special referral grants (matches upstream LIMITED_FREEBUFF_MODEL_IDS).
 func IsLimitedTierAllowed(id string) bool {
 	switch id {
-	case Glm53ModelID, DeepSeekV4FlashModelID, LimitedModelID, SolarPro4ModelID:
+	case Glm53ModelID, DeepSeekV4FlashModelID, LimitedModelID, SolarMini4ModelID:
 		return true
 	default:
 		return false
@@ -1171,8 +1295,17 @@ const Glm52ModelID = %q
 // Glm53ModelID is the unmetered standard row and the proxy default.
 const Glm53ModelID = %q
 
-// SolarPro4ModelID mirrors FREEBUFF_SOLAR_PRO_4_MODEL_ID: the Upstage row,
-// unmetered at full access (entitlement fullAccess.premium=false).
+// SolarMini4ModelID mirrors FREEBUFF_SOLAR_MINI_4_MODEL_ID: the Upstage row
+// that took Solar Pro 4's slot on every surface on 2026-09-23, unmetered at
+// full access (entitlement fullAccess.premium=false) and offered at limited
+// access.
+const SolarMini4ModelID = %q
+
+// SolarPro4ModelID mirrors FREEBUFF_SOLAR_PRO_4_MODEL_ID: RETIRED from every
+// picker on 2026-09-23 (superseded by Solar Mini 4) but still SUPPORTED and
+// admissible, so sessions admitted before the swap drain and released
+// binaries keep working. Kept for the retired-row pins; new picks use
+// SolarMini4ModelID.
 const SolarPro4ModelID = %q
 
 // GLMSessionLength mirrors upstream FREEBUFF_REWARD_SESSION_LENGTH_MS (the
@@ -1184,7 +1317,7 @@ const GLMSessionLength = time.Hour
 // DefaultContextWindow mirrors upstream FREEBUFF_DEFAULT_CONTEXT_WINDOW:
 // assumed for any model absent from FREEBUFF_MODEL_CONTEXT_WINDOWS.
 const DefaultContextWindow = %d
-`, c.defaultID, c.fallbackID, c.fallbackID, quotedList(c.planRequiredIDs), c.glm52ID, c.glm53ID, c.solarID, c.defaultCtx)
+`, c.defaultID, c.fallbackID, c.fallbackID, quotedList(c.subscriptionProIDs), c.glm52ID, c.glm53ID, c.solarMiniID, c.solarID, c.defaultCtx)
 	return []byte(b.String())
 }
 

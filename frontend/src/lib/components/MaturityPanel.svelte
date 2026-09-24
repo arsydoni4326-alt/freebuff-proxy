@@ -12,7 +12,7 @@
     dismiss as dismissToast,
   } from "../stores/toast.js";
   import { postAPI, fetchAPI } from "../api/client.js";
-  import { adminApi } from "../api/paths.js";
+  import { adminApi, adminActions } from "../api/paths.js";
   import {
     tokensData as tokensStore,
     tokensError as tokensErrorStore,
@@ -77,8 +77,48 @@
   let globalEnabled = $state(true);
   let globalLoaded = $state(false);
   let savingGlobal = $state(false);
+  let touchingNow = $state(false);
+
+  async function runTouchNow() {
+    if (touchingNow) return;
+    touchingNow = true;
+    try {
+      const res = await postAPI(adminActions.streakTouch, {});
+      if (res && res.ok) {
+        const touched = (res.results ?? []).filter(
+          (r) => r.status === "touched",
+        ).length;
+        const skipped = (res.results ?? []).filter(
+          (r) => r.status === "skipped",
+        ).length;
+        pushToast({
+          tone: "success",
+          title: $tr("Streak maintenance complete"),
+          body: $tr("{touched} account(s) touched, {skipped} skipped", {
+            touched,
+            skipped,
+          }),
+        });
+      } else {
+        pushToast({
+          tone: "error",
+          title: $tr("Streak touch failed"),
+          body: res?.message || $tr("Request was rejected by server"),
+        });
+      }
+      await refreshTokens();
+    } catch (e) {
+      pushToast({
+        tone: "error",
+        title: $tr("Streak touch failed"),
+        body: e?.message || $tr("Network error"),
+      });
+    } finally {
+      touchingNow = false;
+    }
+  }
+
   // Editable tuning row (instant overlay save beside the control):
-  // touch-model defaults "" (= auto, cheapest unmetered). The select shows
   // "auto" for both "" and a literal "auto" (older overlays stored the
   // word), while edits canonicalize Auto back to "" so the draft always
   // matches the catalog default. The row dims while the kill-switch is off.
@@ -241,6 +281,11 @@
     // Touched only when the touch belongs to the current Pacific day:
     // last night's touch is history (Pending), not today's status.
     if (m?.touch_day) return m.touch_day === pacificDayKey(nowMs);
+    // Day-less preview (no touch stamp this run): upstream today_used means
+    // the account was used elsewhere, not touched here — never report it
+    // as Touched (which would render with an empty time). Only a stamped
+    // touch may fall back to the upstream flag.
+    if (!m?.last_touch) return false;
     return !!t?.today_used;
   }
   // Single shared skipped definition for rows AND the header count: a
@@ -362,26 +407,36 @@
   }
 
   // Last-run ledger summary across covered accounts: latest touch time,
-  // touch count, and skip counts grouped by exact reason. Fully
-  // historical on purpose: no result_day filter here — stale skips stay
-  // visible with the Pacific day they belong to (latestDay).
+  // touch count, and skip counts grouped by exact reason. Scoped to the
+  // latest stamped Pacific day on purpose: midday previews carry no
+  // result_day (pending, pre-run) and must never read as run outcomes, so
+  // only entries stamped with the latest day count — plus pre-upgrade
+  // day-less skip:* rows, which are history, not previews. Day-less
+  // pending previews stay invisible here and eligible in the header; an
+  // empty ledger reads touched 0 skipped 0 with no day label.
   function ledgerSummary(list) {
+    let latestDay = "";
+    for (const t of list) {
+      const day = t.maturity?.result_day;
+      if (day && (!latestDay || day > latestDay)) latestDay = day;
+    }
     let touched = 0;
     let latest = "";
-    let latestDay = "";
     const skips = {};
     for (const t of list) {
       const m = t.maturity;
       if (!m) continue;
+      if (m.result_day) {
+        if (m.result_day !== latestDay) continue;
+      } else if (!(m.last_result ?? "").startsWith("skip:")) {
+        continue;
+      }
       if (m.last_result === "ok") touched += 1;
       else if ((m.last_result ?? "").startsWith("skip:")) {
         skips[m.last_result] = (skips[m.last_result] ?? 0) + 1;
       }
       if (m.last_touch && (!latest || m.last_touch > latest)) {
         latest = m.last_touch;
-      }
-      if (m.result_day && (!latestDay || m.result_day > latestDay)) {
-        latestDay = m.result_day;
       }
     }
     const skipped = Object.values(skips).reduce((a, b) => a + b, 0);
@@ -474,7 +529,7 @@
   <Card
     title={$tr("Streak Maintenance")}
     description={$tr(
-      "Fully automatic: every account is touched nightly. The switch plus the touch-model row below are the only controls.",
+      "Fully automatic: every account is touched nightly. Use the controls below to configure or run maintenance on demand.",
     )}
   >
     {#snippet actions()}
@@ -482,6 +537,18 @@
         {#if globalLoaded && !globalEnabled}
           <StatusBadge tone="bad" status={$tr("Off")} />
         {/if}
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={touchingNow || !globalEnabled}
+          loading={touchingNow}
+          onclick={runTouchNow}
+          title={$tr(
+            "Trigger streak touch turn now for accounts needing maintenance",
+          )}
+        >
+          {touchingNow ? $tr("Running…") : $tr("Run maintenance")}
+        </Button>
       </span>
     {/snippet}
     <div class="flex flex-col gap-2.5">

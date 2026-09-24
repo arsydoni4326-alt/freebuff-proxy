@@ -2,12 +2,14 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type maturityParams struct {
@@ -160,4 +162,26 @@ func (a *adminHandlers) handleTokenMaturityTouch(w http.ResponseWriter, r *http.
 	}
 	a.logfunc().Info("dashboard token maturity touched", "token", id, "action", action, "result", result)
 	a.dash.RenderConfigResult(w, r, true, "Token "+strconv.Itoa(id)+" touch: "+action+" → "+result+".")
+}
+
+// handleTokensStreakTouch runs on-demand streak touches for eligible accounts
+// (POST /admin/tokens/streak-touch, the dashboard "streak touch" lever).
+// force=true bypasses the client-active and today-used skips; the per-token
+// health gates always apply.
+func (a *adminHandlers) handleTokensStreakTouch(w http.ResponseWriter, r *http.Request) {
+	if a.pool == nil {
+		a.dash.RenderConfigResult(w, r, false, "Pool is not running")
+		return
+	}
+	forceAll := r.URL != nil && r.URL.Query().Get("force") == "true"
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+
+	results := a.pool.ForceMaturityTouch(ctx, forceAll)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":      true,
+		"results": results,
+		"total":   len(results),
+	})
 }

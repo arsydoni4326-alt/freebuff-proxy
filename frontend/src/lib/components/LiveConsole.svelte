@@ -164,7 +164,7 @@
   // body size (e.g. 80919 bytes), not a trace/session id and not tokens.
   // Bare digits + B read as hex, so the builder below now emits an explicit
   // "bytes" unit with a thousands separator.
-  function chipTitle(chip) {
+  function chipTitle(chip, group) {
     const c = String(chip ?? "");
     if (c.startsWith("ACCT ")) {
       const n = c.slice(5).trim();
@@ -188,6 +188,17 @@
       return `${c} in this request (tool-call count, not tokens)`;
     if (c.endsWith(" CHUNKS"))
       return `${c} streamed (SSE chunk count, not tokens)`;
+    if (c.endsWith(" tokens")) {
+      const fmtTok = (v) =>
+        Number.isFinite(Number(v))
+          ? Number(v).toLocaleString()
+          : String(v).trim();
+      const parts = [];
+      if (group?.tokInput) parts.push(`input ${fmtTok(group.tokInput)}`);
+      if (group?.tokOutput) parts.push(`output ${fmtTok(group.tokOutput)}`);
+      const split = parts.length ? ` (${parts.join(" / ")})` : "";
+      return `${c} — total LLM tokens for this request (from the upstream usage block)${split}`;
+    }
     if (c.endsWith(" bytes"))
       return `${c} of response body (bytes — not LLM tokens, not an id)`;
     if (c.startsWith("TTFT ")) return "Time to first token (latency)";
@@ -333,6 +344,11 @@
           ms: "",
           bytes: "",
           chunks: "",
+          tokTotal: "",
+          tokInput: "",
+          tokOutput: "",
+          tokCached: "",
+          tokReasoning: "",
           traceStatus: "",
           ttft: "",
           queueWait: "",
@@ -440,6 +456,16 @@
             g.statusesSeen = fields.statuses_seen;
           if (!g.ms && (fields.total_ms || fields.ms))
             g.ms = fields.total_ms || fields.ms;
+          // Token split off the `chat trace` usage block (logged only when
+          // usageTotal > 0): total/input/output (+cached/reasoning when the
+          // upstream reports them). First-write-wins like the ms/ttft
+          // carriers above — the trace line and the done line share req_id.
+          if (!g.tokTotal && fields.total) g.tokTotal = fields.total;
+          if (!g.tokInput && fields.input) g.tokInput = fields.input;
+          if (!g.tokOutput && fields.output) g.tokOutput = fields.output;
+          if (!g.tokCached && fields.cached) g.tokCached = fields.cached;
+          if (!g.tokReasoning && fields.reasoning)
+            g.tokReasoning = fields.reasoning;
           if (g.traceStatus === "error" && !g.errText && fields.error)
             g.errText = fields.error;
         } else {
@@ -530,6 +556,20 @@
                 ? `THROTTLED · ${g.errText}${g.retryAfter ? ` · RETRY ${g.retryAfter}s` : ""}`
                 : `ERROR ${g.status}${g.code ? ` ${g.code}` : ""} · ${g.errText}${g.retryAfter ? ` · RETRY ${g.retryAfter}s` : ""}`;
       g.text = `[${g.time}] ${head}`;
+      // Token label mirrors TracesPanel tokCompact: total wins; when total
+      // is missing but the split is present, show input+output so
+      // usage-present rows never fall back to bytes. Empty string = no
+      // usage block at all (old rows), where the bytes chip still applies.
+      const tokSum = Number(g.tokInput || 0) + Number(g.tokOutput || 0);
+      const tokChip = g.tokTotal
+        ? Number.isFinite(Number(g.tokTotal))
+          ? `${Number(g.tokTotal).toLocaleString()} tokens`
+          : `${String(g.tokTotal).trim()} tokens`
+        : g.tokInput || g.tokOutput
+          ? Number.isFinite(tokSum) && tokSum > 0
+            ? `${tokSum.toLocaleString()} tokens`
+            : `${[g.tokInput, g.tokOutput].filter(Boolean).join(" + ")} tokens`
+          : "";
       g.chips = [
         ...(g.endpoint && g.endpoint !== "unknown" ? [g.endpoint] : []),
         ...(g.stream === true
@@ -548,15 +588,19 @@
         ...(g.queueWait !== "" && Number.isFinite(Number(g.queueWait))
           ? [`QUEUED ${Number(g.queueWait)}ms`]
           : []),
-        // Explicit unit with a thousands separator: bare `${bytes}B`
-        // (e.g. 80919B) reads as a hex id. Response body size, not tokens.
-        ...(g.bytes
-          ? [
-              Number.isFinite(Number(g.bytes))
-                ? `${Number(g.bytes).toLocaleString()} bytes`
-                : `${g.bytes} bytes`,
-            ]
-          : []),
+        // LLM tokens when a usage block exists (total, else input+output);
+        // response body size only when no usage block exists at all, so no
+        // row goes bare. Explicit unit with a thousands separator: bare
+        // digits read as a hex id.
+        ...(tokChip
+          ? [tokChip]
+          : g.bytes
+            ? [
+                Number.isFinite(Number(g.bytes))
+                  ? `${Number(g.bytes).toLocaleString()} bytes`
+                  : `${g.bytes} bytes`,
+              ]
+            : []),
         ...(g.chunks ? [`${g.chunks} CHUNKS`] : []),
       ];
     }
@@ -891,12 +935,13 @@
   {:else if data}
     {#if viewMode === "console"}
       <Card pad="none">
-        <!-- Console View Top Bar: stacks on mobile so 4 actions never overflow -->
+        <!-- Console Top Bar: two tiers. Tier 1 holds identity (left) and the
+             view switch (right, anchored); Tier 2 holds the window pills and
+             stream controls. Tiers wrap only at tier boundaries. -->
         <div
-          class="p-2.5 sm:p-3 bg-[var(--fp-surface)] border-b border-[var(--fp-border)] flex flex-col gap-2.5"
+          class="p-2.5 sm:p-3 bg-[var(--fp-surface)] border-b border-[var(--fp-border)] flex flex-col items-stretch gap-y-2"
         >
-          <!-- Row 1: Context & View Mode Switcher -->
-          <div class="flex items-center justify-between gap-2 min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
             <div class="flex items-center gap-2 min-w-0">
               <span
                 class="led {requestGroups.length > 0
@@ -904,7 +949,7 @@
                   : 'led-idle'} shrink-0"
               ></span>
               <span
-                class="font-mono text-xs text-[var(--fp-text)] font-medium truncate"
+                class="font-mono text-xs text-[var(--fp-text)] font-medium truncate tabular-nums min-w-[14ch]"
                 >{requestGroups.length}
                 {requestGroups.length === 1
                   ? $tr("model request")
@@ -917,101 +962,113 @@
                 >
               {/if}
             </div>
-
-            <SegmentedControl
-              bind:value={viewMode}
-              options={[
-                { id: "console", label: $tr("Console") },
-                { id: "table", label: $tr("Table") },
-              ]}
-              size="xs"
-              ariaLabel={$tr("Log view")}
-              onchange={() => fetchLogs()}
-            />
+            <div class="ml-auto shrink-0">
+              <SegmentedControl
+                bind:value={viewMode}
+                options={[
+                  { id: "console", label: $tr("Console") },
+                  { id: "table", label: $tr("Table") },
+                ]}
+                size="xs"
+                ariaLabel={$tr("Log view")}
+                onchange={() => fetchLogs()}
+              />
+            </div>
           </div>
-
-          <!-- Row 2: Time Window & Quick Action Toolbar -->
-          <div
-            class="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[var(--fp-border)]/40 sm:border-0 sm:pt-0"
-          >
-            <SegmentedControl
-              bind:value={logWindow}
-              options={LOG_WINDOW_OPTIONS}
-              size="xs"
-              ariaLabel={$tr("Log time window")}
-              onchange={() => {
-                page = 0;
-                fetchLogs();
-              }}
-            />
-            <Button
-              variant="ghost"
-              size="sm"
-              onclick={async () => {
-                const ok = await confirmAction({
-                  title: $tr("Clear Request Console"),
-                  message: $tr(
-                    "Are you sure you want to clear the request console logs? This will clear all current events from your view.",
-                  ),
-                  confirmText: $tr("Clear"),
-                  tone: "warn",
-                });
-                if (ok) {
-                  clearedBefore = Date.now();
-                }
-              }}
-              class="text-[var(--fp-dim)] hover:text-[var(--fp-error)]"
-            >
-              <Trash2 size={13} />
-              <span class="hidden min-[480px]:inline">{$tr("Clear")}</span>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-pressed={autoScroll}
-              onclick={toggleAutoScroll}
-              title={autoScroll
-                ? $tr("Following the newest logs")
-                : $tr(
-                    "Follow paused — scroll to the bottom or toggle to resume",
-                  )}
-            >
-              {$tr("Follow {state}", {
-                state: autoScroll ? $tr("on") : $tr("off"),
-              })}
-            </Button>
-            <Button variant="ghost" size="sm" onclick={copyConsoleLogs}>
-              {#if copiedConsole}
-                <Check size={13} class="text-[var(--fp-success)]" />
-                <span class="text-[var(--fp-success)]">{$tr("Copied")}</span>
-              {:else}
-                <Copy size={13} />
-                <span class="hidden min-[480px]:inline">{$tr("Copy")}</span>
-              {/if}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              aria-pressed={autoPoll}
-              onclick={() => (autoPoll = !autoPoll)}
-              title={autoPoll
-                ? $tr("Auto-refreshing every 1s")
-                : $tr("Auto-refresh paused")}
-            >
-              {$tr("Auto {state}", {
-                state: autoPoll ? "1s" : $tr("off"),
-              })}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              loading={manualRefresh}
-              onclick={refresh}
-              disabled={loading && !data}
-            >
-              <RefreshCw size={13} />
-              <span class="hidden min-[480px]:inline">{$tr("Refresh")}</span>
-            </Button>
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="shrink-0">
+              <SegmentedControl
+                bind:value={logWindow}
+                options={LOG_WINDOW_OPTIONS}
+                size="xs"
+                ariaLabel={$tr("Log time window")}
+                onchange={() => {
+                  page = 0;
+                  fetchLogs();
+                }}
+              />
+            </div>
+            <div class="flex flex-wrap items-center gap-2 shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={$tr("Clear")}
+                onclick={async () => {
+                  const ok = await confirmAction({
+                    title: $tr("Clear Request Console"),
+                    message: $tr(
+                      "Are you sure you want to clear the request console logs? This will clear all current events from your view.",
+                    ),
+                    confirmText: $tr("Clear"),
+                    tone: "warn",
+                  });
+                  if (ok) {
+                    clearedBefore = Date.now();
+                  }
+                }}
+                class="text-[var(--fp-dim)] hover:text-[var(--fp-error)] shrink-0"
+              >
+                <Trash2 size={13} />
+                <span class="hidden min-[480px]:inline">{$tr("Clear")}</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-pressed={autoScroll}
+                onclick={toggleAutoScroll}
+                title={autoScroll
+                  ? $tr("Following the newest logs")
+                  : $tr(
+                      "Follow paused — scroll to the bottom or toggle to resume",
+                    )}
+                class="shrink-0 min-w-[92px] justify-center tabular-nums"
+              >
+                {$tr("Follow {state}", {
+                  state: autoScroll ? $tr("on") : $tr("off"),
+                })}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label={copiedConsole ? $tr("Copied") : $tr("Copy")}
+                onclick={copyConsoleLogs}
+                class="shrink-0"
+              >
+                {#if copiedConsole}
+                  <Check size={13} class="text-[var(--fp-success)]" />
+                  <span class="text-[var(--fp-success)]">{$tr("Copied")}</span>
+                {:else}
+                  <Copy size={13} />
+                  <span class="hidden min-[480px]:inline">{$tr("Copy")}</span>
+                {/if}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-pressed={autoPoll}
+                onclick={() => (autoPoll = !autoPoll)}
+                title={autoPoll
+                  ? $tr("Auto-refreshing every 1s")
+                  : $tr("Auto-refresh paused")}
+                class="shrink-0 min-w-[78px] justify-center tabular-nums"
+              >
+                {$tr("Auto {state}", {
+                  state: autoPoll ? "1s" : $tr("off"),
+                })}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                aria-label={$tr("Refresh")}
+                loading={manualRefresh}
+                onclick={refresh}
+                disabled={loading && !data}
+                class="shrink-0"
+              >
+                <RefreshCw size={13} />
+                <span class="hidden min-[480px]:inline">{$tr("Refresh")}</span>
+              </Button>
+            </div>
           </div>
         </div>
         {#if data.truncated}
@@ -1117,7 +1174,7 @@
                         >
                       {:else}
                         <span
-                          title={chipTitle(chip)}
+                          title={chipTitle(chip, g)}
                           class="inline-flex items-center rounded border px-1.5 py-px text-[10px] leading-4 whitespace-nowrap {groupChipClass(
                             chip,
                           )}">{chip}</span
@@ -1125,7 +1182,7 @@
                       {/if}
                     {:else}
                       <span
-                        title={chipTitle(chip)}
+                        title={chipTitle(chip, g)}
                         class="inline-flex items-center rounded border px-1.5 py-px text-[10px] leading-4 whitespace-nowrap {groupChipClass(
                           chip,
                         )}">{chip}</span
@@ -1182,43 +1239,65 @@
       </Card>
     {:else}
       <Card pad="none">
-        <!-- Integrated Top Toolbar Header for Table -->
+        <!-- Integrated Top Toolbar Header for Table: two tiers matching the
+             console — Tier 1 holds identity (left) and the view switch
+             (right, anchored); Tier 2 holds pills, filters (left) and live
+             controls (right). Tiers wrap only at tier boundaries. -->
         <div
-          class="p-2.5 sm:p-3 bg-[var(--fp-surface)] border-b border-[var(--fp-border)] flex flex-col gap-2.5"
+          class="p-2.5 sm:p-3 bg-[var(--fp-surface)] border-b border-[var(--fp-border)] flex flex-col items-stretch gap-y-2"
         >
-          <!-- Row 1: Context & View Mode Switcher -->
-          <div class="flex items-center justify-between gap-2 min-w-0">
-            <span
-              class="inline-flex items-center gap-1.5 text-xs font-mono text-[var(--fp-muted)]"
-            >
+          <!-- Tier 1: identity + view switch -->
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="flex items-center gap-2 min-w-0">
               <span
-                class="led {filteredEntries.length > 0
-                  ? 'led-good'
-                  : 'led-idle'}"
-              ></span>
-              <span class="font-medium text-[var(--fp-text)]"
-                >{filteredEntries.length} {$tr("entries")}</span
+                class="inline-flex items-center gap-1.5 text-xs font-mono text-[var(--fp-muted)] shrink-0"
               >
-            </span>
-
-            <SegmentedControl
-              bind:value={viewMode}
-              options={[
-                { id: "console", label: $tr("Console") },
-                { id: "table", label: $tr("Table") },
-              ]}
-              size="xs"
-              ariaLabel={$tr("Log view")}
-              onchange={() => fetchLogs()}
-            />
+                <span
+                  class="led {filteredEntries.length > 0
+                    ? 'led-good'
+                    : 'led-idle'}"
+                ></span>
+                <span
+                  class="font-medium text-[var(--fp-text)] tabular-nums min-w-[14ch]"
+                  >{filteredEntries.length} {$tr("entries")}</span
+                >
+              </span>
+              {#if windowLabel}
+                <span
+                  class="font-mono text-[11px] text-[var(--fp-dim)] whitespace-nowrap hidden sm:inline"
+                  >{$tr("last {window}", { window: windowLabel })}</span
+                >
+              {/if}
+            </div>
+            <div class="ml-auto shrink-0">
+              <SegmentedControl
+                bind:value={viewMode}
+                options={[
+                  { id: "console", label: $tr("Console") },
+                  { id: "table", label: $tr("Table") },
+                ]}
+                size="xs"
+                ariaLabel={$tr("Log view")}
+                onchange={() => fetchLogs()}
+              />
+            </div>
           </div>
-
-          <!-- Row 2: Filter Controls & Actions -->
-          <div
-            class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-1 border-t border-[var(--fp-border)]/40 sm:border-0 sm:pt-0"
-          >
-            <!-- Filter Controls (Left Group) -->
-            <div class="flex flex-wrap items-center gap-2 flex-1">
+          <!-- Tier 2: filters + live controls -->
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- Filters (Left Group) -->
+            <div class="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+              <div class="shrink-0">
+                <SegmentedControl
+                  bind:value={logWindow}
+                  options={LOG_WINDOW_OPTIONS}
+                  size="xs"
+                  ariaLabel={$tr("Log time window")}
+                  onchange={() => {
+                    page = 0;
+                    fetchLogs();
+                  }}
+                />
+              </div>
               <!-- Level Select -->
               <label for="log-level" class="sr-only">{$tr("Log level")}</label>
               <select
@@ -1233,9 +1312,8 @@
                 <option value="warn">{$tr("Warn")}</option>
                 <option value="error">{$tr("Error")}</option>
               </select>
-
               <!-- Search Input with Search Icon -->
-              <div class="relative flex-1 min-w-[180px] max-w-xs">
+              <div class="relative flex-1 min-w-[140px] max-w-[15rem]">
                 <Search
                   size={13}
                   class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--fp-dim)] pointer-events-none"
@@ -1252,7 +1330,6 @@
                   placeholder={$tr("Filter message…")}
                 />
               </div>
-
               <!-- Hide admin toggle -->
               <Button
                 variant={hideAdmin ? "secondary" : "ghost"}
@@ -1267,7 +1344,6 @@
                 <EyeOff size={13} />
                 <span>{$tr("Hide admin")}</span>
               </Button>
-
               {#if hasActiveFilter}
                 <Button
                   variant="ghost"
@@ -1279,20 +1355,8 @@
                 </Button>
               {/if}
             </div>
-
             <!-- Live Controls (Right Group) -->
-            <div class="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-              <span
-                class="inline-flex items-center gap-1.5 text-xs font-mono text-[var(--fp-muted)] mr-1"
-              >
-                <span
-                  class="led {filteredEntries.length > 0
-                    ? 'led-good'
-                    : 'led-idle'}"
-                ></span>
-                <span>{filteredEntries.length} {$tr("entries")}</span>
-              </span>
-
+            <div class="flex flex-wrap items-center gap-2 ml-auto shrink-0">
               <Button
                 variant="ghost"
                 size="sm"
@@ -1301,21 +1365,23 @@
                 title={autoPoll
                   ? $tr("Auto-refreshing every 1s")
                   : $tr("Auto-refresh paused")}
+                class="shrink-0 min-w-[78px] justify-center tabular-nums"
               >
                 {$tr("Auto {state}", {
                   state: autoPoll ? "1s" : $tr("off"),
                 })}
               </Button>
-
               <Button
                 variant="secondary"
                 size="sm"
+                aria-label={$tr("Refresh")}
                 loading={manualRefresh}
                 onclick={refresh}
                 disabled={loading && !data}
+                class="shrink-0"
               >
                 <RefreshCw size={13} />
-                <span>{$tr("Refresh")}</span>
+                <span class="hidden min-[480px]:inline">{$tr("Refresh")}</span>
               </Button>
             </div>
           </div>

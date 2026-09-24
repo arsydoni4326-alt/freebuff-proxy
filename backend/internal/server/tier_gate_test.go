@@ -38,7 +38,7 @@ import (
 const (
 	tierGemini = "google/gemini-3.8-flash"
 	tierFable  = "anthropic/claude-fable-5.1"
-	tierLuna   = "openai/gpt-5.6-luna"
+	tierLuna   = "openai/gpt-6-luna"
 	// tierWithdrawn is the paused row every withdrawn assertion uses.
 	tierWithdrawn = "minimax/minimax-m3"
 )
@@ -259,8 +259,8 @@ func TestModelsTierAnnotationShape(t *testing.T) {
 		t.Cleanup(ts.Close)
 
 		rows, raw := fetchTierRows(t, ts)
-		if len(rows) != 9 {
-			t.Fatalf("rows = %d, want 9 (6 served + 3 tier rows)", len(rows))
+		if len(rows) != 10 {
+			t.Fatalf("rows = %d, want 10 (7 served + 3 tier rows)", len(rows))
 		}
 		luna := tierRowByID(t, rows, tierLuna)
 		if !luna.Available || luna.Status != "unknown" || !tierEqual(luna.Tiers, []string{"full", "paid"}) || luna.Offer != nil {
@@ -373,8 +373,9 @@ func TestModelsTierAnnotationShape(t *testing.T) {
 		rows, _ := fetchTierRows(t, ts)
 		served := map[string]bool{
 			"deepseek/deepseek-v4-flash":      true,
-			"openai/gpt-5.6-luna":             true,
-			"upstage/solar-pro4":              true,
+			"openai/gpt-6-luna":               true,
+			"upstage/solar-mini4":             true,
+			"stealth/space-bunny-alpha":       true,
 			"meta/muse-spark-1.2-contributor": true,
 			"z-ai/glm-5.3-flash":              true,
 			"mimo/mimo-v2.5":                  true,

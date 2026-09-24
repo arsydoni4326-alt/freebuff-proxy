@@ -8,8 +8,8 @@ import { adminApi } from "./api/paths.js";
 // a client can actually select (served; the withdrawn referral row stays out).
 export const fallbackModelOptions = [
   {
-    id: "openai/gpt-5.6-luna",
-    label: "openai/gpt-5.6-luna",
+    id: "openai/gpt-6-luna",
+    label: "openai/gpt-6-luna",
     tag: "premium",
   },
   {
@@ -18,9 +18,18 @@ export const fallbackModelOptions = [
     tag: "premium",
   },
   {
-    id: "upstage/solar-pro4",
-    label: "upstage/solar-pro4",
+    id: "upstage/solar-mini4",
+    label: "upstage/solar-mini4",
     tag: "free",
+  },
+  // Space Bunny Alpha is served and user-pickable but experimental (BETA):
+  // listed so pickers offer it, priced tag so it never wins the
+  // cheapest-free default (live derivation tags its 10/hr price premium,
+  // and the backend Experimental gate keeps it out of auto-touch/fallback).
+  {
+    id: "stealth/space-bunny-alpha",
+    label: "stealth/space-bunny-alpha",
+    tag: "premium",
   },
   {
     id: "mimo/mimo-v2.5",

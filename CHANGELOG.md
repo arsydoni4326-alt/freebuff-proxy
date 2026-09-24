@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Merged `upstream/main` (#708–#727)** — 19 upstream commits through the
+  vendor `40c75256` (`0.0.188`) pin, integrated on `develop` via the git-flow
+  feature branch `feature/upstream-merge-2026-09-24`. All origin features are
+  preserved (SQLite token DB, maturity automation, smart routing, quota
+  auto-probe, update-check stamp, circuit-breaker observability, registry
+  freshness).
+
+### Added
+- **Session locality / egress region detection** — the gateway now declares
+  the session timezone from `SESSION_TIMEZONE` (override), the detected egress
+  region, or the host zone, and surfaces `session_timezone`,
+  `session_timezone_source`, and `egress_region` on `/healthz`
+  (`backend/internal/egress/`, `docs/decisions/locality-timezone.md`).
+- **Streak Freebucks daily bonus** — the 7+ day streak bonus is surfaced on
+  token snapshots and the dashboard Allowances panel.
+- **Dashboard streak-touch lever** — `POST /admin/tokens/streak-touch` runs
+  on-demand streak touches across pooled accounts (`ForceMaturityTouch`,
+  adapted to the origin maturity design; `?force=true` bypasses the
+  client-active/today-used skips).
+- **Timezone autocomplete** for `SESSION_TIMEZONE` in the dashboard settings.
+
+### Fixed
+- **Merge conflict resolutions** — upstream's `server.go`/`admin_tokens.go`
+  package splits were re-consolidated onto the origin single-file structure
+  (origin features intact); the upstream `MaturitySnapshot`-based maturity
+  design was not adopted (origin `maturityState` automation kept); the
+  upstream `FreebucksDailyBonus` and session-locality additions were ported
+  onto the origin design.
+- **Test catalog drift** — `maturity_auto_test.go` and
+  `quota_pool_nil_test.go` updated for the upstream Solar swap (Solar Pro 4 →
+  Solar Mini 4) and the premium-pool change (GPT-5.6 Luna → GPT-6 Luna).
+
 ## [v1.18.4] - 2026-09-23
 
 ### Fixed

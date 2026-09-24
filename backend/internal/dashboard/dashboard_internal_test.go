@@ -380,13 +380,29 @@ func TestLiveCardPerDayDisplay(t *testing.T) {
 	}
 }
 
+// A retired-from-picker row is a catalog row an upstream regen retired from
+// picking without pausing it: upstream left it recognized (released clients
+// still get a coercion) but it is no longer served and no tier admits it.
+// retiredPickerModels are the retired-from-picker rows: still recognized
+// (released clients get a coercion) but served by nothing and admitted by
+// no tier. 5.6 lost its slot to GPT-6 Luna (c2d2958b); Solar Pro 4 lost its
+// slot to Solar Mini 4 (40c75256).
+var retiredPickerModels = map[string]bool{
+	"openai/gpt-5.6-luna": true,
+	"upstage/solar-pro4":  true,
+}
+
 // TestModelsDataCatalogTierFacts pins the full-catalog models view: every
 // modelcat row appears exactly once with the tier sets that admit it and its
 // withdrawal facts, so the page can show which access level can use what.
 // Served rows keep served=true; withdrawn rows carry served=false +
 // withdrawn=true + the refusal copy and no tiers; tier-only rows (paid,
-// offer) are unserved but never tierless. God-only/eval registry rows
-// (luna-es) stay out. Count is the row count.
+// offer) are unserved but carry the tier that admits them; the
+// retired-from-picker rows (openai/gpt-5.6-luna, whose slot moved to
+// openai/gpt-6-luna with the c2d2958b catalog; upstage/solar-pro4, whose
+// slot moved to upstage/solar-mini4 with the 40c75256 catalog) are unserved,
+// not withdrawn and tierless, because no tier admits them any more. God-only/eval registry
+// rows (luna-es) stay out. Count is the row count.
 func TestModelsDataCatalogTierFacts(t *testing.T) {
 	cfg := &config.Config{
 		RotationInterval:   time.Hour,
@@ -406,7 +422,7 @@ func TestModelsDataCatalogTierFacts(t *testing.T) {
 		t.Fatalf("Count/rows = %d/%d, want %d (every catalog row)", md.Count, len(md.Models), len(modelcat.Catalog))
 	}
 	seen := make(map[string]bool, len(md.Models))
-	var sawReferral, sawWithdrawn, sawOffer bool
+	var sawReferral, sawWithdrawn, sawOffer, sawRetired bool
 	for _, row := range md.Models {
 		if seen[row.ID] {
 			t.Errorf("model %q listed twice", row.ID)
@@ -443,7 +459,26 @@ func TestModelsDataCatalogTierFacts(t *testing.T) {
 				t.Errorf("withdrawn row %q suggests unserved replacement %q", row.ID, row.Replacement)
 			}
 		case !row.Served:
-			if len(row.Tiers) == 0 {
+			if retiredPickerModels[row.ID] {
+				// Retired-from-picker row: still a recognized catalog row
+				// (upstream did not pause it, so released clients get a
+				// coercion), but no tier admits it and the picker must not
+				// offer it. Pinned by id so a regen that silently re-serves
+				// or re-tiers it fails here.
+				sawRetired = true
+				if row.Served {
+					t.Errorf("retired row %q has Served=true, want false", row.ID)
+				}
+				if len(row.Tiers) != 0 {
+					t.Errorf("retired row %q Tiers = %v, want empty (no tier admits it)", row.ID, row.Tiers)
+				}
+				if row.Withdrawn {
+					t.Errorf("retired row %q has Withdrawn=true, want false (upstream did not pause it)", row.ID)
+				}
+				if row.Replacement != "" {
+					t.Errorf("retired row %q Replacement = %q, want empty (no replacement copy)", row.ID, row.Replacement)
+				}
+			} else if len(row.Tiers) == 0 {
 				t.Errorf("unserved row %q carries no tiers, want the admitting tier", row.ID)
 			}
 		}
@@ -483,6 +518,9 @@ func TestModelsDataCatalogTierFacts(t *testing.T) {
 	}
 	if !sawWithdrawn {
 		t.Error("models view missing withdrawn rows")
+	}
+	if !sawRetired {
+		t.Errorf("models view missing a retired-from-picker row (want %v)", retiredPickerModels)
 	}
 	if !sawOffer {
 		t.Error("models view missing the offer row (anthropic/claude-fable-5.1)")
@@ -582,8 +620,12 @@ func TestUnmeteredModelsDerivation(t *testing.T) {
 			t.Errorf("shared-premium model %q listed as unmetered", premium)
 		}
 	}
+	// Solar Mini 4 holds the solar slot from the 40c75256 catalog; Pro 4
+	// stays listed but self-skips below (no longer served). Bunny is served
+	// and unmetered too — the dashboard stage decides its display.
 	for _, want := range []string{
 		modelcat.Glm53ModelID,
+		modelcat.SolarMini4ModelID,
 		modelcat.SolarPro4ModelID,
 		"deepseek/deepseek-v4-flash",
 		"mimo/mimo-v2.5",
