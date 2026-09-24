@@ -200,11 +200,13 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 		var todayUsed bool
 		var lastUsage string
 		var streakUpdated time.Time
+		var freebucksDailyBonus *float64
 		if st := tok.Streak(); st != nil {
 			streak = st.Streak
 			todayUsed = st.TodayUsed
 			lastUsage = st.LastUsageDate
 			streakUpdated = st.UpdatedAt
+			freebucksDailyBonus = st.FreebucksDailyBonus
 		}
 
 		// Phase 5.1: token health score — composite 0–100 from quota,
@@ -267,6 +269,7 @@ func (p *Pool) Snapshot() []TokenSnapshot {
 			TodayUsed:               todayUsed,
 			LastUsageDate:           lastUsage,
 			StreakUpdatedAt:         streakUpdated,
+			FreebucksDailyBonus:     freebucksDailyBonus,
 			Maturity:                p.maturitySnapshot(tok, streak),
 			UpgradeHint:             ss.UpgradeHint,
 			ServerMessage:           ss.ServerMessage,

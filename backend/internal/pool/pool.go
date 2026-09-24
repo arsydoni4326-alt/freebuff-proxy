@@ -265,6 +265,12 @@ type TokenSnapshot struct {
 	TodayUsed       bool      `json:"today_used,omitempty"`
 	LastUsageDate   string    `json:"last_usage,omitempty"`
 	StreakUpdatedAt time.Time `json:"streak_updated_at,omitempty"`
+	// FreebucksDailyBonus mirrors upstream.StreakInfo.FreebucksDailyBonus:
+	// Freebucks a day of a 7+ day streak credits to this account's wallet,
+	// nil when the account is not on the meter or the server omits it.
+	// Rides the cached hourly streak fetch; display only, never read by
+	// admission or cost.
+	FreebucksDailyBonus *float64 `json:"freebucks_daily_bonus,omitempty"`
 	// Maturity is the streak-maturity automation view. The automation is
 	// excised (Fase E): the snapshot always leaves it nil and the
 	// dashboard renders no card. The type is kept so historical payloads
@@ -308,6 +314,12 @@ type Pool struct {
 	// histSink is the optional maturity history consumer (ADR-0016); nil
 	// keeps the pool free of persistence. Set once via SetHistorySink.
 	histSink atomic.Pointer[HistorySink]
+
+	// localityFn is the session-locality zone resolver (SetLocalityResolver):
+	// the server installs one closure that reads the live config plus the
+	// detected egress region, and every upstream client the pool holds or
+	// builds declares its zone as x-fb-timezone. nil = host-zone behaviour.
+	localityFn atomic.Pointer[func() string]
 
 	// requestsServed counts successful upstream chat calls across BOTH
 	// pooled and bridge leases (bridge entries are ephemeral and excluded
@@ -813,6 +825,43 @@ func runOptions(cfg *config.Config) runs.Options {
 	}
 }
 
+// SetLocalityResolver installs fn on every upstream client the pool holds or
+// builds: session calls then declare fn()'s zone as x-fb-timezone (the
+// session-locality rule). The resolver is stored on the pool so runtime token
+// additions and bridge entries created later inherit it; nil restores the
+// host-zone behaviour on every client. Safe to call while serving (each
+// client guards its own resolver).
+func (p *Pool) SetLocalityResolver(fn func() string) {
+	if fn == nil {
+		p.localityFn.Store(nil)
+	} else {
+		p.localityFn.Store(&fn)
+	}
+	for _, tok := range *p.roster.Load() {
+		if tok != nil && tok.client != nil {
+			tok.client.SetLocalityResolver(fn)
+		}
+	}
+	p.bridgeMu.RLock()
+	for _, entry := range p.bridge {
+		if entry != nil && entry.client != nil {
+			entry.client.SetLocalityResolver(fn)
+		}
+	}
+	p.bridgeMu.RUnlock()
+}
+
+// applyLocality installs the pool's configured locality resolver on a client
+// built after SetLocalityResolver (runtime token additions and bridge entries).
+func (p *Pool) applyLocality(c *upstream.Client) {
+	if c == nil {
+		return
+	}
+	if fn := p.localityFn.Load(); fn != nil {
+		c.SetLocalityResolver(*fn)
+	}
+}
+
 // SetConfig swaps in a reloaded configuration. The pool reads config
 // through an atomic pointer, so a config change takes effect on the next
 // Acquire/maintain pass without rebuilding the pool, except that an AUTH_TOKENS slot change rebuilds that entry (see below).
@@ -986,6 +1035,7 @@ func (p *Pool) buildTokenEntry(idx int, token string) (*tokenEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	p.applyLocality(client)
 	sess := session.NewManagerWithStore(client, p.store)
 	sess.SetReAdmitLead(cfg.SessionReAdmitLead)
 	sess.SetAdmissionProbeTTL(cfg.SessionProbeCacheTTL)
@@ -999,6 +1049,7 @@ func (p *Pool) buildTokenEntry(idx int, token string) (*tokenEntry, error) {
 	}
 	entry.session.SetReAdmitGate(entry.seat.idle)
 	go p.asyncAccountInfoFetch(entry)
+	go p.asyncStreakFetch(entry)
 	return entry, nil
 }
 

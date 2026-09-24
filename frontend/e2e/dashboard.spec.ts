@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { loadFixtures, mockDashboard, mockSettingsOverlay } from "./mocks.js";
 import type { PostedSetting } from "./mocks.js";
+import { liveAllowanceToken } from "./mock-usage.js";
 
 test.describe("dashboard hermetic mocks", () => {
   // The Settings tests render the 58-key catalog; under parallel workers on
@@ -126,6 +127,44 @@ test.describe("dashboard hermetic mocks", () => {
     await expect(first.getByLabel("Streak 7 days")).toContainText("7d streak");
     const second = table.locator("tbody tr").filter({ hasText: "Account #2" });
     await expect(second.getByLabel("No streak")).toBeVisible();
+    // The Freebucks perk sentence is NOT part of the Fleet row: it renders on
+    // the Allowances tab (its own test below). Fixture token 0 carries
+    // freebucks_daily_bonus 15, so this asserts the removal, not absent data.
+    await expect(first.locator('[title*="Streak perk"]')).toHaveCount(0);
+    await expect(first.locator('[title*="more days to unlock"]')).toHaveCount(
+      0,
+    );
+  });
+
+  test("Accounts row renders the streak perk line beside the wallet", async ({
+    page,
+  }) => {
+    const f = loadFixtures();
+    // The live pair (akmalrzn15): the perk is credited to the WALLET every
+    // Pacific day, so it rides the wallet line verbatim and never inflates
+    // the server's daily pool.
+    const tokens = JSON.parse(JSON.stringify(f.tokens));
+    tokens.tokens[0] = liveAllowanceToken(0);
+    await mockDashboard(page, f, { tokens });
+
+    await page.goto("http://127.0.0.1:4173/admin/#tokens");
+    await page.getByRole("button", { name: "Allowances" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Account #1" }),
+    ).toBeVisible();
+    const line = page.getByTestId("streak-perk");
+    await expect(line).toHaveCount(1);
+    await expect(line).toContainText("Wallet 25");
+    await expect(line).toContainText(
+      "🎁 Streak perk: +15 Freebucks every Pacific day",
+    );
+    const header = page.getByTestId("freebucks-header").first();
+    await expect(header).toContainText("40 Freebucks spendable");
+    await expect(header).toContainText("= 15 daily + 25 wallet");
+    // The daily pool is the server's own 25, never 25 + the 15 bonus.
+    await expect(page.getByTestId("account-row").first()).toContainText(
+      "Used 10 / 25",
+    );
   });
 
   test("Tokens active rows carry Drop Session in the Instance cell; idle rows carry none", async ({
@@ -303,7 +342,7 @@ test.describe("dashboard hermetic mocks", () => {
       wallet: { balance: 0 },
       monthly: { remaining: 9.63, limit: 10 },
       prices: {
-        "upstage/solar-pro4": 0,
+        "upstage/solar-mini4": 0,
         "deepseek/deepseek-v4-flash": 15,
       },
     };
@@ -318,13 +357,13 @@ test.describe("dashboard hermetic mocks", () => {
     await expect(page.getByTestId("models-note")).toContainText(
       "identical for every account in the region",
     );
-    await expect(page.getByText("upstage/solar-pro4").first()).toBeVisible();
+    await expect(page.getByText("upstage/solar-mini4").first()).toBeVisible();
     await expect(
       page.getByText("deepseek/deepseek-v4-flash").first(),
     ).toBeVisible();
     // Cheapest first: the 0-price row sorts above the priced row.
     const ids = await page.locator("table.fp-table td code").allTextContents();
-    expect(ids.indexOf("upstage/solar-pro4")).toBeLessThan(
+    expect(ids.indexOf("upstage/solar-mini4")).toBeLessThan(
       ids.indexOf("deepseek/deepseek-v4-flash"),
     );
   });
@@ -356,9 +395,9 @@ test.describe("dashboard hermetic mocks", () => {
     page,
   }) => {
     const f = loadFixtures();
-    // Metered account (issue #364): the row keeps the daily figures and
-    // wallet; the live "resets in" countdown renders once in the global
-    // strip, shared for all accounts.
+    // Metered account (issue #364): the row states its own spendable total,
+    // daily pool and wallet once each; the all-accounts "resets in" countdown
+    // stays in the global strip.
     const meteredTokens = JSON.parse(JSON.stringify(f.tokens));
     meteredTokens.tokens[0].freebucks = {
       balance: 50,
@@ -375,9 +414,17 @@ test.describe("dashboard hermetic mocks", () => {
       page.getByRole("heading", { name: "Account #1" }),
     ).toBeVisible();
     const header = page.getByTestId("freebucks-header").first();
-    await expect(header).toContainText("30/75 Freebucks daily");
-    await expect(header).toContainText("20 in wallet");
+    // One figure per fact: the headline states the spendable total and, when
+    // the served figures add up, its own decomposition; the daily pool and
+    // the wallet below carry the rest exactly once.
+    await expect(header).toContainText("50 Freebucks spendable");
+    await expect(header).toContainText("= 30 daily + 20 wallet");
+    await expect(header).not.toContainText("30/75");
     await expect(header).not.toContainText("resets in");
+    const row = page.getByTestId("account-row").first();
+    await expect(row).toContainText("Used 45 / 75");
+    await expect(row).toContainText("30 left");
+    await expect(row).toContainText("Wallet 20");
     await expect(page.getByTestId("reset-strip")).toContainText("resets in");
   });
 
@@ -446,9 +493,10 @@ test.describe("dashboard hermetic mocks", () => {
     page,
   }) => {
     const f = loadFixtures();
-    // Full-tier account with a parked release: the header carries the
-    // server-driven tier plus the daily fraction, and the refund line
-    // renders once for the parked account only.
+    // Full-tier account with a parked release: the identity row carries the
+    // server-driven tier badge, the parked release renders once, and a
+    // payload whose wallet does NOT add up to the served spendable total
+    // claims no decomposition.
     const refundTokens = JSON.parse(JSON.stringify(f.tokens));
     refundTokens.tokens[0].access_tier = "full";
     refundTokens.tokens[0].freebucks = {
@@ -465,9 +513,14 @@ test.describe("dashboard hermetic mocks", () => {
     await expect(
       page.getByRole("heading", { name: "Account #1" }),
     ).toBeVisible();
+    const row = page.getByTestId("account-row").first();
+    await expect(row).toContainText("FULL");
     const header = page.getByTestId("freebucks-header").first();
-    await expect(header).toContainText("FULL");
-    await expect(header).toContainText("95/100 Freebucks daily");
+    await expect(header).toContainText("50 Freebucks spendable");
+    // 95 + 2.5 ≠ 50: the card states the total and invents no bucket.
+    await expect(header).not.toContainText("daily +");
+    await expect(row).toContainText("Used 5 / 100");
+    await expect(row).toContainText("Wallet 3");
     const refund = page.getByTestId("refund-line");
     await expect(refund).toHaveCount(1);
     await expect(refund).toContainText("awaiting final usage");
@@ -1699,7 +1752,7 @@ test.describe("dashboard hermetic mocks", () => {
     );
   });
 
-  test("Models lists 14 rows with tiers, withdrawals, and the live offer", async ({
+  test("Models lists 17 rows with tiers, withdrawals, and the live offer", async ({
     page,
   }) => {
     const f = loadFixtures();
@@ -1718,17 +1771,19 @@ test.describe("dashboard hermetic mocks", () => {
       page.getByRole("heading", { level: 1, name: "Models", exact: true }),
     ).toBeVisible();
 
-    // Served stat tells the truth about 14 rows: 6 served of 14 listed (the
-    // two Pro-only rows are plan-locked, never served).
-    await expect(page.getByText("6 of 14")).toBeVisible();
-    await expect(page.getByText("14 registered · 50 agents")).toBeVisible();
+    // Served stat tells the truth about 17 rows: 7 served of 17 listed (the
+    // two Pro-only rows are plan-locked, never served; GPT-5.6 Luna and
+    // Solar Pro 4 stay listed as recognized rows the gateway no longer
+    // puts in a picker).
+    await expect(page.getByText("7 of 17")).toBeVisible();
+    await expect(page.getByText("17 registered · 50 agents")).toBeVisible();
     // Tier column renders; the pool column stays gone.
     await expect(page.getByText("Tier").first()).toBeVisible();
     await expect(page.locator("table").getByText("Pool")).toHaveCount(0);
-    // 13 rows in the desktop table; tier cells render in both the table
+    // 17 rows in the desktop table; tier cells render in both the table
     // and the mobile cards.
-    await expect(page.locator("table tbody tr")).toHaveCount(14);
-    await expect(page.getByTestId("model-tier")).toHaveCount(28);
+    await expect(page.locator("table tbody tr")).toHaveCount(17);
+    await expect(page.getByTestId("model-tier")).toHaveCount(34);
     // Plan-required rows (Gemini 3.8 Flash, MiMo 2.6 Pro) draw locked: the
     // "Paid plan" badge and upstream's sentence, never a served state.
     // Scoped to the table: the mobile cards carry the same annotation, so an
@@ -1766,8 +1821,17 @@ test.describe("dashboard hermetic mocks", () => {
         ["withdrawn", "Withdrawn — use GLM 5.3 Flash"],
         "withdrawn",
       ],
-      ["openai/gpt-5.6-luna", ["full", "paid plan"], "served"],
-      ["upstage/solar-pro4", ["limited", "full"], "served"],
+      ["openai/gpt-6-luna", ["full", "paid plan"], "served"],
+      // GPT-5.6 Luna left every picker on 2026-09-22: still a recognized
+      // row (draining sessions) listed with no tier, never served.
+      ["openai/gpt-5.6-luna", [], "unserved"],
+      // Solar Pro 4 left every picker on 2026-09-23: still a recognized
+      // row (draining sessions) listed with no tier, never served.
+      ["upstage/solar-pro4", [], "unserved"],
+      ["upstage/solar-mini4", ["limited", "full"], "served"],
+      // Space Bunny Alpha is a served BETA row: full tier only, with its
+      // prompt-retention warning inline.
+      ["stealth/space-bunny-alpha", ["full"], "served"],
       ["google/gemini-3.8-flash", ["full", "paid plan"], "Paid plan"],
       ["meta/muse-spark-1.2-contributor", ["full"], "served"],
       [
@@ -1797,6 +1861,11 @@ test.describe("dashboard hermetic mocks", () => {
         await expect(row.getByTestId("model-tier")).toContainText(chip);
       }
     }
+    // The BETA stealth row carries its prompt-retention warning inline
+    // (table scope: the mobile cards carry the same copy).
+    await expect(
+      table.getByText("Anonymous provider retains prompts").first(),
+    ).toBeVisible();
     await expect(page.getByTestId("model-offer").first()).toContainText(
       "3 of 10 sessions left",
     );
@@ -1820,7 +1889,7 @@ test.describe("dashboard hermetic mocks", () => {
       wallet: { balance: 20 },
       monthly: { remaining: 20 },
       prices: {
-        "openai/gpt-5.6-luna": 2,
+        "openai/gpt-6-luna": 2,
         "deepseek/deepseek-v4-flash": 15,
       },
     };
@@ -1832,8 +1901,8 @@ test.describe("dashboard hermetic mocks", () => {
       page.getByRole("heading", { level: 1, name: "Models", exact: true }),
     ).toBeVisible();
     const rows = page.locator("table tbody tr");
-    await expect(rows).toHaveCount(14);
-    await expect(rows.first()).toContainText("openai/gpt-5.6-luna");
+    await expect(rows).toHaveCount(17);
+    await expect(rows.first()).toContainText("openai/gpt-6-luna");
   });
   test("Models offer row names the spent trial", async ({ page }) => {
     const f = loadFixtures();

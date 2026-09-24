@@ -14,6 +14,7 @@ import {
   FREEBUFF_GLM_V52_MODEL_ID,
   FREEBUFF_GLM_V53_FLASH_MODEL_ID,
   FREEBUFF_GPT_5_6_LUNA_MODEL_ID,
+  FREEBUFF_GPT_6_LUNA_MODEL_ID,
   FREEBUFF_DEEPSEEK_V4_FLASH_MAX_MODEL_ID,
   FREEBUFF_DEEPSEEK_V4_PRO_MAX_MODEL_ID,
   FREEBUFF_GPT_5_6_LUNA_MAX_MODEL_ID,
@@ -28,7 +29,9 @@ import {
   FREEBUFF_MUSE_SPARK_12_CONTRIBUTOR_MODEL_ID,
   FREEBUFF_MUSE_SPARK_13_CONTRIBUTOR_MODEL_ID,
   FREEBUFF_OX_ALPHA_MODEL_ID,
+  FREEBUFF_SOLAR_MINI_4_MODEL_ID,
   FREEBUFF_SOLAR_PRO_4_MODEL_ID,
+  FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID,
   LIMITED_FREEBUFF_MODEL_ID,
   FREEBUFF_MIMO_V25_MODEL_ID,
   FREEBUFF_MIMO_V26_PRO_MODEL_ID,
@@ -134,6 +137,7 @@ export const FREEBUFF_WEB_BASE3_AGENT_ID_BY_MODEL: Record<string, string> = {
   [FREEBUFF_MIMO_V26_PRO_MODEL_ID]: 'base3-free-mimo-2-6-pro',
   [FREEBUFF_MINIMAX_M3_MODEL_ID]: 'base3-free-minimax-m3',
   [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: 'base3-free-luna',
+  [FREEBUFF_GPT_6_LUNA_MODEL_ID]: 'base3-free-luna-6',
   [FREEBUFF_GLM_V52_MODEL_ID]: 'base3-free-glm',
   [FREEBUFF_GLM_V53_FLASH_MODEL_ID]: 'base3-free-glm-5-3-flash',
   [FREEBUFF_KIMI_K3_ECO_MODEL_ID]: 'base3-free-kimi-k3-eco',
@@ -144,6 +148,8 @@ export const FREEBUFF_WEB_BASE3_AGENT_ID_BY_MODEL: Record<string, string> = {
   [FREEBUFF_MUSE_SPARK_13_CONTRIBUTOR_MODEL_ID]: 'base3-free-muse-spark-1-3',
   [FREEBUFF_OX_ALPHA_MODEL_ID]: 'base3-free-ox-alpha',
   [FREEBUFF_SOLAR_PRO_4_MODEL_ID]: 'base3-free-solar-pro4',
+  [FREEBUFF_SOLAR_MINI_4_MODEL_ID]: 'base3-free-solar-mini4',
+  [FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID]: 'base3-free-space-bunny-alpha',
   [FREEBUFF_GEMINI_38_FLASH_MODEL_ID]: 'base3-free-gemini-3-8-flash',
 }
 
@@ -172,6 +178,7 @@ export const FREEBUFF_CLI_BASE3_AGENT_ID_BY_MODEL: Record<string, string> = {
   [FREEBUFF_MIMO_V26_PRO_MODEL_ID]: 'base3-free-mimo-2-6-pro',
   [FREEBUFF_MINIMAX_M3_MODEL_ID]: 'base3-free-minimax-m3',
   [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: 'base3-free-luna',
+  [FREEBUFF_GPT_6_LUNA_MODEL_ID]: 'base3-free-luna-6',
   [FREEBUFF_GLM_V52_MODEL_ID]: 'base3-free-glm',
   [FREEBUFF_GLM_V53_FLASH_MODEL_ID]: 'base3-free-glm-5-3-flash',
   // Ox Alpha reached CLI and Desktop on 2026-08-24. The WEB map above has
@@ -179,6 +186,8 @@ export const FREEBUFF_CLI_BASE3_AGENT_ID_BY_MODEL: Record<string, string> = {
   // is the arrangement described in docs/freebuff-base3-harness.md.
   [FREEBUFF_OX_ALPHA_MODEL_ID]: 'base3-free-ox-alpha',
   [FREEBUFF_SOLAR_PRO_4_MODEL_ID]: 'base3-free-solar-pro4',
+  [FREEBUFF_SOLAR_MINI_4_MODEL_ID]: 'base3-free-solar-mini4',
+  [FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID]: 'base3-free-space-bunny-alpha',
   // Gemini 3.8 Flash reached every surface on 2026-09-03, sharing its root id
   // with the Web map above like every other model both surfaces offer.
   [FREEBUFF_GEMINI_38_FLASH_MODEL_ID]: 'base3-free-gemini-3-8-flash',
@@ -345,7 +354,13 @@ export const FREEBUFF_ROOT_AGENT_IDS = [
   'base2-free-mimo-2-6-pro',
   'base2-free-minimax-m3',
   'base2-free-luna',
+  // GPT-6 Luna (2026-09-22). Its own ids rather than reusing 5.6's: spend and
+  // run counts split by agent_id, and 5.6's roots stay bundled while its
+  // sessions drain.
+  'base2-free-luna-6',
   'base2-free-solar-pro4',
+  'base2-free-solar-mini4',
+  'base2-free-space-bunny-alpha',
   'base2-free-glm',
   'base2-free-glm-5-3-flash',
   'base2-free-kimi-k3-eco',
@@ -406,7 +421,10 @@ export const FREEBUFF_ROOT_AGENT_IDS = [
   'base3-free-mimo-2-6-pro',
   'base3-free-minimax-m3',
   'base3-free-luna',
+  'base3-free-luna-6',
   'base3-free-solar-pro4',
+  'base3-free-solar-mini4',
+  'base3-free-space-bunny-alpha',
   'base3-free-glm',
   'base3-free-glm-5-3-flash',
   'base3-free-kimi-k3-eco',
@@ -429,7 +447,10 @@ export const FREEBUFF_ROOT_AGENT_ID_BY_MODEL: Record<string, string> = {
   [FREEBUFF_MIMO_V26_PRO_MODEL_ID]: 'base2-free-mimo-2-6-pro',
   [FREEBUFF_MINIMAX_M3_MODEL_ID]: 'base2-free-minimax-m3',
   [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: 'base2-free-luna',
+  [FREEBUFF_GPT_6_LUNA_MODEL_ID]: 'base2-free-luna-6',
   [FREEBUFF_SOLAR_PRO_4_MODEL_ID]: 'base2-free-solar-pro4',
+  [FREEBUFF_SOLAR_MINI_4_MODEL_ID]: 'base2-free-solar-mini4',
+  [FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID]: 'base2-free-space-bunny-alpha',
   [FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID]: 'base2-free-deepseek',
   [FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID]: 'base2-free-deepseek-flash',
   [FREEBUFF_GLM_V52_MODEL_ID]: 'base2-free-glm',
@@ -475,7 +496,10 @@ export const FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL: Record<string, string> = {
   [FREEBUFF_MIMO_V26_PRO_MODEL_ID]: 'code-reviewer-mimo-2-6-pro',
   [FREEBUFF_MINIMAX_M3_MODEL_ID]: 'code-reviewer-minimax-m3',
   [FREEBUFF_GPT_5_6_LUNA_MODEL_ID]: 'code-reviewer-luna',
+  [FREEBUFF_GPT_6_LUNA_MODEL_ID]: 'code-reviewer-luna-6',
   [FREEBUFF_SOLAR_PRO_4_MODEL_ID]: 'code-reviewer-solar-pro4',
+  [FREEBUFF_SOLAR_MINI_4_MODEL_ID]: 'code-reviewer-solar-mini4',
+  [FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID]: 'code-reviewer-space-bunny-alpha',
   [FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID]: 'code-reviewer-deepseek',
   [FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID]: 'code-reviewer-deepseek-flash',
   [FREEBUFF_GLM_V52_MODEL_ID]: 'code-reviewer-glm',
@@ -499,7 +523,10 @@ export const FREEBUFF_REVIEWER_AGENT_ID_BY_MODEL: Record<string, string> = {
 const FREEBUFF_DESKTOP_MODELS = new Set([
   FREEBUFF_MINIMAX_M3_MODEL_ID,
   FREEBUFF_GPT_5_6_LUNA_MODEL_ID,
+  FREEBUFF_GPT_6_LUNA_MODEL_ID,
   FREEBUFF_SOLAR_PRO_4_MODEL_ID,
+  FREEBUFF_SOLAR_MINI_4_MODEL_ID,
+  FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID,
   FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID,
   FREEBUFF_DEEPSEEK_V4_FLASH_MODEL_ID,
   FREEBUFF_MIMO_V25_MODEL_ID,
@@ -613,7 +640,12 @@ export const FREE_MODE_AGENT_MODELS: Record<string, Set<string>> = {
   // drain; the door is already shut in front of them.
   'base2-free-minimax-m3': new Set([FREEBUFF_MINIMAX_M3_MODEL_ID]),
   'base2-free-luna': new Set([FREEBUFF_GPT_5_6_LUNA_MODEL_ID]),
+  'base2-free-luna-6': new Set([FREEBUFF_GPT_6_LUNA_MODEL_ID]),
   'base2-free-solar-pro4': new Set([FREEBUFF_SOLAR_PRO_4_MODEL_ID]),
+  'base2-free-solar-mini4': new Set([FREEBUFF_SOLAR_MINI_4_MODEL_ID]),
+  'base2-free-space-bunny-alpha': new Set([
+    FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID,
+  ]),
   'base2-free-glm': new Set([FREEBUFF_GLM_V52_MODEL_ID]),
   // GLM 5.3 Flash's root, pinned to its one model like every other. Kept
   // strictly separate from 'base2-free-glm' next door even though the models
@@ -740,7 +772,12 @@ export const FREE_MODE_AGENT_MODELS: Record<string, Set<string>> = {
   // Code reviewer for free mode
   'code-reviewer-minimax-m3': new Set([FREEBUFF_MINIMAX_M3_MODEL_ID]),
   'code-reviewer-luna': new Set([FREEBUFF_GPT_5_6_LUNA_MODEL_ID]),
+  'code-reviewer-luna-6': new Set([FREEBUFF_GPT_6_LUNA_MODEL_ID]),
   'code-reviewer-solar-pro4': new Set([FREEBUFF_SOLAR_PRO_4_MODEL_ID]),
+  'code-reviewer-solar-mini4': new Set([FREEBUFF_SOLAR_MINI_4_MODEL_ID]),
+  'code-reviewer-space-bunny-alpha': new Set([
+    FREEBUFF_SPACE_BUNNY_ALPHA_MODEL_ID,
+  ]),
   'code-reviewer-ox-alpha': new Set([FREEBUFF_OX_ALPHA_MODEL_ID]),
   'code-reviewer-deepseek': new Set([FREEBUFF_DEEPSEEK_V4_PRO_MODEL_ID]),
   'code-reviewer-deepseek-flash': new Set([

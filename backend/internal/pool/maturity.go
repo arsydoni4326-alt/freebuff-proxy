@@ -941,6 +941,134 @@ func (p *Pool) MaturityTouchNow(ctx context.Context, token int) (string, string,
 	return fin.lastAction, fin.lastResult, nil
 }
 
+// MaturityTouchResult is one account's outcome row for the force-all
+// dashboard lever (POST /admin/tokens/streak-touch).
+type MaturityTouchResult struct {
+	Token     int    `json:"token"`
+	Email     string `json:"email"`
+	Model     string `json:"model"`
+	Status    string `json:"status"` // "touched", "skipped", "error"
+	Reason    string `json:"reason,omitempty"`
+	Streak    int    `json:"streak"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// ForceMaturityTouch runs streak touch immediately across pooled accounts
+// (the dashboard "streak touch" lever). forceAll bypasses the client-active
+// and today-used skips; the per-token health gates (lock, quarantine, ban,
+// cooldown, country block) and streak freshness always apply. Each account
+// is staggered by one second so the walk never bursts upstream.
+func (p *Pool) ForceMaturityTouch(ctx context.Context, forceAll bool) []MaturityTouchResult {
+	toks := p.roster.Load()
+	if toks == nil || len(*toks) == 0 {
+		return nil
+	}
+	now := time.Now()
+	today := pacificDayKey(now)
+	var results []MaturityTouchResult
+
+	for i, tok := range *toks {
+		res := MaturityTouchResult{
+			Token:     i + 1,
+			Email:     tok.Email(),
+			Timestamp: now.UnixMilli(),
+		}
+		if s := tok.Streak(); s != nil {
+			res.Streak = s.Streak
+		}
+
+		// Health gates: locked, quarantined, banned, cooling, country-blocked
+		// accounts are never touched — the same gates the nightly walk honors.
+		if tok.locked.Load() {
+			res.Status = "skipped"
+			res.Reason = "skip:locked"
+			results = append(results, res)
+			continue
+		}
+		p.clearLiftedQuarantine(tok)
+		if q := tok.quarantine.Load(); q != nil {
+			res.Status = "skipped"
+			res.Reason = "skip:quarantined"
+			results = append(results, res)
+			continue
+		}
+		rs := tok.runs.Snapshot()
+		if rs.BanError != nil && (rs.BannedUntil.IsZero() || now.Before(rs.BannedUntil)) {
+			res.Status = "skipped"
+			res.Reason = "skip:banned"
+			results = append(results, res)
+			continue
+		}
+		if !rs.CooldownUntil.IsZero() && now.Before(rs.CooldownUntil) {
+			res.Status = "skipped"
+			res.Reason = "skip:cooling"
+			results = append(results, res)
+			continue
+		}
+		if tok.runs.CountryBlockedError() != nil {
+			res.Status = "skipped"
+			res.Reason = "skip:country-blocked"
+			results = append(results, res)
+			continue
+		}
+
+		// Client-active / today-used skips unless forceAll.
+		if !forceAll {
+			if p.dayRequestCount(i) > 0 {
+				res.Status = "skipped"
+				res.Reason = "skip:client-active"
+				results = append(results, res)
+				continue
+			}
+			if st := tok.Streak(); st != nil && st.TodayUsed {
+				res.Status = "skipped"
+				res.Reason = "skip:today-used"
+				results = append(results, res)
+				continue
+			}
+		}
+
+		// Streak freshness: a stale cache is refreshed before the touch.
+		cached := tok.Streak()
+		if cached == nil || now.Sub(cached.UpdatedAt) > maturityStreakFresh {
+			var err error
+			cached, err = p.maturityRefreshStreak(ctx, tok)
+			if err != nil || cached == nil {
+				res.Status = "skipped"
+				res.Reason = "skip:streak-stale"
+				results = append(results, res)
+				continue
+			}
+		}
+
+		// Resolve the effective touch model and fire.
+		st := p.maturityCopy(tok)
+		cfg := p.cfg.Load()
+		touchOverride := ""
+		if cfg != nil {
+			touchOverride = cfg.MaturityTouchModel
+		}
+		effective, _, pickReason := p.maturityResolveEffective(st, tok, touchOverride)
+		res.Model = effective
+		p.maturityFire(ctx, effective, pickReason, i, tok, tokenEntryLabel(tok), cached, today, now)
+		p.saveMaturity(i, tok)
+		fin := p.maturityCopy(tok)
+		res.Status = "touched"
+		res.Reason = fin.lastResult
+		results = append(results, res)
+
+		// Short stagger between accounts (1 second) so we don't burst upstream.
+		if i < len(*toks)-1 {
+			select {
+			case <-ctx.Done():
+				return results
+			case <-time.After(1 * time.Second):
+			}
+		}
+	}
+	return results
+}
+
 // maturityRecord stores a skip/result marker without touching touch times.
 // Universal automatic: no enabled gate — every account is enrolled. Every
 // write stamps today's Pacific day as the result day (from the caller,

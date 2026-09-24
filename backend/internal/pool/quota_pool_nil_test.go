@@ -37,7 +37,7 @@ func TestPoolPremiumQuotaNilWhenNoSession(t *testing.T) {
 func TestPremiumSnapshotMathSpec(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
 	m := map[string]session.QuotaSnapshot{
-		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-6-luna": {Model: "openai/gpt-6-luna", Limit: 4, RecentCount: 2, Period: "pacific_day", ResetAt: future},
 	}
 	premium := premiumSnapshotFromQuotaMap(m)
 	if premium == nil {
@@ -55,14 +55,14 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	// capped case
 	past := time.Now().Add(-24 * time.Hour)
 	m2 := map[string]session.QuotaSnapshot{
-		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-6-luna": {Model: "openai/gpt-6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: future},
 	}
 	p2 := premiumSnapshotFromQuotaMap(m2)
 	if !p2.Capped {
 		t.Error("capped false want true for future reset")
 	}
 	m3 := map[string]session.QuotaSnapshot{
-		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: past},
+		"openai/gpt-6-luna": {Model: "openai/gpt-6-luna", Limit: 4, RecentCount: 4, Period: "pacific_day", ResetAt: past},
 	}
 	p3 := premiumSnapshotFromQuotaMap(m3)
 	if p3.Capped {
@@ -70,8 +70,8 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	}
 	// glm-5.3-flash shares the premium pool, so luna wins when present
 	m4 := map[string]session.QuotaSnapshot{
-		"openai/gpt-5.6-luna": {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
-		"z-ai/glm-5.3-flash":  {Model: "z-ai/glm-5.3-flash", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-6-luna":  {Model: "openai/gpt-6-luna", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
+		"z-ai/glm-5.3-flash": {Model: "z-ai/glm-5.3-flash", Limit: 4, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 	}
 	pp := premiumSnapshotFromQuotaMap(m4)
 	if pp == nil {
@@ -82,7 +82,7 @@ func TestPremiumSnapshotMathSpec(t *testing.T) {
 	}
 	// premiumPoolModels[0] (luna) wins when present
 	m5 := map[string]session.QuotaSnapshot{
-		"openai/gpt-5.6-luna":        {Model: "openai/gpt-5.6-luna", Limit: 4, RecentCount: 3, Period: "pacific_day", ResetAt: future},
+		"openai/gpt-6-luna":          {Model: "openai/gpt-6-luna", Limit: 4, RecentCount: 3, Period: "pacific_day", ResetAt: future},
 		"deepseek/deepseek-v4-flash": {Model: "deepseek/deepseek-v4-flash", Limit: 100, RecentCount: 1, Period: "pacific_day", ResetAt: future},
 	}
 	p5 := premiumSnapshotFromQuotaMap(m5)

@@ -540,5 +540,14 @@
       "export": "tokenActions",
       "key": "maturityTouch"
     }
+  },
+  {
+    "method": "POST",
+    "path": "/admin/tokens/streak-touch",
+    "auth": "sensitive",
+    "js": {
+      "export": "adminActions",
+      "key": "streakTouch"
+    }
   }
 ]

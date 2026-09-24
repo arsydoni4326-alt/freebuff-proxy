@@ -121,6 +121,7 @@ var allowed = map[string][]string{
 		"internal/config",
 		"internal/convert",
 		"internal/dashboard",
+		"internal/egress", // session-locality rule + region tracker
 		"internal/logring",
 		"internal/modelcat",
 		"internal/phasetiming",
@@ -141,6 +142,7 @@ var allowed = map[string][]string{
 		"internal/cli/port",
 		"internal/clicreds",
 		"internal/config",
+		"internal/egress", // serve path starts the region tracker
 		"internal/logring",
 		"internal/notify",
 		"internal/pool",

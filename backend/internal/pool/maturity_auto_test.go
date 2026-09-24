@@ -14,8 +14,8 @@ import (
 // or live-priced rows: only a served unmetered row with price 0 (or a
 // quota exemption) can win, in catalog order.
 func TestAutoUnmeteredGate(t *testing.T) {
-	if got, _ := modelcat.AutoUnmeteredTouchModel(nil, false); got != "upstage/solar-pro4" {
-		t.Errorf("auto(nil) = %q, want upstage/solar-pro4 (first static unmetered served row)", got)
+	if got, _ := modelcat.AutoUnmeteredTouchModel(nil, false); got != "upstage/solar-mini4" {
+		t.Errorf("auto(nil) = %q, want upstage/solar-mini4 (first static unmetered served row)", got)
 	}
 	for _, honeypot := range []string{
 		"crof/kimi-k3-eco", "openai/gpt-5.6-luna-es",
@@ -32,12 +32,12 @@ func TestAutoUnmeteredGate(t *testing.T) {
 		}
 	}
 	// Live-priced solar loses to the next price-0 unmetered row.
-	if got, _ := modelcat.AutoUnmeteredTouchModel(map[string]float64{"upstage/solar-pro4": 5}, false); got == "upstage/solar-pro4" {
-		t.Errorf("auto picked priced solar-pro4, want next unmetered row")
+	if got, _ := modelcat.AutoUnmeteredTouchModel(map[string]float64{"upstage/solar-mini4": 5}, false); got == "upstage/solar-mini4" {
+		t.Errorf("auto picked priced solar-mini4, want next unmetered row")
 	}
 	// Exemption re-admits a priced row (server-authorized, not a bargain hunt).
-	if got, _ := modelcat.AutoUnmeteredTouchModel(map[string]float64{"upstage/solar-pro4": 5}, true); got != "upstage/solar-pro4" {
-		t.Errorf("auto(exempt) = %q, want upstage/solar-pro4", got)
+	if got, _ := modelcat.AutoUnmeteredTouchModel(map[string]float64{"upstage/solar-mini4": 5}, true); got != "upstage/solar-mini4" {
+		t.Errorf("auto(exempt) = %q, want upstage/solar-mini4", got)
 	}
 	// Every static unmetered row priced with no exemption: no candidate.
 	allPriced := map[string]float64{}
@@ -80,11 +80,11 @@ func TestMaturityAutoDefaultResolves(t *testing.T) {
 	if snap == nil {
 		t.Fatal("snapshot maturity = nil, want resolved view")
 	} else {
-		if snap.AutoTouchModel != "upstage/solar-pro4" || snap.AutoTouchReason != "auto:unmetered" {
-			t.Errorf("auto = %q/%q, want upstage/solar-pro4/auto:unmetered", snap.AutoTouchModel, snap.AutoTouchReason)
+		if snap.AutoTouchModel != "upstage/solar-mini4" || snap.AutoTouchReason != "auto:unmetered" {
+			t.Errorf("auto = %q/%q, want upstage/solar-mini4/auto:unmetered", snap.AutoTouchModel, snap.AutoTouchReason)
 		}
-		if snap.EffectiveTouchModel != "upstage/solar-pro4" {
-			t.Errorf("effective = %q, want upstage/solar-pro4", snap.EffectiveTouchModel)
+		if snap.EffectiveTouchModel != "upstage/solar-mini4" {
+			t.Errorf("effective = %q, want upstage/solar-mini4", snap.EffectiveTouchModel)
 		}
 		if snap.SlotDay == "" {
 			t.Error("slot_day empty, want account-day for the next-touch countdown")
@@ -110,7 +110,7 @@ func TestMaturityAutoSkipsPricedHead(t *testing.T) {
 	(*toks)[0].sessionMgr().UpdateQuotaFromProbe(&upstream.SessionState{
 		Freebucks: &upstream.FreebucksInfo{
 			Balance: 10,
-			Prices:  map[string]float64{"upstage/solar-pro4": 5},
+			Prices:  map[string]float64{"upstage/solar-mini4": 5},
 		},
 	})
 	action, result, err := p.MaturityTouchNow(context.Background(), 0)
@@ -121,7 +121,7 @@ func TestMaturityAutoSkipsPricedHead(t *testing.T) {
 		t.Fatalf("auto repriced touch = %q/%q, want admit/ok on the next unmetered row", action, result)
 	}
 	snap := p.Snapshot()[0].Maturity
-	if snap == nil || snap.EffectiveTouchModel == "" || snap.EffectiveTouchModel == "upstage/solar-pro4" {
+	if snap == nil || snap.EffectiveTouchModel == "" || snap.EffectiveTouchModel == "upstage/solar-mini4" {
 		t.Errorf("effective after reprice = %+v, want a non-solar unmetered pick", snap)
 	}
 	if got := mock.SessionCreatesSnapshot(); got != 1 {
