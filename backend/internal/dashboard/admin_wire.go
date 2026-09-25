@@ -18,7 +18,6 @@ package dashboard
 
 import (
 	"encoding/json"
-
 	"freebucks-proxy/backend/internal/config"
 	"freebucks-proxy/backend/internal/pool"
 )
@@ -236,6 +235,15 @@ type TokenAddRequest struct {
 	Token string `json:"token"`
 }
 
+// StreakTouchResponse is the POST /admin/tokens/streak-touch answer: the
+// per-token touch outcomes plus the total count (the handler's {ok,
+// results, total} envelope, byte-identical key order).
+type StreakTouchResponse struct {
+	OK      bool                       `json:"ok"`
+	Results []pool.MaturityTouchResult `json:"results"`
+	Total   int                        `json:"total"`
+}
+
 // TokenSwapRequest is the POST /admin/tokens/swap body: index pairs in any
 // of the accepted key shapes (i/j, from/to, index) plus the passthrough
 // action/direction strings the route handler forwards.
@@ -403,6 +411,7 @@ func AdminAPIPaths() []AdminAPIPath {
 		{Method: "POST", Path: "/admin/tokens/{id}/refund-refresh", OperationID: "tokenRefundRefresh", Summary: "Replay one token's parked pending-refund DELETE (same instance; drops the result if the account changed)", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/test", OperationID: "tokenTest", Summary: "Zero-cost upstream probe of one token", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/test-all", OperationID: "tokensTestAll", Summary: "Zero-cost upstream probe of all tokens", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: []pool.ProbeTokenOutcome{}},
+		{Method: "POST", Path: "/admin/tokens/streak-touch", OperationID: "tokensStreakTouch", Summary: "Run on-demand streak touches for eligible accounts", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: StreakTouchResponse{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/session", OperationID: "tokenSpawnSession", Summary: "Ensure one token's upstream session for a model", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: SpawnSessionRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/add", OperationID: "tokenAdd", Summary: "Add one upstream token to the pool and persist to .env", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenAddRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/remove", OperationID: "tokenRemove", Summary: "Remove one pool token (absent index removes the last)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenRemoveRequest{}, Response: ResultEnvelope{}},
@@ -411,7 +420,6 @@ func AdminAPIPaths() []AdminAPIPath {
 		{Method: "POST", Path: "/admin/tokens/swap", OperationID: "tokenSwap", Summary: "Swap two pool positions", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenSwapRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/maturity", OperationID: "tokenMaturity", Summary: "Store one token's streak-maintenance preferences (compat API)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: TokenMaturityRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/tokens/{id}/maturity/touch", OperationID: "tokenMaturityTouch", Summary: "Fire one manual maturity touch outside the daily slot", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: ResultEnvelope{}},
-		{Method: "POST", Path: "/admin/tokens/streak-touch", OperationID: "tokensStreakTouch", Summary: "Run on-demand streak touches for eligible accounts", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: []pool.MaturityTouchResult{}},
 		{Method: "POST", Path: "/admin/mode", OperationID: "modeSwitch", Summary: "Switch bridge/pooled mode (loopback rules apply)", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: ModeSwitchRequest{}, Response: ResultEnvelope{}},
 		{Method: "POST", Path: "/admin/diag", OperationID: "diag", Summary: "Configuration and upstream reachability checks", Auth: "sensitive", Kind: AdminAPIKindJSON, Response: DiagResponse{}},
 		{Method: "POST", Path: "/admin/api/change-password", OperationID: "changePassword", Summary: "Rotate the admin dashboard password", Auth: "sensitive", Kind: AdminAPIKindJSON, Request: ChangePasswordRequest{}, Response: ChangePasswordResponse{}},

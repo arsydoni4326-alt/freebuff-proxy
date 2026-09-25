@@ -5,9 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.20.0] - 2026-09-25
 
 ### Changed
+- **Merged `upstream/main` (#730–#743)** — 14 upstream commits through the
+  vendor `276db8d` (`0.0.193`) pin, integrated on `develop` via the git-flow
+  feature branch `feature/upstream-merge-2026-09-25`. All origin features are
+  preserved (SQLite token DB, maturity automation, smart routing, quota
+  auto-probe, update-check stamp, circuit-breaker observability, registry
+  freshness). The upstream deprecation notice (#743) is kept for provenance
+  but reworded to state that this fork continues maintenance.
 - **Merged `upstream/main` (#708–#727)** — 19 upstream commits through the
   vendor `40c75256` (`0.0.188`) pin, integrated on `develop` via the git-flow
   feature branch `feature/upstream-merge-2026-09-24`. All origin features are
@@ -16,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   freshness).
 
 ### Added
+- **403 `free_mode_cost_mode_required` gate classification** (#741) — a
+  Freebuff-only agent id sent with `codebuff_metadata.cost_mode != "free"`
+  now surfaces a dedicated 403 sentinel (`ErrFreeModeCostModeRequired`), a
+  config refusal like `free_mode_invalid_agent_hierarchy` — never a cooldown,
+  never the generic 502.
 - **Session locality / egress region detection** — the gateway now declares
   the session timezone from `SESSION_TIMEZONE` (override), the detected egress
   region, or the host zone, and surfaces `session_timezone`,
@@ -30,6 +42,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Timezone autocomplete** for `SESSION_TIMEZONE` in the dashboard settings.
 
 ### Fixed
+- **Streak-touch FINISH wire fixes** (#739, #742) — the touch's FINISH step id
+  is now an RFC 4122 v4 UUID (`newTouchStepID`, upstream's agent-step schema
+  rejects non-UUID ids with 400), and a failed touch turn ships NO step (the
+  vendor step enum allows only `running|completed|skipped`; the run-level
+  status carries the failure). Both were reproduced live as 400s that
+  `maturityTouchRun` silently swallowed. The origin error-checking on
+  `FinishRun` is kept.
+- **Streak-touch route mount dedupe** (#738) — upstream's official
+  `POST /admin/tokens/streak-touch` manifest/OpenAPI row superseded the
+  origin-ported row from the #708–#727 merge (duplicate removed; the
+  `StreakTouchResponse` type now pins the `{ok, results, total}` envelope).
+- **Egress CLI-spoof gaps** (#732, #740) — UA 151, Bearer-only runs, ad legs,
+  and verbatim expiry handling closed; the ads product UA now claims the
+  vendored CLI version.
+- **Tool-call translation** (#733, #734) — live CF-Worker gate mirrored and
+  ruled out for #729; #729 tool-call translation matrix added (convert +
+  server).
+- **Waiting-room same-session retry** (#737) — transient upstream queues
+  (`free_mode_capacity_deferred`, the waiting room) retry in place against
+  the same session under the `TRANSIENT_RETRIES` budget; transport failures
+  still retry on a fresh connection.
 - **Merge conflict resolutions** — upstream's `server.go`/`admin_tokens.go`
   package splits were re-consolidated onto the origin single-file structure
   (origin features intact); the upstream `MaturitySnapshot`-based maturity
