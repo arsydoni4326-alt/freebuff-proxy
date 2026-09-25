@@ -16,6 +16,8 @@ import (
 	// Hermetic timezone derivation: real IANA zone names must resolve via
 	// LoadLocation on every test host (Windows ships no system zoneinfo).
 	_ "time/tzdata"
+
+	"freebucks-proxy/backend/internal/wirefacts"
 )
 
 // TestEgressDeviceBlockMatrix pins the device-block derivation matrix:
@@ -41,7 +43,8 @@ func TestEgressDeviceBlockMatrix(t *testing.T) {
 
 	t.Run("browser UA table agrees with the device os", func(t *testing.T) {
 		// Exactly the CLI's three platforms; every entry must be the pinned
-		// Chrome-124 UA carrying the platform marker its device os implies.
+		// Chrome-151 UA (AD_CHROME_VERSION) carrying the platform marker its
+		// device os implies.
 		markers := map[string]string{
 			"macos":   "Macintosh",
 			"windows": "Windows NT",
@@ -60,8 +63,8 @@ func TestEgressDeviceBlockMatrix(t *testing.T) {
 			if !strings.Contains(ua, marker) {
 				t.Errorf("adUserAgents[%q] (os %q) missing platform marker %q: %q", goos, os, marker, ua)
 			}
-			if !strings.Contains(ua, "Chrome/124.0.0.0 Safari/537.36") {
-				t.Errorf("adUserAgents[%q] is not the pinned Chrome-124 UA: %q", goos, ua)
+			if !strings.Contains(ua, "Chrome/151.0.0.0 Safari/537.36") {
+				t.Errorf("adUserAgents[%q] is not the pinned Chrome-151 UA: %q", goos, ua)
 			}
 		}
 		// The body UA is the host's table entry (linux fallback excluded:
@@ -73,9 +76,17 @@ func TestEgressDeviceBlockMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("ads request header UA stays the CLI product UA", func(t *testing.T) {
-		if freebuffCliUA != "Freebuff-CLI/1.0.0" {
-			t.Errorf("freebuffCliUA = %q, want the pinned Freebuff-CLI product UA", freebuffCliUA)
+	t.Run("ads request header UA carries the vendored CLI version", func(t *testing.T) {
+		// The version in the product UA is part of the emulated client's
+		// identity, so it must track the vendor pin rather than a frozen
+		// literal: releases advertise the wrapper version the binary was built
+		// from (cli/src/hooks/use-gravity-ad.ts:817-821,
+		// freebuff/cli/build.ts:23,33), which is what wirefacts.VendorVersion
+		// records for the snapshots the proxy speaks. The old hardcoded
+		// Freebuff-CLI/1.0.0 (the monorepo placeholder cli/package.json
+		// version) fails this pin.
+		if want := "Freebuff-CLI/" + wirefacts.VendorVersion; freebuffCliUA != want {
+			t.Errorf("freebuffCliUA = %q, want %q", freebuffCliUA, want)
 		}
 	})
 

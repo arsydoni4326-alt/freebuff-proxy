@@ -42,9 +42,12 @@ type Client struct {
 	debugDump          bool
 
 	// transientRetriesLimit is TRANSIENT_RETRIES: the maximum number of
-	// additional attempts after a transient transport failure (0 disables
-	// retries entirely). Only transport-level failures (dial/TLS/reset/EOF)
-	// retry; classified upstream errors never do.
+	// additional attempts after a transient failure (0 disables retries
+	// entirely). Transport-level failures (dial/TLS/reset/EOF) retry on a
+	// fresh connection; transient upstream queues
+	// (free_mode_capacity_deferred, the waiting room) retry in place
+	// against the SAME lease/session in ChatCompletions. Any other
+	// classified upstream error never retries.
 	transientRetriesLimit int
 
 	// capacityDeferredRetries counts free_mode_capacity_deferred retries
@@ -53,6 +56,12 @@ type Client struct {
 	// TRANSIENT_RETRIES budget (per-request, tracked separately from
 	// transient transport retries).
 	capacityDeferredRetries atomic.Int64
+
+	// waitingRoomRetries counts waiting-room retries served by this client:
+	// the upstream waiting room (any 503, or the 429 waiting_room_queued
+	// race) is retried in-place against the SAME lease/session under the
+	// same per-request TRANSIENT_RETRIES budget as the capacity queue.
+	waitingRoomRetries atomic.Int64
 
 	// stealthProfile is the active TLS fingerprint. profileMu guards swaps
 	// made by the retry loop (rotating the pinned profile before a retry);
@@ -101,8 +110,8 @@ type Client struct {
 	// and the /api/auth/cli/* flow uses its own login-request helper.
 	authOnly bool
 
-	// retryBackoff overrides the randomized 200-600ms pre-retry sleep (test
-	// seam; nil uses the crypto/rand jitter).
+	// retryBackoff overrides the computed exponential pre-retry sleep (test
+	// seam; nil uses the crypto/rand 1s*2^attempt +0-30% jitter, cap 10s).
 	retryBackoff func() time.Duration
 }
 
@@ -304,9 +313,9 @@ func NewWithIndex(token string, tokenIndex int, cfg *config.Config) (*Client, er
 				return errors.New("too many redirects")
 			}
 			// Go strips Authorization/Cookie on cross-host redirects but not
-			// x-codebuff-api-key, which carries the same raw token (defensive —
-			// agent-runs START/FINISH now set it after newRequest, and this
-			// strip is what keeps it from leaking to a redirect target). Drop
+			// x-codebuff-api-key (defensive: no current caller sets it after
+			// the Bearer-only agent-runs fix, but a relayed downstream value
+			// must never leak to a redirect target). Drop
 			// both when the redirect target is a different host OR downgrades
 			// the scheme https->http (same host, plaintext) so the token never
 			// leaves the trusted origin; same-scheme same-host redirects (e.g.
@@ -402,6 +411,10 @@ func (c *Client) TransientRetries() int64 { return c.transientRetries.Load() }
 // retries this client served (same-session retries under the
 // TRANSIENT_RETRIES budget, issue #75).
 func (c *Client) CapacityDeferredRetries() int64 { return c.capacityDeferredRetries.Load() }
+
+// WaitingRoomRetries returns how many waiting-room retries this client
+// served (same-session retries under the TRANSIENT_RETRIES budget).
+func (c *Client) WaitingRoomRetries() int64 { return c.waitingRoomRetries.Load() }
 
 // PendingWaitingRoomChain reports whether the client last classified a 428
 // waiting_room_required (issue #94) and the pre-session chain has not been

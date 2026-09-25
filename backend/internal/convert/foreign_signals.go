@@ -3,13 +3,26 @@ package convert
 import "strings"
 
 // Foreign-harness signal mirror (vendor 3420c99,
-// common/src/constants/foreign-client-signals.ts).
+// common/src/constants/foreign-client-signals.ts — DELETED upstream at
+// 0ae8779d2, 0.0.189+, after a 659-account false-positive ban reversal).
+// Retained as a PINNED historical reference, not a live port: upstream no
+// longer keys any gate on client-chosen signals (tool names, system prompt,
+// fingerprint_id). Its replacement is edge-stamped CF-Worker detection
+// (common/src/constants/cf-worker-signals.ts), mirrored LIVE in
+// cf_worker_signals.go — that file is the verdict that actually ships.
+// This file stays as the historical record of what the old gate enforced
+// (issue #630 vs #729 trail); never consult it for a live verdict.
 //
-// Upstream detects third-party clients offering tools on the free lane and
-// downgrades the enforced signals to FREEBUFF_DOWNGRADE_MODEL_ID. This file
-// mirrors the enforcement-relevant semantics so the proxy can classify its
-// OWN wire the way upstream will — for diagnosis (issue #630), never for
-// enforcement: the proxy serves whatever the client declared.
+// What upstream ENFORCED while the file lived: third-party clients offering
+// tools on the free lane were downgraded to FREEBUFF_DOWNGRADE_MODEL_ID.
+// This file mirrors those enforcement-relevant semantics so the proxy can
+// classify its OWN wire the way upstream did — for diagnosis (issue #630),
+// never for enforcement: the proxy serves whatever the client declared.
+// The end_turn/decide injection (schemacache_endturn.go) stays: decide was
+// the genuine marker under the old rule (issue #630) and end_turn is a real
+// upstream tool name; the live gate (cf_worker_signals.go) is tools-blind
+// and consults neither, so the injection buys nothing there — and, with no
+// tool-keyed enforcement left upstream, costs nothing either (issue #729).
 //
 // Enforcement order upstream (detectForeignFreebuffClient):
 //  0. foreign_tool_names / foreign_system_prompt — a harness tool name or
