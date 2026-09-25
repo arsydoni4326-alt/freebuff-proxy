@@ -117,8 +117,8 @@ REGISTRY_FILES=(
 # here: freebuff-standing.ts (renamed from freebuff-trust.ts), foreign-client-signals.ts, prompt-agent-stream.ts,
 # tools/constants.ts for cb_easp).
 WIRE_FILES=(
+	common/src/constants/freebuff-cost-mode.ts
 	common/src/constants/freebuff-standing.ts
-	common/src/constants/foreign-client-signals.ts
 	common/src/constants/freebuff-spend-ceilings.ts
 	common/src/constants/freebuff-signup-block.ts
 	common/src/constants/freebuff-peak-hours.ts
@@ -131,6 +131,15 @@ WIRE_FILES=(
 	packages/agent-runtime/src/run-programmatic-step.ts
 	common/src/tools/constants.ts
 )
+# NOTE: common/src/constants/foreign-client-signals.ts was REMOVED from this
+# list (deleted upstream at 0ae8779d2; snapshots + wiregen input removed in
+# the same port). common/src/constants/cf-worker-signals.ts (its edge-stamped
+# replacement) is deliberately NOT tracked: it keys on CF-Worker/CF-Ray
+# infrastructure headers the proxy never sees — observe-only.
+# common/src/constants/freebuff-cost-mode.ts IS tracked: its
+# FREEBUFF_COST_MODE_ESCALATION_ERROR marker (403 free_mode_cost_mode_required)
+# is classified in backend/internal/upstream/classify.go, so an edit to the
+# marker or its message must surface here.
 
 # Vendor npm wrapper version, fetched FIRST (before any clone/fetch) so the
 # version signal prints even when the git network is down. Fail-open helper:

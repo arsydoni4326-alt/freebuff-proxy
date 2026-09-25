@@ -1,3 +1,12 @@
+# ⚠️ Upstream Deprecated & Unmaintained
+
+> **IMPORTANT NOTICE**: The upstream repository (`trefeon/freebuff-proxy`) is
+> **deprecated and no longer maintained** — development and updates have ceased
+> there. This fork (`arsydoni4326-alt/freebuff-proxy`) continues maintenance and
+> development; the upstream notice is kept for provenance.
+
+---
+
 # freebucks-proxy
 
 freebucks-proxy is a Go wire gateway in front of the upstream service: pooled
