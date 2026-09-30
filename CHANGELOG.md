@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Merged `upstream/main` (#756–#762)** — 7 upstream commits integrated on 
+  `develop` via the git-flow feature branch `feature/upstream-merge-2026-09-30`. 
+  All origin features preserved (SQLite token DB, maturity automation, smart 
+  routing, quota auto-probe, update-check stamp, circuit-breaker observability, 
+  registry freshness).
+
+### Fixed
+- **Waiting-room retry cap** (#761) — waiting-room same-session retries now 
+  capped to prevent 503 ban storms (upstream fix from #744).
+- **Tool-less retry on 404 no-endpoints** (#760) — tools-bearing chat requests 
+  that hit 404 `no_available_endpoints` now retry without tools (upstream fix 
+  from #729).
+
+### Technical Details
+- Merge conflict resolution: `README.md` kept the fork's comprehensive version 
+  with the correctly reworded deprecation banner (upstream is deprecated, this 
+  fork continues maintenance). Upstream's minimal deprecation-only README would 
+  be factually incorrect for an actively maintained fork.
+- Upstream drift data refreshed to vendor `d22c969` (`0.0.193` → `0.0.1.1`).
+- CI actions bumped (actions-minor-patch group).
+- Frontend dependency bump: brace-expansion.
+- Build verified: `go build ./backend/...` and `go vet ./backend/...` clean.
+
 ## [v1.20.0] - 2026-09-25
 
 ### Changed
