@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.20.2-arsydoni4326-alt] - 2026-10-08
+
+### Changed
+- **Merged `upstream/main` (#765)** — 1 upstream commit integrated: dependency bump for `modernc.org/sqlite` (v1.59.0 → v1.60.1) and `modernc.org/libc` (v1.75.7 → v1.77.1).
+
+### Technical Details
+- Clean merge with no conflicts; only `go.mod` and `go.sum` updated.
+- All Go modules verified.
+
 ## [v1.20.1-arsydoni4326-alt] - 2026-09-30
 
 ### Changed
